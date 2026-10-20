@@ -8,6 +8,9 @@ import type { WSMessage } from "../types/events";
 class FakeWebSocket {
   static lastUrl: string | null = null;
   static lastInstance: FakeWebSocket | null = null;
+  // Mirrors the real WebSocket.OPEN constant — the client compares
+  // readyState against it before sending.
+  static readonly OPEN = 1;
   // Fields read by WSClient.connect()/disconnect(), all no-op here.
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
@@ -18,7 +21,10 @@ class FakeWebSocket {
     FakeWebSocket.lastUrl = url;
     FakeWebSocket.lastInstance = this;
   }
-  close() {}
+  closeCalls = 0;
+  close() {
+    this.closeCalls += 1;
+  }
   sent: string[] = [];
   send(frame: string) {
     this.sent.push(frame);
@@ -529,5 +535,80 @@ describe("WSClient session renewal", () => {
     FakeWebSocket.lastInstance!.onopen!();
 
     expect(FakeWebSocket.lastInstance!.sent).toEqual([]);
+  });
+  // The server keeps a WebSocket open for a fixed liveness window and
+  // refreshes it on any inbound frame. Without a heartbeat the client goes
+  // silent, the server drops the connection on its deadline, and the client
+  // reconnects and refetches the whole workspace — the "web UI stopped
+  // responding" symptom. The heartbeat has to be an application-level frame:
+  // protocol-level PING/PONG control frames do not survive a CDN edge that
+  // terminates and re-originates the WebSocket.
+  it("sends an application-level heartbeat while the socket is open", () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new WSClient("ws://example.test/ws");
+      ws.setAuth("tok", "acme");
+      ws.connect();
+
+      const sock = FakeWebSocket.lastInstance!;
+      sock.readyState = FakeWebSocket.OPEN;
+      sock.onopen!();
+
+      // The heartbeat goes out immediately and then every interval.
+      const types = () => sock.sent.map((f) => JSON.parse(f).type);
+      expect(types()).toContain("ping");
+
+      // The next ping is only sent once the previous one has been
+      // answered — one heartbeat in flight at a time.
+      vi.advanceTimersByTime(20_000);
+      expect(types().filter((t) => t === "ping").length).toBe(1);
+
+      sock.onmessage!({ data: JSON.stringify({ type: "pong" }) });
+      vi.advanceTimersByTime(20_000);
+      expect(types().filter((t) => t === "ping").length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answers the heartbeat pong without dispatching it to subscribers", () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new WSClient("ws://example.test/ws");
+      ws.setAuth("tok", "acme");
+      ws.connect();
+
+      const sock = FakeWebSocket.lastInstance!;
+      sock.readyState = FakeWebSocket.OPEN;
+      sock.onopen!();
+      vi.advanceTimersByTime(20_000);
+
+      const seen: WSMessage[] = [];
+      ws.onAny((msg) => seen.push(msg));
+
+      sock.onmessage!({ data: JSON.stringify({ type: "pong" }) });
+
+      expect(seen).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a stale socket when the heartbeat goes unanswered", () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new WSClient("ws://example.test/ws");
+      ws.setAuth("tok", "acme");
+      ws.connect();
+
+      const sock = FakeWebSocket.lastInstance!;
+      sock.readyState = FakeWebSocket.OPEN;
+      sock.onopen!();
+      vi.advanceTimersByTime(30_000); // heartbeat deadline passes, no pong
+
+      expect(sock.closeCalls).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -197,10 +197,17 @@ func checkOrigin(r *http.Request) bool {
 	return false
 }
 
-const (
-	writeWait  = 10 * time.Second
-	pongWait   = 60 * time.Second
-	pingPeriod = (pongWait * 9) / 10
+// WebSocket liveness knobs. Declared as vars rather than consts so the
+// liveness tests can shrink the windows instead of waiting a full minute.
+var (
+	writeWait = 10 * time.Second
+	pongWait  = 60 * time.Second
+	// The server pings every client well inside the pong deadline so a
+	// browser that answers promptly is never killed by a slow hop. 20s
+	// (instead of 90% of pongWait) leaves three chances to answer per
+	// deadline window, which matters when the connection crosses a CDN edge
+	// that re-originates the WebSocket and adds latency to the round trip.
+	pingPeriod = 20 * time.Second
 
 	// inboundReadLimit caps a single inbound message. Every frame a client
 	// legitimately sends is tiny — the largest is the token auth frame, well
@@ -844,7 +851,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 	// Bound inbound messages here rather than in readPump: the token auth
 	// path below reads its first frame before the caller is authenticated, so
 	// a limit installed any later leaves that read unbounded.
-	conn.SetReadLimit(inboundReadLimit)
+	conn.SetReadLimit(int64(inboundReadLimit))
 
 	if userID == "" {
 		tokenStr, errMsg, closed := firstMessageAuth(conn)
@@ -958,6 +965,17 @@ func (c *Client) readPump() {
 			}
 			break
 		}
+		// Any inbound frame proves the peer is still alive, so refresh the
+		// read deadline here as well as in the PONG handler. The deadline was
+		// only ever refreshed by a protocol-level PONG, but a proxy or CDN
+		// in the path can terminate the client WebSocket and re-originate
+		// it (Cloudflare's edge does exactly that), and control frames do
+		// not always survive that hop. An application-level heartbeat —
+		// `{"type":"ping"}` — travels as a data frame, so it always arrives
+		// and keeps the deadline alive. Without this the server tears down a
+		// perfectly healthy browser connection every pongWait, and the client
+		// answers by reconnecting and refetching the whole workspace.
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
 		c.handleFrame(raw)
 	}
 }

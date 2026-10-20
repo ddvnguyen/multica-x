@@ -16,6 +16,35 @@ const UNPARSEABLE_LOG_MAX_CHARS = 200;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
+// Application-level heartbeat. The server keeps a WebSocket open for
+// `pongWait` (60s) and refreshes that deadline on any inbound frame, so a
+// client that stays silent is disconnected on a timer. A protocol-level
+// PING/PONG would also do it, but those are control frames: a CDN edge that
+// terminates the client WebSocket and re-originates it (Cloudflare does)
+// does not always carry them through to the origin, and the connection then
+// dies on the server's deadline while both ends believe it is fine. The
+// client answers that by reconnecting and refetching the whole workspace,
+// which is what makes the web UI feel like it stopped responding.
+//
+// A heartbeat is a data frame, so it survives every hop in the chain. 20s
+// keeps it comfortably inside the 60s server deadline with room for a lost
+// frame or two. The mobile client uses the same exchange (see
+// apps/mobile/data/realtime/ws-client.ts) — a text `{"type":"ping"}` answered
+// by `{"type":"pong"}`.
+const HEARTBEAT_INTERVAL_MS = 20_000;
+// A missing pong means the socket is half-open: the peer is gone but the
+// browser has not noticed yet. Treating that as a dead connection is what
+// turns a silently stale UI into a prompt reconnect.
+//
+// The window has to be longer than the slowest round trip the deployment can
+// produce. The UI is usually reached through a CDN edge that re-originates
+// the WebSocket, and that hop has been measured at 15-20s on a bad route —
+// closing the socket after 10s would turn a slow-but-alive connection into a
+// reconnect loop, which is the failure this heartbeat exists to prevent. 30s
+// still sits well inside the server's 60s liveness window, so the server
+// never drops a connection the client still considers alive.
+const HEARTBEAT_TIMEOUT_MS = 30_000;
+
 function summarizeUnparseable(data: unknown): string {
   const text = typeof data === "string" ? data : String(data);
   if (text.length <= UNPARSEABLE_LOG_MAX_CHARS) return text;
@@ -41,6 +70,9 @@ export class WSClient {
   private identity: WSClientIdentity | undefined;
   private handlers = new Map<WSEventType, Set<EventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private awaitingPong = false;
   private reconnectAttempt = 0;
   private hasConnectedBefore = false;
   // One-shot per connection. A non-conforming frame can repeat hundreds of
@@ -99,6 +131,7 @@ export class WSClient {
     this.ws = new WebSocket(url.toString());
 
     this.ws.onopen = () => {
+      this.startHeartbeat();
       const token = this.getToken?.() ?? this.token;
       if (!this.cookieAuth && token) {
         this.ws!.send(
@@ -144,6 +177,14 @@ export class WSClient {
         this.onAuthenticated();
         return;
       }
+      // The heartbeat's own answer. Nothing subscribes to it, and letting it
+      // fall through would dispatch it to every `onAny` listener for no
+      // reason.
+      if ((msg as any).type === "pong") {
+        this.awaitingPong = false;
+        this.clearPongTimer();
+        return;
+      }
       this.logger.debug("received", msg.type);
       const eventHandlers = this.handlers.get(msg.type);
       if (eventHandlers) {
@@ -157,6 +198,7 @@ export class WSClient {
     };
 
     this.ws.onclose = () => {
+      this.stopHeartbeat();
       this.scheduleReconnect();
     };
 
@@ -164,6 +206,62 @@ export class WSClient {
       // Suppress — onclose handles reconnect; errors during StrictMode
       // double-fire are expected in dev and harmless.
     };
+  }
+
+  /**
+   * Keeps the WebSocket alive with an application-level heartbeat. The
+   * server treats any inbound frame as proof of life, so this survives
+   * proxies and CDNs that drop protocol-level PING/PONG control frames.
+   */
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.sendHeartbeat();
+    this.heartbeatTimer = setInterval(
+      () => this.sendHeartbeat(),
+      HEARTBEAT_INTERVAL_MS,
+    );
+  }
+
+  private sendHeartbeat() {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    // One heartbeat in flight at a time. On a slow link the pong can take
+    // longer than the interval, and a second ping would only pile up.
+    if (this.awaitingPong) return;
+    this.awaitingPong = true;
+    try {
+      this.ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      // A send failure means the socket is already broken. Closing it hands
+      // the recovery to the normal onclose → reconnect path.
+      this.ws.close();
+      return;
+    }
+    this.clearPongTimer();
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null;
+      if (!this.awaitingPong) return;
+      // The peer stopped answering: the connection is half-open. Close it so
+      // onclose can reconnect instead of leaving the UI on a socket that
+      // silently stops delivering events.
+      this.logger.warn("ws: heartbeat timeout, closing stale connection");
+      this.ws?.close();
+    }, HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private clearPongTimer() {
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.clearPongTimer();
+    this.awaitingPong = false;
   }
 
   /**
@@ -211,6 +309,7 @@ export class WSClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.stopHeartbeat();
     if (this.ws) {
       // Remove handlers before close to prevent onclose from scheduling a reconnect
       this.ws.onclose = null;
