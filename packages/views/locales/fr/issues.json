@@ -374,7 +374,13 @@
     "manual_reorder_hint": "Passez au tri Manuel pour réorganiser les tâches dans une colonne.",
     "filter_to_status": "Filtrer sur cet état",
     "outside_workflow": "Hors du workflow de ce tableau",
-    "workflow_columns_note": "Les colonnes viennent du workflow du tableau ; hors projet, les vues utilisent Default."
+    "workflow_columns_note": "Les colonnes viennent du workflow du tableau ; hors projet, les vues utilisent Default.",
+    "collapse_list": "Réduire la liste",
+    "expand_list": "Développer {{name}}",
+    "add_list": "Ajouter une liste",
+    "rename_list": "Renommer la liste",
+    "rename_list_locked": "Les listes intégrées ne peuvent pas être renommées.",
+    "column_actions": "Actions de la colonne"
   },
   "peek": {
     "panel_label": "Aperçu de la tâche",
