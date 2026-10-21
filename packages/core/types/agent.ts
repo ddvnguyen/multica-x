@@ -973,6 +973,61 @@ export interface RuntimeHourlyActivity {
   count: number;
 }
 
+// Freebuff account state.
+//
+// A Freebuff runtime runs against an account that lives on the daemon's
+// machine: the token file is there, and only there can a browser login be
+// completed. The daemon reads the account and reports it; these types are
+// that report.
+//
+// The status block mirrors the wrapper's `--status --json` output: the open
+// session slot, the per-model price and the credit. Every field is optional
+// — a runtime whose account the daemon cannot read reports a message, not a
+// full snapshot.
+export interface FreebuffCredit {
+  balance?: number | null;
+  dailyLimit?: number | null;
+  dailySpent?: number | null;
+  dailyRemaining?: number | null;
+  dailyResetAt?: string | null;
+  walletBalance?: number | null;
+}
+
+export interface FreebuffStatus {
+  status?: string | null;
+  instanceId?: string | null;
+  model?: string | null;
+  accessTier?: string | null;
+  admittedAt?: string | null;
+  expiresAt?: string | null;
+  remainingMs?: number | null;
+  message?: string | null;
+  credit?: FreebuffCredit | null;
+  /** model id -> price (Freebucks per hour of session). */
+  prices?: Record<string, unknown> | null;
+}
+
+// The browser-login state machine.
+//
+// "requested"  the user clicked the button; the daemon has not started yet
+// "awaiting_login"  the daemon has a one-time URL for the user to open
+// "connected"  the browser confirmed; `account` names the account
+// "failed"  `error` says why
+export interface FreebuffConnect {
+  state: string;
+  login_url?: string | null;
+  account?: string | null;
+  error?: string | null;
+  requested_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface FreebuffAccount {
+  status?: FreebuffStatus | null;
+  connect?: FreebuffConnect | null;
+  updated_at?: string | null;
+}
+
 // One (agent, provider, model) row of the "Cost by agent" tab on the runtime
 // detail page. provider + model stay on the wire because cost is computed
 // client-side from a per-model pricing table (provider disambiguates bare

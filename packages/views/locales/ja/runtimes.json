@@ -449,5 +449,21 @@
     "table_cache_r": "キャッシュ R",
     "table_cache_w": "キャッシュ W",
     "no_data": "まだ使用量データがありません"
+  },
+  "freebuff": {
+    "title": "Freebuff アカウント",
+    "connect": "Freebuff に接続",
+    "open_login": "ログインページを開く",
+    "connected_as": "{{account}} で接続済み",
+    "awaiting_login": "ブラウザでのログインを確認しています…",
+    "toast_connect_failed": "Freebuff のサインインを開始できませんでした",
+    "session_title": "セッション",
+    "session_state": "{{state}}",
+    "session_remaining": "残り {{time}}",
+    "session_none": "開いているセッションスロットはありません",
+    "credit_title": "クレジット",
+    "credit_daily": "本日は {{limit}} 中 {{remaining}} Freebucks 残存",
+    "credit_total": "合計 {{total}} Freebucks",
+    "prices_title": "モデルごとの価格"
   }
 }

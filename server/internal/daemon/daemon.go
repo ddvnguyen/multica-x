@@ -728,6 +728,11 @@ type profileLaunchSpec struct {
 	path      string
 	version   string
 	fixedArgs []string
+	// commandName is the profile's command as the workspace wrote it (for
+	// example "codebuddy-freebuff"), not the resolved path. The daemon
+	// recognises a runtime by its command, so this is what makes a Freebuff
+	// runtime identifiable however the wrapper is installed.
+	commandName string
 }
 
 // New creates a new Daemon instance.
@@ -2133,6 +2138,10 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	// interval — far too slow for "install a CLI, see it under Runtimes".
 	go d.agentDiscoveryLoop(ctx)
 
+	// Keep the Freebuff account state fresh (session slot, prices, credit)
+	// and start a browser login when the user asks for one from the web UI.
+	go d.freebuffLoop(ctx)
+
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
 	go d.heartbeatLoop(ctx)
@@ -2224,7 +2233,7 @@ func (d *Daemon) findRuntime(id string) *Runtime {
 // args resolved for a custom runtime profile. Called from
 // registerRuntimesForWorkspace. Lazily initializes the map so test fixtures
 // that build a Daemon literal without seeding every map don't panic.
-func (d *Daemon) recordProfileLaunch(profileID, path, version string, fixedArgs []string) {
+func (d *Daemon) recordProfileLaunch(profileID, path, version, commandName string, fixedArgs []string) {
 	if profileID == "" || path == "" {
 		return
 	}
@@ -2234,9 +2243,10 @@ func (d *Daemon) recordProfileLaunch(profileID, path, version string, fixedArgs 
 		d.profileLaunchSpecs = make(map[string]profileLaunchSpec)
 	}
 	d.profileLaunchSpecs[profileID] = profileLaunchSpec{
-		path:      path,
-		version:   version,
-		fixedArgs: append([]string(nil), fixedArgs...),
+		path:        path,
+		version:     version,
+		commandName: commandName,
+		fixedArgs:   append([]string(nil), fixedArgs...),
 	}
 }
 
@@ -3103,7 +3113,7 @@ func (d *Daemon) appendProfileRuntimes(ctx context.Context, workspaceID string, 
 		if d.cfg.DeviceName != "" {
 			displayName = fmt.Sprintf("%s (%s)", displayName, d.cfg.DeviceName)
 		}
-		d.recordProfileLaunch(profile.ID, resolved, version, profile.FixedArgs)
+		d.recordProfileLaunch(profile.ID, resolved, version, profile.CommandName, profile.FixedArgs)
 		d.logger.Info("registering custom runtime profile",
 			"workspace_id", workspaceID, "profile_id", profile.ID,
 			"protocol_family", profile.ProtocolFamily, "command_path", resolved)

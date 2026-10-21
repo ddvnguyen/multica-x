@@ -465,5 +465,21 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
+  },
+  "freebuff": {
+    "title": "Freebuff account",
+    "connect": "Connect to Freebuff",
+    "open_login": "Open the login page",
+    "connected_as": "Connected as {{account}}",
+    "awaiting_login": "Waiting for the browser to confirm the sign-in…",
+    "toast_connect_failed": "Could not start the Freebuff sign-in",
+    "session_title": "Session",
+    "session_state": "{{state}}",
+    "session_remaining": "{{time}} left",
+    "session_none": "No session slot is open",
+    "credit_title": "Credit",
+    "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
+    "credit_total": "{{total}} Freebucks in total",
+    "prices_title": "Price per model"
   }
 }

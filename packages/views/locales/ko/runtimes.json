@@ -449,5 +449,21 @@
     "table_cache_r": "캐시 R",
     "table_cache_w": "캐시 W",
     "no_data": "아직 사용량 데이터가 없습니다"
+  },
+  "freebuff": {
+    "title": "Freebuff 계정",
+    "connect": "Freebuff 연결",
+    "open_login": "로그인 페이지 열기",
+    "connected_as": "{{account}} 계정으로 연결됨",
+    "awaiting_login": "브라우저에서 로그인을 확인하는 중…",
+    "toast_connect_failed": "Freebuff 로그인을 시작할 수 없습니다",
+    "session_title": "세션",
+    "session_state": "{{state}}",
+    "session_remaining": "{{time}} 남음",
+    "session_none": "열린 세션 슬롯이 없습니다",
+    "credit_title": "크레딧",
+    "credit_daily": "오늘 {{limit}} 중 {{remaining}} Freebucks 남음",
+    "credit_total": "총 {{total}} Freebucks",
+    "prices_title": "모델별 가격"
   }
 }

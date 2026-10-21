@@ -246,6 +246,29 @@ SET status = 'offline',
     updated_at = now()
 WHERE id = $1;
 
+-- name: SetAgentRuntimeFreebuffMetadata :exec
+-- Merges the Freebuff account block into a runtime's metadata.
+--
+-- The block carries what the owner asked to see for a Freebuff runtime: the
+-- open session slot (opened/expires/remaining), the per-model price, and the
+-- daily and total credit — plus the state of the browser login ("connect")
+-- that produces them. It is merged rather than stored in a column because the
+-- block is advisory: it describes an external account the daemon reads, not
+-- state the server owns.
+--
+-- The payload is merged INTO the existing block, not over it: the account
+-- snapshot and the browser-login state are written by different actors (the
+-- daemon and the server respectively) and a report that carries only one of
+-- them must not erase the other.
+--
+-- `updated_at` is deliberately untouched. The daemon refreshes this block on
+-- a timer, and bumping the row's timestamp on every refresh would reorder
+-- the runtime list under the user for no reason.
+UPDATE agent_runtime
+SET metadata = metadata || jsonb_build_object(
+  'freebuff', COALESCE(metadata->'freebuff', '{}'::jsonb) || @payload::jsonb)
+WHERE id = @id;
+
 -- name: SelectStaleOnlineRuntimes :many
 -- Lists online runtimes whose last_seen_at exceeds the stale window. The
 -- sweeper uses this as a candidate set, then optionally filters via the

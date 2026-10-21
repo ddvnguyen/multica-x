@@ -74,6 +74,8 @@ import type {
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
+  FreebuffAccount,
+  FreebuffConnect,
   IssueUsageSummary,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
@@ -341,6 +343,8 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  FreebuffAccountSchema,
+  FreebuffConnectSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SearchIndexManifestSchema,
@@ -2532,6 +2536,27 @@ export class ApiClient {
       [],
       { endpoint: "GET /api/runtimes/:id/usage/by-hour" },
     );
+  }
+
+  // Freebuff account state for a runtime: the open session slot, the
+  // per-model price, the credit, and the state of the browser login.
+  async getFreebuffAccount(runtimeId: string): Promise<FreebuffAccount> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/freebuff`);
+    return parseWithFallback<FreebuffAccount>(raw, FreebuffAccountSchema, {}, {
+      endpoint: "GET /api/runtimes/:id/freebuff",
+    });
+  }
+
+  // Asks the daemon to start a browser login for the runtime's Freebuff
+  // account. The login URL arrives in the account block, not here.
+  async requestFreebuffConnect(runtimeId: string): Promise<FreebuffConnect> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/freebuff/connect`,
+      { method: "POST" },
+    );
+    return parseWithFallback<FreebuffConnect>(raw, FreebuffConnectSchema, { state: "" }, {
+      endpoint: "POST /api/runtimes/:id/freebuff/connect",
+    });
   }
 
   // Workspace dashboard — three independent rollups for `/{slug}/dashboard`.

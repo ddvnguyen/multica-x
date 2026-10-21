@@ -167,6 +167,9 @@ const (
 	PendingWorkKindModelList        = "model_list"
 	PendingWorkKindLocalSkills      = "local_skills"
 	PendingWorkKindLocalSkillImport = "local_skill_import"
+	// PendingWorkKindFreebuff asks the daemon to start a browser login for
+	// the runtime's Freebuff account.
+	PendingWorkKindFreebuff = "freebuff"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
