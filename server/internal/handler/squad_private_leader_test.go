@@ -307,6 +307,10 @@ func TestChildDone_SquadPrivateLeader_PlainMemberWakesLeader(t *testing.T) {
 // shape that used to strand — the removed canEnqueueSquadLeader gate failed
 // closed here — while a direct-to-leader-agent parent advanced fine. The
 // leader must now be woken.
+//
+// The worker agent cannot write the done status itself any more — only a human
+// can — so the close is made the way the platform makes one: a server-side
+// write carrying the worker's run.
 func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -392,6 +396,9 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 	})
 
 	// Worker agent moves the child to done (agent actor via X-Agent-ID/X-Task-ID).
+	// Only a human may write a done-category status, so the agent's own write
+	// is refused and the completion is made the way the platform makes one:
+	// a server-side write carrying the worker's run.
 	w = httptest.NewRecorder()
 	r = newRequest("PATCH", "/api/issues/"+child.ID, map[string]any{
 		"status": "done",
@@ -400,9 +407,11 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", child.ID)
 	testHandler.UpdateIssue(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue (child done): expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("UpdateIssue (child done as agent): expected 403, got %d: %s", w.Code, w.Body.String())
 	}
+	closeIssueAsPlatform(t, child.ID, workerTaskID)
+	testHandler.processChildEvents(ctx, parseUUID(parent.ID))
 
 	// The private leader MUST have a queued task on the parent.
 	var count int

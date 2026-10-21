@@ -3219,6 +3219,11 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Completion is a human decision: a machine-authored create may not open
+	// an issue already in a done-category status.
+	if !h.guardIssueCompletion(w, r, wsUUID, status) {
+		return
+	}
 	if !validateIssueEnum(w, "priority", priority, validIssuePriorities) {
 		return
 	}
@@ -4023,6 +4028,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// A project move remapped the status; guard the key actually written.
 		statusKeyForGuard = params.Status.String
 	}
+	// Completion is a human decision: a machine-authored write may not land
+	// the issue in a done-category status.
+	if !h.guardIssueCompletion(w, r, prevIssue.WorkspaceID, statusKeyForGuard) {
+		return
+	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeError(w, status, msg)
@@ -4660,6 +4670,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+	}
+	// Completion is a human decision: a machine-authored batch may not land an
+	// issue in a done-category status.
+	if !h.guardIssueCompletion(w, r, wsUUID, batchStatusKey) {
+		return
 	}
 	if !h.validateBatchTriageLocks(w, r, wsUUID, req.IssueIDs, rawUpdates) {
 		return
