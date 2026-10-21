@@ -51,6 +51,11 @@ func (t assistantTurn) resolveFallback(prior string) string {
 // Session.Messages channel for live progress/transcript storage, but only a
 // terminal result (or the last complete assistant message after an explicitly
 // successful empty result) may become Result.Output.
+// maxErrorDetailLength bounds how much of a CLI's last assistant text is
+// quoted in a failure message. The text can be a whole answer; the failure
+// message only needs the cause.
+const maxErrorDetailLength = 500
+
 type streamTerminalState struct {
 	lastAssistantText string
 	finalResultText   string
@@ -121,6 +126,20 @@ func finalizeStreamResult(
 	case state.resultIsError:
 		status = "failed"
 		errMsg = state.finalResultText
+		if errMsg == "" {
+			// The CLI reported the failure as an error result with no detail of
+			// its own, but it usually still rendered the upstream's message as
+			// the assistant's last text — a gateway refusal, a quota error, a
+			// provider's 4xx body. That text is the only thing that says WHAT
+			// went wrong, and "returned an error result without details" says
+			// nothing at all: the reader is left with a classification and no
+			// cause. Prefer the rendered text, trimmed to what a failure
+			// message can carry.
+			errMsg = state.lastAssistantText
+			if len(errMsg) > maxErrorDetailLength {
+				errMsg = errMsg[:maxErrorDetailLength] + "…"
+			}
+		}
 		if errMsg == "" {
 			errMsg = provider + " returned an error result without details"
 		}
