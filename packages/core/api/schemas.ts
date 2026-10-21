@@ -1930,6 +1930,63 @@ const RuntimeUsageSchema = z.object({
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
 
+// Freebuff account schemas — the account state a Freebuff runtime's daemon
+// reports (`/api/runtimes/:id/freebuff`).
+//
+// The status block is the wrapper's own `--status --json` output, verbatim:
+// the open session slot, the per-model price and the credit. It is kept
+// lenient on purpose — the wrapper owns that shape, and a field this UI does
+// not know about must not cost the fields it does.
+
+const FreebuffCreditSchema = z
+  .object({
+    balance: z.number().nullish().catch(null),
+    dailyLimit: z.number().nullish().catch(null),
+    dailySpent: z.number().nullish().catch(null),
+    dailyRemaining: z.number().nullish().catch(null),
+    dailyResetAt: z.string().nullish().catch(null),
+    walletBalance: z.number().nullish().catch(null),
+  })
+  .loose();
+
+const FreebuffStatusSchema = z
+  .object({
+    status: z.string().nullish().catch(null),
+    instanceId: z.string().nullish().catch(null),
+    model: z.string().nullish().catch(null),
+    accessTier: z.string().nullish().catch(null),
+    admittedAt: z.string().nullish().catch(null),
+    expiresAt: z.string().nullish().catch(null),
+    remainingMs: z.number().nullish().catch(null),
+    message: z.string().nullish().catch(null),
+    credit: FreebuffCreditSchema.nullish().catch(null),
+    // The price of a model is Freebucks per hour of session. The account
+    // host has been seen to report it as a number and as an object, so the
+    // value stays unknown and the UI formats whatever it gets.
+    prices: z.record(z.string(), z.unknown()).nullish().catch(null),
+  })
+  .loose();
+
+export const FreebuffConnectSchema = z
+  .object({
+    state: z.string().catch(""),
+    login_url: z.string().nullish().catch(null),
+    expires_at: z.string().nullish().catch(null),
+    account: z.string().nullish().catch(null),
+    error: z.string().nullish().catch(null),
+    requested_at: z.string().nullish().catch(null),
+    updated_at: z.string().nullish().catch(null),
+  })
+  .loose();
+
+export const FreebuffAccountSchema = z
+  .object({
+    status: FreebuffStatusSchema.nullish().catch(null),
+    connect: FreebuffConnectSchema.nullish().catch(null),
+    updated_at: z.string().nullish().catch(null),
+  })
+  .loose();
+
 const RuntimeHourlyActivitySchema = z.object({
   hour: z.number().default(0),
   count: z.number().default(0),
@@ -2468,6 +2525,17 @@ export const DuplicateIssueErrorBodySchema = z.object({
     title: z.string(),
   }).loose(),
 }).loose();
+
+// A destructive confirmation must fail closed on an incomplete plan. Do not
+// default missing arrays to empty or silently discard malformed entries.
+export const RuntimeAccessRevocationPlanSchema = z.object({
+  code: z.enum(["runtime_has_nonowner_dependents", "runtime_access_revocation_plan_changed"]),
+  nonowner_agents: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+  active_task_ids: z.array(z.string().uuid()),
+}).refine((body) =>
+  new Set(body.nonowner_agents.map((agent) => agent.id)).size === body.nonowner_agents.length &&
+  new Set(body.active_task_ids).size === body.active_task_ids.length,
+).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids }));
 
 export interface DuplicateIssueErrorBody {
   code: "active_duplicate_issue";

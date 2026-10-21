@@ -141,6 +141,18 @@
     },
     "visibility_toast_updated": "Visibility set to {{visibility}}",
     "visibility_toast_failed": "Failed to update visibility",
+    "visibility_revoke_dialog": {
+      "title": "Make this Runtime private?",
+      "description": "Making \"{{name}}\" private will unbind {{count}} teammate agents, cancel {{taskCount}} active runs on this machine, and pause active autopilots assigned to those agents. Your own agents and runs are unaffected.",
+      "warning": "Access is revoked immediately on the server. Connected daemons stop through their normal cancellation check. An offline machine cannot receive the stop request until it reconnects; its local process may continue meanwhile.",
+      "plan_changed": "The access plan changed while this dialog was open. Review it and confirm again.",
+      "checkbox": "I understand that the listed teammate agents will be unbound, their active runs cancelled, and their active autopilots paused.",
+      "cancel": "Cancel",
+      "confirm": "Make Runtime private",
+      "submitting": "Revoking access...",
+      "toast_success": "Runtime is now private and teammate access was revoked",
+      "toast_failed": "Failed to revoke runtime access"
+    },
     "delete_dialog": {
       "self_heal_notice": "This runtime is managed by a running local daemon. Deleting it will succeed, but the daemon will re-register a fresh runtime within seconds — stop the daemon process first to remove it permanently.",
       "profile_backed_notice": "This runtime was registered from a custom runtime profile. Deleting it removes only the current runtime instance; a running daemon can register it again while the profile remains. Delete the custom runtime profile from Custom runtimes to remove it permanently.",
@@ -465,5 +477,22 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
+  },
+  "freebuff": {
+    "title": "Freebuff account",
+    "connect": "Connect to Freebuff",
+    "open_login": "Open the login page",
+    "connected_as": "Connected as {{account}}",
+    "awaiting_login": "Waiting for the browser to confirm the sign-in…",
+    "login_expires": "This link expires at {{time}}",
+    "toast_connect_failed": "Could not start the Freebuff sign-in",
+    "session_title": "Session",
+    "session_state": "{{state}}",
+    "session_remaining": "{{time}} left",
+    "session_none": "No session slot is open",
+    "credit_title": "Credit",
+    "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
+    "credit_total": "{{total}} Freebucks in total",
+    "prices_title": "Price per model"
   }
 }

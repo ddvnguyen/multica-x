@@ -750,6 +750,27 @@ func (c *Client) ReportUpdateResult(ctx context.Context, runtimeID, updateID str
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/update/%s/result", runtimeID, updateID), result, nil)
 }
 
+// ReportFreebuffAccount sends a Freebuff account report back to the server:
+// the fresh account snapshot and/or the state of the browser login.
+func (c *Client) ReportFreebuffAccount(ctx context.Context, runtimeID string, payload map[string]any) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff", runtimeID), payload, nil)
+}
+
+// GetFreebuffConnectPending asks the server whether the user asked for a
+// Freebuff browser login on this runtime. The daemon polls it rather than
+// receiving the request in a heartbeat acknowledgement, because the request
+// lives in the runtime row's metadata and the WebSocket heartbeat path never
+// reads that row.
+func (c *Client) GetFreebuffConnectPending(ctx context.Context, runtimeID string) (bool, error) {
+	var resp struct {
+		ConnectRequested bool `json:"connect_requested"`
+	}
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff/pending", runtimeID), &resp); err != nil {
+		return false, err
+	}
+	return resp.ConnectRequested, nil
+}
+
 // ReportModelListResult sends the model-discovery result back to the server.
 func (c *Client) ReportModelListResult(ctx context.Context, runtimeID, requestID string, result map[string]any) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/models/%s/result", runtimeID, requestID), result, nil)
@@ -1078,6 +1099,7 @@ type RegisterResponse struct {
 	Repos        []RepoData      `json:"repos"`
 	ReposVersion string          `json:"repos_version"`
 	Settings     json.RawMessage `json:"settings,omitempty"`
+	CACerts      string          `json:"ca_certs,omitempty"`
 }
 
 func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterResponse, error) {
@@ -1093,6 +1115,9 @@ type WorkspaceReposResponse struct {
 	Repos        []RepoData      `json:"repos"`
 	ReposVersion string          `json:"repos_version"`
 	Settings     json.RawMessage `json:"settings,omitempty"`
+	// CACerts is the server's extra CA certificates (PEM) for git; see
+	// applyGitCACerts.
+	CACerts string `json:"ca_certs,omitempty"`
 }
 
 func (c *Client) GetWorkspaceRepos(ctx context.Context, workspaceID string) (*WorkspaceReposResponse, error) {

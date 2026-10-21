@@ -1,6 +1,7 @@
 export * from "./access";
 export * from "./queries";
 export * from "./profiles";
+export * from "./freebuff";
 export * from "./mutations";
 export * from "./models";
 export * from "./local-skills";
