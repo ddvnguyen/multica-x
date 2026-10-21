@@ -82,6 +82,18 @@ export function FreebuffAccountCard({ runtime }: { runtime: AgentRuntime }) {
 
   const requestConnect = useRequestFreebuffConnect(wsId);
 
+  const connect = account?.connect ?? null;
+  const loginExpires = connect?.expires_at ?? null;
+
+  // The one-time URL is short-lived. Saying when it dies is the difference
+  // between "the button did nothing" and "the link expired".
+  const loginExpiryLabel = useMemo(() => {
+    if (!loginExpires) return null;
+    const at = new Date(loginExpires);
+    if (Number.isNaN(at.getTime())) return null;
+    return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }, [loginExpires]);
+
   useEffect(() => {
     if (!isFreebuff) return;
     const id = setInterval(() => setTick((n) => n + 1), TICK_MS);
@@ -91,7 +103,6 @@ export function FreebuffAccountCard({ runtime }: { runtime: AgentRuntime }) {
   if (!isFreebuff) return null;
 
   const status = account?.status ?? null;
-  const connect = account?.connect ?? null;
   const credit = status?.credit ?? null;
   const prices = status?.prices ?? null;
   const sessionState = status?.status ?? null;
@@ -149,9 +160,12 @@ export function FreebuffAccountCard({ runtime }: { runtime: AgentRuntime }) {
         {connectState === "failed" && connect?.error ? (
           <p className="text-caption text-destructive">{connect.error}</p>
         ) : null}
-        {connectState === "awaiting_login" && !loginUrl ? (
+        {connectState === "awaiting_login" ? (
           <p className="text-caption text-muted-foreground">
             {t(($) => $.freebuff.awaiting_login)}
+            {loginExpiryLabel
+              ? ` · ${t(($) => $.freebuff.login_expires, { time: loginExpiryLabel })}`
+              : null}
           </p>
         ) : null}
 

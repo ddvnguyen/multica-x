@@ -1720,6 +1720,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// are admin-gated below).
 					r.Get("/runtime-profiles", h.ListRuntimeProfiles)
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
+					// Freebuff browser login. The account client on the
+					// daemon's machine owns the login, so it asks here
+					// whether a login was requested and reports the
+					// one-time URL (or the account that signed in) back.
+					// Member-visible: it is the same account a member can
+					// already connect from the runtime page.
+					r.Get("/freebuff/connect-pending", h.ListFreebuffConnectPending)
+					r.Post("/runtimes/{runtimeId}/freebuff/login", h.ReportFreebuffLogin)
 					// The workspace MCP library — member-visible so an agent
 					// owner can see what is available to add to their agent.
 					// The payload is names and transports only; the stored

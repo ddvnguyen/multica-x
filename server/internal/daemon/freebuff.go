@@ -290,6 +290,23 @@ func (d *Daemon) reportFreebuffStatus(ctx context.Context, rt Runtime) {
 	d.logger.Debug("freebuff account refreshed",
 		"runtime_id", rt.ID, "summary", freebuffAccountSummary(status))
 	d.reportFreebuffAccount(ctx, rt, map[string]any{"status": status})
+	// A browser login that is waiting for the user is part of the account's
+	// state, and it lives in the account client's own files — not in the
+	// daemon's memory. So the snapshot carries it, and the daemon forwards it
+	// as the login state: the URL stays visible in the UI even after the
+	// daemon that started it restarted.
+	if login, ok := status["login"].(map[string]any); ok {
+		if url, _ := login["loginUrl"].(string); url != "" && login["state"] == "pending" {
+			connect := map[string]any{
+				"state":     "awaiting_login",
+				"login_url": url,
+			}
+			if expires, ok := login["expiresAt"].(float64); ok && expires > 0 {
+				connect["expires_at"] = time.UnixMilli(int64(expires)).UTC().Format(time.RFC3339)
+			}
+			d.reportFreebuffConnect(ctx, rt, connect)
+		}
+	}
 }
 
 // reportFreebuffAccount delivers an account report to the server.

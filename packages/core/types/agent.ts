@@ -1018,6 +1018,7 @@ export interface FreebuffStatus {
 export interface FreebuffConnect {
   state: string;
   login_url?: string | null;
+  expires_at?: string | null;
   account?: string | null;
   error?: string | null;
   requested_at?: string | null;

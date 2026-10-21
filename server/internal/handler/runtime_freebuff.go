@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,9 @@ type FreebuffConnect struct {
 	// LoginURL is the one-time URL the user opens to sign in. Present while
 	// State is "awaiting_login".
 	LoginURL string `json:"login_url,omitempty"`
+	// ExpiresAt is when that one-time URL stops working. The account host
+	// decides it; the UI shows it so the user knows how long they have.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Account identifies the account that signed in.
 	Account string `json:"account,omitempty"`
 	// Error explains a "failed" state.
@@ -62,6 +66,11 @@ type FreebuffConnect struct {
 	// UpdatedAt is when the state last changed.
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
+
+// FreebuffCommandName is the runtime-profile command that makes a runtime a
+// Freebuff runtime. The account client on the daemon's machine recognises
+// the same name.
+const FreebuffCommandName = "codebuddy-freebuff"
 
 // Freebuff connect states.
 const (
@@ -97,6 +106,161 @@ func freebuffBlockFromRuntime(rt db.AgentRuntime) *FreebuffBlock {
 // freebuffBlockPayload renders a block for storage.
 func freebuffBlockPayload(block *FreebuffBlock) ([]byte, error) {
 	return json.Marshal(block)
+}
+
+// ListFreebuffConnectPending lists the Freebuff runtimes whose browser login
+// the user has asked for.
+//
+// The account client on the daemon's machine polls this: it is the account
+// that owns the login, so it — not the web UI and not the server — is what
+// turns a click into a one-time URL. The answer is a short list because a
+// login request is rare; the poll is cheap and the daemon's own poll is the
+// backstop for a lost nudge.
+//
+// Member-gated by the router (workspace scope).
+func (h *Handler) ListFreebuffConnectPending(w http.ResponseWriter, r *http.Request) {
+	wsID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
+	if !ok {
+		return
+	}
+
+	runtimes, err := h.Queries.ListAgentRuntimes(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list runtimes")
+		return
+	}
+	profiles, err := h.Queries.ListRuntimeProfiles(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list runtime profiles")
+		return
+	}
+	commandByProfile := make(map[string]string, len(profiles))
+	for _, profile := range profiles {
+		commandByProfile[uuidToString(profile.ID)] = profile.CommandName
+	}
+
+	out := make([]map[string]any, 0)
+	for _, rt := range runtimes {
+		if !rt.ProfileID.Valid {
+			continue
+		}
+		if commandByProfile[uuidToString(rt.ProfileID)] != FreebuffCommandName {
+			continue
+		}
+		block := freebuffBlockFromRuntime(rt)
+		if block.Connect == nil || block.Connect.State != FreebuffConnectRequested {
+			continue
+		}
+		out = append(out, map[string]any{
+			"runtime_id":   uuidToString(rt.ID),
+			"name":         rt.Name,
+			"requested_at": block.Connect.RequestedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runtimes": out})
+}
+
+// ReportFreebuffLogin records the state of a browser login that the account
+// client started on the daemon's machine.
+//
+// The client that owns the account is the one that can complete the
+// handshake, so it reports the result here: the one-time URL to open, or the
+// account that signed in. The block is merged into the runtime's metadata, so
+// the account snapshot the daemon reported is left alone.
+//
+// Member-gated by the router (workspace scope).
+func (h *Handler) ReportFreebuffLogin(w http.ResponseWriter, r *http.Request) {
+	wsID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
+		return
+	}
+	runtimeID := chi.URLParam(r, "runtimeId")
+	rt, _, ok := h.requireRuntimeReadAccess(w, r, obsmetrics.RuntimeLookupSourceRuntimeAPI, runtimeID)
+	if !ok {
+		return
+	}
+	if uuidToString(rt.WorkspaceID) != wsID {
+		writeError(w, http.StatusNotFound, "runtime not found")
+		return
+	}
+
+	var body struct {
+		State     string          `json:"state"`
+		LoginURL  string          `json:"login_url"`
+		ExpiresAt json.RawMessage `json:"expires_at"`
+		Account   string          `json:"account"`
+		Error     string          `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	state := strings.TrimSpace(body.State)
+	switch state {
+	case FreebuffConnectAwaitingLogin, FreebuffConnectConnected, FreebuffConnectFailed:
+	case "":
+		writeError(w, http.StatusBadRequest, "state is required")
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "unknown state")
+		return
+	}
+
+	now := time.Now()
+	connect := &FreebuffConnect{
+		State:     state,
+		LoginURL:  body.LoginURL,
+		Account:   body.Account,
+		Error:     body.Error,
+		UpdatedAt: &now,
+	}
+	if expires, ok := parseFreebuffExpiresAt(body.ExpiresAt); ok {
+		connect.ExpiresAt = &expires
+	}
+	// Carry the original click time forward: the client never saw it.
+	if previous := freebuffBlockFromRuntime(rt).Connect; previous != nil {
+		connect.RequestedAt = previous.RequestedAt
+	}
+
+	payload, err := json.Marshal(map[string]any{"connect": connect})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode the freebuff login state")
+		return
+	}
+	if err := h.Queries.SetAgentRuntimeFreebuffMetadata(r.Context(), db.SetAgentRuntimeFreebuffMetadataParams{
+		Payload: payload,
+		ID:      rt.ID,
+	}); err != nil {
+		slog.Warn("freebuff login report failed", "runtime_id", runtimeID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store the freebuff login state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "connect": connect})
+}
+
+// parseFreebuffExpiresAt reads the expiry of a one-time login URL. It
+// accepts an RFC 3339 instant (what the API speaks) and epoch milliseconds
+// (what the account host reports).
+func parseFreebuffExpiresAt(raw json.RawMessage) (time.Time, bool) {
+	if len(raw) == 0 {
+		return time.Time{}, false
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+			return parsed.UTC(), true
+		}
+		return time.Time{}, false
+	}
+	var millis int64
+	if err := json.Unmarshal(raw, &millis); err == nil && millis > 0 {
+		return time.UnixMilli(millis).UTC(), true
+	}
+	return time.Time{}, false
 }
 
 // GetFreebuffAccount returns the Freebuff account state the daemon last

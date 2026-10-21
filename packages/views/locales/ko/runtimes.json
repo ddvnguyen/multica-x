@@ -468,6 +468,7 @@
     "open_login": "로그인 페이지 열기",
     "connected_as": "{{account}} 계정으로 연결됨",
     "awaiting_login": "브라우저에서 로그인을 확인하는 중…",
+    "login_expires": "이 링크는 {{time}}에 만료됩니다",
     "toast_connect_failed": "Freebuff 로그인을 시작할 수 없습니다",
     "session_title": "세션",
     "session_state": "{{state}}",

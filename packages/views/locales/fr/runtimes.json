@@ -484,6 +484,7 @@
     "open_login": "Ouvrir la page de connexion",
     "connected_as": "Connecté en tant que {{account}}",
     "awaiting_login": "En attente de la confirmation du navigateur…",
+    "login_expires": "Ce lien expire à {{time}}",
     "toast_connect_failed": "Impossible de démarrer la connexion Freebuff",
     "session_title": "Session",
     "session_state": "{{state}}",

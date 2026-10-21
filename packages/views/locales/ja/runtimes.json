@@ -468,6 +468,7 @@
     "open_login": "ログインページを開く",
     "connected_as": "{{account}} で接続済み",
     "awaiting_login": "ブラウザでのログインを確認しています…",
+    "login_expires": "このリンクは {{time}} に期限切れになります",
     "toast_connect_failed": "Freebuff のサインインを開始できませんでした",
     "session_title": "セッション",
     "session_state": "{{state}}",

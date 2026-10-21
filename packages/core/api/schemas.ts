@@ -1971,6 +1971,7 @@ export const FreebuffConnectSchema = z
   .object({
     state: z.string().catch(""),
     login_url: z.string().nullish().catch(null),
+    expires_at: z.string().nullish().catch(null),
     account: z.string().nullish().catch(null),
     error: z.string().nullish().catch(null),
     requested_at: z.string().nullish().catch(null),
