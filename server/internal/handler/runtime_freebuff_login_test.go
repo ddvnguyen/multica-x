@@ -171,6 +171,19 @@ func TestListFreebuffConnectPending_OnlyRequestsFreebuffRuntimes(t *testing.T) {
 	if !found {
 		t.Fatalf("the runtime with a pending request was not listed")
 	}
+
+	// A login that is already waiting for the browser stays in the list: the
+	// account client has to keep polling it.
+	if err := queries.SetAgentRuntimeFreebuffMetadata(ctx, db.SetAgentRuntimeFreebuffMetadataParams{
+		Payload: []byte(`{"connect":{"state":"awaiting_login","login_url":"https://freebuff.com/login?auth_code=x"}}`),
+		ID:      parseUUID(runtimeID),
+	}); err != nil {
+		t.Fatalf("write awaiting state: %v", err)
+	}
+	block := readFreebuffBlock(t, runtimeID)
+	if block.Connect == nil || block.Connect.State != FreebuffConnectAwaitingLogin {
+		t.Fatalf("connect state = %#v, want awaiting_login", block.Connect)
+	}
 }
 
 // TestFreebuffLoginReport_RejectsAnUnknownState keeps a stray write from

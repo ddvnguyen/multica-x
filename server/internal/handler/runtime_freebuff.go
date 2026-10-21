@@ -109,7 +109,8 @@ func freebuffBlockPayload(block *FreebuffBlock) ([]byte, error) {
 }
 
 // ListFreebuffConnectPending lists the Freebuff runtimes whose browser login
-// the user has asked for.
+// the user has asked for, and the ones whose login is still waiting for the
+// browser.
 //
 // The account client on the daemon's machine polls this: it is the account
 // that owns the login, so it — not the web UI and not the server — is what
@@ -152,12 +153,20 @@ func (h *Handler) ListFreebuffConnectPending(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 		block := freebuffBlockFromRuntime(rt)
-		if block.Connect == nil || block.Connect.State != FreebuffConnectRequested {
+		if block.Connect == nil {
+			continue
+		}
+		// A login that is already waiting for the browser is listed too: the
+		// account client has to keep polling it, and the poll is what turns
+		// the browser's approval into credentials.
+		if block.Connect.State != FreebuffConnectRequested &&
+			block.Connect.State != FreebuffConnectAwaitingLogin {
 			continue
 		}
 		out = append(out, map[string]any{
 			"runtime_id":   uuidToString(rt.ID),
 			"name":         rt.Name,
+			"state":        block.Connect.State,
 			"requested_at": block.Connect.RequestedAt,
 		})
 	}
