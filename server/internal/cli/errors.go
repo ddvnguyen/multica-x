@@ -474,6 +474,17 @@ var serverMessagePrefixes = map[ErrorKind][2]string{
 	KindConflict:   {"Request conflict: ", "请求冲突："},
 }
 
+// serverCodePrefixes lists the response CODES whose server-side message names
+// the move that IS allowed, for a status whose generic copy points the wrong
+// way.
+//
+// The completion refusal is the case that matters: the generic forbidden line
+// ("you do not have permission") sends an agent looking for an access problem
+// it does not have, while the refusal names the status it may write instead.
+var serverCodePrefixes = map[string][2]string{
+	"agent_cannot_complete_issue": {"Refused: ", "已拒绝："},
+}
+
 // messageFor returns the localized message for a kind.
 func messageFor(kind ErrorKind, lang Language) string {
 	m, ok := kindMessages[kind]
@@ -555,6 +566,16 @@ func userMessage(err error, lang Language) string {
 				return prefix[0] + serverMsg
 			}
 		}
+		// A response code that names its own fix carries that message even
+		// when the status has no generic prefix of its own.
+		if prefix, ok := serverCodePrefixes[extractServerCode(httpErr.Body)]; ok {
+			if serverMsg := extractServerMessage(httpErr.Body); serverMsg != "" {
+				if lang == LangZH {
+					return prefix[1] + serverMsg
+				}
+				return prefix[0] + serverMsg
+			}
+		}
 		return messageFor(kind, lang)
 	}
 
@@ -572,6 +593,21 @@ func userMessage(err error, lang Language) string {
 // "message" (the issue-table cursor responses do this). Prose always wins;
 // a bare code is kept only as a last resort so the user still gets something
 // greppable when no sentence is on offer.
+// extractServerCode returns the response body's machine-readable code, if it
+// carries one.
+func extractServerCode(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" || body[0] != '{' {
+		return ""
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return ""
+	}
+	code, _ := parsed["code"].(string)
+	return strings.TrimSpace(code)
+}
+
 func extractServerMessage(body string) string {
 	body = strings.TrimSpace(body)
 	if body == "" || body[0] != '{' {
