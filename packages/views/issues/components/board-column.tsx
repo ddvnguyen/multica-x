@@ -2,7 +2,16 @@
 
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import { Virtuoso } from "react-virtuoso";
-import { Ban, EyeOff, FolderMinus, MoreHorizontal, Plus, UserMinus } from "lucide-react";
+import {
+  ArrowLeftRight,
+  Ban,
+  EyeOff,
+  FolderMinus,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  UserMinus,
+} from "lucide-react";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import type {
@@ -23,6 +32,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
 import { useViewBaseline } from "../surface/view-baseline-context";
 import { StatusHeading } from "./status-heading";
+import { StatusIcon } from "./status-icon";
 import { DraggableBoardCard } from "./board-card";
 import type { ChildProgress } from "./list-row";
 import { useT } from "../../i18n";
@@ -33,6 +43,7 @@ import { DeferredPopup } from "../../common/deferred-popup";
 import { DeferredTooltip } from "../../common/deferred-tooltip";
 import { VirtuosoSeed } from "../../common/virtuoso-seed";
 import { useBoardWorkflow } from "./board-workflow-context";
+import { useStatusLabel } from "../utils/status-label";
 import { ColumnHandoff } from "../../workflows/column-handoff";
 import type { IssueCreateDefaults } from "../surface/types";
 
@@ -43,6 +54,12 @@ import type { IssueCreateDefaults } from "../surface/types";
 
 export const BOARD_COL_WIDTH = 280;
 export const BOARD_CARD_WIDTH = BOARD_COL_WIDTH - 16 - 8; // col(280) - col p-2(16) - droppable p-1(8)
+
+/**
+ * Width of a collapsed column: a slim strip that still carries the list's
+ * icon, name and count (Trello's collapsed list).
+ */
+export const BOARD_COLLAPSED_WIDTH = 44;
 
 // Board cards are ~90-140px tall, so ~10 fill a column viewport — unlike the
 // generic VIRTUOSO_SEED_COUNT (30, sized for 36px list rows). The seed mounts
@@ -108,6 +125,8 @@ export const BoardColumn = memo(function BoardColumn({
   projectId,
   onCreateIssue,
   sortLabel,
+  onCollapse,
+  onRenameList,
 }: {
   group: BoardColumnGroup;
   issueIds: string[];
@@ -120,11 +139,16 @@ export const BoardColumn = memo(function BoardColumn({
   projectId?: string;
   onCreateIssue?: (defaults: IssueCreateDefaults) => void;
   sortLabel?: string | null;
+  /** Collapse this column into a slim strip. */
+  onCollapse?: () => void;
+  /** Rename the list (status) this column stands for. */
+  onRenameList?: (status: string) => void;
 }) {
   const status = group.status;
   const wsId = useWorkspaceId();
   const { entryOf } = useIssueStatuses(wsId);
-  const archived = !!status && !!entryOf(status)?.archived_at;
+  const statusEntry = status ? entryOf(status) : undefined;
+  const archived = !!status && !!statusEntry?.archived_at;
   const { setNodeRef, isOver: droppableIsOver } = useDroppable({ id: group.id });
   // A dragged card whose project workflow does not list this status cannot
   // land here; the column dims and says why. (MUL-7420)
@@ -138,6 +162,15 @@ export const BoardColumn = memo(function BoardColumn({
   const viewBaseline = useViewBaseline();
   const statusFixedByView = !!status && viewBaseline?.status.has(status) === true;
   const { t } = useT("issues");
+  // Renaming a list edits the workspace status catalog, and the server refuses
+  // built-ins and archived rows. The menu says so rather than offering an
+  // action that would be rejected after the fact.
+  const canRenameList =
+    !!status &&
+    !!onRenameList &&
+    !!statusEntry &&
+    statusEntry.is_system !== true &&
+    !statusEntry.archived_at;
 
   // Resolve IDs to Issue objects, preserving parent-provided order
   const resolvedIssues = useMemo(
@@ -219,9 +252,25 @@ export const BoardColumn = memo(function BoardColumn({
       <div className="mb-2 flex items-center justify-between gap-2 px-1.5">
         <BoardGroupHeading group={group} count={totalCount ?? issueIds.length} />
 
-        {/* Right: step handler + add + menu */}
+        {/* Right: step handler + collapse + add + menu */}
         <div className="flex min-w-0 items-center gap-1">
           {status && <WorkflowStepHandlerBadge status={status} />}
+          {onCollapse && (
+            <DeferredTooltip
+              content={t(($) => $.board.collapse_list)}
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="rounded-full text-muted-foreground"
+                  aria-label={t(($) => $.board.collapse_list)}
+                  onClick={onCollapse}
+                >
+                  <ArrowLeftRight className="size-3.5" />
+                </Button>
+              }
+            />
+          )}
           {/* Column-header popups mount lazily: a board/swimlane renders one
               header per column and almost none of these menus/tooltips are
               ever opened — eagerly mounting them dominated surface mount
@@ -230,7 +279,12 @@ export const BoardColumn = memo(function BoardColumn({
             <DeferredPopup
               ariaHasPopup="menu"
               triggerRender={
-                <Button variant="ghost" size="icon-sm" className="rounded-full text-muted-foreground">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="rounded-full text-muted-foreground"
+                  aria-label={t(($) => $.board.column_actions)}
+                >
                   <MoreHorizontal className="size-3.5" />
                 </Button>
               }
@@ -239,12 +293,31 @@ export const BoardColumn = memo(function BoardColumn({
                 <DropdownMenu open={open} onOpenChange={onOpenChange}>
                   <DropdownMenuTrigger
                     render={
-                      <Button variant="ghost" size="icon-sm" className="rounded-full text-muted-foreground">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="rounded-full text-muted-foreground"
+                        aria-label={t(($) => $.board.column_actions)}
+                      >
                         <MoreHorizontal className="size-3.5" />
                       </Button>
                     }
                   />
                   <DropdownMenuContent align="end">
+                    {onRenameList && (
+                      <DropdownMenuItem
+                        disabled={!canRenameList}
+                        title={
+                          canRenameList
+                            ? undefined
+                            : t(($) => $.board.rename_list_locked)
+                        }
+                        onClick={() => onRenameList(status)}
+                      >
+                        <Pencil className="size-3.5" />
+                        {t(($) => $.board.rename_list)}
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem
                       disabled={statusFixedByView}
                       title={statusFixedByView ? t(($) => $.filters.in_view) : undefined}
@@ -381,6 +454,61 @@ function WorkflowStepHandlerBadge({ status }: { status: string }) {
   if (!scopeWorkflow || !scopeProject) return null;
   return <ColumnHandoff status={status} workflow={scopeWorkflow} project={scopeProject} />;
 }
+
+/**
+ * A collapsed column: a slim strip that keeps the list's icon, name and count
+ * visible (Trello's collapsed list) and expands on click.
+ *
+ * It renders NO droppable, so a card cannot be dropped into a collapsed
+ * column — the column is a label, not a target.
+ */
+export const CollapsedBoardColumn = memo(function CollapsedBoardColumn({
+  group,
+  count,
+  onExpand,
+}: {
+  group: BoardColumnGroup;
+  count: number;
+  onExpand: () => void;
+}) {
+  const { t } = useT("issues");
+  const wsId = useWorkspaceId();
+  const { categoryOf, colorOf, iconOf } = useIssueStatuses(wsId);
+  const labelOf = useStatusLabel(wsId);
+  const title = group.status ? labelOf(group.status) : group.title;
+
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-label={t(($) => $.board.expand_list, { name: title })}
+      className="group/column flex shrink-0 flex-col items-center gap-2 rounded-xl bg-muted/40 p-1.5 transition-colors hover:bg-muted/70"
+      style={{ width: BOARD_COLLAPSED_WIDTH }}
+    >
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-background/60 text-muted-foreground">
+        <ArrowLeftRight className="size-3.5 rotate-90" />
+      </span>
+      {group.status && (
+        <StatusIcon
+          status={group.status}
+          category={categoryOf(group.status)}
+          color={colorOf(group.status)}
+          icon={iconOf(group.status)}
+          className="size-3.5"
+        />
+      )}
+      <span
+        className="min-h-0 max-h-full overflow-hidden rotate-180 text-body font-medium text-muted-foreground"
+        style={{ writingMode: "vertical-rl" }}
+      >
+        {title}
+      </span>
+      <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-micro font-medium tabular-nums text-muted-foreground">
+        {count}
+      </span>
+    </button>
+  );
+});
 
 function BoardGroupHeading({
   group,

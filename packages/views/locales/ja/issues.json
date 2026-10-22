@@ -370,7 +370,13 @@
     "manual_reorder_hint": "列内の順序を変更するには、並び順を「手動」に切り替えてください。",
     "filter_to_status": "このステータスで絞り込む",
     "outside_workflow": "このボードのワークフローにはありません",
-    "workflow_columns_note": "ボードの列はワークフローで決まります。プロジェクト外のビューは Default を使います。"
+    "workflow_columns_note": "ボードの列はワークフローで決まります。プロジェクト外のビューは Default を使います。",
+    "collapse_list": "リストを折りたたむ",
+    "expand_list": "{{name}} を展開",
+    "add_list": "リストを追加",
+    "rename_list": "リスト名を変更",
+    "rename_list_locked": "組み込みのリストは名前を変更できません。",
+    "column_actions": "列の操作"
   },
   "peek": {
     "panel_label": "タスクのプレビュー",

@@ -370,7 +370,13 @@
     "manual_reorder_hint": "열 안의 순서를 바꾸려면 정렬을 '수동'으로 전환하세요.",
     "filter_to_status": "이 상태로 필터",
     "outside_workflow": "이 보드의 워크플로에 없음",
-    "workflow_columns_note": "보드의 열은 워크플로가 정합니다. 프로젝트 밖의 보기는 Default를 사용합니다."
+    "workflow_columns_note": "보드의 열은 워크플로가 정합니다. 프로젝트 밖의 보기는 Default를 사용합니다.",
+    "collapse_list": "리스트 접기",
+    "expand_list": "{{name}} 펼치기",
+    "add_list": "리스트 추가",
+    "rename_list": "리스트 이름 변경",
+    "rename_list_locked": "기본 리스트는 이름을 변경할 수 없습니다.",
+    "column_actions": "열 작업"
   },
   "peek": {
     "panel_label": "태스크 미리보기",

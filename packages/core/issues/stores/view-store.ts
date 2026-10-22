@@ -283,6 +283,16 @@ export interface IssueViewState {
   showSubIssues: boolean;
   listCollapsedStatuses: IssueStatus[];
   /**
+   * Board columns collapsed to a slim strip, as board column group ids
+   * (`status:<key>`, `project:<id>`, `assignee:<type>:<id>`,
+   * `property:<id>:<option>`).
+   *
+   * Collapsing is not hiding: the column keeps its place and its count, it
+   * just stops showing its cards. Ids are group ids, so one field covers
+   * every grouping the board can use.
+   */
+  boardCollapsedColumns: string[];
+  /**
    * Board / list columns the user hid, as concrete status keys.
    *
    * Column visibility used to be expressed by writing the surviving statuses
@@ -346,6 +356,8 @@ export interface IssueViewState {
   toggleCardPropertyId: (propertyId: string) => void;
   toggleShowSubIssues: () => void;
   toggleListCollapsed: (status: IssueStatus) => void;
+  /** Collapse or expand one board column, addressed by its column group id. */
+  toggleBoardColumnCollapsed: (columnId: string) => void;
   setSwimlaneGrouping: (grouping: SwimlaneGrouping) => void;
   /** Update the lane order for the currently active swimlane grouping. */
   setSwimlaneOrder: (order: string[]) => void;
@@ -383,6 +395,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   cardPropertyIds: [],
   showSubIssues: true,
   listCollapsedStatuses: [],
+  boardCollapsedColumns: [],
   hiddenStatuses: [...DEFAULT_HIDDEN_STATUSES],
   ganttZoom: "week",
   ganttShowCompleted: false,
@@ -591,6 +604,12 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         ? state.listCollapsedStatuses.filter((s) => s !== status)
         : [...state.listCollapsedStatuses, status],
     })),
+  toggleBoardColumnCollapsed: (columnId) =>
+    set((state) => ({
+      boardCollapsedColumns: state.boardCollapsedColumns.includes(columnId)
+        ? state.boardCollapsedColumns.filter((id) => id !== columnId)
+        : [...state.boardCollapsedColumns, columnId],
+    })),
   setSwimlaneGrouping: (grouping) => set({ swimlaneGrouping: grouping }),
   setSwimlaneOrder: (order) =>
     set((state) => ({
@@ -684,6 +703,7 @@ export const viewStorePersistOptions = (name: string) => ({
     cardPropertyIds: state.cardPropertyIds,
     showSubIssues: state.showSubIssues,
     listCollapsedStatuses: state.listCollapsedStatuses,
+    boardCollapsedColumns: state.boardCollapsedColumns,
     hiddenStatuses: state.hiddenStatuses,
     ganttZoom: state.ganttZoom,
     ganttShowCompleted: state.ganttShowCompleted,
@@ -788,6 +808,14 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
     tableCollapsedParents: Array.isArray(p.tableCollapsedParents)
       ? p.tableCollapsedParents
       : current.tableCollapsedParents,
+    // Column ids are plain strings. A hand-edited snapshot can hold anything,
+    // and a non-string here would be compared against a group id forever
+    // without ever matching — drop those instead of carrying them.
+    boardCollapsedColumns: Array.isArray(p.boardCollapsedColumns)
+      ? p.boardCollapsedColumns.filter(
+          (id): id is string => typeof id === "string",
+        )
+      : current.boardCollapsedColumns,
     // A saved view is a server-owned blob and a persisted snapshot can be
     // hand-edited, so an unknown member can arrive here. It cannot be
     // represented: the backend rejects it with a 400 and the filter chip

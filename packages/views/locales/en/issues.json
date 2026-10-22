@@ -374,7 +374,13 @@
     "manual_reorder_hint": "Switch to Manual ordering to rearrange issues within a column.",
     "filter_to_status": "Filter to this status",
     "outside_workflow": "Not in this board’s workflow",
-    "workflow_columns_note": "Columns come from the board’s workflow; views outside a project use Default."
+    "workflow_columns_note": "Columns come from the board’s workflow; views outside a project use Default.",
+    "collapse_list": "Collapse list",
+    "expand_list": "Expand {{name}}",
+    "add_list": "Add list",
+    "rename_list": "Rename list",
+    "rename_list_locked": "Built-in lists cannot be renamed.",
+    "column_actions": "Column actions"
   },
   "peek": {
     "panel_label": "Issue preview",

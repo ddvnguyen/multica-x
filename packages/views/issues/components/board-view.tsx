@@ -16,11 +16,13 @@ import {
   type DragOverEvent,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import type {
   Issue,
   IssueAssigneeType,
   IssueStatus,
+  IssueStatusEntry,
   Project,
   IssueProperty,
 } from "@multica/core/types";
@@ -30,7 +32,12 @@ import { propertyListOptions, useSetIssueProperty, useUnsetIssueProperty } from 
 import { useWorkspaceId } from "@multica/core/hooks";
 import type { IssueGrouping } from "@multica/core/issues/stores/view-store";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
+import {
+  BoardColumn,
+  BOARD_CARD_WIDTH,
+  CollapsedBoardColumn,
+  type BoardColumnGroup,
+} from "./board-column";
 import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
 import {
   resolveProjectWorkflow,
@@ -41,6 +48,8 @@ import {
 } from "@multica/core/issue-workflows";
 import { WorkflowHandoffConfirmDialog } from "../../workflows/handoff-confirm-dialog";
 import { stepHandlerActor, useStepHandlerLabel } from "../../workflows/step-handler";
+import { useWorkflowPermissions } from "../../workflows/permissions";
+import { StatusEditorDialog } from "./status-editor-dialog";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { BoardCardContent } from "./board-card";
 import { HiddenColumnsPanel, HiddenColumnRow } from "./hidden-columns-panel";
@@ -288,6 +297,23 @@ function BoardViewImpl({
   const boardWsId = useWorkspaceId();
   const catalog = useIssueStatuses(boardWsId);
   const labelOf = useStatusLabel(boardWsId);
+  // Adding and renaming a list edits the workspace status catalog, which the
+  // server limits to workspace admins. The affordance is hidden from everyone
+  // else rather than offered and then refused.
+  const { isAdmin } = useWorkflowPermissions();
+  const collapsedColumnIds = useViewStore((s) => s.boardCollapsedColumns);
+  const toggleBoardColumnCollapsed = useViewStore(
+    (s) => s.toggleBoardColumnCollapsed,
+  );
+  const collapsedColumns = useMemo(
+    () => new Set(collapsedColumnIds),
+    [collapsedColumnIds],
+  );
+  // The status editor is shared with Settings → Issue Statuses: create mode
+  // adds a list, edit mode renames one.
+  const [statusEditor, setStatusEditor] = useState<{
+    entry: IssueStatusEntry | null;
+  } | null>(null);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(boardWsId));
   const groupingPropertyId = propertyIdFromViewKey(storeGrouping);
   const groupingProperty = groupingPropertyId
@@ -574,10 +600,15 @@ function BoardViewImpl({
   );
 
   // Side peek steps through a column with J / K, in the order shown here.
+  // A collapsed column shows no cards, so it is not part of the walk.
   const peek = useIssuePeekActions();
   useEffect(() => {
-    peek?.publishColumns(groups.map((group) => columns[group.id] ?? EMPTY_IDS));
-  }, [peek, groups, columns]);
+    peek?.publishColumns(
+      groups
+        .filter((group) => !collapsedColumns.has(group.id))
+        .map((group) => columns[group.id] ?? EMPTY_IDS),
+    );
+  }, [peek, groups, columns, collapsedColumns]);
   useEffect(() => () => peek?.publishColumns(null), [peek]);
 
   // #6700: drag empty board background with the left button to pan horizontally
@@ -814,6 +845,22 @@ function BoardViewImpl({
     setColumns(buildColumns(groupedIssues, groups, grouping, groupingOptionIds));
   }, [groupedIssues, groups, grouping, groupingOptionIds, setColumns, isDraggingRef]);
 
+  /**
+   * How many cards a column holds: the server's exact total when the column
+   * is paginated, the descriptor's count when the grouping is server-driven,
+   * and the loaded cards otherwise. A collapsed column shows this number, so
+   * it has to be the same one the expanded column shows.
+   */
+  const columnCount = useCallback(
+    (group: BoardColumnGroup) => {
+      const total = isStatusGroup(group)
+        ? statusPagination?.[group.status]?.total
+        : groupPagination?.[group.id]?.total;
+      return total ?? group.totalCount ?? columns[group.id]?.length ?? 0;
+    },
+    [columns, groupPagination, statusPagination],
+  );
+
   return (
     <BoardWorkflowContext.Provider value={boardWorkflow}>
     <DndContext
@@ -854,50 +901,74 @@ function BoardViewImpl({
             </div>
           )
         ) : (
-          groups.map((group) =>
-            isStatusGroup(group) ? (
+          groups.map((group) => {
+            // A collapsed column keeps its place and its count, and shows no
+            // cards. It is not a drop target: the strip renders no droppable.
+            if (collapsedColumns.has(group.id)) {
+              return (
+                <CollapsedBoardColumn
+                  key={group.id}
+                  group={group}
+                  count={columnCount(group)}
+                  onExpand={() => toggleBoardColumnCollapsed(group.id)}
+                />
+              );
+            }
+            const shared = {
+              issueIds: columns[group.id] ?? EMPTY_IDS,
+              issueMap: issueMapRef.current,
+              childProgressMap,
+              projectMap,
+              projectId,
+              onCreateIssue,
+              sortLabel,
+              onCollapse: () => toggleBoardColumnCollapsed(group.id),
+              onRenameList:
+                isAdmin && isStatusGroup(group)
+                  ? (status: string) => {
+                      const entry = catalog.entryOf(status);
+                      if (entry) setStatusEditor({ entry });
+                    }
+                  : undefined,
+            };
+            return isStatusGroup(group) ? (
               <ServerPaginatedBoardColumn
                 key={group.id}
                 group={group}
-                issueIds={columns[group.id] ?? EMPTY_IDS}
-                issueMap={issueMapRef.current}
-                childProgressMap={childProgressMap}
-                projectMap={projectMap}
                 page={statusPagination?.[group.status]}
-                projectId={projectId}
-                onCreateIssue={onCreateIssue}
-                sortLabel={sortLabel}
+                {...shared}
               />
             ) : (
               groupPagination?.[group.id] ? (
                 <ServerPaginatedBoardColumn
                   key={group.id}
                   group={group}
-                  issueIds={columns[group.id] ?? EMPTY_IDS}
-                  issueMap={issueMapRef.current}
-                  childProgressMap={childProgressMap}
-                  projectMap={projectMap}
                   page={groupPagination[group.id]!}
-                  projectId={projectId}
-                  onCreateIssue={onCreateIssue}
-                  sortLabel={sortLabel}
+                  {...shared}
                 />
               ) : (
                 <BoardColumn
                   key={group.id}
                   group={group}
-                  issueIds={columns[group.id] ?? EMPTY_IDS}
-                  issueMap={issueMapRef.current}
-                  childProgressMap={childProgressMap}
-                  projectMap={projectMap}
-                  projectId={projectId}
-                  onCreateIssue={onCreateIssue}
                   totalCount={group.totalCount}
-                  sortLabel={sortLabel}
+                  {...shared}
                 />
               )
-            ),
-          )
+            );
+          })
+        )}
+        {/* Trello's trailing "Add another list": a column is a status, so
+            adding one creates a workspace status — the same editor the
+            settings page uses. */}
+        {grouping === "status" && isAdmin && groups.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setStatusEditor({ entry: null })}
+            className="flex h-10 shrink-0 items-center gap-2 self-start rounded-xl bg-muted/40 px-3 text-body text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+          >
+            <Plus className="size-4" />
+            {t(($) => $.board.add_list)}
+          </button>
         )}
         {groupBranches?.hasMoreGroups && (
           <div className="flex w-8 shrink-0 items-center justify-center">
@@ -952,6 +1023,12 @@ function BoardViewImpl({
         );
       }}
     />
+    <StatusEditorDialog
+      open={statusEditor !== null}
+      onOpenChange={(open) => !open && setStatusEditor(null)}
+      category={null}
+      status={statusEditor?.entry ?? null}
+    />
     </BoardWorkflowContext.Provider>
   );
 }
@@ -967,6 +1044,8 @@ const ServerPaginatedBoardColumn = memo(function ServerPaginatedBoardColumn({
   projectId,
   onCreateIssue,
   sortLabel,
+  onCollapse,
+  onRenameList,
 }: {
   group: BoardColumnGroup;
   issueIds: string[];
@@ -977,6 +1056,8 @@ const ServerPaginatedBoardColumn = memo(function ServerPaginatedBoardColumn({
   projectId?: string;
   onCreateIssue?: (defaults: IssueCreateDefaults) => void;
   sortLabel?: string | null;
+  onCollapse?: () => void;
+  onRenameList?: (status: string) => void;
 }) {
   const footer = page ? (
     <ListLoadMoreFooter
@@ -999,6 +1080,8 @@ const ServerPaginatedBoardColumn = memo(function ServerPaginatedBoardColumn({
       projectId={projectId}
       onCreateIssue={onCreateIssue}
       sortLabel={sortLabel}
+      onCollapse={onCollapse}
+      onRenameList={onRenameList}
       footer={footer}
     />
   );
