@@ -15,6 +15,7 @@ import type {
   IssueStatusIcon,
 } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Label as FieldLabel } from "@multica/ui/components/ui/label";
@@ -277,24 +278,24 @@ export function StatusEditorDialog({
               </legend>
               <div className="flex flex-wrap gap-2">
                 {(["", ...ISSUE_STATUS_ICONS] as const).map((icon) => (
-                  <Button
-                    key={icon}
-                    type="button"
-                    variant={draft.icon === icon ? "secondary" : "outline"}
-                    size={icon ? "icon" : "default"}
-                    className={`${icon ? "size-11" : "h-11"} aria-pressed:ring-2 aria-pressed:ring-ring`}
-                    aria-label={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
-                    aria-pressed={draft.icon === icon}
-                    title={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
-                    onClick={() => {
-                      setIconChanged(true);
-                      setDraft((current) => ({ ...current, icon }));
-                    }}
-                  >
-                    {icon
-                      ? <StatusIcon status="" category={draft.category} color={draft.color} icon={icon} className="size-5" />
-                      : t(($) => $.issue_statuses.editor.icon_shapes.default)}
-                  </Button>
+                  <TooltipHint key={icon} label={icon ? t(($) => $.issue_statuses.editor.icon_shapes[icon]) : undefined}>
+                    <Button
+                      type="button"
+                      variant={draft.icon === icon ? "secondary" : "outline"}
+                      size={icon ? "icon" : "default"}
+                      className={`${icon ? "size-11" : "h-11"} aria-pressed:ring-2 aria-pressed:ring-ring`}
+                      aria-label={t(($) => $.issue_statuses.editor.icon_shapes[icon || "default"])}
+                      aria-pressed={draft.icon === icon}
+                      onClick={() => {
+                        setIconChanged(true);
+                        setDraft((current) => ({ ...current, icon }));
+                      }}
+                    >
+                      {icon
+                        ? <StatusIcon status="" category={draft.category} color={draft.color} icon={icon} className="size-5" />
+                        : t(($) => $.issue_statuses.editor.icon_shapes.default)}
+                    </Button>
+                  </TooltipHint>
                 ))}
               </div>
             </fieldset>
