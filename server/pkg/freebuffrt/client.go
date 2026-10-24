@@ -236,11 +236,14 @@ func (c *Client) CreateThread(ctx context.Context, projectPath, model string) (T
 	return t, err
 }
 
-// GetThread reads a thread snapshot.
+// GetThread reads a thread snapshot. The orchestrator wraps the record as
+// {"thread": {...}, "messages": [...]}.
 func (c *Client) GetThread(ctx context.Context, id string) (Thread, error) {
-	var t Thread
-	err := c.do(ctx, http.MethodGet, "/api/thread/"+url.PathEscape(id), nil, &t)
-	return t, err
+	var snap struct {
+		Thread Thread `json:"thread"`
+	}
+	err := c.do(ctx, http.MethodGet, "/api/thread/"+url.PathEscape(id), nil, &snap)
+	return snap.Thread, err
 }
 
 // PostMessage sends a user message, starting a turn.

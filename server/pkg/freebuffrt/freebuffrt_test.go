@@ -92,6 +92,9 @@ func TestClientCalls(t *testing.T) {
 		case "POST /api/thread/t1/message":
 			_ = json.NewDecoder(r.Body).Decode(&gotMessage)
 			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "GET /api/thread/t1":
+			// Real shape: the record is wrapped, with messages alongside.
+			_, _ = w.Write([]byte(`{"thread":{"id":"t1","turnState":"idle","lastTurnOutcome":"completed","lastTurnFinishedAt":1792862114223,"model":"m-1"},"messages":[]}`))
 		case "GET /api/thread/missing":
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		default:
@@ -112,6 +115,10 @@ func TestClientCalls(t *testing.T) {
 	}
 	if err := c.PostMessage(ctx, "t1", "hi"); err != nil || gotMessage["text"] != "hi" {
 		t.Fatalf("post message: %v %v", gotMessage, err)
+	}
+	snap, err := c.GetThread(ctx, "t1")
+	if err != nil || snap.ID != "t1" || snap.TurnState != "idle" || snap.LastTurnOutcome == nil || *snap.LastTurnOutcome != "completed" {
+		t.Fatalf("get thread must unwrap the thread record: %+v %v", snap, err)
 	}
 	_, err = c.GetThread(ctx, "missing")
 	apiErr, ok := err.(*APIError)
