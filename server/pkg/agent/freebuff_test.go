@@ -297,3 +297,18 @@ func TestFreebuffAccountIDs(t *testing.T) {
 		t.Errorf("generated id %q is invalid", id)
 	}
 }
+
+func TestFreebuffFinishUsage(t *testing.T) {
+	raw := `{"type":"agent","threadId":"t1","seq":8,"event":{"type":"finish","metrics":{"usage":{"inputTokens":34697,"cachedInputTokens":11968,"outputTokens":12,"totalTokens":34709},"costUsd":0}}}`
+	u, ok := freebuffFinishUsage(freebuffEvent{Type: "agent", Raw: json.RawMessage(raw)}, "t1")
+	if !ok || u.InputTokens != 22729 || u.CacheReadTokens != 11968 || u.OutputTokens != 12 {
+		t.Fatalf("usage = %+v ok=%v", u, ok)
+	}
+	if _, ok := freebuffFinishUsage(freebuffEvent{Type: "agent", Raw: json.RawMessage(raw)}, "other"); ok {
+		t.Fatal("usage for another thread was accepted")
+	}
+	text := `{"type":"agent","threadId":"t1","event":{"type":"text","text":"pong"}}`
+	if _, ok := freebuffFinishUsage(freebuffEvent{Type: "agent", Raw: json.RawMessage(text)}, "t1"); ok {
+		t.Fatal("a text event was read as usage")
+	}
+}

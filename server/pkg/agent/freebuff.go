@@ -303,6 +303,7 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 	}
 
 	var out strings.Builder
+	var usage *TokenUsage
 	sawStart := false
 	sentAt := time.Now()
 	ticker := time.NewTicker(freebuffPollInterval)
@@ -324,7 +325,11 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 			// An outcome that predates this message belongs to an earlier turn.
 			return false, Result{}
 		}
-		return true, freebuffResult(t, threadID, out.String())
+		res = freebuffResult(t, threadID, out.String())
+		if usage != nil && t.Model != nil && *t.Model != "" {
+			res.Usage = map[string]TokenUsage{*t.Model: *usage}
+		}
+		return true, res
 	}
 
 	// The thread snapshot can flip to idle before the stream has delivered
@@ -336,6 +341,9 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 			case ev, ok := <-events:
 				if !ok {
 					return
+				}
+				if u, ok := freebuffFinishUsage(ev, threadID); ok {
+					usage = &u
 				}
 				if m, ok := freebuffMessage(ev, threadID); ok {
 					if m.Type == MessageText {
@@ -365,6 +373,9 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 				err := streamErr()
 				return Result{Status: "failed", Output: out.String(), SessionID: threadID,
 					Error: fmt.Sprintf("freebuff event stream closed: %v", err)}
+			}
+			if u, ok := freebuffFinishUsage(ev, threadID); ok {
+				usage = &u
 			}
 			if m, ok := freebuffMessage(ev, threadID); ok {
 				sawStart = true
@@ -421,6 +432,36 @@ func freebuffResult(t freebuffThread, threadID, output string) Result {
 		res.Usage = map[string]TokenUsage{*t.Model: {}}
 	}
 	return res
+}
+
+// freebuffFinishUsage reads the token usage the engine reports when a turn
+// finishes: {"type":"agent","threadId":…,"event":{"type":"finish","metrics":{"usage":{…}}}}.
+func freebuffFinishUsage(ev freebuffEvent, threadID string) (TokenUsage, bool) {
+	var env struct {
+		ThreadID string `json:"threadId"`
+		Event    struct {
+			Type    string `json:"type"`
+			Metrics struct {
+				Usage struct {
+					InputTokens       int64 `json:"inputTokens"`
+					CachedInputTokens int64 `json:"cachedInputTokens"`
+					OutputTokens      int64 `json:"outputTokens"`
+				} `json:"usage"`
+			} `json:"metrics"`
+		} `json:"event"`
+	}
+	if json.Unmarshal(ev.Raw, &env) != nil || env.Event.Type != "finish" {
+		return TokenUsage{}, false
+	}
+	if env.ThreadID != "" && env.ThreadID != threadID {
+		return TokenUsage{}, false
+	}
+	u := env.Event.Metrics.Usage
+	return TokenUsage{
+		InputTokens:     u.InputTokens - u.CachedInputTokens,
+		CacheReadTokens: u.CachedInputTokens,
+		OutputTokens:    u.OutputTokens,
+	}, true
 }
 
 // freebuffMessage maps one orchestrator event for threadID to a Message.
