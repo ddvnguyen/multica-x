@@ -52,7 +52,7 @@ func TestLaunchEnv(t *testing.T) {
 	want := map[string]string{
 		"PORT":                          "0",
 		"FREEBUFF_LAUNCH_ID":            "id1",
-		"FREEBUFF_DESKTOP_STATE_PATH":   "/p/state",
+		"FREEBUFF_DESKTOP_STATE_PATH":   "/p/state.json",
 		"FREEBUFF_UI_DIR":               "/r/orchestrator/ui",
 		"FREEBUFF_PROFILE_LOCK_WAIT_MS": "0",
 	}

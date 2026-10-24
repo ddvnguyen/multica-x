@@ -52,7 +52,7 @@ func LaunchEnv(b Bundle, profileDir, launchID string) map[string]string {
 	return map[string]string{
 		"PORT":                           "0",
 		"FREEBUFF_LAUNCH_ID":             launchID,
-		"FREEBUFF_DESKTOP_STATE_PATH":    filepath.Join(profileDir, "state"),
+		"FREEBUFF_DESKTOP_STATE_PATH":    filepath.Join(profileDir, "state.json"),
 		"FREEBUFF_UI_DIR":                b.UIDir(),
 		"CODEBUFF_WASM_DIR":              b.WasmDir(),
 		"CODEBUFF_TREE_SITTER_WASM_PATH": filepath.Join(b.WasmDir(), "tree-sitter.wasm"),
