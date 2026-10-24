@@ -312,3 +312,20 @@ func TestFreebuffFinishUsage(t *testing.T) {
 		t.Fatal("a text event was read as usage")
 	}
 }
+
+func TestFreebuffMessageMapsToolEvents(t *testing.T) {
+	call := `{"type":"agent","threadId":"t1","event":{"type":"tool_call","toolCallId":"c1","toolName":"run_terminal_command","input":{"command":"pwd"}}}`
+	m, ok := freebuffMessage(freebuffEvent{Type: "agent", Raw: json.RawMessage(call)}, "t1")
+	if !ok || m.Type != MessageToolUse || m.Tool != "run_terminal_command" || m.CallID != "c1" || m.Input["command"] != "pwd" {
+		t.Fatalf("tool call = %+v ok=%v", m, ok)
+	}
+	res := `{"type":"agent","threadId":"t1","event":{"type":"tool_result","toolCallId":"c1","toolName":"run_terminal_command","exitCode":0,"output":"stdout:\n/x\n"}}`
+	m, ok = freebuffMessage(freebuffEvent{Type: "agent", Raw: json.RawMessage(res)}, "t1")
+	if !ok || m.Type != MessageToolResult || m.CallID != "c1" || m.Output != "stdout:\n/x\n" {
+		t.Fatalf("tool result = %+v ok=%v", m, ok)
+	}
+	structured := `{"type":"agent","threadId":"t1","event":{"type":"tool_result","toolCallId":"c2","toolName":"read_files","output":[{"path":"a"}]}}`
+	if m, _ = freebuffMessage(freebuffEvent{Type: "agent", Raw: json.RawMessage(structured)}, "t1"); m.Output != `[{"path":"a"}]` {
+		t.Fatalf("structured output = %q", m.Output)
+	}
+}

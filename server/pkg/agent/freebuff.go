@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"sync"
 	"time"
 
@@ -65,6 +66,7 @@ func (o *FreebuffOrchestrator) Stop() {
 		select {
 		case <-o.done:
 		case <-time.After(freebuffStopGrace):
+			signalProcessGroup(o.cmd, syscall.SIGKILL)
 		}
 	})
 }
@@ -154,6 +156,14 @@ func StartFreebuffOrchestrator(ctx context.Context, cfg Config, profileDir strin
 	runCtx, cancel := context.WithCancel(context.Background())
 	cmd := cfg.commandAt(bun).exec(runCtx, bundle.OrchestratorPath())
 	hideAgentWindow(cmd)
+	// Freebuff holds one hosted-model slot per network and gives it back when
+	// it shuts down cleanly. A SIGKILL leaves the slot taken and the next
+	// session is refused, so ask first; Stop kills the group if it lingers.
+	cmd.Cancel = func() error {
+		signalProcessGroup(cmd, syscall.SIGTERM)
+		return nil
+	}
+	cmd.WaitDelay = freebuffStopGrace
 	cfg.logAgentCommand(cmd, newAgentCommandLogArgs([]string{bundle.OrchestratorPath()}))
 	cmd.Dir = filepath.Dir(bundle.OrchestratorPath())
 	cmd.Env = buildEnv(env)
@@ -464,10 +474,27 @@ func freebuffFinishUsage(ev freebuffEvent, threadID string) (TokenUsage, bool) {
 	}, true
 }
 
+// freebuffToolOutput renders a tool result's output, which is a string for
+// shell commands and structured data for other tools.
+func freebuffToolOutput(v any) string {
+	switch o := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return o
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // freebuffMessage maps one orchestrator event for threadID to a Message.
 //
-// Only `text` and `reasoning_delta` are mapped: they are the response events
-// the engine emits (the same names the Desktop UI folds into a transcript).
+// Only `text`, `reasoning_delta`, `tool_call` and `tool_result` are mapped:
+// they are the response events the engine emits (the same names the Desktop UI
+// folds into a transcript).
 // Events may arrive bare or wrapped in an `event` field with a `threadId`;
 // both are accepted. Everything else is ignored here and still serves as a
 // liveness signal through the event stream.
@@ -487,11 +514,21 @@ func freebuffMessage(ev freebuffEvent, threadID string) (Message, bool) {
 	typ, text := env.Type, env.Text
 	if len(env.Event) > 0 {
 		var inner struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type       string         `json:"type"`
+			Text       string         `json:"text"`
+			ToolCallID string         `json:"toolCallId"`
+			ToolName   string         `json:"toolName"`
+			Input      map[string]any `json:"input"`
+			Output     any            `json:"output"`
 		}
 		if json.Unmarshal(env.Event, &inner) == nil && inner.Type != "" {
 			typ, text = inner.Type, inner.Text
+			switch typ {
+			case "tool_call":
+				return Message{Type: MessageToolUse, Tool: inner.ToolName, CallID: inner.ToolCallID, Input: inner.Input}, true
+			case "tool_result":
+				return Message{Type: MessageToolResult, Tool: inner.ToolName, CallID: inner.ToolCallID, Output: freebuffToolOutput(inner.Output)}, true
+			}
 		}
 	}
 	switch typ {
