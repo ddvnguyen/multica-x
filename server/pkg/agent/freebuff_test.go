@@ -27,6 +27,7 @@ type fakeFreebuff struct {
 	createCwd string
 	holdTurn  bool
 	createModel string
+	catalogLoadsAfter int
 	idleGap   bool
 }
 
@@ -47,6 +48,10 @@ func (f *fakeFreebuff) CreateThread(_ context.Context, cwd, model string) (freeb
 	defer f.mu.Unlock()
 	f.createCwd = cwd
 	f.createModel = model
+	if f.catalogLoadsAfter > 0 {
+		f.catalogLoadsAfter--
+		return freebuffrt.Thread{}, &freebuffrt.APIError{Status: 400, Message: "invalid model"}
+	}
 	t := &freebuffrt.Thread{ID: "t1", TurnState: "idle"}
 	f.threads[t.ID] = t
 	return *t, nil
@@ -367,5 +372,27 @@ func TestFreebuffRunCreatesTheThreadOnTheChosenModel(t *testing.T) {
 	}
 	if f.createModel != "m-69307952f8" {
 		t.Fatalf("thread created on model %q", f.createModel)
+	}
+}
+
+func TestFreebuffRunWaitsForTheCatalogToLoad(t *testing.T) {
+	freebuffModelInterval = 10 * time.Millisecond
+	t.Cleanup(func() { freebuffModelInterval = time.Second })
+	f := newFakeFreebuff()
+	f.catalogLoadsAfter = 3
+	if res, _ := runFake(t, f, ExecOptions{Cwd: "/work", Model: "m-1"}); res.Status != "completed" {
+		t.Fatalf("a model rejected while the catalog loaded was not retried: %+v", res)
+	}
+}
+
+func TestFreebuffRunReportsAModelTheAccountDoesNotOffer(t *testing.T) {
+	freebuffModelInterval = 10 * time.Millisecond
+	freebuffModelWait = 50 * time.Millisecond
+	t.Cleanup(func() { freebuffModelInterval, freebuffModelWait = time.Second, 20*time.Second })
+	f := newFakeFreebuff()
+	f.catalogLoadsAfter = 1000
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work", Model: "m-nope"})
+	if res.Status != "failed" || !strings.Contains(res.Error, `"m-nope"`) {
+		t.Fatalf("result = %+v", res)
 	}
 }

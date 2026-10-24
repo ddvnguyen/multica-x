@@ -300,7 +300,7 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 			return fail("failed", "freebuff thread %s: %v", threadID, err)
 		}
 	} else {
-		t, err := c.CreateThread(ctx, opts.Cwd, opts.Model)
+		t, err := createFreebuffThread(ctx, c, opts.Cwd, opts.Model)
 		if err != nil {
 			var apiErr *freebuffAPIError
 			if opts.Model != "" && errors.As(err, &apiErr) && apiErr.Status == 400 {
@@ -492,6 +492,31 @@ func freebuffToolOutput(v any) string {
 		return ""
 	}
 	return string(b)
+}
+
+// Freebuff model keys are checked against the account's catalog, which the
+// orchestrator loads from the account host after it starts. Until then it
+// answers 400 "invalid model" for a key it will accept a moment later, so a
+// 400 on a chosen model is retried for up to freebuffModelWait.
+var (
+	freebuffModelWait     = 20 * time.Second
+	freebuffModelInterval = time.Second
+)
+
+func createFreebuffThread(ctx context.Context, c freebuffClient, cwd, model string) (freebuffrt.Thread, error) {
+	deadline := time.Now().Add(freebuffModelWait)
+	for {
+		t, err := c.CreateThread(ctx, cwd, model)
+		var apiErr *freebuffAPIError
+		if err == nil || model == "" || !errors.As(err, &apiErr) || apiErr.Status != 400 || time.Now().After(deadline) {
+			return t, err
+		}
+		select {
+		case <-ctx.Done():
+			return t, ctx.Err()
+		case <-time.After(freebuffModelInterval):
+		}
+	}
 }
 
 // freebuffMessage maps one orchestrator event for threadID to a Message.
