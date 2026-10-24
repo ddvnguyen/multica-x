@@ -330,6 +330,9 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
 			return discoverDimModels(ctx, runtimeCmd)
 		})
+	case "freebuff":
+		// The orchestrator picks the free-tier model itself; nothing to enumerate.
+		return Catalog{Models: []Model{}}, nil
 	case "zeroclaw":
 		// ZeroClaw's ACP server advertises no catalog: session/new answers
 		// exactly {sessionId, workspaceDir} (verified against 0.8.4), and it
@@ -440,7 +443,7 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 // dropdown plus a silently-ignored manual-entry field.
 func ModelSelectionSupported(providerType string) bool {
 	switch providerType {
-	case "qwenpaw", "mcode", "zeroclaw":
+	case "freebuff", "qwenpaw", "mcode", "zeroclaw":
 		// QwenPaw's `session/set_model` persists to agent.json at the agent
 		// scope, not the session scope. Calling it would mutate the user's
 		// shared, persistent agent config. Model override is therefore
