@@ -395,6 +395,7 @@ var SupportedTypes = []string{
 	"opencode",
 	"codearts",
 	"deveco",
+	"freebuff",
 	"openclaw",
 	"hermes",
 	"pi",
@@ -486,6 +487,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return newCodeArtsBackend(cfg)
 	case "deveco":
 		return &devecoBackend{cfg: cfg}, nil
+	case "freebuff":
+		return &freebuffBackend{cfg: cfg}, nil
 	case "openclaw":
 		return &openclawBackend{cfg: cfg}, nil
 	case "hermes":
@@ -554,6 +557,7 @@ var launchHeaders = map[string]string{
 	"cursor":      "cursor-agent (stream-json)",
 	"codearts":    "codearts run (json)",
 	"deveco":      "deveco run (json)",
+	"freebuff":    "bun orchestrator.js (local HTTP)",
 	"hermes":      "hermes acp",
 	"kimi":        "kimi acp",
 	"reasonix":    "reasonix acp",
