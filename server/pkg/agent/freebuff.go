@@ -328,11 +328,11 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 			sawStart = true
 			return false, Result{}
 		}
-		if !sawStart && t.LastTurnOutcome == nil {
-			return false, Result{}
-		}
-		if !sawStart && t.LastTurnOutcome != nil && !sentAtBefore(t, sentAt) {
-			// An outcome that predates this message belongs to an earlier turn.
+		// An idle thread with no outcome is not a finished turn: a run that
+		// had only issued its first tool call was reported complete on that
+		// basis. Only a recorded outcome that is not older than this message
+		// ends the turn.
+		if t.LastTurnOutcome == nil || !sentAtBefore(t, sentAt) {
 			return false, Result{}
 		}
 		res = freebuffResult(t, threadID, out.String())

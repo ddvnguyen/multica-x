@@ -26,6 +26,7 @@ type fakeFreebuff struct {
 	posted    string
 	createCwd string
 	holdTurn  bool
+	idleGap   bool
 }
 
 func newFakeFreebuff() *fakeFreebuff {
@@ -64,15 +65,29 @@ func (f *fakeFreebuff) PostMessage(_ context.Context, id, text string) error {
 	t := f.threads[id]
 	f.posted = text
 	t.TurnState = "running"
-	script, hold := f.script, f.holdTurn
+	script, hold, idleGap := f.script, f.holdTurn, f.idleGap
 	f.mu.Unlock()
 	go func() {
-		for _, raw := range script {
+		send := func(raw string) {
 			var head struct {
 				Type string `json:"type"`
 			}
 			_ = json.Unmarshal([]byte(raw), &head)
 			f.events <- freebuffrt.Event{Type: head.Type, Raw: json.RawMessage(raw)}
+		}
+		if idleGap && len(script) > 1 {
+			// The thread reads idle with no outcome after the first event
+			// while the turn goes on.
+			send(script[0])
+			script = script[1:]
+			f.mu.Lock()
+			t.TurnState = "idle"
+			f.mu.Unlock()
+			f.events <- freebuffrt.Event{Type: "thread", Raw: json.RawMessage(`{"type":"thread"}`)}
+			time.Sleep(3 * freebuffPollInterval)
+		}
+		for _, raw := range script {
+			send(raw)
 		}
 		if hold {
 			return
@@ -327,5 +342,18 @@ func TestFreebuffMessageMapsToolEvents(t *testing.T) {
 	structured := `{"type":"agent","threadId":"t1","event":{"type":"tool_result","toolCallId":"c2","toolName":"read_files","output":[{"path":"a"}]}}`
 	if m, _ = freebuffMessage(freebuffEvent{Type: "agent", Raw: json.RawMessage(structured)}, "t1"); m.Output != `[{"path":"a"}]` {
 		t.Fatalf("structured output = %q", m.Output)
+	}
+}
+
+func TestFreebuffRunWaitsForTheTurnOutcome(t *testing.T) {
+	f := newFakeFreebuff()
+	f.idleGap = true
+	f.script = []string{
+		`{"type":"agent","threadId":"t1","event":{"type":"tool_call","toolCallId":"c1","toolName":"run_terminal_command","input":{"command":"pwd"}}}`,
+	}
+	f.script = append(f.script, `{"type":"agent","threadId":"t1","event":{"type":"text","text":"done"}}`)
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
+	if res.Status != "completed" || res.Output != "done" {
+		t.Fatalf("an idle thread without an outcome ended the turn early: %+v", res)
 	}
 }
