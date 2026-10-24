@@ -1596,7 +1596,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
 		r.Post("/runtimes/{runtimeId}/freebuff", h.ReportFreebuffAccount)
-		r.Get("/runtimes/{runtimeId}/freebuff/pending", h.GetFreebuffConnectPending)
+		r.Get("/runtimes/{runtimeId}/freebuff/pending", h.GetFreebuffPending)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1738,14 +1738,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
 					// Per-workspace accounts (freebuff-desktop) — member-visible listing.
 					r.Get("/accounts", h.ListWorkspaceAccounts)
-					// Freebuff browser login. The account client on the
-					// daemon's machine owns the login, so it asks here
-					// whether a login was requested and reports the
-					// one-time URL (or the account that signed in) back.
-					// Member-visible: it is the same account a member can
-					// already connect from the runtime page.
-					r.Get("/freebuff/connect-pending", h.ListFreebuffConnectPending)
-					r.Post("/runtimes/{runtimeId}/freebuff/login", h.ReportFreebuffLogin)
 					// The workspace MCP library — member-visible so an agent
 					// owner can see what is available to add to their agent.
 					// The payload is names and transports only; the stored
@@ -2430,11 +2422,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/local-skills/{requestId}", h.GetLocalSkillListRequest)
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
-					// Freebuff account: the open session slot, the
-					// per-model price, the credit, and the browser
-					// login that produces them.
+					// Freebuff accounts: the list, add (returns a login URL
+					// through the daemon), remove, and the default.
 					r.Get("/freebuff", h.GetFreebuffAccount)
-					r.Post("/freebuff/connect", h.RequestFreebuffConnect)
+					r.Post("/freebuff/accounts", h.AddFreebuffAccount)
+					r.Delete("/freebuff/accounts/{accountId}", h.RemoveFreebuffAccount)
+					r.Post("/freebuff/accounts/{accountId}/default", h.SetFreebuffDefaultAccount)
+					r.Post("/freebuff/accounts/{accountId}/login", h.RetryFreebuffAccountLogin)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and

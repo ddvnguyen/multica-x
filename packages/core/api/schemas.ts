@@ -1936,13 +1936,13 @@ const RuntimeUsageSchema = z.object({
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
 
-// Freebuff account schemas — the account state a Freebuff runtime's daemon
-// reports (`/api/runtimes/:id/freebuff`).
+// Freebuff account schemas — the accounts a Freebuff runtime holds
+// (`/api/runtimes/:id/freebuff`).
 //
-// The status block is the wrapper's own `--status --json` output, verbatim:
-// the open session slot, the per-model price and the credit. It is kept
-// lenient on purpose — the wrapper owns that shape, and a field this UI does
-// not know about must not cost the fields it does.
+// The status block is the daemon's own report: the open session slot, the
+// per-model price and the credit. It is kept lenient on purpose — the daemon
+// owns that shape, and a field this UI does not know about must not cost the
+// fields it does.
 
 const FreebuffCreditSchema = z
   .object({
@@ -1973,22 +1973,25 @@ const FreebuffStatusSchema = z
   })
   .loose();
 
-export const FreebuffConnectSchema = z
+export const FreebuffAccountSchema = z
   .object({
+    id: z.string().catch(""),
+    label: z.string().nullish().catch(null),
+    // An unknown state renders as "not signed in" rather than failing the list.
     state: z.string().catch(""),
     login_url: z.string().nullish().catch(null),
     expires_at: z.string().nullish().catch(null),
-    account: z.string().nullish().catch(null),
     error: z.string().nullish().catch(null),
+    status: FreebuffStatusSchema.nullish().catch(null),
     requested_at: z.string().nullish().catch(null),
     updated_at: z.string().nullish().catch(null),
   })
   .loose();
 
-export const FreebuffAccountSchema = z
+export const FreebuffAccountsSchema = z
   .object({
-    status: FreebuffStatusSchema.nullish().catch(null),
-    connect: FreebuffConnectSchema.nullish().catch(null),
+    accounts: z.array(FreebuffAccountSchema).catch([]),
+    default_account_id: z.string().nullish().catch(null),
     updated_at: z.string().nullish().catch(null),
   })
   .loose();

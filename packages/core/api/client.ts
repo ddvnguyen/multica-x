@@ -80,7 +80,7 @@ import type {
   CreatePersonalAccessTokenResponse,
   RuntimeUsage,
   FreebuffAccount,
-  FreebuffConnect,
+  FreebuffAccounts,
   IssueUsageSummary,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
@@ -357,7 +357,7 @@ import {
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
   FreebuffAccountSchema,
-  FreebuffConnectSchema,
+  FreebuffAccountsSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SearchIndexManifestSchema,
@@ -2637,24 +2637,49 @@ export class ApiClient {
     );
   }
 
-  // Freebuff account state for a runtime: the open session slot, the
-  // per-model price, the credit, and the state of the browser login.
-  async getFreebuffAccount(runtimeId: string): Promise<FreebuffAccount> {
+  // The Freebuff accounts a runtime holds, with the state of each sign-in.
+  async getFreebuffAccounts(runtimeId: string): Promise<FreebuffAccounts> {
     const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/freebuff`);
-    return parseWithFallback<FreebuffAccount>(raw, FreebuffAccountSchema, {}, {
+    return parseWithFallback<FreebuffAccounts>(raw, FreebuffAccountsSchema, { accounts: [] }, {
       endpoint: "GET /api/runtimes/:id/freebuff",
     });
   }
 
-  // Asks the daemon to start a browser login for the runtime's Freebuff
-  // account. The login URL arrives in the account block, not here.
-  async requestFreebuffConnect(runtimeId: string): Promise<FreebuffConnect> {
+  // Adds an account. The daemon starts its sign-in; the link to open arrives
+  // in the account list, not here.
+  async addFreebuffAccount(runtimeId: string): Promise<FreebuffAccount> {
     const raw = await this.fetch<unknown>(
-      `/api/runtimes/${runtimeId}/freebuff/connect`,
+      `/api/runtimes/${runtimeId}/freebuff/accounts`,
       { method: "POST" },
     );
-    return parseWithFallback<FreebuffConnect>(raw, FreebuffConnectSchema, { state: "" }, {
-      endpoint: "POST /api/runtimes/:id/freebuff/connect",
+    return parseWithFallback<FreebuffAccount>(raw, FreebuffAccountSchema, { id: "", state: "" }, {
+      endpoint: "POST /api/runtimes/:id/freebuff/accounts",
+    });
+  }
+
+  async removeFreebuffAccount(runtimeId: string, accountId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/freebuff/accounts/${accountId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // Asks the daemon for a new sign-in link for an account that is signed out
+  // or whose link ran out.
+  async retryFreebuffAccountLogin(runtimeId: string, accountId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/freebuff/accounts/${accountId}/login`,
+      { method: "POST" },
+    );
+  }
+
+  async setFreebuffDefaultAccount(runtimeId: string, accountId: string): Promise<FreebuffAccounts> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/freebuff/accounts/${accountId}/default`,
+      { method: "POST" },
+    );
+    return parseWithFallback<FreebuffAccounts>(raw, FreebuffAccountsSchema, { accounts: [] }, {
+      endpoint: "POST /api/runtimes/:id/freebuff/accounts/:id/default",
     });
   }
 

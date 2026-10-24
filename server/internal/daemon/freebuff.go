@@ -12,27 +12,25 @@ import (
 	"github.com/multica-ai/multica/server/pkg/freebuffrt"
 )
 
-// Freebuff account reporting.
+// Freebuff accounts.
 //
-// A Freebuff runtime is a runtime whose provider is "freebuff". Its account is
-// the orchestrator profile directory on this machine (one runtime, one
-// account): the login lives there, and only this machine can complete a
-// browser login for it.
+// A Freebuff runtime is a runtime whose provider is "freebuff". It holds any
+// number of accounts; each is a directory of orchestrator state on this
+// machine (see agent.FreebuffAccountDir), and the login lives there.
 //
-// The daemon's job is small. It starts the headless orchestrator, reports what
-// it says, and gets out of the way:
+// The daemon's job is small. It does what the user asked for in the web UI and
+// reports what it finds:
 //
-//   - the account snapshot — whether the profile is signed in, and as whom —
-//     refreshed on a timer;
-//   - the browser login — started when the user clicks "Connect to Freebuff"
-//     in the web UI. The orchestrator hands back a one-time URL and keeps
-//     running until the browser confirms, so the daemon forwards the URL and
-//     then waits for the account to appear.
+//   - add an account — start the headless orchestrator on a fresh account
+//     directory and ask it for a sign-in URL. The URL is the account host's own
+//     page, so it opens in a browser on any machine; the daemon forwards it and
+//     waits for the sign-in to land, then reports the account as connected;
+//   - remove an account — stop its login if one is running and delete its
+//     directory, login included;
+//   - pick the default — remember which account tasks run on;
+//   - refresh — on a timer, ask each account's orchestrator who is signed in.
 //
 // The server stores what the daemon reports and the web UI reads it back.
-//
-// The login URL is a loopback page on the orchestrator, so it opens only in a
-// browser on the daemon's own machine.
 
 // freebuffProvider is the provider value that makes a runtime a Freebuff
 // runtime.
@@ -57,9 +55,12 @@ var freebuffLoginTimeout = 6 * time.Minute
 // freebuffLoginPollInterval is how often a pending login is checked.
 var freebuffLoginPollInterval = 2 * time.Second
 
-// freebuffConnects tracks the browser logins this daemon has in flight, so a
-// second poll does not start a second login for the same runtime.
-var freebuffConnects sync.Map // runtimeID -> struct{}
+// freebuffLogins tracks the sign-ins this daemon has in flight, keyed by
+// runtime and account, so a second poll does not start a second login for the
+// same account. The value is the cancel function of the login.
+var freebuffLogins sync.Map // "runtimeID/accountID" -> context.CancelFunc
+
+func freebuffLoginKey(runtimeID, accountID string) string { return runtimeID + "/" + accountID }
 
 // freebuffAccount is the slice of the orchestrator the account flow uses. It
 // is satisfied by *freebuffrt.Client and replaced in tests.
@@ -69,12 +70,12 @@ type freebuffAccount interface {
 	CancelLogin(ctx context.Context) error
 }
 
-// startFreebuffAccount launches the orchestrator for a runtime's profile and
-// returns its client and a stop function. It is a field-like variable so tests
-// can run the account flow without a real orchestrator.
-var startFreebuffAccount = func(ctx context.Context, runtimeID string) (freebuffAccount, func(), error) {
-	cfg := agent.Config{RuntimeID: runtimeID, Logger: nil}
-	dir, err := agent.FreebuffProfileDir(cfg)
+// startFreebuffAccount launches the orchestrator for one account of a runtime
+// and returns its client and a stop function. It is a variable so tests can run
+// the account flow without a real orchestrator.
+var startFreebuffAccount = func(ctx context.Context, runtimeID, accountID string) (freebuffAccount, func(), error) {
+	cfg := agent.Config{RuntimeID: runtimeID}
+	dir, err := agent.EnsureFreebuffAccountDir(cfg, accountID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -98,58 +99,108 @@ func (d *Daemon) freebuffRuntimes() []Runtime {
 	return out
 }
 
-// freebuffLoop keeps the Freebuff account state fresh and starts a browser
-// login when the user asks for one.
+// freebuffLoop keeps the Freebuff accounts in step with what the user asked
+// for and refreshes who is signed in.
 func (d *Daemon) freebuffLoop(ctx context.Context) {
-	connectTicker := time.NewTicker(freebuffConnectPollInterval)
-	defer connectTicker.Stop()
+	pollTicker := time.NewTicker(freebuffConnectPollInterval)
+	defer pollTicker.Stop()
 	statusTicker := time.NewTicker(freebuffStatusInterval)
 	defer statusTicker.Stop()
 
 	// One snapshot at startup so the UI has something to show before the
 	// first tick.
 	for _, rt := range d.freebuffRuntimes() {
-		go d.reportFreebuffStatus(ctx, rt)
+		go d.reportFreebuffAccounts(ctx, rt)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-connectTicker.C:
-			d.checkFreebuffConnects(ctx)
+		case <-pollTicker.C:
+			for _, rt := range d.freebuffRuntimes() {
+				d.syncFreebuffRuntime(ctx, rt)
+			}
 		case <-statusTicker.C:
 			for _, rt := range d.freebuffRuntimes() {
-				if _, running := freebuffConnects.Load(rt.ID); running {
-					continue
-				}
-				go d.reportFreebuffStatus(ctx, rt)
+				go d.reportFreebuffAccounts(ctx, rt)
 			}
 		}
 	}
 }
 
-// checkFreebuffConnects asks the server, per Freebuff runtime, whether a
-// browser login was requested, and starts one when it was.
-func (d *Daemon) checkFreebuffConnects(ctx context.Context) {
-	for _, rt := range d.freebuffRuntimes() {
-		if _, running := freebuffConnects.Load(rt.ID); running {
-			continue
-		}
-		requested, err := d.client.GetFreebuffConnectPending(ctx, rt.ID)
-		if err != nil {
-			d.logger.Debug("freebuff connect poll failed", "runtime_id", rt.ID, "error", err)
-			continue
-		}
-		if !requested {
-			continue
-		}
-		freebuffConnects.Store(rt.ID, struct{}{})
-		go func(rt Runtime) {
-			defer freebuffConnects.Delete(rt.ID)
-			d.handleFreebuffConnect(ctx, rt)
-		}(rt)
+// syncFreebuffRuntime asks the server what the user wants done to this
+// runtime's accounts and does it.
+func (d *Daemon) syncFreebuffRuntime(ctx context.Context, rt Runtime) {
+	pending, err := d.client.GetFreebuffPending(ctx, rt.ID)
+	if err != nil {
+		d.logger.Debug("freebuff pending poll failed", "runtime_id", rt.ID, "error", err)
+		return
 	}
+	cfg := agent.Config{RuntimeID: rt.ID}
+
+	removed := false
+	for _, acc := range pending.Accounts {
+		if !agent.ValidFreebuffAccountID(acc.ID) {
+			continue
+		}
+		key := freebuffLoginKey(rt.ID, acc.ID)
+		switch acc.State {
+		case "requested", "awaiting_login":
+			if _, running := freebuffLogins.Load(key); running {
+				continue
+			}
+			loginCtx, cancel := context.WithCancel(ctx)
+			freebuffLogins.Store(key, context.CancelFunc(cancel))
+			go func(accountID string) {
+				defer freebuffLogins.Delete(key)
+				defer cancel()
+				d.handleFreebuffLogin(loginCtx, rt, accountID)
+			}(acc.ID)
+		case "removing":
+			stopFreebuffLogin(key)
+			if err := agent.RemoveFreebuffAccount(cfg, acc.ID); err != nil {
+				d.logger.Warn("freebuff account removal failed", "runtime_id", rt.ID, "account_id", acc.ID, "error", err)
+				continue
+			}
+			removed = true
+		}
+	}
+
+	if pending.DefaultAccountID != "" && agent.ValidFreebuffAccountID(pending.DefaultAccountID) {
+		if ids, _ := agent.ListFreebuffAccounts(cfg); containsString(ids, pending.DefaultAccountID) {
+			_ = agent.SetFreebuffDefaultAccount(cfg, pending.DefaultAccountID)
+		}
+	}
+	if removed {
+		// Tell the server the accounts are gone so it can drop them.
+		d.reportFreebuffAccountsPresent(ctx, rt)
+	}
+}
+
+// stopFreebuffLogin cancels a running sign-in and waits briefly for its
+// orchestrator to go, so the account directory can be deleted under it.
+func stopFreebuffLogin(key string) {
+	cancel, ok := freebuffLogins.Load(key)
+	if !ok {
+		return
+	}
+	cancel.(context.CancelFunc)()
+	for i := 0; i < 30; i++ {
+		if _, running := freebuffLogins.Load(key); !running {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // freebuffAccountLabel names the signed-in account for display: the email,
@@ -171,18 +222,39 @@ func freebuffAccountLabel(user json.RawMessage) string {
 	return ""
 }
 
-// handleFreebuffConnect runs the orchestrator's browser login and reports the
-// URL it produced and, later, the outcome. The orchestrator stays up for the
-// whole wait: the browser confirms the login against it.
-func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
+// freebuffAccountReport is one account in a report to the server.
+type freebuffAccountReport map[string]any
+
+// freebuffSignedInReport is the report for an account that is signed in.
+func freebuffSignedInReport(accountID string, st freebuffrt.AuthStatus) freebuffAccountReport {
+	label := freebuffAccountLabel(st.User)
+	message := "Signed in to Freebuff"
+	if label != "" {
+		message = "Signed in as " + label
+	}
+	return freebuffAccountReport{
+		"id":     accountID,
+		"state":  "connected",
+		"label":  label,
+		"status": map[string]any{"message": message},
+	}
+}
+
+// handleFreebuffLogin signs one account in and reports the URL it produced
+// and, later, the outcome. The orchestrator stays up for the whole wait: it is
+// the orchestrator that notices the sign-in has happened.
+func (d *Daemon) handleFreebuffLogin(ctx context.Context, rt Runtime, accountID string) {
+	report := func(entry freebuffAccountReport) {
+		d.reportFreebuffEntries(ctx, rt, []freebuffAccountReport{entry}, false)
+	}
 	fail := func(message string) {
-		d.reportFreebuffConnect(ctx, rt, map[string]any{"state": "failed", "error": message})
+		report(freebuffAccountReport{"id": accountID, "state": "failed", "error": message})
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, freebuffLoginTimeout)
 	defer cancel()
 
-	client, stop, err := startFreebuffAccount(runCtx, rt.ID)
+	client, stop, err := startFreebuffAccount(runCtx, rt.ID, accountID)
 	if err != nil {
 		fail(err.Error())
 		return
@@ -191,10 +263,7 @@ func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
 
 	// An account that is already signed in needs no login.
 	if st, err := client.AuthStatus(runCtx); err == nil && st.Authed {
-		d.reportFreebuffConnect(ctx, rt, map[string]any{
-			"state":   "connected",
-			"account": freebuffAccountLabel(st.User),
-		})
+		report(freebuffSignedInReport(accountID, st))
 		return
 	}
 
@@ -203,13 +272,20 @@ func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
 		fail(err.Error())
 		return
 	}
-	if login.URL == "" {
+	// Prefer the account host's own page: it opens from any machine. The
+	// loopback page works only in a browser on this one.
+	url := login.RemoteURL
+	if url == "" {
+		url = login.URL
+	}
+	if url == "" {
 		fail("the Freebuff orchestrator did not return a login URL")
 		return
 	}
-	d.reportFreebuffConnect(ctx, rt, map[string]any{
+	report(freebuffAccountReport{
+		"id":         accountID,
 		"state":      "awaiting_login",
-		"login_url":  login.URL,
+		"login_url":  url,
 		"expires_at": time.Now().Add(freebuffLoginTimeout).UTC().Format(time.RFC3339),
 	})
 
@@ -221,10 +297,10 @@ func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
 			cancelCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = client.CancelLogin(cancelCtx)
 			c()
+			// Removed by the user, or the daemon is shutting down: nobody is
+			// waiting to hear about it. Only a timeout is the user's to read.
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-				fail("the browser login did not complete in time")
-			} else {
-				fail("the browser login was interrupted")
+				fail("the sign-in was not completed in time; try again for a new link")
 			}
 			return
 		case <-ticker.C:
@@ -233,67 +309,92 @@ func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
 				continue
 			}
 			if st.Authed {
-				d.reportFreebuffConnect(ctx, rt, map[string]any{
-					"state":   "connected",
-					"account": freebuffAccountLabel(st.User),
-				})
-				// Refresh the snapshot now that the account exists.
-				d.reportFreebuffAccount(ctx, rt, map[string]any{"status": freebuffStatusPayload(st)})
+				report(freebuffSignedInReport(accountID, st))
+				// The first account becomes the default right away; the server
+				// confirms it on the next poll.
+				cfg := agent.Config{RuntimeID: rt.ID}
+				if ids, _ := agent.ListFreebuffAccounts(cfg); len(ids) == 1 {
+					_ = agent.SetFreebuffDefaultAccount(cfg, accountID)
+				}
 				return
 			}
 			if st.Login.Phase == "failed" || st.Login.Phase == "error" || st.Login.Phase == "cancelled" {
-				fail("the browser login " + st.Login.Phase)
+				fail("the sign-in " + st.Login.Phase)
 				return
 			}
 		}
 	}
 }
 
-// freebuffStatusPayload is the account snapshot the UI card reads. The
-// orchestrator exposes sign-in state only; session slot, credit and prices are
-// left out until the card is taught to read them from the orchestrator.
-func freebuffStatusPayload(st freebuffrt.AuthStatus) map[string]any {
-	if !st.Authed {
-		return map[string]any{"message": "Not signed in to Freebuff"}
+// reportFreebuffAccounts refreshes the state of every account on disk: who is
+// signed in. An account that cannot be asked right now (its orchestrator is
+// busy running a task, or the bundle is missing) keeps the state the server
+// has — it is reported as present, nothing more.
+func (d *Daemon) reportFreebuffAccounts(ctx context.Context, rt Runtime) {
+	cfg := agent.Config{RuntimeID: rt.ID}
+	ids, err := agent.ListFreebuffAccounts(cfg)
+	if err != nil {
+		d.logger.Debug("freebuff accounts unavailable", "runtime_id", rt.ID, "error", err)
+		return
 	}
-	label := freebuffAccountLabel(st.User)
-	if label == "" {
-		return map[string]any{"message": "Signed in to Freebuff"}
+	entries := make([]freebuffAccountReport, 0, len(ids))
+	for _, id := range ids {
+		if _, signingIn := freebuffLogins.Load(freebuffLoginKey(rt.ID, id)); signingIn {
+			entries = append(entries, freebuffAccountReport{"id": id})
+			continue
+		}
+		entries = append(entries, d.freebuffAccountEntry(ctx, rt, id))
 	}
-	return map[string]any{"message": "Signed in as " + label}
+	d.reportFreebuffEntries(ctx, rt, entries, true)
 }
 
-// reportFreebuffStatus refreshes the account snapshot.
-func (d *Daemon) reportFreebuffStatus(ctx context.Context, rt Runtime) {
+// freebuffAccountEntry asks one account's orchestrator who is signed in.
+func (d *Daemon) freebuffAccountEntry(ctx context.Context, rt Runtime, accountID string) freebuffAccountReport {
+	unchanged := freebuffAccountReport{"id": accountID}
 	runCtx, cancel := context.WithTimeout(ctx, freebuffStatusTimeout)
 	defer cancel()
 
-	client, stop, err := startFreebuffAccount(runCtx, rt.ID)
+	client, stop, err := startFreebuffAccount(runCtx, rt.ID, accountID)
 	if err != nil {
-		// A busy profile (a task is using the orchestrator) or a missing
-		// bundle is a normal answer, not a daemon failure: keep the last
-		// snapshot and say why in the log.
-		d.logger.Debug("freebuff status unavailable", "runtime_id", rt.ID, "error", err)
-		return
+		// A busy account (a task is using its orchestrator) or a missing
+		// bundle is a normal answer, not a daemon failure.
+		d.logger.Debug("freebuff account unavailable", "runtime_id", rt.ID, "account_id", accountID, "error", err)
+		return unchanged
 	}
 	defer stop()
 
 	st, err := client.AuthStatus(runCtx)
 	if err != nil {
-		d.logger.Debug("freebuff status failed", "runtime_id", rt.ID, "error", err)
-		return
+		d.logger.Debug("freebuff account status failed", "runtime_id", rt.ID, "account_id", accountID, "error", err)
+		return unchanged
 	}
-	d.reportFreebuffAccount(ctx, rt, map[string]any{"status": freebuffStatusPayload(st)})
+	if !st.Authed {
+		return freebuffAccountReport{
+			"id":     accountID,
+			"state":  "signed_out",
+			"status": map[string]any{"message": "Not signed in to Freebuff"},
+		}
+	}
+	return freebuffSignedInReport(accountID, st)
 }
 
-// reportFreebuffAccount delivers an account report to the server.
-func (d *Daemon) reportFreebuffAccount(ctx context.Context, rt Runtime, payload map[string]any) {
+// reportFreebuffEntries delivers a report to the server. complete says the
+// entries are every account on this machine, so any other the server lists is
+// gone from it.
+func (d *Daemon) reportFreebuffEntries(ctx context.Context, rt Runtime, entries []freebuffAccountReport, complete bool) {
+	payload := map[string]any{"accounts": entries, "complete": complete}
 	d.reportRuntimeResultWithRetry(ctx, "freebuff_account", rt.ID, "", func(ctx context.Context) error {
 		return d.client.ReportFreebuffAccount(ctx, rt.ID, payload)
 	})
 }
 
-// reportFreebuffConnect delivers a browser-login state to the server.
-func (d *Daemon) reportFreebuffConnect(ctx context.Context, rt Runtime, connect map[string]any) {
-	d.reportFreebuffAccount(ctx, rt, map[string]any{"connect": connect})
+// reportFreebuffAccountsPresent tells the server which accounts exist on this
+// machine, without asking any of them anything. The server drops the rest.
+func (d *Daemon) reportFreebuffAccountsPresent(ctx context.Context, rt Runtime) {
+	ids, _ := agent.ListFreebuffAccounts(agent.Config{RuntimeID: rt.ID})
+	entries := make([]freebuffAccountReport, 0, len(ids))
+	for _, id := range ids {
+		entries = append(entries, freebuffAccountReport{"id": id})
+	}
+	d.reportFreebuffEntries(ctx, rt, entries, true)
 }

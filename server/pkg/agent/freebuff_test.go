@@ -194,7 +194,11 @@ func TestFreebuffCancelStopsTurn(t *testing.T) {
 }
 
 func TestFreebuffExecuteStartFailure(t *testing.T) {
-	b := &freebuffBackend{cfg: Config{RuntimeID: "rt1", Env: map[string]string{FreebuffEnvProfilesDir: "/p"}},
+	cfg := Config{RuntimeID: "rt1", Env: map[string]string{FreebuffEnvProfilesDir: t.TempDir()}}
+	if _, err := EnsureFreebuffAccountDir(cfg, "a1"); err != nil {
+		t.Fatal(err)
+	}
+	b := &freebuffBackend{cfg: cfg,
 		start: func(context.Context, Config, string) (*FreebuffOrchestrator, error) {
 			return nil, errors.New("no bundle")
 		}}
@@ -221,5 +225,75 @@ func TestFreebuffProfileDir(t *testing.T) {
 	}
 	if got, _ := FreebuffProfileDir(Config{Env: map[string]string{FreebuffEnvProfilesDir: "/acct"}}); got != "/acct/default" {
 		t.Errorf("default runtime dir = %q", got)
+	}
+}
+
+func TestFreebuffExecuteNeedsAnAccount(t *testing.T) {
+	b := &freebuffBackend{cfg: Config{RuntimeID: "rt1", Env: map[string]string{FreebuffEnvProfilesDir: t.TempDir()}}}
+	if _, err := b.Execute(context.Background(), "x", ExecOptions{Cwd: "/w"}); !errors.Is(err, ErrNoFreebuffAccount) {
+		t.Fatalf("err = %v, want ErrNoFreebuffAccount", err)
+	}
+}
+
+func TestFreebuffAccountForRun(t *testing.T) {
+	cfg := Config{RuntimeID: "rt1", Env: map[string]string{FreebuffEnvProfilesDir: t.TempDir()}}
+	mk := func(ids ...string) {
+		for _, id := range ids {
+			if _, err := EnsureFreebuffAccountDir(cfg, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if _, err := FreebuffAccountForRun(cfg); !errors.Is(err, ErrNoFreebuffAccount) {
+		t.Fatalf("no accounts: err = %v", err)
+	}
+	mk("only")
+	if got, err := FreebuffAccountForRun(cfg); err != nil || got != "only" {
+		t.Fatalf("a single account is the default: %q %v", got, err)
+	}
+	mk("second")
+	if _, err := FreebuffAccountForRun(cfg); !errors.Is(err, ErrNoFreebuffAccount) {
+		t.Fatalf("two accounts and no default must not guess: err = %v", err)
+	}
+	if err := SetFreebuffDefaultAccount(cfg, "second"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := FreebuffAccountForRun(cfg); got != "second" {
+		t.Fatalf("default = %q", got)
+	}
+	// The agent's env wins over the runtime default.
+	cfg.Env[FreebuffEnvAccount] = "only"
+	if got, _ := FreebuffAccountForRun(cfg); got != "only" {
+		t.Fatalf("env override = %q", got)
+	}
+	cfg.Env[FreebuffEnvAccount] = "ghost"
+	if _, err := FreebuffAccountForRun(cfg); err == nil {
+		t.Fatal("an account that is not on disk must fail")
+	}
+	delete(cfg.Env, FreebuffEnvAccount)
+
+	// A default that was removed from disk must not be followed.
+	if err := RemoveFreebuffAccount(cfg, "second"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FreebuffAccountForRun(cfg); err == nil {
+		t.Fatal("a removed default account must fail, not fall back silently")
+	}
+}
+
+func TestFreebuffAccountIDs(t *testing.T) {
+	for _, ok := range []string{"a1", "a1b2c3d4", "work-2"} {
+		if !ValidFreebuffAccountID(ok) {
+			t.Errorf("%q rejected", ok)
+		}
+	}
+	for _, bad := range []string{"", "../x", "a/b", "A1", "-x", ".", strings.Repeat("a", 33)} {
+		if ValidFreebuffAccountID(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if id := NewFreebuffAccountID(); !ValidFreebuffAccountID(id) {
+		t.Errorf("generated id %q is invalid", id)
 	}
 }

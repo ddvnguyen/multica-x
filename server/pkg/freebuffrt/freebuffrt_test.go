@@ -151,3 +151,45 @@ func TestEventsStream(t *testing.T) {
 		t.Fatalf("types = %v", types)
 	}
 }
+
+func TestStartLoginResolvesTheRemoteSignInURL(t *testing.T) {
+	var base string
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /api/auth/login/start":
+			_, _ = w.Write([]byte(`{"url":"` + base + `/auth/login/launch/tok","attemptId":"at1"}`))
+		case "GET /auth/login/launch/tok":
+			http.Redirect(w, r, "https://freebuff.com/login?auth_code=abc&desktop_flow=at1", http.StatusFound)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	base = c.base
+	got, err := c.StartLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RemoteURL != "https://freebuff.com/login?auth_code=abc&desktop_flow=at1" {
+		t.Fatalf("remote URL = %q", got.RemoteURL)
+	}
+	if got.AttemptID != "at1" || !strings.HasPrefix(got.URL, base) {
+		t.Fatalf("loopback fields lost: %+v", got)
+	}
+}
+
+func TestStartLoginFallsBackWhenTheRedirectIsUnusable(t *testing.T) {
+	var base string
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/login/start":
+			_, _ = w.Write([]byte(`{"url":"` + base + `/auth/login/launch/tok","attemptId":"at1"}`))
+		default:
+			http.Redirect(w, r, "http://127.0.0.1:1/loop", http.StatusFound)
+		}
+	})
+	base = c.base
+	got, err := c.StartLogin(context.Background())
+	if err != nil || got.RemoteURL != "" {
+		t.Fatalf("a loopback redirect must not be offered as a remote URL: %+v %v", got, err)
+	}
+}

@@ -78,9 +78,8 @@ func freebuffSetting(cfg Config, key string) string {
 	return strings.TrimSpace(os.Getenv(key))
 }
 
-// FreebuffProfileDir resolves the account profile directory for a runtime:
-// one runtime, one account. Tasks and the daemon's account card both go
-// through here, so they always agree on which login a runtime uses.
+// FreebuffProfileDir resolves the directory that holds a runtime's accounts
+// (see freebuff_accounts.go).
 func FreebuffProfileDir(cfg Config) (string, error) {
 	root := freebuffSetting(cfg, FreebuffEnvProfilesDir)
 	if root == "" {
@@ -225,7 +224,11 @@ func (b *freebuffBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	if opts.Cwd == "" {
 		return nil, errors.New("freebuff requires a working directory")
 	}
-	profileDir, err := FreebuffProfileDir(b.cfg)
+	accountID, err := FreebuffAccountForRun(b.cfg)
+	if err != nil {
+		return nil, err
+	}
+	profileDir, err := FreebuffAccountDir(b.cfg, accountID)
 	if err != nil {
 		return nil, err
 	}
