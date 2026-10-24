@@ -23,6 +23,8 @@ type freebuffClient interface {
 	GetThread(ctx context.Context, id string) (freebuffrt.Thread, error)
 	PostMessage(ctx context.Context, threadID, text string) error
 	StopTurn(ctx context.Context, threadID string) error
+	HasNotice(ctx context.Context, id, notice string) (bool, error)
+	TakeSlot(ctx context.Context, threadID string) error
 }
 
 func defaultLogger() *slog.Logger { return slog.Default() }

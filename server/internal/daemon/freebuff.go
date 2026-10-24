@@ -81,11 +81,11 @@ var startFreebuffAccount = func(ctx context.Context, runtimeID, accountID string
 	if err != nil {
 		return nil, nil, err
 	}
-	orch, err := agent.StartFreebuffOrchestrator(ctx, cfg, dir)
+	orch, release, err := agent.AcquireFreebuffOrchestrator(ctx, cfg, dir)
 	if err != nil {
 		return nil, nil, err
 	}
-	return orch.Client, orch.Stop, nil
+	return orch.Client, release, nil
 }
 
 // freebuffRuntimes returns the Freebuff runtimes this daemon owns.

@@ -246,6 +246,39 @@ func (c *Client) GetThread(ctx context.Context, id string) (Thread, error) {
 	return snap.Thread, err
 }
 
+// SlotTakenNotice is the notice id the orchestrator records on a thread whose
+// turn was refused because the account's purchased hour is held elsewhere.
+const SlotTakenNotice = "freebuff-slot-taken"
+
+// HasNotice reports whether the thread carries a notice with the given id.
+func (c *Client) HasNotice(ctx context.Context, id, notice string) (bool, error) {
+	var snap struct {
+		Messages []struct {
+			Parts []struct {
+				Kind   string `json:"kind"`
+				Notice string `json:"notice"`
+			} `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/thread/"+url.PathEscape(id), nil, &snap); err != nil {
+		return false, err
+	}
+	for _, m := range snap.Messages {
+		for _, p := range m.Parts {
+			if p.Kind == "notice" && p.Notice == notice {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// TakeSlot moves the account's purchased hour of hosted-model time to this
+// thread, ending the session another thread held, at no further charge.
+func (c *Client) TakeSlot(ctx context.Context, threadID string) error {
+	return c.do(ctx, http.MethodPost, "/api/thread/"+url.PathEscape(threadID)+"/freebuff/take-slot", map[string]any{}, nil)
+}
+
 // PostMessage sends a user message, starting a turn.
 func (c *Client) PostMessage(ctx context.Context, threadID, text string) error {
 	return c.do(ctx, http.MethodPost, "/api/thread/"+url.PathEscape(threadID)+"/message", map[string]any{"text": text}, nil)

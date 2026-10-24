@@ -29,6 +29,10 @@ type fakeFreebuff struct {
 	createModel string
 	catalogLoadsAfter int
 	idleGap   bool
+	slotHeld  bool // another thread holds the account's purchased hour
+	slotTakes int
+	finishes  float64
+	posts     int
 }
 
 func newFakeFreebuff() *fakeFreebuff {
@@ -73,7 +77,21 @@ func (f *fakeFreebuff) PostMessage(_ context.Context, id, text string) error {
 	f.posted = text
 	t.TurnState = "running"
 	script, hold, idleGap := f.script, f.holdTurn, f.idleGap
+	f.posts++
+	refused := f.slotHeld
 	f.mu.Unlock()
+	if refused {
+		go func() {
+			f.mu.Lock()
+			t.TurnState = "idle"
+			o := "error"
+			t.LastTurnOutcome = &o
+			t.LastTurnFinishedAt = f.nextFinish()
+			f.mu.Unlock()
+			f.events <- freebuffrt.Event{Type: "finish", Raw: json.RawMessage(`{"type":"finish"}`)}
+		}()
+		return nil
+	}
 	go func() {
 		send := func(raw string) {
 			var head struct {
@@ -103,9 +121,34 @@ func (f *fakeFreebuff) PostMessage(_ context.Context, id, text string) error {
 		t.TurnState = "idle"
 		o := f.outcome
 		t.LastTurnOutcome = &o
+		t.LastTurnFinishedAt = f.nextFinish()
 		f.mu.Unlock()
 		f.events <- freebuffrt.Event{Type: "finish", Raw: json.RawMessage(`{"type":"finish"}`)}
 	}()
+	return nil
+}
+
+// nextFinish returns strictly increasing finish times, as a real orchestrator's
+// are, so back-to-back turns in a test never share a millisecond.
+func (f *fakeFreebuff) nextFinish() float64 {
+	if f.finishes == 0 {
+		f.finishes = float64(time.Now().UnixMilli())
+	}
+	f.finishes++
+	return f.finishes
+}
+
+func (f *fakeFreebuff) HasNotice(_ context.Context, _, notice string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.slotHeld && notice == freebuffrt.SlotTakenNotice, nil
+}
+
+func (f *fakeFreebuff) TakeSlot(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.slotHeld = false
+	f.slotTakes++
 	return nil
 }
 
@@ -362,6 +405,28 @@ func TestFreebuffRunWaitsForTheTurnOutcome(t *testing.T) {
 	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
 	if res.Status != "completed" || res.Output != "done" {
 		t.Fatalf("an idle thread without an outcome ended the turn early: %+v", res)
+	}
+}
+
+func TestFreebuffRunTakesTheSlotAnotherThreadHolds(t *testing.T) {
+	f := newFakeFreebuff()
+	f.slotHeld = true
+	f.script = []string{`{"type":"text","text":"ok"}`}
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
+	if res.Status != "completed" || res.Output != "ok" {
+		t.Fatalf("a refused turn was not retried after taking the slot: %+v", res)
+	}
+	if f.slotTakes != 1 || f.posts != 2 {
+		t.Fatalf("slotTakes=%d posts=%d, want one take and one resend", f.slotTakes, f.posts)
+	}
+}
+
+func TestFreebuffRunDoesNotTakeASlotForOtherErrors(t *testing.T) {
+	f := newFakeFreebuff()
+	f.outcome = "error"
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
+	if res.Status != "failed" || f.slotTakes != 0 || f.posts != 1 {
+		t.Fatalf("result=%+v slotTakes=%d posts=%d", res, f.slotTakes, f.posts)
 	}
 }
 

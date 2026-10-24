@@ -37,8 +37,31 @@ func TestFreebuffRealSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer StopFreebuffOrchestrators()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	// Two tasks in a row must share one orchestrator, hence one session.
+	var pids []int
+	for i := 0; i < 2; i++ {
+		smokeTurn(t, ctx, backend)
+		pids = append(pids, pooledPID(dir))
+	}
+	if pids[0] == 0 || pids[0] != pids[1] {
+		t.Fatalf("second task did not reuse the orchestrator: pids %v", pids)
+	}
+}
+
+func pooledPID(dir string) int {
+	sharedFreebuffPool.mu.Lock()
+	defer sharedFreebuffPool.mu.Unlock()
+	if e := sharedFreebuffPool.entries[dir]; e != nil && e.orch != nil && e.orch.cmd != nil && e.orch.cmd.Process != nil {
+		return e.orch.cmd.Process.Pid
+	}
+	return 0
+}
+
+func smokeTurn(t *testing.T, ctx context.Context, backend Backend) {
+	t.Helper()
 	session, err := backend.Execute(ctx, "Run the shell command `echo FREEBUFF_SMOKE_OK` with your terminal tool and tell me what it printed.", ExecOptions{
 		Cwd:     t.TempDir(),
 		Model:   os.Getenv("MULTICA_FREEBUFF_MODEL"),

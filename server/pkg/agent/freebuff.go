@@ -22,7 +22,8 @@ import (
 // HTTP/SSE API. The Freebuff CLI is a TUI with no machine interface, so the
 // orchestrator is the reusable core; this file only wraps it.
 //
-// One orchestrator process is started per task and torn down with it. Its
+// Tasks on one account share an orchestrator process (see freebuff_pool.go),
+// which outlives them for a while so they ride one hosted-model session. Its
 // state directory (the profile) holds the account login and the threads, so a
 // profile is an account, and ResumeSessionID is an orchestrator thread id.
 type freebuffBackend struct {
@@ -57,6 +58,24 @@ type FreebuffOrchestrator struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
+	// turn serialises turns on this orchestrator: the account's hosted-model
+	// hour is held by one thread at a time, and a second thread taking it
+	// would end the first one's session. Nil means no limit.
+	turn chan struct{}
+}
+
+// lockTurn waits for this orchestrator's turn and returns the func that hands
+// it on.
+func (o *FreebuffOrchestrator) lockTurn(ctx context.Context) (func(), error) {
+	if o.turn == nil {
+		return func() {}, nil
+	}
+	select {
+	case o.turn <- struct{}{}:
+		return func() { <-o.turn }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Stop terminates the orchestrator and its process group. Safe to call twice.
@@ -182,7 +201,7 @@ func StartFreebuffOrchestrator(ctx context.Context, cfg Config, profileDir strin
 		return nil, fmt.Errorf("start freebuff orchestrator: %w", err)
 	}
 
-	o := &FreebuffOrchestrator{cmd: cmd, cancel: cancel, done: make(chan struct{})}
+	o := &FreebuffOrchestrator{cmd: cmd, cancel: cancel, done: make(chan struct{}), turn: make(chan struct{}, 1)}
 	readyCh := make(chan freebuffrt.Ready, 1)
 	go func() {
 		sc := bufio.NewScanner(stdout)
@@ -242,13 +261,20 @@ func (b *freebuffBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	if err != nil {
 		return nil, err
 	}
-	start := b.start
-	if start == nil {
-		start = StartFreebuffOrchestrator
-	}
 
 	runCtx, cancel := runContext(ctx, opts.Timeout)
-	orch, err := start(runCtx, b.cfg, profileDir)
+	var (
+		orch    *FreebuffOrchestrator
+		release func()
+	)
+	if b.start != nil {
+		orch, err = b.start(runCtx, b.cfg, profileDir)
+		if orch != nil {
+			release = orch.Stop
+		}
+	} else {
+		orch, release, err = AcquireFreebuffOrchestrator(runCtx, b.cfg, profileDir)
+	}
 	if err != nil {
 		cancel()
 		return nil, err
@@ -258,9 +284,19 @@ func (b *freebuffBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	resCh := make(chan Result, 1)
 	go func() {
 		defer cancel()
-		defer orch.Stop()
+		defer release()
 		started := time.Now()
-		res := b.run(runCtx, orch.Client, prompt, opts, msgCh)
+		var res Result
+		if unlock, err := orch.lockTurn(runCtx); err != nil {
+			status := "cancelled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = "timeout"
+			}
+			res = Result{Status: status, Error: "waiting for another task on this Freebuff account: " + err.Error()}
+		} else {
+			res = b.run(runCtx, orch.Client, prompt, opts, msgCh)
+			unlock()
+		}
 		res.DurationMs = time.Since(started).Milliseconds()
 		close(msgCh)
 		resCh <- res
@@ -319,6 +355,9 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 	var out strings.Builder
 	var usage *TokenUsage
 	sawStart := false
+	tookSlot := false
+	var refusedFinish any
+	resent := false
 	sentAt := time.Now()
 	ticker := time.NewTicker(freebuffPollInterval)
 	defer ticker.Stop()
@@ -336,10 +375,28 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 		// had only issued its first tool call was reported complete on that
 		// basis. Only a recorded outcome that is not older than this message
 		// ends the turn.
-		if t.LastTurnOutcome == nil || !sentAtBefore(t, sentAt) {
+		if t.LastTurnOutcome == nil || !sentAtBefore(t, sentAt) || (resent && t.LastTurnFinishedAt == refusedFinish) {
 			return false, Result{}
 		}
 		res = freebuffResult(t, threadID, out.String())
+		if res.Status == "failed" && !tookSlot {
+			// The account's purchased hour is held by another thread (an
+			// earlier task, or the Desktop app). Move it here, which costs
+			// nothing, and send the message again once.
+			if held, _ := c.HasNotice(ctx, threadID, freebuffrt.SlotTakenNotice); held {
+				tookSlot = true
+				if err := c.TakeSlot(ctx, threadID); err == nil {
+					if err := c.PostMessage(ctx, threadID, prompt); err == nil {
+						// The refused turn's outcome is still on the thread; only
+						// a later finish counts.
+						refusedFinish, resent = t.LastTurnFinishedAt, true
+						sentAt = time.Now()
+						sawStart = false
+						return false, Result{}
+					}
+				}
+			}
+		}
 		if usage != nil && t.Model != nil && *t.Model != "" {
 			res.Usage = map[string]TokenUsage{*t.Model: *usage}
 		}
