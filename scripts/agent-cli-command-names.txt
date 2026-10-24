@@ -9,6 +9,7 @@ deveco
 devin
 dim
 dsh
+freebuff
 grok
 hermes
 kimi

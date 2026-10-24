@@ -118,22 +118,12 @@ func TestListFreebuffConnectPending_OnlyRequestsFreebuffRuntimes(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	var profileID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO runtime_profile (workspace_id, display_name, protocol_family, command_name, description, visibility, created_by, enabled)
-		VALUES ($1, 'Freebuff test profile', 'codebuddy', 'codebuddy-freebuff', 'x', 'private', $2, true)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&profileID); err != nil {
-		t.Fatalf("create profile: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM runtime_profile WHERE id = $1`, profileID) })
-
 	var runtimeID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id, profile_id)
-		VALUES ($1, 'freebuff-pending-test-machine', 'Freebuff pending runtime', 'local', 'codebuddy', 'online', 'x', '{}'::jsonb, now(), 'private', $2, $3)
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, 'freebuff-pending-test-machine', 'Freebuff pending runtime', 'local', $3, 'online', 'x', '{}'::jsonb, now(), 'private', $2)
 		RETURNING id
-	`, testWorkspaceID, testUserID, profileID).Scan(&runtimeID); err != nil {
+	`, testWorkspaceID, testUserID, FreebuffProvider).Scan(&runtimeID); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_runtime WHERE id = $1`, runtimeID) })
