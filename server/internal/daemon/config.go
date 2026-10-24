@@ -973,7 +973,7 @@ func isExecutableFile(path string) bool {
 // descriptor registry (agent.BuiltinRuntimeCommands) so adding a new fork
 // doesn't require editing this list by hand.
 var defaultAgentCommandNames = append([]string{
-	"claude", "codex", "opencode", "codearts", "deveco", "openclaw", "hermes",
+	"claude", "codex", "opencode", "codearts", "deveco", "freebuff", "openclaw", "hermes",
 	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "muse", "dim", "zeroclaw",
 }, agent.BuiltinRuntimeCommands()...)
 

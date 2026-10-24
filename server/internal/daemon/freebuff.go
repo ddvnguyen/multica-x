@@ -1,43 +1,46 @@
 package daemon
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/freebuffrt"
 )
 
 // Freebuff account reporting.
 //
-// A Freebuff runtime is a custom runtime profile whose command is the
-// codebuddy-freebuff wrapper. The wrapper owns the account: the token file
-// lives on this machine and only this machine can complete a browser login
-// for it.
+// A Freebuff runtime is a runtime whose provider is "freebuff". Its account is
+// the orchestrator profile directory on this machine (one runtime, one
+// account): the login lives there, and only this machine can complete a
+// browser login for it.
 //
-// The daemon's job is small. It runs the wrapper, reports what the wrapper
-// says, and gets out of the way:
+// The daemon's job is small. It starts the headless orchestrator, reports what
+// it says, and gets out of the way:
 //
-//   - the account snapshot (`--status --json`) — the open session slot, the
-//     per-model price, the daily and total credit — refreshed on a timer,
-//     because the session slot counts down whether or not anyone is looking;
-//   - the browser login (`login --json`) — started when the user clicks
-//     "Connect to Freebuff" in the web UI. The wrapper prints the one-time
-//     URL on its first line and keeps running until the browser confirms, so
-//     the daemon forwards both.
+//   - the account snapshot — whether the profile is signed in, and as whom —
+//     refreshed on a timer;
+//   - the browser login — started when the user clicks "Connect to Freebuff"
+//     in the web UI. The orchestrator hands back a one-time URL and keeps
+//     running until the browser confirms, so the daemon forwards the URL and
+//     then waits for the account to appear.
 //
 // The server stores what the daemon reports and the web UI reads it back.
+//
+// The login URL is a loopback page on the orchestrator, so it opens only in a
+// browser on the daemon's own machine.
 
-// freebuffCommandName is the profile command that makes a runtime a Freebuff
-// runtime. It is the wrapper's own name on PATH.
-const freebuffCommandName = "codebuddy-freebuff"
+// freebuffProvider is the provider value that makes a runtime a Freebuff
+// runtime.
+const freebuffProvider = "freebuff"
 
-// freebuffStatusInterval is how often the account snapshot is refreshed.
-var freebuffStatusInterval = 60 * time.Second
+// freebuffStatusInterval is how often the account snapshot is refreshed. Each
+// refresh starts an orchestrator, so this is slower than a plain HTTP poll.
+var freebuffStatusInterval = 5 * time.Minute
 
 // freebuffConnectPollInterval is how often the daemon asks the server whether
 // the user asked for a browser login. The click is a rare event, so the poll
@@ -45,17 +48,42 @@ var freebuffStatusInterval = 60 * time.Second
 // poll is the backstop for a lost nudge.
 var freebuffConnectPollInterval = 5 * time.Second
 
-// freebuffStatusTimeout bounds one `--status --json` run. The wrapper makes
-// a single HTTP call, so a slow answer means the account host is unreachable.
-var freebuffStatusTimeout = 15 * time.Second
+// freebuffStatusTimeout bounds one status refresh, orchestrator start included.
+var freebuffStatusTimeout = 45 * time.Second
 
-// freebuffLoginTimeout bounds one browser login. The wrapper enforces its own
-// deadline (5 minutes by default); this is the daemon's backstop.
+// freebuffLoginTimeout bounds one browser login.
 var freebuffLoginTimeout = 6 * time.Minute
+
+// freebuffLoginPollInterval is how often a pending login is checked.
+var freebuffLoginPollInterval = 2 * time.Second
 
 // freebuffConnects tracks the browser logins this daemon has in flight, so a
 // second poll does not start a second login for the same runtime.
 var freebuffConnects sync.Map // runtimeID -> struct{}
+
+// freebuffAccount is the slice of the orchestrator the account flow uses. It
+// is satisfied by *freebuffrt.Client and replaced in tests.
+type freebuffAccount interface {
+	AuthStatus(ctx context.Context) (freebuffrt.AuthStatus, error)
+	StartLogin(ctx context.Context) (freebuffrt.LoginStart, error)
+	CancelLogin(ctx context.Context) error
+}
+
+// startFreebuffAccount launches the orchestrator for a runtime's profile and
+// returns its client and a stop function. It is a field-like variable so tests
+// can run the account flow without a real orchestrator.
+var startFreebuffAccount = func(ctx context.Context, runtimeID string) (freebuffAccount, func(), error) {
+	cfg := agent.Config{RuntimeID: runtimeID, Logger: nil}
+	dir, err := agent.FreebuffProfileDir(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	orch, err := agent.StartFreebuffOrchestrator(ctx, cfg, dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return orch.Client, orch.Stop, nil
+}
 
 // freebuffRuntimes returns the Freebuff runtimes this daemon owns.
 func (d *Daemon) freebuffRuntimes() []Runtime {
@@ -63,36 +91,11 @@ func (d *Daemon) freebuffRuntimes() []Runtime {
 	defer d.mu.Unlock()
 	var out []Runtime
 	for _, rt := range d.runtimeIndex {
-		if d.isFreebuffRuntimeLocked(rt) {
+		if rt.Provider == freebuffProvider {
 			out = append(out, rt)
 		}
 	}
 	return out
-}
-
-// isFreebuffRuntimeLocked reports whether a runtime is a Freebuff runtime.
-// The caller must hold d.mu.
-func (d *Daemon) isFreebuffRuntimeLocked(rt Runtime) bool {
-	if rt.ProfileID == "" {
-		return false
-	}
-	spec, ok := d.profileLaunchSpecs[rt.ProfileID]
-	if !ok {
-		return false
-	}
-	return spec.commandName == freebuffCommandName
-}
-
-// freebuffCommandFor returns the resolved wrapper path for a Freebuff runtime.
-func (d *Daemon) freebuffCommandFor(runtimeID string) (string, bool) {
-	spec, ok := d.customProfileLaunchForRuntime(runtimeID)
-	if !ok || spec.path == "" {
-		return "", false
-	}
-	if spec.commandName != freebuffCommandName {
-		return "", false
-	}
-	return spec.path, true
 }
 
 // freebuffLoop keeps the Freebuff account state fresh and starts a browser
@@ -117,6 +120,9 @@ func (d *Daemon) freebuffLoop(ctx context.Context) {
 			d.checkFreebuffConnects(ctx)
 		case <-statusTicker.C:
 			for _, rt := range d.freebuffRuntimes() {
+				if _, running := freebuffConnects.Load(rt.ID); running {
+					continue
+				}
 				go d.reportFreebuffStatus(ctx, rt)
 			}
 		}
@@ -146,167 +152,138 @@ func (d *Daemon) checkFreebuffConnects(ctx context.Context) {
 	}
 }
 
-// freebuffLoginLine is one JSON line the wrapper prints during a login.
-type freebuffLoginLine struct {
-	Status    string `json:"status"`
-	LoginURL  string `json:"loginUrl"`
-	Account   string `json:"account"`
-	Error     string `json:"error"`
-	ExpiresAt int64  `json:"expiresAt"`
+// freebuffAccountLabel names the signed-in account for display: the email,
+// else the name, from the orchestrator's user record.
+func freebuffAccountLabel(user json.RawMessage) string {
+	var u struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Login string `json:"login"`
+	}
+	if json.Unmarshal(user, &u) != nil {
+		return ""
+	}
+	for _, v := range []string{u.Email, u.Name, u.Login} {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
-// handleFreebuffConnect runs the wrapper's browser login and reports the URL
-// it produced and, later, the outcome.
-//
-// The wrapper prints one JSON line when it has a URL and another when the
-// login finishes, so the daemon can forward the URL to the UI while the
-// browser is still open.
+// handleFreebuffConnect runs the orchestrator's browser login and reports the
+// URL it produced and, later, the outcome. The orchestrator stays up for the
+// whole wait: the browser confirms the login against it.
 func (d *Daemon) handleFreebuffConnect(ctx context.Context, rt Runtime) {
-	command, ok := d.freebuffCommandFor(rt.ID)
-	if !ok {
-		d.logger.Warn("freebuff connect: runtime command not resolved", "runtime_id", rt.ID)
-		d.reportFreebuffConnect(ctx, rt, map[string]any{
-			"state": "failed",
-			"error": "the Freebuff wrapper is not available on this computer",
-		})
-		return
+	fail := func(message string) {
+		d.reportFreebuffConnect(ctx, rt, map[string]any{"state": "failed", "error": message})
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, freebuffLoginTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, command, "login", "--json")
-	stdout, err := cmd.StdoutPipe()
+	client, stop, err := startFreebuffAccount(runCtx, rt.ID)
 	if err != nil {
+		fail(err.Error())
+		return
+	}
+	defer stop()
+
+	// An account that is already signed in needs no login.
+	if st, err := client.AuthStatus(runCtx); err == nil && st.Authed {
 		d.reportFreebuffConnect(ctx, rt, map[string]any{
-			"state": "failed",
-			"error": err.Error(),
+			"state":   "connected",
+			"account": freebuffAccountLabel(st.User),
 		})
 		return
 	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		d.reportFreebuffConnect(ctx, rt, map[string]any{
-			"state": "failed",
-			"error": err.Error(),
-		})
+
+	login, err := client.StartLogin(runCtx)
+	if err != nil {
+		fail(err.Error())
 		return
 	}
-
-	// WaitDelay keeps a grandchild holding the stdout pipe from parking this
-	// goroutine past the deadline.
-	cmd.WaitDelay = 2 * time.Second
-
-	reported := ""
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1*1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var parsed freebuffLoginLine
-		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
-			continue
-		}
-		switch parsed.Status {
-		case "awaiting_login":
-			if parsed.LoginURL == "" {
-				continue
-			}
-			d.reportFreebuffConnect(ctx, rt, map[string]any{
-				"state":     "awaiting_login",
-				"login_url": parsed.LoginURL,
-			})
-			reported = "awaiting_login"
-		case "connected":
-			d.reportFreebuffConnect(ctx, rt, map[string]any{
-				"state":   "connected",
-				"account": parsed.Account,
-			})
-			reported = "connected"
-		case "failed":
-			d.reportFreebuffConnect(ctx, rt, map[string]any{
-				"state": "failed",
-				"error": parsed.Error,
-			})
-			reported = "failed"
-		}
-	}
-
-	waitErr := cmd.Wait()
-	if reported == "connected" {
+	if login.URL == "" {
+		fail("the Freebuff orchestrator did not return a login URL")
 		return
-	}
-	if reported == "failed" {
-		return
-	}
-	message := "the browser login did not complete"
-	if waitErr != nil {
-		message = waitErr.Error()
-	}
-	if tail := strings.TrimSpace(stderr.String()); tail != "" {
-		message = tail
 	}
 	d.reportFreebuffConnect(ctx, rt, map[string]any{
-		"state": "failed",
-		"error": message,
+		"state":      "awaiting_login",
+		"login_url":  login.URL,
+		"expires_at": time.Now().Add(freebuffLoginTimeout).UTC().Format(time.RFC3339),
 	})
+
+	ticker := time.NewTicker(freebuffLoginPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-runCtx.Done():
+			cancelCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = client.CancelLogin(cancelCtx)
+			c()
+			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				fail("the browser login did not complete in time")
+			} else {
+				fail("the browser login was interrupted")
+			}
+			return
+		case <-ticker.C:
+			st, err := client.AuthStatus(runCtx)
+			if err != nil {
+				continue
+			}
+			if st.Authed {
+				d.reportFreebuffConnect(ctx, rt, map[string]any{
+					"state":   "connected",
+					"account": freebuffAccountLabel(st.User),
+				})
+				// Refresh the snapshot now that the account exists.
+				d.reportFreebuffAccount(ctx, rt, map[string]any{"status": freebuffStatusPayload(st)})
+				return
+			}
+			if st.Login.Phase == "failed" || st.Login.Phase == "error" || st.Login.Phase == "cancelled" {
+				fail("the browser login " + st.Login.Phase)
+				return
+			}
+		}
+	}
 }
 
-// reportFreebuffStatus refreshes the account snapshot: the open session
-// slot, the per-model price and the credit.
-func (d *Daemon) reportFreebuffStatus(ctx context.Context, rt Runtime) {
-	command, ok := d.freebuffCommandFor(rt.ID)
-	if !ok {
-		return
+// freebuffStatusPayload is the account snapshot the UI card reads. The
+// orchestrator exposes sign-in state only; session slot, credit and prices are
+// left out until the card is taught to read them from the orchestrator.
+func freebuffStatusPayload(st freebuffrt.AuthStatus) map[string]any {
+	if !st.Authed {
+		return map[string]any{"message": "Not signed in to Freebuff"}
 	}
+	label := freebuffAccountLabel(st.User)
+	if label == "" {
+		return map[string]any{"message": "Signed in to Freebuff"}
+	}
+	return map[string]any{"message": "Signed in as " + label}
+}
+
+// reportFreebuffStatus refreshes the account snapshot.
+func (d *Daemon) reportFreebuffStatus(ctx context.Context, rt Runtime) {
 	runCtx, cancel := context.WithTimeout(ctx, freebuffStatusTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(runCtx, command, "--status", "--json").Output()
+	client, stop, err := startFreebuffAccount(runCtx, rt.ID)
 	if err != nil {
-		// A refused account is a normal answer, not a daemon failure: the
-		// wrapper exits non-zero and prints the reason. Report it as the
-		// account's own message so the UI can show it.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			d.reportFreebuffAccount(ctx, rt, map[string]any{
-				"status": map[string]any{
-					"message": strings.TrimSpace(string(exitErr.Stderr)),
-				},
-			})
-			return
-		}
+		// A busy profile (a task is using the orchestrator) or a missing
+		// bundle is a normal answer, not a daemon failure: keep the last
+		// snapshot and say why in the log.
+		d.logger.Debug("freebuff status unavailable", "runtime_id", rt.ID, "error", err)
+		return
+	}
+	defer stop()
+
+	st, err := client.AuthStatus(runCtx)
+	if err != nil {
 		d.logger.Debug("freebuff status failed", "runtime_id", rt.ID, "error", err)
 		return
 	}
-	var status map[string]any
-	if err := json.Unmarshal(out, &status); err != nil {
-		d.logger.Debug("freebuff status is not JSON", "runtime_id", rt.ID, "error", err)
-		return
-	}
-	d.logger.Debug("freebuff account refreshed",
-		"runtime_id", rt.ID, "summary", freebuffAccountSummary(status))
-	d.reportFreebuffAccount(ctx, rt, map[string]any{"status": status})
-	// A browser login that is waiting for the user is part of the account's
-	// state, and it lives in the account client's own files — not in the
-	// daemon's memory. So the snapshot carries it, and the daemon forwards it
-	// as the login state: the URL stays visible in the UI even after the
-	// daemon that started it restarted.
-	if login, ok := status["login"].(map[string]any); ok {
-		if url, _ := login["loginUrl"].(string); url != "" && login["state"] == "pending" {
-			connect := map[string]any{
-				"state":     "awaiting_login",
-				"login_url": url,
-			}
-			if expires, ok := login["expiresAt"].(float64); ok && expires > 0 {
-				connect["expires_at"] = time.UnixMilli(int64(expires)).UTC().Format(time.RFC3339)
-			}
-			d.reportFreebuffConnect(ctx, rt, connect)
-		}
-	}
+	d.reportFreebuffAccount(ctx, rt, map[string]any{"status": freebuffStatusPayload(st)})
 }
 
 // reportFreebuffAccount delivers an account report to the server.
@@ -319,21 +296,4 @@ func (d *Daemon) reportFreebuffAccount(ctx context.Context, rt Runtime, payload 
 // reportFreebuffConnect delivers a browser-login state to the server.
 func (d *Daemon) reportFreebuffConnect(ctx context.Context, rt Runtime, connect map[string]any) {
 	d.reportFreebuffAccount(ctx, rt, map[string]any{"connect": connect})
-}
-
-// freebuffAccountSummary is a short human-readable description of an account
-// snapshot, used in daemon logs so a support request carries the state
-// without the whole JSON.
-func freebuffAccountSummary(status map[string]any) string {
-	if status == nil {
-		return "no account snapshot"
-	}
-	fields := []string{}
-	if state, ok := status["status"].(string); ok && state != "" {
-		fields = append(fields, "session="+state)
-	}
-	if remaining, ok := status["remainingMs"].(float64); ok {
-		fields = append(fields, fmt.Sprintf("remaining=%.0fms", remaining))
-	}
-	return strings.Join(fields, " ")
 }

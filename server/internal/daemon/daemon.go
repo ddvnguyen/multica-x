@@ -6469,6 +6469,7 @@ func taskRootDirParams(workspacesRoot string, task Task) execenv.RootDirParams {
 var runtimeDisplayNameOverrides = map[string]string{
 	"codearts":   "CodeArts",
 	"dsh":        "DeepSeek Harness",
+	"freebuff":   "Freebuff",
 	"traecli":    "Trae",
 	"grok":       "Grok",
 	"qoderclicn": "Qoder CN",
