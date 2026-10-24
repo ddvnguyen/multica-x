@@ -26,6 +26,7 @@ type fakeFreebuff struct {
 	posted    string
 	createCwd string
 	holdTurn  bool
+	createModel string
 	idleGap   bool
 }
 
@@ -41,10 +42,11 @@ func (f *fakeFreebuff) Events(ctx context.Context) (<-chan freebuffrt.Event, fun
 	return f.events, func() error { return nil }, nil
 }
 
-func (f *fakeFreebuff) CreateThread(_ context.Context, cwd string) (freebuffrt.Thread, error) {
+func (f *fakeFreebuff) CreateThread(_ context.Context, cwd, model string) (freebuffrt.Thread, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCwd = cwd
+	f.createModel = model
 	t := &freebuffrt.Thread{ID: "t1", TurnState: "idle"}
 	f.threads[t.ID] = t
 	return *t, nil
@@ -355,5 +357,15 @@ func TestFreebuffRunWaitsForTheTurnOutcome(t *testing.T) {
 	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
 	if res.Status != "completed" || res.Output != "done" {
 		t.Fatalf("an idle thread without an outcome ended the turn early: %+v", res)
+	}
+}
+
+func TestFreebuffRunCreatesTheThreadOnTheChosenModel(t *testing.T) {
+	f := newFakeFreebuff()
+	if res, _ := runFake(t, f, ExecOptions{Cwd: "/work", Model: "m-69307952f8"}); res.Status != "completed" {
+		t.Fatalf("result = %+v", res)
+	}
+	if f.createModel != "m-69307952f8" {
+		t.Fatalf("thread created on model %q", f.createModel)
 	}
 }

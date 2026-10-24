@@ -107,6 +107,43 @@ describe("FreebuffAccountCard", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
+  it("lists each model with what an hour costs and how long today's credit lasts", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({
+      accounts: [
+        {
+          ...connected,
+          status: {
+            credit: { balance: 25, dailyLimit: 25, dailyRemaining: 25 },
+            models: [
+              { id: "m-glm", name: "GLM 5.3 Flash", price: 20 },
+              { id: "m-solar", name: "Solar Mini 4", price: 0, notes: ["Promotional"] },
+              { id: "m-slow", name: "MiMo v2.6 Flash Slow", price: 5, recommended: true },
+              { id: "m-haiku", name: "Claude Haiku 5.5", price: 100, locked: true },
+              { id: "m-new", name: "Brand New Model", price: null },
+            ],
+          },
+        },
+      ],
+      default_account_id: "a1",
+    });
+    const { container } = renderCard(makeRuntime());
+
+    expect(await screen.findByText("Models and cost")).toBeInTheDocument();
+    const text = container.textContent ?? "";
+    expect(text).toContain("20 Freebucks/h");
+    expect(text).toContain("about 1.3 h left today");
+    expect(text).toContain("5 Freebucks/h");
+    expect(text).toContain("about 5 h left today");
+    expect(text).toContain("Free");
+    expect(text).toContain("Promotional");
+    expect(text).toContain("Recommended");
+    expect(text).toContain("Needs a paid plan");
+    expect(text).toContain("Price not published");
+    // Cheapest first, locked models last.
+    expect(text.indexOf("Solar Mini 4")).toBeLessThan(text.indexOf("GLM 5.3 Flash"));
+    expect(text.indexOf("GLM 5.3 Flash")).toBeLessThan(text.indexOf("Claude Haiku 5.5"));
+  });
+
   it("renders nothing for a runtime that is not a Freebuff runtime", async () => {
     const { container } = renderCard(
       makeRuntime({ id: "rt-other", provider: "codebuddy" }),

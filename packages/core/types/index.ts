@@ -79,6 +79,7 @@ export type {
   RuntimeHourlyActivity,
   FreebuffAccount,
   FreebuffAccounts,
+  FreebuffModel,
   FreebuffStatus,
   FreebuffCredit,
   RuntimeUsageByAgent,

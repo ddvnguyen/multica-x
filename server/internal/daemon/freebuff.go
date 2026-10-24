@@ -67,6 +67,7 @@ func freebuffLoginKey(runtimeID, accountID string) string { return runtimeID + "
 type freebuffAccount interface {
 	AuthStatus(ctx context.Context) (freebuffrt.AuthStatus, error)
 	AccountSettings(ctx context.Context, section string) (json.RawMessage, error)
+	Catalog(ctx context.Context) (freebuffrt.Catalog, error)
 	StartLogin(ctx context.Context) (freebuffrt.LoginStart, error)
 	CancelLogin(ctx context.Context) error
 }
@@ -229,17 +230,23 @@ type freebuffAccountReport map[string]any
 // freebuffSignedInReport is the report for an account that is signed in. The
 // credit and prices come from the account host; when it cannot be reached the
 // account is still reported as connected, with the sign-in message alone.
-func freebuffSignedInReport(ctx context.Context, client freebuffAccount, accountID string, st freebuffrt.AuthStatus) freebuffAccountReport {
+func freebuffSignedInReport(ctx context.Context, client freebuffAccount, runtimeID, accountID string, st freebuffrt.AuthStatus) freebuffAccountReport {
 	label := freebuffAccountLabel(st.User)
 	message := "Signed in to Freebuff"
 	if label != "" {
 		message = "Signed in as " + label
 	}
 	status := map[string]any{"message": message}
-	if raw, err := client.AccountSettings(ctx, "allowance"); err == nil {
-		for k, v := range freebuffAllowanceStatus(raw) {
+	allowance, err := client.AccountSettings(ctx, "allowance")
+	if err == nil {
+		for k, v := range freebuffAllowanceStatus(allowance) {
 			status[k] = v
 		}
+	}
+	if cat, err := client.Catalog(ctx); err == nil {
+		models := freebuffModelEntries(cat, allowance)
+		freebuffModelCache.Store(freebuffModelKey(runtimeID, accountID), models)
+		status["models"] = models
 	}
 	return freebuffAccountReport{
 		"id":     accountID,
@@ -323,7 +330,7 @@ func (d *Daemon) handleFreebuffLogin(ctx context.Context, rt Runtime, accountID 
 
 	// An account that is already signed in needs no login.
 	if st, err := client.AuthStatus(runCtx); err == nil && st.Authed {
-		report(freebuffSignedInReport(runCtx, client, accountID, st))
+		report(freebuffSignedInReport(runCtx, client, rt.ID, accountID, st))
 		return
 	}
 
@@ -369,7 +376,7 @@ func (d *Daemon) handleFreebuffLogin(ctx context.Context, rt Runtime, accountID 
 				continue
 			}
 			if st.Authed {
-				report(freebuffSignedInReport(runCtx, client, accountID, st))
+				report(freebuffSignedInReport(runCtx, client, rt.ID, accountID, st))
 				// The first account becomes the default right away; the server
 				// confirms it on the next poll.
 				cfg := agent.Config{RuntimeID: rt.ID}
@@ -435,7 +442,7 @@ func (d *Daemon) freebuffAccountEntry(ctx context.Context, rt Runtime, accountID
 			"status": map[string]any{"message": "Not signed in to Freebuff"},
 		}
 	}
-	return freebuffSignedInReport(runCtx, client, accountID, st)
+	return freebuffSignedInReport(runCtx, client, rt.ID, accountID, st)
 }
 
 // reportFreebuffEntries delivers a report to the server. complete says the

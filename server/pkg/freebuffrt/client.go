@@ -223,10 +223,16 @@ type Thread struct {
 	Model              *string `json:"model"`
 }
 
-// CreateThread opens a thread rooted at projectPath.
-func (c *Client) CreateThread(ctx context.Context, projectPath string) (Thread, error) {
+// CreateThread opens a thread rooted at projectPath. A non-empty model is a
+// catalog key (see Catalog); empty leaves the choice to the orchestrator.
+func (c *Client) CreateThread(ctx context.Context, projectPath, model string) (Thread, error) {
 	var t Thread
-	err := c.do(ctx, http.MethodPost, "/api/threads", map[string]any{"projectPath": projectPath}, &t)
+	body := map[string]any{"projectPath": projectPath}
+	if model != "" {
+		body["harnessId"] = "codebuff"
+		body["model"] = model
+	}
+	err := c.do(ctx, http.MethodPost, "/api/threads", body, &t)
 	return t, err
 }
 

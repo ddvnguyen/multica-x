@@ -554,7 +554,15 @@
     "credit_title": "クレジット",
     "credit_daily": "本日は {{limit}} 中 {{remaining}} Freebucks 残存",
     "credit_total": "合計 {{total}} Freebucks",
-    "prices_title": "モデルごとの価格"
+    "prices_title": "モデルごとの価格",
+    "models_title": "モデルとコスト",
+    "models_hint": "セッション1時間あたりのFreebucks。早く終了した時間は返金されます。",
+    "model_free": "無料",
+    "model_per_hour": "{{price}} Freebucks/時間",
+    "model_hours_left": "本日あと約{{hours}}時間",
+    "model_locked": "有料プランが必要",
+    "model_recommended": "おすすめ",
+    "model_price_unknown": "価格は未公開"
   },
   "qoder": {
     "title": "QCA runtime",

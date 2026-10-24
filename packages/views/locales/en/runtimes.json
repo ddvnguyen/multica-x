@@ -571,7 +571,15 @@
     "credit_title": "Credit",
     "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
     "credit_total": "{{total}} Freebucks in total",
-    "prices_title": "Price per model"
+    "prices_title": "Price per model",
+    "models_title": "Models and cost",
+    "models_hint": "Freebucks per hour of session. An hour that ends early is refunded.",
+    "model_free": "Free",
+    "model_per_hour": "{{price}} Freebucks/h",
+    "model_hours_left": "about {{hours}} h left today",
+    "model_locked": "Needs a paid plan",
+    "model_recommended": "Recommended",
+    "model_price_unknown": "Price not published"
   },
   "qoder": {
     "title": "QCA runtime",

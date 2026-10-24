@@ -45,3 +45,34 @@ describe("freebuff accounts response compatibility", () => {
     expect(parse({ connect: { state: "connected" }, status: { message: "x" } }).accounts).toEqual([]);
   });
 });
+
+describe("Freebuff model catalog in the account status", () => {
+  it("keeps the models the daemon reports", () => {
+    const parsed = FreebuffAccountsSchema.parse({
+      accounts: [
+        {
+          id: "a1",
+          state: "connected",
+          status: {
+            models: [
+              { id: "m-1", name: "GLM 5.3 Flash", price: 20, locked: false, recommended: true, notes: ["Promotional"] },
+              { id: "m-2", name: "Claude Haiku 5.5", price: null, locked: true },
+            ],
+          },
+        },
+      ],
+    });
+    const models = parsed.accounts[0]?.status?.models ?? [];
+    expect(models).toHaveLength(2);
+    expect(models[0]).toMatchObject({ id: "m-1", price: 20, recommended: true, notes: ["Promotional"] });
+    expect(models[1]).toMatchObject({ locked: true, price: null });
+  });
+
+  it("survives a malformed catalog without losing the account", () => {
+    const parsed = FreebuffAccountsSchema.parse({
+      accounts: [{ id: "a1", state: "connected", label: "x@y.z", status: { message: "ok", models: "nope" } }],
+    });
+    expect(parsed.accounts[0]?.label).toBe("x@y.z");
+    expect(parsed.accounts[0]?.status?.models ?? null).toBeNull();
+  });
+});

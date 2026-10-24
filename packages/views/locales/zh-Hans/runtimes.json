@@ -554,7 +554,15 @@
     "credit_title": "额度",
     "credit_daily": "今日剩余 {{remaining}} / {{limit}} Freebucks",
     "credit_total": "共 {{total}} Freebucks",
-    "prices_title": "各模型价格"
+    "prices_title": "各模型价格",
+    "models_title": "模型与费用",
+    "models_hint": "每小时会话消耗的 Freebucks。提前结束的时长会退还。",
+    "model_free": "免费",
+    "model_per_hour": "{{price}} Freebucks/小时",
+    "model_hours_left": "今日约可用 {{hours}} 小时",
+    "model_locked": "需要付费套餐",
+    "model_recommended": "推荐",
+    "model_price_unknown": "未公布价格"
   },
   "qoder": {
     "title": "QCA 运行时",

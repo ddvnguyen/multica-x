@@ -1951,6 +1951,20 @@ const FreebuffCreditSchema = z
   })
   .loose();
 
+const FreebuffModelSchema = z
+  .object({
+    id: z.string().catch(""),
+    name: z.string().catch(""),
+    tagline: z.string().nullish().catch(null),
+    section: z.string().nullish().catch(null),
+    price: z.number().nullish().catch(null),
+    locked: z.boolean().catch(false),
+    premium: z.boolean().catch(false),
+    recommended: z.boolean().catch(false),
+    notes: z.array(z.string()).nullish().catch(null),
+  })
+  .loose();
+
 const FreebuffStatusSchema = z
   .object({
     status: z.string().nullish().catch(null),
@@ -1966,6 +1980,7 @@ const FreebuffStatusSchema = z
     // host has been seen to report it as a number and as an object, so the
     // value stays unknown and the UI formats whatever it gets.
     prices: z.record(z.string(), z.unknown()).nullish().catch(null),
+    models: z.array(FreebuffModelSchema).nullish().catch(null),
   })
   .loose();
 

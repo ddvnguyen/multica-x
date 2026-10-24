@@ -300,8 +300,12 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 			return fail("failed", "freebuff thread %s: %v", threadID, err)
 		}
 	} else {
-		t, err := c.CreateThread(ctx, opts.Cwd)
+		t, err := c.CreateThread(ctx, opts.Cwd, opts.Model)
 		if err != nil {
+			var apiErr *freebuffAPIError
+			if opts.Model != "" && errors.As(err, &apiErr) && apiErr.Status == 400 {
+				return fail("failed", "freebuff does not offer model %q for this account (%v); pick another model for the agent", opts.Model, err)
+			}
 			return fail("failed", "freebuff create thread: %v", err)
 		}
 		threadID = t.ID

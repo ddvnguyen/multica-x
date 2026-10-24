@@ -4696,7 +4696,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		return
 	}
 
-	catalog, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
+	catalog, err := d.listRuntimeModels(ctx, rt, agent.NewCommand(execPath, fixedArgs))
 	if err != nil {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",

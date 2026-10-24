@@ -997,6 +997,20 @@ export interface FreebuffCredit {
   walletBalance?: number | null;
 }
 
+// One model of the account's catalog. `price` is Freebucks per hour of
+// session, null when the account host published none for it.
+export interface FreebuffModel {
+  id: string;
+  name: string;
+  tagline?: string | null;
+  section?: string | null;
+  price?: number | null;
+  locked?: boolean;
+  premium?: boolean;
+  recommended?: boolean;
+  notes?: string[] | null;
+}
+
 export interface FreebuffStatus {
   status?: string | null;
   instanceId?: string | null;
@@ -1009,6 +1023,7 @@ export interface FreebuffStatus {
   credit?: FreebuffCredit | null;
   /** model id -> price (Freebucks per hour of session). */
   prices?: Record<string, unknown> | null;
+  models?: FreebuffModel[] | null;
 }
 
 // One Freebuff account of a runtime.

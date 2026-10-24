@@ -554,7 +554,15 @@
     "credit_title": "크레딧",
     "credit_daily": "오늘 {{limit}} 중 {{remaining}} Freebucks 남음",
     "credit_total": "총 {{total}} Freebucks",
-    "prices_title": "모델별 가격"
+    "prices_title": "모델별 가격",
+    "models_title": "모델 및 비용",
+    "models_hint": "세션 1시간당 Freebucks. 일찍 끝난 시간은 환불됩니다.",
+    "model_free": "무료",
+    "model_per_hour": "{{price}} Freebucks/시간",
+    "model_hours_left": "오늘 약 {{hours}}시간 남음",
+    "model_locked": "유료 플랜 필요",
+    "model_recommended": "추천",
+    "model_price_unknown": "가격 미공개"
   },
   "qoder": {
     "title": "QCA runtime",

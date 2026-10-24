@@ -571,7 +571,15 @@
     "credit_title": "Crédits",
     "credit_daily": "{{remaining}} Freebucks restants sur {{limit}} aujourd'hui",
     "credit_total": "{{total}} Freebucks au total",
-    "prices_title": "Prix par modèle"
+    "prices_title": "Prix par modèle",
+    "models_title": "Modèles et coût",
+    "models_hint": "Freebucks par heure de session. Une heure terminée plus tôt est remboursée.",
+    "model_free": "Gratuit",
+    "model_per_hour": "{{price}} Freebucks/h",
+    "model_hours_left": "environ {{hours}} h restantes aujourd'hui",
+    "model_locked": "Nécessite un forfait payant",
+    "model_recommended": "Recommandé",
+    "model_price_unknown": "Prix non publié"
   },
   "qoder": {
     "title": "Environnement QCA",

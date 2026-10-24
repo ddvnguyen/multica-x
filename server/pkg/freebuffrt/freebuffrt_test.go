@@ -106,7 +106,7 @@ func TestClientCalls(t *testing.T) {
 	if err != nil || !st.Authed || !strings.Contains(string(st.User), "a@b") {
 		t.Fatalf("auth status: %+v %v", st, err)
 	}
-	th, err := c.CreateThread(ctx, "/work")
+	th, err := c.CreateThread(ctx, "/work", "")
 	if err != nil || th.ID != "t1" {
 		t.Fatalf("create thread: %+v %v", th, err)
 	}

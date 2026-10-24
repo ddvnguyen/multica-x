@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Check, Copy, ExternalLink, Plus, Timer, Wallet } from "lucide-react";
-import type { AgentRuntime, FreebuffAccount } from "@multica/core/types";
+import type { AgentRuntime, FreebuffAccount, FreebuffModel } from "@multica/core/types";
 // Deep import on purpose: the freebuff helpers live behind their own
 // entry point so a test that stubs the runtimes barrel does not have to
 // know about them.
@@ -17,6 +17,7 @@ import {
 } from "@multica/core/runtimes/freebuff";
 import { Button } from "@multica/ui/components/ui/button";
 import { copyText } from "@multica/ui/lib/clipboard";
+import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 import { openExternal } from "../../platform";
 
@@ -326,9 +327,12 @@ function FreebuffStatusDetails({ account }: { account: FreebuffAccount }) {
   const status = account.status ?? null;
   const credit = status?.credit ?? null;
   const prices = status?.prices ?? null;
+  const models = status?.models ?? null;
   const sessionState = status?.status ?? null;
   const remaining = formatRemaining(status?.remainingMs);
-  const hasDetails = Boolean(sessionState || credit || (prices && Object.keys(prices).length > 0));
+  const hasDetails = Boolean(
+    sessionState || credit || (models && models.length > 0) || (prices && Object.keys(prices).length > 0),
+  );
 
   if (!hasDetails) {
     return status?.message ? (
@@ -370,7 +374,9 @@ function FreebuffStatusDetails({ account }: { account: FreebuffAccount }) {
         </div>
       </div>
 
-      {prices && Object.keys(prices).length > 0 ? (
+      {models && models.length > 0 ? (
+        <FreebuffModelTable models={models} dailyRemaining={credit?.dailyRemaining ?? null} />
+      ) : prices && Object.keys(prices).length > 0 ? (
         <div className="text-caption">
           <div className="font-medium">{t(($) => $.freebuff.prices_title)}</div>
           <div className="mt-1 space-y-0.5">
@@ -383,6 +389,76 @@ function FreebuffStatusDetails({ account }: { account: FreebuffAccount }) {
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// What each model costs. The price is Freebucks per hour of session; with the
+// credit left today it says how long the model can run before the daily
+// allowance is gone. A locked model needs a paid plan and cannot be picked.
+function FreebuffModelTable({
+  models,
+  dailyRemaining,
+}: {
+  models: FreebuffModel[];
+  dailyRemaining: number | null;
+}) {
+  const { t } = useT("runtimes");
+  const sorted = [...models].sort(
+    (a, b) =>
+      Number(a.locked ?? false) - Number(b.locked ?? false) ||
+      (a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY) ||
+      a.name.localeCompare(b.name),
+  );
+  return (
+    <div className="text-caption">
+      <div className="font-medium">{t(($) => $.freebuff.models_title)}</div>
+      <div className="mt-0.5 text-muted-foreground">{t(($) => $.freebuff.models_hint)}</div>
+      <ul className="mt-2 space-y-2">
+        {sorted.map((model) => {
+          const price = model.price ?? null;
+          const hours =
+            price != null && price > 0 && dailyRemaining != null
+              ? Math.round((dailyRemaining / price) * 10) / 10
+              : null;
+          return (
+            <li
+              key={model.id}
+              className={cn("flex items-start justify-between gap-3", model.locked && "opacity-60")}
+            >
+              <div className="min-w-0">
+                <div className="truncate">
+                  {model.name}
+                  {model.recommended ? (
+                    <span className="ml-1.5 text-muted-foreground">
+                      · {t(($) => $.freebuff.model_recommended)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="truncate text-muted-foreground">
+                  {[model.tagline, ...(model.notes ?? [])].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              <div className="shrink-0 text-right tabular-nums">
+                <div>
+                  {price == null
+                    ? t(($) => $.freebuff.model_price_unknown)
+                    : price === 0
+                      ? t(($) => $.freebuff.model_free)
+                      : t(($) => $.freebuff.model_per_hour, { price })}
+                </div>
+                <div className="text-muted-foreground">
+                  {model.locked
+                    ? t(($) => $.freebuff.model_locked)
+                    : hours != null
+                      ? t(($) => $.freebuff.model_hours_left, { hours })
+                      : null}
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

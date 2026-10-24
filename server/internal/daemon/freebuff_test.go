@@ -67,6 +67,14 @@ type fakeAccount struct {
 	loginErr error
 	canceled bool
 	allowance json.RawMessage
+	catalog   *freebuffrt.Catalog
+}
+
+func (f *fakeAccount) Catalog(context.Context) (freebuffrt.Catalog, error) {
+	if f.catalog == nil {
+		return freebuffrt.Catalog{}, errors.New("no catalog")
+	}
+	return *f.catalog, nil
 }
 
 func (f *fakeAccount) AccountSettings(context.Context, string) (json.RawMessage, error) {
@@ -376,7 +384,7 @@ func TestFreebuffSignedInReportCarriesTheAllowance(t *testing.T) {
 	acct := &fakeAccount{allowance: json.RawMessage(`{"status":"none","accessTier":"limited","freebucks":{"balance":25,"daily":{"limit":25,"spent":0,"remaining":25,"resetAt":"2026-10-24T17:00:00.000Z"},"wallet":{"balance":0},"prices":{"mimo/mimo-v2.5":10,"upstage/solar-mini4":0}}}`)}
 	st := freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"owner@example.com"}`)}
 
-	status := freebuffSignedInReport(context.Background(), acct, "a1", st)["status"].(map[string]any)
+	status := freebuffSignedInReport(context.Background(), acct, "rt1", "a1", st)["status"].(map[string]any)
 	credit := status["credit"].(map[string]any)
 	if credit["dailyRemaining"] != 25.0 || credit["dailyLimit"] != 25.0 || credit["walletBalance"] != 0.0 || credit["dailyResetAt"] != "2026-10-24T17:00:00.000Z" {
 		t.Fatalf("credit = %v", credit)
@@ -391,9 +399,106 @@ func TestFreebuffSignedInReportCarriesTheAllowance(t *testing.T) {
 
 func TestFreebuffSignedInReportSurvivesAnUnreachableAccountHost(t *testing.T) {
 	st := freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"owner@example.com"}`)}
-	r := freebuffSignedInReport(context.Background(), &fakeAccount{}, "a1", st)
+	r := freebuffSignedInReport(context.Background(), &fakeAccount{}, "rt1", "a1", st)
 	status := r["status"].(map[string]any)
 	if r["state"] != "connected" || status["message"] != "Signed in as owner@example.com" || status["credit"] != nil {
 		t.Fatalf("report = %v", r)
+	}
+}
+
+const liveAllowance = `{"status":"none","accessTier":"limited","freebucks":{"balance":25,"daily":{"limit":25,"spent":0,"remaining":25},"prices":{"z-ai/glm-5.3-flash":20,"deepseek/deepseek-v4-flash-fast":25,"upstage/solar-mini4":0,"fbc/mimo-slow":5,"fbc/claude-haiku-5.5":100},"priceNotices":{"deepseek/deepseek-v4-flash-fast":"Off-peak pricing · 10x at peak","upstage/solar-mini4":"Promotional"}}}`
+
+func liveCatalog() freebuffrt.Catalog {
+	model := func(id, compiled, name, access string) freebuffrt.CatalogModel {
+		return freebuffrt.CatalogModel{ID: id, CompiledID: compiled, DisplayName: name, Access: access}
+	}
+	return freebuffrt.Catalog{
+		RecommendedKey: "m-slow",
+		Models: []freebuffrt.CatalogModel{
+			model("m-glm", "z-ai/glm-5.3-flash", "GLM 5.3 Flash", "open"),
+			model("m-solar", "upstage/solar-mini4", "Solar Mini 4", "open"),
+			model("m-slow", "", "MiMo v2.6 Flash Slow", "open"),
+			model("m-fast", "deepseek/deepseek-v4-flash-fast", "DeepSeek V4.1 Flash Fast", "locked"),
+			model("m-new", "", "Brand New Model", "open"),
+		},
+	}
+}
+
+func TestFreebuffModelEntries(t *testing.T) {
+	entries := freebuffModelEntries(liveCatalog(), json.RawMessage(liveAllowance))
+	byID := map[string]freebuffModelEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	if p := byID["m-glm"].Price; p == nil || *p != 20 {
+		t.Fatalf("glm price = %v", p)
+	}
+	if p := byID["m-slow"].Price; p == nil || *p != 5 || !byID["m-slow"].Recommended {
+		t.Fatalf("hosted slow model = %+v", byID["m-slow"])
+	}
+	if byID["m-new"].Price != nil {
+		t.Fatalf("a model with no matching price was given %v", *byID["m-new"].Price)
+	}
+	if e := byID["m-fast"]; !e.Locked || len(e.Notes) != 1 || e.Notes[0] != "Off-peak pricing · 10x at peak" {
+		t.Fatalf("locked model = %+v", e)
+	}
+	if e := byID["m-solar"]; e.Price == nil || *e.Price != 0 || len(e.Notes) != 1 || e.Notes[0] != "Promotional" {
+		t.Fatalf("free model = %+v", e)
+	}
+}
+
+func TestFreebuffPickerModels(t *testing.T) {
+	models := freebuffPickerModels(freebuffModelEntries(liveCatalog(), json.RawMessage(liveAllowance)))
+	labels := map[string]string{}
+	var defaults []string
+	for _, m := range models {
+		labels[m.ID] = m.Label
+		if m.Default {
+			defaults = append(defaults, m.ID)
+		}
+	}
+	if _, ok := labels["m-fast"]; ok {
+		t.Fatal("a locked model is offered in the picker")
+	}
+	want := map[string]string{
+		"m-glm":   "GLM 5.3 Flash · 20 Freebucks/h",
+		"m-solar": "Solar Mini 4 · Free",
+		"m-slow":  "MiMo v2.6 Flash Slow · 5 Freebucks/h",
+		"m-new":   "Brand New Model",
+	}
+	for id, label := range want {
+		if labels[id] != label {
+			t.Errorf("label of %s = %q, want %q", id, labels[id], label)
+		}
+	}
+	if len(defaults) != 1 || defaults[0] != "m-slow" {
+		t.Fatalf("defaults = %v", defaults)
+	}
+}
+
+func TestFreebuffSignedInReportCarriesTheModels(t *testing.T) {
+	cat := liveCatalog()
+	acct := &fakeAccount{allowance: json.RawMessage(liveAllowance), catalog: &cat}
+	st := freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"owner@example.com"}`)}
+	status := freebuffSignedInReport(context.Background(), acct, "rt-models", "a1", st)["status"].(map[string]any)
+	if models, _ := status["models"].([]freebuffModelEntry); len(models) != 5 {
+		t.Fatalf("models = %v", status["models"])
+	}
+	if _, ok := freebuffModelCache.Load(freebuffModelKey("rt-models", "a1")); !ok {
+		t.Fatal("the catalog was not kept for the model picker")
+	}
+}
+
+func TestListRuntimeModelsForFreebuffUsesTheDefaultAccount(t *testing.T) {
+	useProfiles(t)
+	rt := Runtime{ID: "rt-picker", Provider: freebuffProvider}
+	if _, err := agent.EnsureFreebuffAccountDir(agent.Config{RuntimeID: rt.ID}, "a1"); err != nil {
+		t.Fatal(err)
+	}
+	freebuffModelCache.Store(freebuffModelKey(rt.ID, "a1"), freebuffModelEntries(liveCatalog(), json.RawMessage(liveAllowance)))
+	d := &Daemon{}
+	cat, err := d.listRuntimeModels(context.Background(), rt, agent.Command{})
+	if err != nil || len(cat.Models) != 4 {
+		t.Fatalf("catalog = %+v, err = %v", cat, err)
 	}
 }
