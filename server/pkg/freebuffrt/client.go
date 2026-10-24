@@ -145,6 +145,10 @@ func (c *Client) AuthStatus(ctx context.Context) (AuthStatus, error) {
 type LoginStart struct {
 	URL       string `json:"url"`
 	AttemptID string `json:"attemptId"`
+	// RemoteURL is the account host's own sign-in page, which the loopback
+	// launch page redirects to. Unlike URL it opens in a browser on any
+	// machine. Empty when the redirect could not be read.
+	RemoteURL string `json:"-"`
 }
 
 // StartLogin begins a browser login. The returned URL is a loopback launch
@@ -152,8 +156,46 @@ type LoginStart struct {
 // from the machine the orchestrator runs on.
 func (c *Client) StartLogin(ctx context.Context) (LoginStart, error) {
 	var out LoginStart
-	err := c.do(ctx, http.MethodPost, "/api/auth/login/start", map[string]any{}, &out)
-	return out, err
+	if err := c.do(ctx, http.MethodPost, "/api/auth/login/start", map[string]any{}, &out); err != nil {
+		return out, err
+	}
+	out.RemoteURL = c.resolveLaunchURL(ctx, out.URL)
+	return out, nil
+}
+
+// resolveLaunchURL reads where the loopback launch page redirects to without
+// following it. The redirect target is the account host's sign-in page; the
+// orchestrator keeps waiting on its own side for the sign-in to complete, so
+// the user can open the target from any machine. Any failure yields "" and
+// the caller falls back to the loopback URL.
+func (c *Client) resolveLaunchURL(ctx context.Context, launch string) string {
+	u, err := url.Parse(launch)
+	base, baseErr := url.Parse(c.base)
+	if err != nil || baseErr != nil || u.Host != base.Host {
+		return ""
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, launch, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set(launchHeader, c.launchID)
+	noFollow := &http.Client{
+		Timeout:       c.http.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 300 || resp.StatusCode > 399 {
+		return ""
+	}
+	loc, err := resp.Location()
+	if err != nil || (loc.Scheme != "https" && loc.Scheme != "http") || loc.Hostname() == "127.0.0.1" || loc.Hostname() == "localhost" {
+		return ""
+	}
+	return loc.String()
 }
 
 // CancelLogin abandons a pending browser login.

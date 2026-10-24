@@ -763,19 +763,27 @@ func (c *Client) ReportFreebuffAccount(ctx context.Context, runtimeID string, pa
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff", runtimeID), payload, nil)
 }
 
-// GetFreebuffConnectPending asks the server whether the user asked for a
-// Freebuff browser login on this runtime. The daemon polls it rather than
-// receiving the request in a heartbeat acknowledgement, because the request
-// lives in the runtime row's metadata and the WebSocket heartbeat path never
-// reads that row.
-func (c *Client) GetFreebuffConnectPending(ctx context.Context, runtimeID string) (bool, error) {
-	var resp struct {
-		ConnectRequested bool `json:"connect_requested"`
-	}
-	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff/pending", runtimeID), &resp); err != nil {
-		return false, err
-	}
-	return resp.ConnectRequested, nil
+// FreebuffPending is what the user asked the daemon to do to a runtime's
+// Freebuff accounts.
+type FreebuffPending struct {
+	// Accounts lists the accounts that need the daemon: a sign-in to start or
+	// resume ("requested", "awaiting_login") or a login to delete ("removing").
+	Accounts []struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	} `json:"accounts"`
+	// DefaultAccountID is the account tasks run on.
+	DefaultAccountID string `json:"default_account_id"`
+}
+
+// GetFreebuffPending asks the server what the user wants done to a Freebuff
+// runtime's accounts. The daemon polls it rather than receiving the request in
+// a heartbeat acknowledgement, because the request lives in the runtime row's
+// metadata and the WebSocket heartbeat path never reads that row.
+func (c *Client) GetFreebuffPending(ctx context.Context, runtimeID string) (FreebuffPending, error) {
+	var resp FreebuffPending
+	err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff/pending", runtimeID), &resp)
+	return resp, err
 }
 
 // ReportModelListResult sends the model-discovery result back to the server.

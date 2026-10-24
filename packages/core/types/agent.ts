@@ -981,15 +981,13 @@ export interface RuntimeHourlyActivity {
 
 // Freebuff account state.
 //
-// A Freebuff runtime runs against an account that lives on the daemon's
-// machine: the token file is there, and only there can a browser login be
-// completed. The daemon reads the account and reports it; these types are
+// A Freebuff runtime holds any number of accounts. Each account's login lives
+// on the daemon's machine; the daemon reports what it finds and these types are
 // that report.
 //
-// The status block mirrors the wrapper's `--status --json` output: the open
-// session slot, the per-model price and the credit. Every field is optional
-// — a runtime whose account the daemon cannot read reports a message, not a
-// full snapshot.
+// The status block is the open session slot, the per-model price and the
+// credit. Every field is optional — an account the daemon cannot read yet
+// reports a message, not a full snapshot.
 export interface FreebuffCredit {
   balance?: number | null;
   dailyLimit?: number | null;
@@ -1013,25 +1011,31 @@ export interface FreebuffStatus {
   prices?: Record<string, unknown> | null;
 }
 
-// The browser-login state machine.
+// One Freebuff account of a runtime.
 //
-// "requested"  the user clicked the button; the daemon has not started yet
-// "awaiting_login"  the daemon has a one-time URL for the user to open
-// "connected"  the browser confirmed; `account` names the account
-// "failed"  `error` says why
-export interface FreebuffConnect {
+// "requested"  the user added it; the daemon has not started the sign-in yet
+// "awaiting_login"  `login_url` is the one-time link to open in any browser
+// "connected"  signed in; `label` names the account
+// "signed_out"  the account exists but is no longer signed in
+// "failed"  the sign-in failed; `error` says why
+// "removing"  the user removed it; the daemon has not deleted it yet
+export interface FreebuffAccount {
+  id: string;
+  label?: string | null;
   state: string;
   login_url?: string | null;
   expires_at?: string | null;
-  account?: string | null;
   error?: string | null;
+  status?: FreebuffStatus | null;
   requested_at?: string | null;
   updated_at?: string | null;
 }
 
-export interface FreebuffAccount {
-  status?: FreebuffStatus | null;
-  connect?: FreebuffConnect | null;
+// The accounts a Freebuff runtime holds. `default_account_id` is the account
+// tasks run on.
+export interface FreebuffAccounts {
+  accounts: FreebuffAccount[];
+  default_account_id?: string | null;
   updated_at?: string | null;
 }
 
