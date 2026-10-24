@@ -66,6 +66,14 @@ type fakeAccount struct {
 	login    freebuffrt.LoginStart
 	loginErr error
 	canceled bool
+	allowance json.RawMessage
+}
+
+func (f *fakeAccount) AccountSettings(context.Context, string) (json.RawMessage, error) {
+	if f.allowance == nil {
+		return nil, errors.New("account host unreachable")
+	}
+	return f.allowance, nil
 }
 
 func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error) {
@@ -361,5 +369,31 @@ func TestFreebuffRuntimes_SelectsByProvider(t *testing.T) {
 	got := d.freebuffRuntimes()
 	if len(got) != 1 || got[0].ID != "rt-fb" {
 		t.Fatalf("freebuffRuntimes = %#v", got)
+	}
+}
+
+func TestFreebuffSignedInReportCarriesTheAllowance(t *testing.T) {
+	acct := &fakeAccount{allowance: json.RawMessage(`{"status":"none","accessTier":"limited","freebucks":{"balance":25,"daily":{"limit":25,"spent":0,"remaining":25,"resetAt":"2026-10-24T17:00:00.000Z"},"wallet":{"balance":0},"prices":{"mimo/mimo-v2.5":10,"upstage/solar-mini4":0}}}`)}
+	st := freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"owner@example.com"}`)}
+
+	status := freebuffSignedInReport(context.Background(), acct, "a1", st)["status"].(map[string]any)
+	credit := status["credit"].(map[string]any)
+	if credit["dailyRemaining"] != 25.0 || credit["dailyLimit"] != 25.0 || credit["walletBalance"] != 0.0 || credit["dailyResetAt"] != "2026-10-24T17:00:00.000Z" {
+		t.Fatalf("credit = %v", credit)
+	}
+	if prices := status["prices"].(map[string]any); prices["mimo/mimo-v2.5"] != 10.0 || prices["upstage/solar-mini4"] != 0.0 {
+		t.Fatalf("prices = %v", prices)
+	}
+	if status["accessTier"] != "limited" || status["message"] != "Signed in as owner@example.com" {
+		t.Fatalf("status = %v", status)
+	}
+}
+
+func TestFreebuffSignedInReportSurvivesAnUnreachableAccountHost(t *testing.T) {
+	st := freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"owner@example.com"}`)}
+	r := freebuffSignedInReport(context.Background(), &fakeAccount{}, "a1", st)
+	status := r["status"].(map[string]any)
+	if r["state"] != "connected" || status["message"] != "Signed in as owner@example.com" || status["credit"] != nil {
+		t.Fatalf("report = %v", r)
 	}
 }

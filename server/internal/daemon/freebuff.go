@@ -66,6 +66,7 @@ func freebuffLoginKey(runtimeID, accountID string) string { return runtimeID + "
 // is satisfied by *freebuffrt.Client and replaced in tests.
 type freebuffAccount interface {
 	AuthStatus(ctx context.Context) (freebuffrt.AuthStatus, error)
+	AccountSettings(ctx context.Context, section string) (json.RawMessage, error)
 	StartLogin(ctx context.Context) (freebuffrt.LoginStart, error)
 	CancelLogin(ctx context.Context) error
 }
@@ -225,19 +226,78 @@ func freebuffAccountLabel(user json.RawMessage) string {
 // freebuffAccountReport is one account in a report to the server.
 type freebuffAccountReport map[string]any
 
-// freebuffSignedInReport is the report for an account that is signed in.
-func freebuffSignedInReport(accountID string, st freebuffrt.AuthStatus) freebuffAccountReport {
+// freebuffSignedInReport is the report for an account that is signed in. The
+// credit and prices come from the account host; when it cannot be reached the
+// account is still reported as connected, with the sign-in message alone.
+func freebuffSignedInReport(ctx context.Context, client freebuffAccount, accountID string, st freebuffrt.AuthStatus) freebuffAccountReport {
 	label := freebuffAccountLabel(st.User)
 	message := "Signed in to Freebuff"
 	if label != "" {
 		message = "Signed in as " + label
 	}
+	status := map[string]any{"message": message}
+	if raw, err := client.AccountSettings(ctx, "allowance"); err == nil {
+		for k, v := range freebuffAllowanceStatus(raw) {
+			status[k] = v
+		}
+	}
 	return freebuffAccountReport{
 		"id":     accountID,
 		"state":  "connected",
 		"label":  label,
-		"status": map[string]any{"message": message},
+		"status": status,
 	}
+}
+
+// freebuffAllowanceStatus maps the account host's allowance answer onto the
+// status block the UI reads: the day's credit, the wallet, the access tier and
+// the per-model prices.
+func freebuffAllowanceStatus(raw json.RawMessage) map[string]any {
+	var in struct {
+		AccessTier string `json:"accessTier"`
+		Freebucks  struct {
+			Balance *float64 `json:"balance"`
+			Daily   struct {
+				Limit     *float64 `json:"limit"`
+				Spent     *float64 `json:"spent"`
+				Remaining *float64 `json:"remaining"`
+				ResetAt   string   `json:"resetAt"`
+			} `json:"daily"`
+			Wallet struct {
+				Balance *float64 `json:"balance"`
+			} `json:"wallet"`
+			Prices map[string]any `json:"prices"`
+		} `json:"freebucks"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return nil
+	}
+	f := in.Freebucks
+	credit := map[string]any{}
+	set := func(key string, v *float64) {
+		if v != nil {
+			credit[key] = *v
+		}
+	}
+	set("balance", f.Balance)
+	set("dailyLimit", f.Daily.Limit)
+	set("dailySpent", f.Daily.Spent)
+	set("dailyRemaining", f.Daily.Remaining)
+	set("walletBalance", f.Wallet.Balance)
+	if f.Daily.ResetAt != "" {
+		credit["dailyResetAt"] = f.Daily.ResetAt
+	}
+	out := map[string]any{}
+	if len(credit) > 0 {
+		out["credit"] = credit
+	}
+	if len(f.Prices) > 0 {
+		out["prices"] = f.Prices
+	}
+	if in.AccessTier != "" {
+		out["accessTier"] = in.AccessTier
+	}
+	return out
 }
 
 // handleFreebuffLogin signs one account in and reports the URL it produced
@@ -263,7 +323,7 @@ func (d *Daemon) handleFreebuffLogin(ctx context.Context, rt Runtime, accountID 
 
 	// An account that is already signed in needs no login.
 	if st, err := client.AuthStatus(runCtx); err == nil && st.Authed {
-		report(freebuffSignedInReport(accountID, st))
+		report(freebuffSignedInReport(runCtx, client, accountID, st))
 		return
 	}
 
@@ -309,7 +369,7 @@ func (d *Daemon) handleFreebuffLogin(ctx context.Context, rt Runtime, accountID 
 				continue
 			}
 			if st.Authed {
-				report(freebuffSignedInReport(accountID, st))
+				report(freebuffSignedInReport(runCtx, client, accountID, st))
 				// The first account becomes the default right away; the server
 				// confirms it on the next poll.
 				cfg := agent.Config{RuntimeID: rt.ID}
@@ -375,7 +435,7 @@ func (d *Daemon) freebuffAccountEntry(ctx context.Context, rt Runtime, accountID
 			"status": map[string]any{"message": "Not signed in to Freebuff"},
 		}
 	}
-	return freebuffSignedInReport(accountID, st)
+	return freebuffSignedInReport(runCtx, client, accountID, st)
 }
 
 // reportFreebuffEntries delivers a report to the server. complete says the

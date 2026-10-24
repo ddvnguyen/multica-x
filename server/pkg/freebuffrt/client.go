@@ -141,6 +141,16 @@ func (c *Client) AuthStatus(ctx context.Context) (AuthStatus, error) {
 	return st, nil
 }
 
+// AccountSettings reads GET /api/account/settings/<section> (usage,
+// allowance, billing, auto-topup): the account host's answer, relayed as is.
+func (c *Client) AccountSettings(ctx context.Context, section string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/api/account/settings/"+section, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // LoginStart is the answer to starting a browser login.
 type LoginStart struct {
 	URL       string `json:"url"`
