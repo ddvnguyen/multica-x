@@ -1,0 +1,17 @@
+# Host-only plugin row. The browser half is discovered through package.json's
+# `dsh.client` declaration; its host face registers the /multica transport that
+# the island calls, so the row must be mounted for the rail row to do anything.
+- insert:
+    - id: multica-dsh-plugin
+      name: '@multica/dsh-plugin'
+      config:
+        # Where multica-be listens. The island never talks to it directly: the
+        # host half proxies /multica/* and /multica/ws, so the token below stays
+        # in this process and the browser sees one same origin.
+        serverUrl: http://127.0.0.1:8080
+        # Personal access token for the Multica user the panel speaks as.
+        # Leave empty and set MULTICA_DSH_TOKEN in the dsh process instead.
+        token: ''
+        # Workspace the island opens. Empty selects the first workspace the
+        # token can read.
+        workspaceSlug: ''

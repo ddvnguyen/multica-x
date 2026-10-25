@@ -4,6 +4,7 @@ import * as React from "react"
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover"
 
 import { cn } from "@multica/ui/lib/utils"
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container"
 
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
   return <PopoverPrimitive.Root data-slot="popover" {...props} />
@@ -31,8 +32,12 @@ function PopoverContent({
   // popup unmounts the moment focus leaves for the dialog, tearing the dialog
   // down with it.
   Pick<PopoverPrimitive.Portal.Props, "keepMounted">) {
+  const container = usePortalContainer()
   return (
-    <PopoverPrimitive.Portal keepMounted={keepMounted}>
+    <PopoverPrimitive.Portal
+      keepMounted={keepMounted}
+      container={container ?? undefined}
+    >
       <PopoverPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}

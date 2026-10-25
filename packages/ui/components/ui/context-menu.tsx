@@ -4,6 +4,7 @@ import * as React from "react"
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu"
 
 import { cn } from "@multica/ui/lib/utils"
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container"
 import { ChevronRightIcon, CheckIcon } from "lucide-react"
 
 function ContextMenu({ ...props }: ContextMenuPrimitive.Root.Props) {
@@ -11,8 +12,13 @@ function ContextMenu({ ...props }: ContextMenuPrimitive.Root.Props) {
 }
 
 function ContextMenuPortal({ ...props }: ContextMenuPrimitive.Portal.Props) {
+  const container = usePortalContainer()
   return (
-    <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />
+    <ContextMenuPrimitive.Portal
+      data-slot="context-menu-portal"
+      container={container ?? undefined}
+      {...props}
+    />
   )
 }
 
@@ -42,8 +48,9 @@ function ContextMenuContent({
     ContextMenuPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset" | "anchor"
   >) {
+  const container = usePortalContainer()
   return (
-    <ContextMenuPrimitive.Portal>
+    <ContextMenuPrimitive.Portal container={container ?? undefined}>
       <ContextMenuPrimitive.Positioner
         className="isolate z-50 outline-none"
         align={align}
