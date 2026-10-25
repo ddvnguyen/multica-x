@@ -753,7 +753,7 @@ func CheckThinkingLevelWith(loadCatalog func() (Catalog, error), providerType, m
 			// opencode has no single default model, so it accepts a level any
 			// advertised model supports. Providers that instead require a pinned
 			// model never reach here — they were already rejected above.
-			if providerType == "opencode" {
+			if providerType == "opencode" || providerType == "opencode2" {
 				if anyModelSupportsThinkingValue(models, value) {
 					return ThinkingLevelCheck{Valid: true}, nil
 				}
@@ -995,9 +995,10 @@ var thinkingDynamicCatalogProviders = map[string]bool{
 	// Grok advertises each model's effort catalog through session/new, so the
 	// server does not maintain a provider-wide fixed enum. The daemon applies
 	// the selected effort with `--effort`, not session/set_config_option.
-	"grok":     true,
-	"opencode": true,
-	"kimi":     true,
+	"grok":      true,
+	"opencode":  true,
+	"opencode2": true,
+	"kimi":      true,
 }
 
 // acpCatalogThinkingProviders are the ACP runtimes that discover their effort

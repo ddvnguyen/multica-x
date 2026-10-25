@@ -59,6 +59,11 @@ func opencodeUsesV2Contract(cfg Config) bool {
 	if !cfg.BuiltinRuntime {
 		return false
 	}
+	// The opencode2 identity is the 2.x contract by definition; no version
+	// sniff is needed (or trusted) for it.
+	if cfg.Provider == "opencode2" {
+		return true
+	}
 	// parseSemver scans for a semver token anywhere in the string, which is what
 	// this needs: 2.x reports `opencode v2.0.10` where 1.x reports a bare
 	// `1.18.31`, and extractVersionLine keeps whichever whole line it matched.

@@ -12,7 +12,7 @@ import (
 // gateOpenCodeResumeToSaneClock returns the retired pointer before changing
 // either prompt carrier. Callers must persist it even if fresh launch fails.
 func gateOpenCodeResumeToSaneClock(ctx context.Context, task *Task, taskCtx *execenv.TaskContextForEnv, provider string, cfg agent.Config, cwd string, mcpConfig []byte, taskLog *slog.Logger) string {
-	if provider != "opencode" || task.PriorSessionID == "" {
+	if (provider != "opencode" && provider != "opencode2") || task.PriorSessionID == "" {
 		return ""
 	}
 	var customArgs []string

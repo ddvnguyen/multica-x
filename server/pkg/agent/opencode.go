@@ -47,9 +47,9 @@ type opencodeBackend struct {
 	// session is per-run state, set by Execute on the copy it scans with, so
 	// the cancellation handler can interrupt the session server-side. It is nil
 	// on the Backend New returns and on any backend built directly by a test.
-	session        *opencodeSessionTracker
+	session           *opencodeSessionTracker
 	defaultExecutable string
-	providerLabel      string
+	providerLabel     string
 }
 
 // opencodeSeparatesReasoning recognizes the released OpenCode 1.x wire contract.
@@ -68,6 +68,15 @@ func opencodeSeparatesReasoning(cfg Config) bool {
 	}
 	version, err := parseSemver(raw)
 	return err == nil && version.Major == 1 && !version.lessThan(semver{Major: 1, Minor: 3, Patch: 16})
+}
+
+// opencodeDefaultExecutable is the binary name used when cfg carries no explicit
+// path, for callers that have a Config but no backend.
+func opencodeDefaultExecutable(cfg Config) string {
+	if cfg.Provider == "opencode2" {
+		return "opencode2"
+	}
+	return "opencode"
 }
 
 func resolveOpenCodeExecutable(cfg Config, fallback string) (string, error) {
@@ -215,7 +224,7 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	runtimeCmd := b.cfg.commandAt(execPath)
 	// run carries this invocation's session id. Execute scans with it instead of
 	// b so two runs sharing a Backend value cannot observe each other's session.
-	run := &opencodeBackend{cfg: b.cfg, session: &opencodeSessionTracker{}}
+	run := &opencodeBackend{cfg: b.cfg, session: &opencodeSessionTracker{}, defaultExecutable: b.defaultExecutable}
 	cmd := runtimeCmd.exec(runCtx, args...)
 	hideAgentWindow(cmd)
 	// Take over context cancellation. The default kills the whole group the

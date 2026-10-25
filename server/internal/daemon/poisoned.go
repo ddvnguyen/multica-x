@@ -47,7 +47,7 @@ const (
 )
 
 func classifyOpenCodeClockSkew(provider, errMsg string) (string, bool) {
-	if provider == "opencode" && strings.HasPrefix(errMsg, agent.ErrOpenCodeClockSkew.Error()) {
+	if (provider == "opencode" || provider == "opencode2") && strings.HasPrefix(errMsg, agent.ErrOpenCodeClockSkew.Error()) {
 		return FailureReasonOpenCodeClockSkew, true
 	}
 	return "", false

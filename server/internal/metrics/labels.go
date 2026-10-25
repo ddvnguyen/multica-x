@@ -167,6 +167,7 @@ var (
 		"multica_agent": "multica_agent",
 		"openclaw":      "openclaw",
 		"opencode":      "opencode",
+		"opencode2":     "opencode2",
 		"deveco":        "deveco",
 		"pi":            "pi",
 		"qoder":         "qoder",

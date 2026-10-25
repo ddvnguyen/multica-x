@@ -335,6 +335,10 @@ type Config struct {
 	// vendor's binary; it defaults to false so an unset caller fails
 	// closed onto standard behavior.
 	BuiltinRuntime bool
+	// Provider is the runtime identity the daemon resolved this backend for
+	// (e.g. "opencode2"). Backends use it where the identity, not a version
+	// sniff, pins a contract. Empty for callers that only know the family.
+	Provider string
 	// provider is the runtime/provider identity used in safe launch logs. New
 	// fills it from the protocol family; NewRuntime preserves the concrete
 	// built-in runtime identity instead (for example omp rather than pi).
@@ -430,6 +434,7 @@ var resumeRejectionUndetectable = map[string]bool{
 	"cursor":      true,
 	"deveco":      true,
 	"opencode":    true,
+	"opencode2":   true,
 	"codearts":    true,
 }
 
@@ -465,7 +470,7 @@ func New(agentType string, cfg Config) (Backend, error) {
 	case "copilot":
 		return &copilotBackend{cfg: cfg}, nil
 	case "opencode":
-		return &opencodeBackend{cfg: cfg}, nil
+		return &opencodeBackend{cfg: cfg, defaultExecutable: "opencode", providerLabel: "opencode"}, nil
 	case "codearts":
 		return newCodeArtsBackend(cfg)
 	case "deveco":

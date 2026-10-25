@@ -157,6 +157,14 @@ func (b *piBackend) applyBuiltinRuntimeOverrides(desc BuiltinRuntime) {
 	b.providerLabel = desc.ProviderLabel
 }
 
+// opencodeBackend carries the descriptor's executable and label the same way,
+// and records the identity so the 2.x contract is pinned by it.
+func (b *opencodeBackend) applyBuiltinRuntimeOverrides(desc BuiltinRuntime) {
+	b.defaultExecutable = desc.DefaultExecutable
+	b.providerLabel = desc.ProviderLabel
+	b.cfg.Provider = desc.ID
+}
+
 // ResolveBackend is the single production entry point the daemon uses to
 // construct a backend from a provider key. It routes built-in runtime
 // identities (e.g. "omp") through NewRuntime, and protocol families (e.g.
