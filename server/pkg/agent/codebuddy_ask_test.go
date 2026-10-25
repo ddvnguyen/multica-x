@@ -271,7 +271,7 @@ func TestCodebuddyHandleControlRequestDoesNotBlockOnAsk(t *testing.T) {
 	}
 
 	b := &codebuddyBackend{cfg: Config{Logger: slog.Default()}}
-	var written bytes.Buffer
+	var written syncBuffer
 	stdin := &codebuddyStdin{w: &written}
 
 	done := make(chan struct{})
@@ -287,16 +287,16 @@ func TestCodebuddyHandleControlRequestDoesNotBlockOnAsk(t *testing.T) {
 	}
 
 	// No response yet: the question is still open.
-	if written.Len() != 0 {
+	if written.String() != "" {
 		t.Fatalf("expected no response while the ask is open, got %q", written.String())
 	}
 
 	close(asker.release)
 	deadline := time.Now().Add(2 * time.Second)
-	for written.Len() == 0 && time.Now().Before(deadline) {
+	for written.String() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if written.Len() == 0 {
+	if written.String() == "" {
 		t.Fatal("expected an answer once the asker returned")
 	}
 }
