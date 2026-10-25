@@ -37,27 +37,13 @@ func TestFreebuffRealSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer StopFreebuffOrchestrators()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	// Two tasks in a row must share one orchestrator, hence one session.
-	var pids []int
+	// A second task starts a fresh orchestrator while the account's hour is
+	// still held by the first thread; it must take that hour, not fail.
 	for i := 0; i < 2; i++ {
 		smokeTurn(t, ctx, backend)
-		pids = append(pids, pooledPID(dir))
 	}
-	if pids[0] == 0 || pids[0] != pids[1] {
-		t.Fatalf("second task did not reuse the orchestrator: pids %v", pids)
-	}
-}
-
-func pooledPID(dir string) int {
-	sharedFreebuffPool.mu.Lock()
-	defer sharedFreebuffPool.mu.Unlock()
-	if e := sharedFreebuffPool.entries[dir]; e != nil && e.orch != nil && e.orch.cmd != nil && e.orch.cmd.Process != nil {
-		return e.orch.cmd.Process.Pid
-	}
-	return 0
 }
 
 func smokeTurn(t *testing.T, ctx context.Context, backend Backend) {

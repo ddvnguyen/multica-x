@@ -112,7 +112,6 @@ func RemoveFreebuffAccount(cfg Config, accountID string) error {
 	if err != nil {
 		return err
 	}
-	EvictFreebuffOrchestrator(dir)
 	return os.RemoveAll(dir)
 }
 

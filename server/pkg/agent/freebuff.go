@@ -22,9 +22,11 @@ import (
 // HTTP/SSE API. The Freebuff CLI is a TUI with no machine interface, so the
 // orchestrator is the reusable core; this file only wraps it.
 //
-// Tasks on one account share an orchestrator process (see freebuff_pool.go),
-// which outlives them for a while so they ride one hosted-model session. Its
-// state directory (the profile) holds the account login and the threads, so a
+// One orchestrator process is started per task and torn down with it, because
+// the terminal tool it runs inherits that task's environment (credentials,
+// task id), which a shared process could not carry. A hosted-model hour opened
+// by an earlier task is moved to the new thread rather than bought again (see
+// run). Its state directory (the profile) holds the account login and the threads, so a
 // profile is an account, and ResumeSessionID is an orchestrator thread id.
 type freebuffBackend struct {
 	cfg Config
@@ -58,27 +60,27 @@ type FreebuffOrchestrator struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
-	// turn serialises turns on this orchestrator: the account's hosted-model
-	// hour is held by one thread at a time, and a second thread taking it
-	// would end the first one's session. Nil means no limit.
-	turn chan struct{}
 }
 
-// lockTurn waits for this orchestrator's turn and returns the func that hands
-// it on.
-func (o *FreebuffOrchestrator) lockTurn(ctx context.Context) (func(), error) {
-	if o.turn == nil {
-		return func() {}, nil
-	}
+// freebuffTurnLocks serialises turns per account profile. The account's
+// hosted-model hour is held by one thread at a time, and a second thread taking
+// it (see run) would end the first one's session, so tasks on one account
+// take turns.
+var freebuffTurnLocks sync.Map // profileDir -> chan struct{}
+
+func lockFreebuffTurn(ctx context.Context, profileDir string) (func(), error) {
+	v, _ := freebuffTurnLocks.LoadOrStore(profileDir, make(chan struct{}, 1))
+	ch := v.(chan struct{})
 	select {
-	case o.turn <- struct{}{}:
-		return func() { <-o.turn }, nil
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// Stop terminates the orchestrator and its process group. Safe to call twice.
+// Stop shuts the orchestrator down gracefully so Freebuff releases the
+// account's session slot, and kills its process group if it lingers.
 func (o *FreebuffOrchestrator) Stop() {
 	o.once.Do(func() {
 		o.cancel()
@@ -201,7 +203,7 @@ func StartFreebuffOrchestrator(ctx context.Context, cfg Config, profileDir strin
 		return nil, fmt.Errorf("start freebuff orchestrator: %w", err)
 	}
 
-	o := &FreebuffOrchestrator{cmd: cmd, cancel: cancel, done: make(chan struct{}), turn: make(chan struct{}, 1)}
+	o := &FreebuffOrchestrator{cmd: cmd, cancel: cancel, done: make(chan struct{})}
 	readyCh := make(chan freebuffrt.Ready, 1)
 	go func() {
 		sc := bufio.NewScanner(stdout)
@@ -263,19 +265,20 @@ func (b *freebuffBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	}
 
 	runCtx, cancel := runContext(ctx, opts.Timeout)
-	var (
-		orch    *FreebuffOrchestrator
-		release func()
-	)
-	if b.start != nil {
-		orch, err = b.start(runCtx, b.cfg, profileDir)
-		if orch != nil {
-			release = orch.Stop
-		}
-	} else {
-		orch, release, err = AcquireFreebuffOrchestrator(runCtx, b.cfg, profileDir)
-	}
+	// The profile admits one orchestrator at a time, so a task on a busy
+	// account waits here for the previous one to be fully stopped.
+	unlock, err := lockFreebuffTurn(runCtx, profileDir)
 	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("waiting for another task on this Freebuff account: %w", err)
+	}
+	start := b.start
+	if start == nil {
+		start = StartFreebuffOrchestrator
+	}
+	orch, err := start(runCtx, b.cfg, profileDir)
+	if err != nil {
+		unlock()
 		cancel()
 		return nil, err
 	}
@@ -284,20 +287,13 @@ func (b *freebuffBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	resCh := make(chan Result, 1)
 	go func() {
 		defer cancel()
-		defer release()
 		started := time.Now()
-		var res Result
-		if unlock, err := orch.lockTurn(runCtx); err != nil {
-			status := "cancelled"
-			if errors.Is(err, context.DeadlineExceeded) {
-				status = "timeout"
-			}
-			res = Result{Status: status, Error: "waiting for another task on this Freebuff account: " + err.Error()}
-		} else {
-			res = b.run(runCtx, orch.Client, prompt, opts, msgCh)
-			unlock()
-		}
+		res := b.run(runCtx, orch.Client, prompt, opts, msgCh)
 		res.DurationMs = time.Since(started).Milliseconds()
+		// Stop before reporting: the next task on this account may start
+		// the moment this one is reported finished.
+		orch.Stop()
+		unlock()
 		close(msgCh)
 		resCh <- res
 		close(resCh)

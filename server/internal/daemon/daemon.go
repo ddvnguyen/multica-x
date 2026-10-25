@@ -2066,9 +2066,6 @@ func (d *Daemon) RunWithHealthListener(ctx context.Context, healthLn net.Listene
 
 func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	var err error
-	// Pooled Freebuff orchestrators must stop gracefully so the account's
-	// session slot is released; the daemon is their only owner.
-	defer agent.StopFreebuffOrchestrators()
 	// Wrap context so handleUpdate can cancel the daemon for restart.
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancelFunc = cancel
