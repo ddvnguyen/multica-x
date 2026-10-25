@@ -28,6 +28,8 @@ const MCP_SUPPORTED_PROVIDERS = new Set([
   "traecli",
   "dim",
   "omp",
+  // "opencode2" is deliberately absent: 2.x refuses Multica-managed MCP
+  // (ErrOpenCodeV2MCPUnsupported), so the MCP tab must stay hidden for it.
 ]);
 
 export function providerSupportsMcpConfig(provider: string | undefined | null): boolean {
