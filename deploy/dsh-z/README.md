@@ -15,6 +15,12 @@ kills any process by PID (per the lane safety rule, compare with
 `moct-backend`), and makes only additive changes on the shared Postgres
 cluster (its own role and database, nothing else).
 
+The Go server itself has no loopback default (it listens on `*:PORT` unless
+told otherwise), so the deploy writes `MULTICA_BIND_HOST=$MULTICA_BE_Z_BIND_HOST`
+into the server env file; with the committed default `127.0.0.1`, multica-be z
+ends up bound to `127.0.0.1:$MULTICA_BE_Z_PORT` — verify with
+`ss -ltnp | grep 4390` after a rerun.
+
 ## Topology
 
 | Piece | What runs | Port | Where |
