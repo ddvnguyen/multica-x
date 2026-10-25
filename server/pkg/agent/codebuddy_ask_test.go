@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,6 +24,28 @@ type stubAsker struct {
 	got     AskRequest
 	calls   int
 	release chan struct{} // when non-nil, Ask blocks until it is closed
+}
+
+// lockedWriteBuffer is a bytes.Buffer that can be read while another goroutine
+// writes to it. The stdin wrapper serializes writers, but a test that inspects
+// the buffer from its own goroutine is a second reader the race detector is
+// right to flag. It is separate from syncBuffer in openclaw_stdout_test.go
+// because that file is !windows and this test runs everywhere.
+type lockedWriteBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedWriteBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedWriteBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (s *stubAsker) Ask(ctx context.Context, req AskRequest) (AskAnswer, error) {
@@ -271,7 +294,7 @@ func TestCodebuddyHandleControlRequestDoesNotBlockOnAsk(t *testing.T) {
 	}
 
 	b := &codebuddyBackend{cfg: Config{Logger: slog.Default()}}
-	var written syncBuffer
+	var written lockedWriteBuffer
 	stdin := &codebuddyStdin{w: &written}
 
 	done := make(chan struct{})
