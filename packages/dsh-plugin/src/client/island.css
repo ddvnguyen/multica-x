@@ -1,0 +1,59 @@
+/*
+ * The island's stylesheet.
+ *
+ * It is compiled to a single string, injected into the island's shadow root,
+ * and never reaches the shell's document — that is the whole isolation story
+ * for CSS. `:root` therefore means "the shadow host": the build-time rewrite in
+ * `scripts/wrap-client.mjs` turns every `:root` selector into `:host`, which is
+ * how the fork's design tokens land on the island instead of on dsh.
+ *
+ * This is the only file under this package that may reach the fork for styling,
+ * and only through the fork's public `@multica/ui/styles/*` exports; the
+ * provenance gate enforces that alongside the JS rule in `src/fork.ts`.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@multica/ui/styles/tokens.css";
+@import "@multica/ui/styles/base.css";
+
+@source "../../../ui";
+@source "../../../views";
+@source "../../../core";
+@source "./";
+
+@custom-variant dark (&:is(.dark *));
+
+/* The shell supplies no font stack of its own to a shadow tree. */
+:root {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.multica-island-surface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--app-shell);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.5;
+}
+
+.multica-island-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* Overlay seat: one stacking context above the page the island renders, still
+ * inside the shadow root so portaled popups keep their styles. */
+.multica-island-portals {
+  position: relative;
+  z-index: 60;
+}

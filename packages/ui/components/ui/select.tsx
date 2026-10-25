@@ -4,6 +4,7 @@ import * as React from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select"
 
 import { cn } from "@multica/ui/lib/utils"
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
 type SelectProps<
@@ -85,8 +86,9 @@ function SelectContent({
     SelectPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset" | "alignItemWithTrigger"
   >) {
+  const container = usePortalContainer()
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={container ?? undefined}>
       <SelectPrimitive.Positioner
         side={side}
         sideOffset={sideOffset}
