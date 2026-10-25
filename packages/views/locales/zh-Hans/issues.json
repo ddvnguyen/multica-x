@@ -1380,6 +1380,15 @@
     "section_title": "重复项",
     "unmark_toast": "已重新打开为待办"
   },
+  "questions": {
+    "section_title": "等待你回答",
+    "expires_at": "{{time}} 过期",
+    "multi_select_hint": "可选择多个",
+    "other_placeholder": "或输入回答",
+    "submit": "回答",
+    "answered_toast": "回答已发送",
+    "answer_failed": "回答发送失败"
+  },
   "pr_automation": {
     "link_action": "关联 PR",
     "link_placeholder": "粘贴 PR 链接",

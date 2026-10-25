@@ -71,6 +71,12 @@ const (
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
+	// DaemonCapabilityQuestionsV1 advertises that this run can park a provider
+	// tool call on a question and resume it with the answer. Negotiated per
+	// run, not persisted: the daemon consumes the answer while building this
+	// run's exec options, so nothing later needs to remember it. Absence means
+	// the backend keeps its ask tool disabled, which is today's behaviour.
+	DaemonCapabilityQuestionsV1 = "questions-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"

@@ -4173,6 +4173,7 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	enableTaskSupplement := slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1)
+	enableQuestions := slices.Contains(req.Capabilities, protocol.DaemonCapabilityQuestionsV1)
 	var task *db.AgentTaskQueue
 	var err error
 	legacy := req.RuntimeID == "" && req.DispatchedAt == ""
@@ -4221,6 +4222,12 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
 			slog.Warn("start task: failed to load negotiated supplement capability", "task_id", taskID, "error", capabilityErr)
 		}
+	}
+	// Question channel: echo the offer back. Unlike supplements this is not
+	// persisted — the daemon only needs the answer while it builds this run's
+	// exec options, and a run whose daemon restarts is already over.
+	if enableQuestions {
+		resp.QuestionCapability = protocol.DaemonCapabilityQuestionsV1
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -4448,6 +4455,8 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
 		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
 	}
+	// A completed run can never consume an answer.
+	h.expireQuestionsForTask(r.Context(), task.ID)
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -5111,6 +5120,8 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
 		slog.Warn("fail task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
 	}
+	// A failed run can never consume an answer.
+	h.expireQuestionsForTask(r.Context(), task.ID)
 
 	slog.Info("task failed", "task_id", taskID, "agent_id", uuidToString(task.AgentID), "task_error", req.Error, "failure_reason", req.FailureReason)
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -5555,6 +5566,9 @@ func (h *Handler) CancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("task cancelled by user", "task_id", taskID, "issue_id", uuidToString(task.IssueID))
+	// The daemon is still holding the tool call at this point; expiring here
+	// means its next poll returns "expired" instead of waiting for the TTL.
+	h.expireQuestionsForTask(r.Context(), task.ID)
 	resp := taskToResponse(*task, workspaceID)
 	// Keep this issue-scoped surface consistent with the list endpoints so a
 	// cancelled row keeps its resolved "on behalf of" name in the UI.

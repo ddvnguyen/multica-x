@@ -477,8 +477,17 @@ const (
 
 var errStartClaimRejected = errors.New("task start claim rejected")
 
-func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (bool, error) {
-	var negotiated bool
+// TaskStartCapabilities is what the server committed to for this run. The
+// daemon must use this rather than its own offer: an old server ignores an
+// unknown capability and omits the echo, which keeps a daemon-first rollout
+// fail closed without requiring a synchronized deployment.
+type TaskStartCapabilities struct {
+	TaskSupplement bool
+	Questions      bool
+}
+
+func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (TaskStartCapabilities, error) {
+	var negotiated TaskStartCapabilities
 	var decodeResponse responseDecoder = func(r io.Reader) error {
 		data, err := io.ReadAll(io.LimitReader(r, maxStartTaskResponseBytes+1))
 		if err != nil {
@@ -489,6 +498,7 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		}
 		var response struct {
 			SupplementCapability string `json:"supplement_capability"`
+			QuestionCapability   string `json:"question_capability"`
 		}
 		// Empty acknowledgements start the task without negotiating supplements.
 		// Invalid JSON fails without retrying; transport read failures can retry.
@@ -497,17 +507,23 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 				return fmt.Errorf("%w: task start: %w", errInvalidResponseBody, err)
 			}
 		}
-		negotiated = response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1
+		negotiated = TaskStartCapabilities{
+			TaskSupplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
+			Questions:      response.QuestionCapability == protocol.DaemonCapabilityQuestionsV1,
+		}
 		return nil
 	}
 	path := fmt.Sprintf("/api/daemon/tasks/%s/start", task.ID)
 	if !task.StartClaimSupported {
 		// Old servers have no safe replay contract. Preserve one attempt.
 		err := c.postJSON(ctx, path, map[string]any{"capabilities": capabilities}, decodeResponse)
-		return err == nil && negotiated, err
+		if err != nil {
+			return TaskStartCapabilities{}, err
+		}
+		return negotiated, nil
 	}
 	if task.RuntimeID == "" || task.DispatchedAt == "" {
-		return false, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
+		return TaskStartCapabilities{}, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
 	}
 	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
 	defer cancel()
@@ -518,9 +534,12 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 	}, decodeResponse, startTaskRetrySchedule)
 	var reqErr *requestError
 	if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusConflict {
-		return false, fmt.Errorf("%w: %w", errStartClaimRejected, err)
+		return TaskStartCapabilities{}, fmt.Errorf("%w: %w", errStartClaimRejected, err)
 	}
-	return err == nil && negotiated, err
+	if err != nil {
+		return TaskStartCapabilities{}, err
+	}
+	return negotiated, nil
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the

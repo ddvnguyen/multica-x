@@ -31,6 +31,22 @@ export function issueTasksOptions(issueId: string) {
   });
 }
 
+/**
+ * Open questions on an issue (M-81). Only open ones are fetched: the section
+ * renders nothing when this is empty, and a settled question is not a call to
+ * action. A short staleTime keeps a remount from re-asking immediately while
+ * still picking up an answer made from another tab or the CLI.
+ */
+export function issueOpenQuestionsOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.questions(issueId),
+    queryFn: () => api.listIssueQuestions(issueId, "open"),
+    enabled: !!issueId,
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
 export interface IssueSortParam {
   sort_by?: ListIssuesParams["sort_by"];
   sort_direction?: ListIssuesParams["sort_direction"];
@@ -193,6 +209,10 @@ export const issueKeys = {
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
+  questionsAll: () => ["issues", "questions"] as const,
+  /** Per-issue open questions (issue-detail question card, M-81). */
+  questions: (issueId: string) =>
+    [...issueKeys.questionsAll(), issueId] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };

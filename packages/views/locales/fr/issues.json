@@ -1426,6 +1426,15 @@
     "section_title": "Doublons",
     "unmark_toast": "Rouverte en À faire"
   },
+  "questions": {
+    "section_title": "En attente de votre réponse",
+    "expires_at": "Expire à {{time}}",
+    "multi_select_hint": "Sélectionnez tout ce qui s'applique",
+    "other_placeholder": "Ou saisissez une réponse",
+    "submit": "Répondre",
+    "answered_toast": "Réponse envoyée",
+    "answer_failed": "Impossible d'envoyer la réponse"
+  },
   "pr_automation": {
     "link_action": "Lier une pull request",
     "link_placeholder": "Collez l’URL de la pull request",

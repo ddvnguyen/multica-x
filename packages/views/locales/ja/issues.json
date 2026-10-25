@@ -1380,6 +1380,15 @@
     "section_title": "重複",
     "unmark_toast": "未着手として再開しました"
   },
+  "questions": {
+    "section_title": "あなたの回答待ち",
+    "expires_at": "{{time}} に期限切れ",
+    "multi_select_hint": "該当するものをすべて選択",
+    "other_placeholder": "または回答を入力",
+    "submit": "回答",
+    "answered_toast": "回答を送信しました",
+    "answer_failed": "回答を送信できませんでした"
+  },
   "pr_automation": {
     "link_action": "PR を関連付け",
     "link_placeholder": "PR の URL を貼り付け",

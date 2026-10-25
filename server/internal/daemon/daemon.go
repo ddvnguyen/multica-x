@@ -8414,11 +8414,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if supplementSupported {
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityTaskSupplementV1)
 	}
-	taskSupplementNegotiated, err := d.client.StartTask(prepareCtx, task, taskCapabilities...)
+	// The question channel needs the server's endpoints, and the backend only
+	// offers the ask tool when a channel exists. Offering it is what makes the
+	// server echo it back; an older server ignores the unknown capability and
+	// the run keeps today's behaviour (AskUserQuestion disallowed).
+	if agent.SupportsAsk(provider) {
+		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityQuestionsV1)
+	}
+	startCapabilities, err := d.client.StartTask(prepareCtx, task, taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
 	}
+	taskSupplementNegotiated := startCapabilities.TaskSupplement
 	if taskSupplementNegotiated {
 		// Register before provider launch so a hint cannot arrive in the gap
 		// between the committed server transition and turn/started. The row is
@@ -8684,8 +8692,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	// The ask channel exists only when the server echoed the capability. A
+	// backend without it keeps its ask tool disabled, so a daemon paired with
+	// a server that has no question endpoints behaves exactly as before.
+	var askChannel agent.Asker
+	if startCapabilities.Questions {
+		askChannel = newQuestionChannel(d.client, task.ID, taskLog)
+	}
 	execOpts := agent.ExecOptions{
 		EnableTaskSupplement:       taskSupplementNegotiated,
+		Ask:                        askChannel,
 		CursorHookCommand:          cursorHookCommand,
 		Cwd:                        env.WorkDir,
 		Model:                      model,
