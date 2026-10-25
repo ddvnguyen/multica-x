@@ -1,0 +1,18 @@
+[Unit]
+Description=multica lane-z daemon — profile z, pointed at multica-be z
+After=network.target multica-be-z.service
+
+[Service]
+Type=simple
+# HOME is the lane home: profile state lives in $LANE_HOME/.multica/profiles/z
+# and the dsh runtime profile in $LANE_HOME/.dsh/profiles/multica.
+Environment=HOME=__LANE_HOME__
+Environment=PATH=/home/ddv/.local/bin:/home/ddv/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__RELEASE_DIR__/current/bin/multica --profile z daemon start --foreground
+EnvironmentFile=__DAEMON_ENV__
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
