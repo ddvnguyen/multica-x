@@ -97,6 +97,19 @@ var BuiltinRuntimes = []BuiltinRuntime{
 		ProviderLabel:     "omp",
 		ModelDiscovery:    discoverOmpModels,
 	},
+	{
+		ID:                "opencode2",
+		ProtocolFamily:    "opencode",
+		DefaultCommand:    "opencode2",
+		EnvPrefix:         "MULTICA_OPENCODE2",
+		DisplayName:       "OpenCode 2",
+		SkillsDir:         ".opencode/skills",
+		UserSkillsDir:     "~/.config/opencode/skills",
+		LaunchHeader:      "opencode2 (json mode)",
+		DefaultExecutable: "opencode2",
+		ProviderLabel:     "opencode2",
+		ModelDiscovery:    discoverOpenCode2Models,
+	},
 }
 
 // BuiltinRuntimeByID returns the descriptor for the given runtime identity,

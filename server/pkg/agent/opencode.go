@@ -47,7 +47,9 @@ type opencodeBackend struct {
 	// session is per-run state, set by Execute on the copy it scans with, so
 	// the cancellation handler can interrupt the session server-side. It is nil
 	// on the Backend New returns and on any backend built directly by a test.
-	session *opencodeSessionTracker
+	session        *opencodeSessionTracker
+	defaultExecutable string
+	providerLabel      string
 }
 
 // opencodeSeparatesReasoning recognizes the released OpenCode 1.x wire contract.
@@ -68,10 +70,10 @@ func opencodeSeparatesReasoning(cfg Config) bool {
 	return err == nil && version.Major == 1 && !version.lessThan(semver{Major: 1, Minor: 3, Patch: 16})
 }
 
-func resolveOpenCodeExecutable(cfg Config) (string, error) {
+func resolveOpenCodeExecutable(cfg Config, fallback string) (string, error) {
 	execPath := cfg.ExecutablePath
 	if execPath == "" {
-		execPath = "opencode"
+		execPath = fallback
 	}
 	resolved, err := exec.LookPath(execPath)
 	if err != nil {
@@ -139,7 +141,7 @@ func openCodeEnvironment(cfg Config, opts ExecOptions) ([]string, error) {
 }
 
 func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	execPath, err := resolveOpenCodeExecutable(b.cfg)
+	execPath, err := resolveOpenCodeExecutable(b.cfg, b.defaultExecutable)
 	if err != nil {
 		return nil, err
 	}

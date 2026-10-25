@@ -41,7 +41,7 @@ func CheckOpenCodeResumeClock(ctx context.Context, cfg Config, opts ExecOptions)
 	if opts.ResumeSessionID == "" || strings.HasPrefix(opts.ResumeSessionID, "-") {
 		return errOpenCodeClockExport
 	}
-	execPath, err := resolveOpenCodeExecutable(cfg)
+	execPath, err := resolveOpenCodeExecutable(cfg, "opencode")
 	if err != nil {
 		return err
 	}

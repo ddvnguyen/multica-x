@@ -829,6 +829,62 @@ func discoverOpenCodeModels(ctx context.Context, runtimeCmd Command) ([]Model, e
 	return models, nil
 }
 
+// discoverOpenCode2Models discovers models for the OpenCode 2.x runtime identity.
+// It reuses the same discovery as discoverOpenCodeModels but defaults to the
+// opencode2 binary (the 2.x standalone contract is already handled inside
+// discoverOpenCodeModels via the resolved runtimeCmd).
+func discoverOpenCode2Models(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if runtimeCmd.Path == "" {
+		runtimeCmd.Path = "opencode2"
+	}
+	if _, err := exec.LookPath(runtimeCmd.Path); err != nil {
+		return []Model{}, nil
+	}
+	// Newer opencode (1.15+) syncs its hosted free-model catalog over the
+	// network on `opencode models`, which can take ~6s; the previous 5s cap
+	// timed out and returned an empty list, so the runtime showed online but
+	// the model picker was empty. See multica-ai/multica#3627.
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	version, _ := detectCLIVersion(runCtx, runtimeCmd)
+	parsed, versionErr := parseSemver(version)
+	var models []Model
+	if versionErr == nil && parsed.Major >= 2 {
+		// Use a private server so profile environment and cwd are inherited and
+		// discovery does not start a resident service. An explicitly selected
+		// server in the runtime prefix must still win.
+		if directory, err := os.Getwd(); err == nil {
+			query := url.Values{"location[directory]": {directory}}
+			args := []string{"api", "GET", "/api/model?" + query.Encode()}
+			server, standalone := opencodeConnectionFromArgs(runtimeCmd.Prefix)
+			if server == "" && !standalone {
+				args = append(args, "--standalone")
+			}
+			cmd := runtimeCmd.exec(runCtx, args...)
+			hideAgentWindow(cmd)
+			if out, err := outputOwned(cmd, runtimeCmd.logger); err == nil {
+				models = parseOpenCodeV2Models(out)
+			}
+		}
+	} else {
+		cmd := runtimeCmd.exec(runCtx, "models", "--verbose")
+		hideAgentWindow(cmd)
+		// A stale config can produce a non-zero exit with a usable catalog.
+		out, _ := outputOwned(cmd, runtimeCmd.logger)
+		models = parseOpenCodeModels(string(out))
+	}
+	if len(models) == 0 {
+		cmd := runtimeCmd.exec(runCtx, "models")
+		hideAgentWindow(cmd)
+		out, _ := outputOwned(cmd, runtimeCmd.logger)
+		models = parseOpenCodeModels(string(out))
+	}
+	if len(models) == 0 {
+		return []Model{}, nil
+	}
+	return models, nil
+}
+
 // OpenCode 2.x GET /api/model returns Location.response(Model.Info[]): an
 // envelope, with variants represented as an array of {id, settings, body, ...}.
 // Unlike 1.x, there is no reasoning boolean or advertised default variant.
