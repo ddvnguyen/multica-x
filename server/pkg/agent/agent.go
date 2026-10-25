@@ -138,6 +138,11 @@ type ExecOptions struct {
 	// EnableTaskSupplement, to accept additional messages; other providers
 	// ignore it.
 	CursorHookCommand []string
+	// Ask, when non-nil, lets the backend park a tool call that needs a human
+	// decision and resume it with the answer. Nil means "no answer channel",
+	// and a backend must then keep its ask tool disabled rather than block.
+	// Currently honoured by the codebuddy backend (which also serves freebuff).
+	Ask Asker
 	// piMcpExtensionPath is set by piBackend.Execute after it writes the
 	// temporary MCP extension. The daemon does not fill it.
 	piMcpExtensionPath string

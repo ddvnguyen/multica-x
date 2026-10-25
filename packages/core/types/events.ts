@@ -7,6 +7,7 @@ import type { TimelineEntry } from "./activity";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
 import type { Label } from "./label";
+import type { Question } from "./question";
 
 // WebSocket event types (matching Go server protocol/events.go)
 export type WSEventType =
@@ -77,6 +78,9 @@ export type WSEventType =
   | "issue_metadata:changed"
   | "issue_properties:changed"
   | "property:created"
+  | "question:created"
+  | "question:answered"
+  | "question:expired"
   | "property:updated"
   | "issue_status:changed"
   | "issue_workflow:changed"
@@ -149,6 +153,17 @@ export interface IssuePropertiesChangedPayload {
   issue_id: string;
   properties: IssuePropertyValues;
   issue_revision?: number;
+}
+
+/**
+ * A structured question was created, answered or expired (M-81). One payload
+ * for all three because the client's only response is the same: re-read the
+ * issue's open questions. Carrying the record would mean merging a row this
+ * client may never have seen, and the list is a handful of rows at most.
+ */
+export interface QuestionChangedPayload {
+  issue_id: string;
+  question?: Question;
 }
 
 export interface PropertyChangedPayload {

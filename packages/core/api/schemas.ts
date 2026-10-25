@@ -2143,6 +2143,36 @@ export const AgentActivityBucketListSchema = z.array(z.object({
 
 export const AgentTaskListSchema = z.array(AgentTaskSchema);
 
+// Structured agent questions (M-81). Options and status are the only fields the
+// card's behaviour depends on, so they are the only ones required: a question
+// missing its header still renders as its prompt, while an unparsed row would
+// hide a decision the run is waiting on.
+export const QuestionSchema = z.object({
+  id: z.string(),
+  group_id: z.string(),
+  issue_id: z.string().optional(),
+  task_id: z.string().optional(),
+  tool_call_id: z.string().optional(),
+  asked_by_agent_id: z.string().optional(),
+  addressee_type: z.enum(["member", "agent"]).optional(),
+  addressee_id: z.string().optional(),
+  header: z.string().default(""),
+  prompt: z.string(),
+  options: z
+    .array(z.object({ label: z.string(), description: z.string().optional() }).loose())
+    .default([]),
+  multi_select: z.boolean().default(false),
+  status: z.enum(["open", "answered", "expired"]),
+  answer: z.string().optional(),
+  answered_by_type: z.enum(["member", "agent"]).optional(),
+  answered_by_id: z.string().optional(),
+  answered_at: z.string().optional(),
+  expires_at: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const QuestionListSchema = z.array(QuestionSchema);
+
 export const AgentTaskPageSchema = z.object({
   tasks: AgentTaskListSchema,
   nextCursor: z.string().min(1).nullable(),

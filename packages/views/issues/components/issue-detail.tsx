@@ -14,6 +14,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
+import { OpenQuestionsSection } from "./open-questions-section";
 import {
   Archive,
   Calendar,
@@ -2908,6 +2909,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       )}
 
       <IssueDuplicatesSection issueId={issue.id} />
+
+      {/* Open questions — a run is parked on a decision, so this sits high in
+          the sidebar and disappears once answered. */}
+      <OpenQuestionsSection issueId={issue.id} />
 
       {/* Pull requests — hidden when the workspace disables the PR sidebar
           (or the GitHub master switch is off). Backend data is kept either

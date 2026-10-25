@@ -1606,6 +1606,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
+		// Structured agent questions (M-81). The daemon opens a group when the
+		// runtime asks the user something, polls it until answered/expired, and
+		// expires the group itself when its run is cancelled.
+		r.Post("/tasks/{taskId}/questions", h.CreateTaskQuestions)
+		r.Get("/tasks/{taskId}/questions/{groupId}", h.GetTaskQuestionGroup)
+		r.Post("/tasks/{taskId}/questions/{groupId}/expire", h.ExpireTaskQuestionGroup)
+
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
 		r.Get("/issues/{issueId}/gc-check", h.GetIssueGCCheck)
 		r.Get("/chat-sessions/{sessionId}/gc-check", h.GetChatSessionGCCheck)
@@ -2081,6 +2088,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/pull-requests", h.LinkIssuePullRequest)
 					r.Delete("/pull-requests/{prId}", h.UnlinkIssuePullRequest)
 					r.Put("/pr-auto-complete", h.SetIssuePRAutoComplete)
+					// Structured agent questions raised by a run on this issue.
+					r.Get("/questions", h.ListIssueQuestions)
 				})
 			})
 
@@ -2097,6 +2106,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateQuickAction)
 					r.Delete("/", h.DeleteQuickAction)
 				})
+			})
+
+			// Structured agent questions: the answer path. Answering is
+			// deliberately not issue-scoped — an addressee agent may be handed a
+			// question id by its own tool call and must not need the issue id.
+			r.Route("/api/questions/{id}", func(r chi.Router) {
+				r.Post("/answer", h.AnswerQuestion)
 			})
 
 			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)

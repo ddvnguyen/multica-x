@@ -238,6 +238,9 @@ WITH deleted_wakeup_receipts AS (
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ),
+deleted_questions AS (
+ DELETE FROM question WHERE question.workspace_id = $1
+),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
 ),

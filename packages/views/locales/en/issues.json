@@ -1426,6 +1426,15 @@
     "section_title": "Duplicates",
     "unmark_toast": "Reopened as Todo"
   },
+  "questions": {
+    "section_title": "Waiting on you",
+    "expires_at": "Expires at {{time}}",
+    "multi_select_hint": "Select all that apply",
+    "other_placeholder": "Or type an answer",
+    "submit": "Answer",
+    "answered_toast": "Answer sent",
+    "answer_failed": "Could not send the answer"
+  },
   "pr_automation": {
     "link_action": "Link pull request",
     "link_placeholder": "Paste a pull request URL",

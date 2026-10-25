@@ -26,6 +26,15 @@ const (
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
+	// Question events. A question is one blocked tool call asking the owner
+	// (or a leader agent) to choose between options; a single call carries up
+	// to four questions sharing a group_id, so `created` and `expired` fire
+	// once per group and `answered` fires per question. Clients re-read the
+	// issue's question list on any of them.
+	EventQuestionCreated  = "question:created"
+	EventQuestionAnswered = "question:answered"
+	EventQuestionExpired  = "question:expired"
+
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
 	// subscribes by `task:` prefix and invalidates the workspace task

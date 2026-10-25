@@ -1380,6 +1380,15 @@
     "section_title": "중복 항목",
     "unmark_toast": "할 일로 다시 열었습니다"
   },
+  "questions": {
+    "section_title": "답변 대기 중",
+    "expires_at": "{{time}}에 만료",
+    "multi_select_hint": "해당하는 항목을 모두 선택하세요",
+    "other_placeholder": "또는 답변을 입력하세요",
+    "submit": "답변",
+    "answered_toast": "답변을 보냈습니다",
+    "answer_failed": "답변을 보내지 못했습니다"
+  },
   "pr_automation": {
     "link_action": "PR 연결",
     "link_placeholder": "PR URL 붙여넣기",

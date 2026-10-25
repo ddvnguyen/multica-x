@@ -27,7 +27,7 @@ func TestBuildCodebuddyArgs_Basic(t *testing.T) {
 		"--input-format", "stream-json",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
-		"--disallowedTools", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+		"--disallowedTools", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion",
 		"--model", "claude-sonnet-4-20250514",
 		"--max-turns", "25",
 		"--append-system-prompt", "You are an agent.",
@@ -86,7 +86,7 @@ func TestBuildCodebuddyArgs_DisallowsInteractiveTools(t *testing.T) {
 		t.Fatalf("expected --disallowedTools in args: %v", args)
 	}
 
-	for offset, want := range []string{"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"} {
+	for offset, want := range []string{"EnterPlanMode", "ExitPlanMode", "AskUserQuestion"} {
 		got := ""
 		if idx+1+offset < len(args) {
 			got = args[idx+1+offset]
@@ -94,6 +94,26 @@ func TestBuildCodebuddyArgs_DisallowsInteractiveTools(t *testing.T) {
 		if got != want {
 			t.Fatalf("disallowed tool %d = %q, want %q\nfull args: %v", offset, got, want, args)
 		}
+	}
+}
+
+// An Asker means the bridge can answer AskUserQuestion, so the tool must reach
+// the model. Leaving it in --disallowedTools would contradict the capability
+// declared in the initialize frame.
+func TestBuildCodebuddyArgsEnablesAskWhenAskerIsPresent(t *testing.T) {
+	t.Parallel()
+
+	args := buildCodebuddyArgs(ExecOptions{Ask: &stubAsker{}}, slog.Default())
+
+	for _, a := range args {
+		if a == codebuddyAskToolName {
+			t.Fatalf("AskUserQuestion must not be disallowed when an Asker is present: %v", args)
+		}
+	}
+	// The plan tools stay disallowed either way.
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--disallowedTools EnterPlanMode ExitPlanMode") {
+		t.Fatalf("plan tools must stay disallowed: %v", args)
 	}
 }
 
@@ -329,9 +349,8 @@ func TestWriteCodebuddyInput(t *testing.T) {
 	t.Parallel()
 
 	var buf strings.Builder
-	err := writeCodebuddyInput(&buf, "hello world")
-	if err != nil {
-		t.Fatalf("writeCodebuddyInput: %v", err)
+	if err := (&codebuddyStdin{w: &buf}).writeLine(promptFrame("hello world")); err != nil {
+		t.Fatalf("write prompt frame: %v", err)
 	}
 
 	data := buf.String()
@@ -479,7 +498,7 @@ func TestCodebuddyHandleControlRequestApprovesInCodebuddyShape(t *testing.T) {
 		}),
 	}
 
-	b.handleControlRequest(msg, &written)
+	b.handleControlRequest(msg, &codebuddyStdin{w: &written}, nil, context.Background())
 
 	var resp map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(written.Bytes()), &resp); err != nil {

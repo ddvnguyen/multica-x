@@ -154,8 +154,11 @@ func TestStartTaskCapabilityNegotiationMixedVersions(t *testing.T) {
 				if (err != nil) != tc.wantError {
 					t.Errorf("StartTask: %v", err)
 				}
-				if got != tc.negotiated {
-					t.Errorf("negotiated = %v, want %v", got, tc.negotiated)
+				if got.TaskSupplement != tc.negotiated {
+					t.Errorf("negotiated supplement = %v, want %v", got.TaskSupplement, tc.negotiated)
+				}
+				if got.Questions {
+					t.Errorf("questions capability must not be negotiated when it was never offered")
 				}
 				wantCalls := 1
 				if tc.retry && task.StartClaimSupported {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -42,23 +41,40 @@ func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {
 		"--input-format", "stream-json",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
-		// CodeBuddy's interactive tools have no UI to render in under the
-		// daemon's headless stream-json transport. AskUserQuestion and
-		// ExitPlanMode are both exempted from CodeBuddy's permission-mode
-		// finalization, so --permission-mode bypassPermissions does NOT
-		// auto-approve them — they always reach the permission bridge and
-		// stall the turn waiting for a confirmation nobody can give
-		// (GitHub #6012). EnterPlanMode is denied alongside them: leaving it
-		// enabled would let the model enter a plan mode it then has no tool
-		// to leave. Plan-shaped work still happens — the plan is written as
-		// ordinary assistant output instead of behind an approval gate.
+		// CodeBuddy's plan-mode tools have no UI to render in under the
+		// daemon's headless stream-json transport. ExitPlanMode is exempted
+		// from CodeBuddy's permission-mode finalization, so
+		// --permission-mode bypassPermissions does NOT auto-approve it — it
+		// always reaches the permission bridge and stalls the turn waiting for
+		// a confirmation nobody can give (GitHub #6012). EnterPlanMode is
+		// denied alongside it: leaving it enabled would let the model enter a
+		// plan mode it then has no tool to leave. Plan-shaped work still
+		// happens — the plan is written as ordinary assistant output instead of
+		// behind an approval gate.
 		//
-		// Pass one value per tool: --disallowedTools is variadic and
-		// CodeBuddy compares each entry against the tool name exactly
-		// (PermissionUtils.matchPermissionRules), so a comma-joined string
-		// would match nothing despite what the CLI's own help text claims.
-		"--disallowedTools", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+		// AskUserQuestion is the same kind of tool with a different answer: it
+		// is only disallowed when nothing can answer it, because the bridge is
+		// exactly where the daemon's question card plugs in. See the
+		// conditional append below.
 	}
+	// AskUserQuestion is disallowed only when nothing can answer it. When the
+	// daemon supplies an Asker, the ask tool is enabled through the CLI's
+	// stream-json capability handshake (see writeCodebuddyInitialize) and the
+	// permission bridge holds the call until an answer arrives — see
+	// handleAskControlRequest. Leaving it in --disallowedTools would make the
+	// capability declaration a lie: the tool is filtered out before it can ask.
+	//
+	// Pass one value per tool: --disallowedTools is variadic and CodeBuddy
+	// compares each entry against the tool name exactly
+	// (PermissionUtils.matchPermissionRules), so a comma-joined string would
+	// match nothing despite what the CLI's own help text claims. One flag for
+	// the whole list, so the order the tests see is the order we declare.
+	disallowed := []string{"EnterPlanMode", "ExitPlanMode"}
+	if opts.Ask == nil {
+		disallowed = append(disallowed, codebuddyAskToolName)
+	}
+	args = append(args, "--disallowedTools")
+	args = append(args, disallowed...)
 	// NOTE: --strict-mcp-config is deliberately never passed. It means "only
 	// use servers from --mcp-config", which drops CodeBuddy's user, project
 	// AND local scopes. Measured against CodeBuddy 2.x with one real MCP
@@ -160,6 +176,10 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 	}
 	var closeStdinOnce sync.Once
 	closeStdin := func() { closeStdinOnce.Do(func() { _ = stdin.Close() }) }
+	// Every write to the CLI goes through one lock: the prompt, the
+	// auto-approvals from the read loop, and an ask answer from its own
+	// goroutine all share this pipe.
+	stdinW := &codebuddyStdin{w: stdin}
 
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[codebuddy:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
@@ -185,7 +205,15 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 	// be answered mid-run.
 	writeDone := make(chan error, 1)
 	go func() {
-		err := writeCodebuddyInput(stdin, prompt)
+		// The capability handshake must be the first frame on stdin: the CLI
+		// resolves it before it processes the prompt, and AskUserQuestion
+		// stays disabled for the whole session if it is missing.
+		if opts.Ask != nil {
+			if err := writeCodebuddyInitialize(stdinW); err != nil {
+				b.cfg.Logger.Warn("codebuddy: failed to write initialize", "error", err)
+			}
+		}
+		err := stdinW.writeLine(promptFrame(prompt))
 		if err != nil {
 			closeStdin()
 		}
@@ -304,7 +332,19 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 					})
 				}
 			case "control_request":
-				b.handleControlRequest(msg, stdin)
+				b.handleControlRequest(msg, stdinW, opts.Ask, runCtx)
+			case "control_response":
+				// Only our initialize handshake gets one. A rejected handshake
+				// leaves AskUserQuestion disabled for the session, which would
+				// otherwise look like a model that simply never asked.
+				var resp struct {
+					Subtype   string `json:"subtype"`
+					RequestID string `json:"request_id"`
+					Error     string `json:"error"`
+				}
+				if err := json.Unmarshal(msg.Response, &resp); err == nil && resp.Subtype == "error" {
+					b.cfg.Logger.Warn("codebuddy: control response error", "request_id", resp.RequestID, "error", resp.Error)
+				}
 			}
 		}
 		scanErr := scanner.Err()
@@ -494,10 +534,18 @@ func (b *codebuddyBackend) handleUser(msg codebuddySDKMessage, ch chan<- Message
 	}
 }
 
-func (b *codebuddyBackend) handleControlRequest(msg codebuddySDKMessage, stdin interface{ Write([]byte) (int, error) }) {
-	// Auto-approve all tool uses in autonomous/daemon mode.
+func (b *codebuddyBackend) handleControlRequest(msg codebuddySDKMessage, stdin *codebuddyStdin, ask Asker, runCtx context.Context) {
+	// Auto-approve all tool uses in autonomous/daemon mode, except the ask
+	// tool when the daemon can answer it.
 	var req codebuddyControlRequestPayload
 	if err := json.Unmarshal(msg.Request, &req); err != nil {
+		return
+	}
+
+	if ask != nil && req.Subtype == "can_use_tool" && req.ToolName == codebuddyAskToolName {
+		// Held off the read loop: the question can stay open for minutes, and
+		// blocking the scanner would stall the CLI on a full stdout pipe.
+		go b.handleAskControlRequest(runCtx, msg.RequestID, req, stdin, ask)
 		return
 	}
 
@@ -512,37 +560,12 @@ func (b *codebuddyBackend) handleControlRequest(msg codebuddySDKMessage, stdin i
 	// tools never emit control_request, and CodeBuddy does not use Claude's
 	// async_launched tool_result shape. Background work is disabled via
 	// CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS before tool execution.
-
-	response := map[string]any{
-		"type": "control_response",
-		"response": map[string]any{
-			"subtype":    "success",
-			"request_id": msg.RequestID,
-			"response": map[string]any{
-				// CodeBuddy's SdkPermissionClient reads `allowed` and treats a
-				// missing key as a denial; `behavior` is Claude Code's spelling,
-				// which the fork still honours on its other permission paths.
-				// Send both so an approval is never read as a silent reject.
-				"allowed":      true,
-				"behavior":     "allow",
-				"updatedInput": inputMap,
-			},
-		},
-	}
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		b.cfg.Logger.Warn("codebuddy: failed to marshal control response", "error", err)
-		return
-	}
-	data = append(data, '\n')
-	if _, err := stdin.Write(data); err != nil {
-		b.cfg.Logger.Warn("codebuddy: failed to write control response", "error", err)
-	}
+	b.allowControlRequest(stdin, msg.RequestID, inputMap)
 }
 
-func writeCodebuddyInput(w io.Writer, prompt string) error {
-	payload := map[string]any{
+// promptFrame is the stream-json user turn that starts the run.
+func promptFrame(prompt string) map[string]any {
+	return map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"role": "user",
@@ -554,15 +577,6 @@ func writeCodebuddyInput(w io.Writer, prompt string) error {
 			},
 		},
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal codebuddy input: %w", err)
-	}
-	data = append(data, '\n')
-	if _, err := w.Write(data); err != nil {
-		return err
-	}
-	return nil
 }
 
 const codebuddyDisableBackgroundTasksEnv = "CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS"
@@ -637,6 +651,9 @@ type codebuddySDKMessage struct {
 	// control request fields
 	RequestID string          `json:"request_id,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
+	// control_response fields — the CLI nests both subtype and error, unlike
+	// the top-level error event above.
+	Response json.RawMessage `json:"response,omitempty"`
 }
 
 type codebuddyLogEntry struct {
@@ -677,9 +694,10 @@ type codebuddyContentBlock struct {
 }
 
 type codebuddyControlRequestPayload struct {
-	Subtype  string          `json:"subtype"`
-	ToolName string          `json:"tool_name,omitempty"`
-	Input    json.RawMessage `json:"input,omitempty"`
+	Subtype   string          `json:"subtype"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 func codebuddyResultUsage(msg codebuddySDKMessage, fallbackModel string) map[string]TokenUsage {

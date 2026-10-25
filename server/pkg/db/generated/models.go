@@ -1361,6 +1361,31 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+type Question struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	GroupID        pgtype.UUID        `json:"group_id"`
+	Position       int32              `json:"position"`
+	ToolCallID     string             `json:"tool_call_id"`
+	AskedByAgentID pgtype.UUID        `json:"asked_by_agent_id"`
+	AddresseeType  pgtype.Text        `json:"addressee_type"`
+	AddresseeID    pgtype.UUID        `json:"addressee_id"`
+	Header         string             `json:"header"`
+	Prompt         string             `json:"prompt"`
+	Options        []byte             `json:"options"`
+	MultiSelect    bool               `json:"multi_select"`
+	Status         string             `json:"status"`
+	Answer         pgtype.Text        `json:"answer"`
+	AnsweredByType pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID   pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt     pgtype.Timestamptz `json:"answered_at"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
