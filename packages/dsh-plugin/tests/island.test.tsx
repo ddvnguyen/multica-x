@@ -1,6 +1,8 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isIslandMounted, mountIsland, shadowStyles, unmountIsland } from "../src/client/island";
+import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
+import { attachSeat } from "../src/client/seat";
 
 /**
  * The island is a second React tree inside a shadow root, so these tests drive
@@ -196,6 +198,38 @@ describe("mountIsland", () => {
     expect(requests.some((url) => url.includes("issues"))).toBe(true);
   });
 
+  // One row per rail entry: the island has to render each of the five views on
+  // its own, inside the same shadow root, with nothing page-level in the shell.
+  const entries: Array<{ entry: string; route: IslandRoute; text: string }> = [
+    { entry: "issues", route: BOARD_ROUTE, text: "Issues" },
+    { entry: "agents", route: { view: "agents" }, text: "Agents" },
+    { entry: "skills", route: { view: "skills" }, text: "Skills" },
+    { entry: "inbox", route: { view: "inbox" }, text: "Inbox" },
+    { entry: "chat", route: { view: "chat" }, text: "Chat" },
+  ];
+
+  for (const { entry, route, text } of entries) {
+    it(`opens the ${entry} entry inside the shadow root`, async () => {
+      stubBackend();
+      const host = hostElement();
+      act(() => mountIsland(host, { initialRoute: route }));
+
+      await settle(() => {
+        const rendered = host.shadowRoot?.textContent ?? "";
+        expect(rendered).toContain(text);
+        expect(rendered).not.toContain("Connecting to Multica");
+        expect(rendered).not.toContain("did not start");
+      });
+
+      // Native rendering only: no iframe anywhere in the document, and the
+      // island's sheet stays inside its own shadow root.
+      expect(host.shadowRoot?.querySelector("iframe")).toBeNull();
+      expect(document.querySelectorAll("iframe")).toHaveLength(0);
+      expect(host.shadowRoot?.querySelector("style[data-multica-styles]")).not.toBeNull();
+      expect(document.querySelector("style[data-multica-styles]")).toBeNull();
+    });
+  }
+
   it("explains a host that is not configured instead of rendering an empty page", async () => {
     stubBackend({ problem: "token is not set" });
     const host = hostElement();
@@ -216,6 +250,40 @@ describe("mountIsland", () => {
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("No Multica workspace");
     });
+  });
+
+  it("tears a seat down once the rail moves away from it", async () => {
+    stubBackend();
+    const seat = document.createElement("div");
+    document.body.append(seat);
+    mounted.push(seat);
+
+    act(() => attachSeat(seat, BOARD_ROUTE));
+    expect(isIslandMounted(seat)).toBe(true);
+
+    // The shell detaches the ref before it removes the node, so the sweep runs a
+    // microtask later — after the commit — and only for a node that really left.
+    await act(async () => {
+      seat.remove();
+      attachSeat(null, BOARD_ROUTE);
+    });
+    expect(isIslandMounted(seat)).toBe(false);
+  });
+
+  it("keeps a seat alive across a re-attach", async () => {
+    stubBackend();
+    const seat = document.createElement("div");
+    document.body.append(seat);
+    mounted.push(seat);
+
+    act(() => {
+      attachSeat(seat, BOARD_ROUTE);
+      // A re-render detaches and re-attaches the same node.
+      attachSeat(null, BOARD_ROUTE);
+      attachSeat(seat, BOARD_ROUTE);
+    });
+    await act(async () => {});
+    expect(isIslandMounted(seat)).toBe(true);
   });
 
   it("is idempotent per host and tears down cleanly", async () => {

@@ -1,20 +1,81 @@
 import { createElement as bundledCreateElement } from "react";
 import type { DshClientContext } from "../dsh";
-import { createRailIcon, createSeatComponent, type HostCreateElement } from "./seat";
+import type { IslandRoute } from "./navigation";
+import { FAMILY_ROOTS } from "./navigation";
+import {
+  createRailIcon,
+  createSeatComponent,
+  type HostCreateElement,
+  type RailGlyph,
+} from "./seat";
 
 /**
  * Browser face of the Multica panel.
  *
- * Two additive registrations, no shadowing:
+ * One rail row per Multica view, additive and without shadowing:
  *
- * - `sidebar.panellist` (a `list`) gets a rail row. The sidebar owns the button
- *   and its selection state, so the row is the shell's own rail entry, and the
- *   panel id is what makes selecting it mount the matching `main` cell.
- * - `main` (a `keyed` slot) gets one cell under the key `multica`: the seat the
- *   React 19 island mounts into. `priority: -100` is the additive convention the
- *   shipped panels use; nothing shipped is replaced.
+ * - `sidebar.panellist` (a `list`) renders one sidebar button per registration
+ *   and addresses the matching `main` cell by list id. Each entry below is one
+ *   of those rows; the sidebar owns the button, the label and the selection
+ *   state, which is why the menu is five rows rather than a dropdown the plugin
+ *   would have to position inside someone else's column. The list has no
+ *   grouping API, so the grouping is expressed by adjacent order (30–34) and a
+ *   shared glyph family, and each label carries the product name because the
+ *   collapsed rail shows only a glyph and a tooltip.
+ * - `main` (a `keyed` slot) gets one cell per entry: the seat the React 19
+ *   island mounts into, opening at that entry's own view. `priority: -100` is
+ *   the additive convention the shipped panels use; nothing shipped is replaced.
  */
+export interface MulticaEntry {
+  /** `sidebar.panellist` list id, and the `main` cell key it addresses. */
+  id: string;
+  /** Rail row label: the button's accessible name and its tooltip. */
+  label: string;
+  /** Where the island opens when this row is selected. */
+  route: IslandRoute;
+  /** Glyph drawn inside the shell's rail button. */
+  glyph: RailGlyph;
+}
+
+/** The five entries, in the order the Owner named them. */
+export const MULTICA_ENTRIES: readonly MulticaEntry[] = [
+  {
+    id: "multica",
+    label: "Multica Issues",
+    route: FAMILY_ROOTS.issues,
+    glyph: "issues",
+  },
+  {
+    id: "multica-agents",
+    label: "Multica Agents",
+    route: FAMILY_ROOTS.agents,
+    glyph: "agents",
+  },
+  {
+    id: "multica-skills",
+    label: "Multica Skills",
+    route: FAMILY_ROOTS.skills,
+    glyph: "skills",
+  },
+  {
+    id: "multica-inbox",
+    label: "Multica Inbox",
+    route: FAMILY_ROOTS.inbox,
+    glyph: "inbox",
+  },
+  {
+    id: "multica-chat",
+    label: "Multica Chat",
+    route: FAMILY_ROOTS.chat,
+    glyph: "chat",
+  },
+];
+
+/** The entry the panel opened with; kept as the first row's id. */
 export const MULTICA_PANEL_ID = "multica";
+
+/** First rail row's order; the entries follow in sequence. */
+const FIRST_ORDER = 30;
 
 /** dsh resolves `inject` before calling `apply`. */
 export const inject = ["slots"];
@@ -34,29 +95,35 @@ export function configureHostRuntime(createElement: HostCreateElement | null): v
 
 export function apply(ctx: DshClientContext): void {
   const createElement = hostCreateElement ?? (bundledCreateElement as HostCreateElement);
-  const seat = createSeatComponent(createElement);
-  const railIcon = createRailIcon(createElement);
 
-  ctx.slots.inject("sidebar.panellist", () =>
-    ctx.slots.register(
-      {
-        name: "sidebar.panellist",
-        id: MULTICA_PANEL_ID,
-        order: 30,
-        label: "Multica",
-      },
-      railIcon,
-    ),
-  );
+  MULTICA_ENTRIES.forEach((entry, index) => {
+    const railIcon = createRailIcon(createElement, entry.glyph);
+    const seat = createSeatComponent(createElement, {
+      panelId: entry.id,
+      initialRoute: entry.route,
+    });
 
-  ctx.slots.inject("main", () =>
-    ctx.slots.register(
-      {
-        name: "main",
-        key: MULTICA_PANEL_ID,
-        priority: -100,
-      },
-      seat,
-    ),
-  );
+    ctx.slots.inject("sidebar.panellist", () =>
+      ctx.slots.register(
+        {
+          name: "sidebar.panellist",
+          id: entry.id,
+          order: FIRST_ORDER + index,
+          label: entry.label,
+        },
+        railIcon,
+      ),
+    );
+
+    ctx.slots.inject("main", () =>
+      ctx.slots.register(
+        {
+          name: "main",
+          key: entry.id,
+          priority: -100,
+        },
+        seat,
+      ),
+    );
+  });
 }

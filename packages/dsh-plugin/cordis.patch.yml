@@ -1,6 +1,6 @@
 # Host-only plugin row. The browser half is discovered through package.json's
 # `dsh.client` declaration; its host face registers the /multica transport that
-# the island calls, so the row must be mounted for the rail row to do anything.
+# the islands call, so the row must be mounted for any of the rail rows to work.
 - insert:
     - id: multica-dsh-plugin
       name: '@multica/dsh-plugin'
