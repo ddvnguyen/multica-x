@@ -462,8 +462,18 @@ else
     WEB_PROFILE="$WEB_HOME/profiles/web"
     mkdir -p "$WEB_HOME/profiles"
 
+    # dsh forwards `plugin` to a `pnpm` it resolves from PATH, and the global
+    # pnpm here is a different major than the one that built the profile's
+    # node_modules — which makes pnpm want to recreate the tree and abort
+    # without a TTY. The shim hands corepack the pin from the profile's own
+    # package.json, so `dsh plugin` uses exactly that pnpm. See
+    # deploy/dsh-z/pnpm-shim/pnpm.
+    if ! node -p "require('$WEB_PROFILE/package.json').packageManager" >/dev/null 2>&1; then
+      log "WARN: $WEB_PROFILE/package.json declares no packageManager; dsh plugin would use PATH's pnpm (deploy/dsh-z/pnpm-shim/pnpm refuses)"
+    fi
     dsh_plugin_bin() { # run `dsh plugin --profile web` with the web's own profile root
-      DSH_HOME="$WEB_HOME" HOME="$WEB_HOME" "$DSH_BIN" plugin --profile web "$@"
+      DSH_HOME="$WEB_HOME" HOME="$WEB_HOME" PATH="$SCRIPT_DIR/pnpm-shim:$PATH" \
+        "$DSH_BIN" plugin --profile web "$@"
     }
 
     installed_row_matches() { # true when the profile already carries this exact bundle

@@ -46,6 +46,8 @@ flowchart LR
 |---|---|
 | `dsh-z.env` | committed, non-secret lane config: ports, DB DSN (password placeholder), lane home, refs, `LANE_MOCT_BASE_URL` (the MOCT seam switch, `docs/moct-seam.md`) |
 | `deploy.sh` | idempotent provisioner (the only file you run) |
+| `build-plugin-bundle.sh` | packages the built `@multica/dsh-plugin` as a directory bundle for the lane web profile |
+| `pnpm-shim/pnpm` | the `pnpm` dsh forwards to for the web profile: corepack on the version the profile declares |
 | `lane-cli.sh` | lane CLI wrapper: strips every `MULTICA_*` env var and sets HOME to the lane home, so calls never leak to the live control plane |
 | `units/*.service` | systemd user unit templates; deploy.sh substitutes placeholders and installs them `0600` into `~/.config/systemd/user/` |
 
@@ -55,6 +57,41 @@ generated once and kept in
 The DSN committed in `dsh-z.env` carries a `PASSWORD` placeholder; the
 composed DSN for the server lives in `/mnt/workspace/clouds/dsh-z/multica-be/env`
 (`0600`) and is consumed by the unit via `EnvironmentFile=`.
+
+## Lane hygiene
+
+The lane owns everything it installs. Two properties keep it that way, both
+enforced by `deploy.sh` rather than by convention:
+
+- **No install runs a script.** The web profile's `package.json` has no
+  `scripts` block. It used to carry a `postinstall` that ran a dsh-x script
+  against dsh-x's `node_modules`, so every install on this lane wrote outside
+  `/mnt/workspace/clouds/dsh-z/`; the patch belongs to that profile, not this
+  one. `dsh plugin` is never passed `--ignore-scripts`.
+- **One pnpm per profile.** The web profile declares
+  `"packageManager": "pnpm@12.14.0"` — the version that built its
+  `node_modules` — and phase 9c puts `pnpm-shim/` first on PATH for every
+  `dsh plugin --profile web` call. Without it dsh resolves the user's global
+  pnpm from PATH, pnpm sees a modules directory from another major, wants to
+  recreate it, and aborts with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`
+  because dsh has no TTY. To install by hand, use the same route:
+
+  ```bash
+  cd /mnt/workspace/clouds/dsh-z/data/home/profiles/web
+  PATH="<multica-x>/deploy/dsh-z/pnpm-shim:$PATH" \
+  DSH_HOME=/mnt/workspace/clouds/dsh-z/data/home \
+  HOME=/mnt/workspace/clouds/dsh-z/data/home \
+    node /mnt/workspace/clouds/dsh-z/current/apps/cli/lib/bin.js plugin --profile web add <bundle>
+  ```
+
+  Corepack serves that pnpm from its cache; a host that has never run it
+downloads the binary once.
+
+The only writes an install still makes outside `dsh-z/` are the two shared,
+content-addressed caches (`/home/ddv/.pnpm-store/v11` and corepack's pnpm
+cache). Neither holds lane state, and neither can be written by another lane's
+profile — but they are outside the lane tree, and removing that needs the
+profile re-resolved against a store under `dsh-z/`.
 
 ## Notes and known deviations
 
