@@ -21,7 +21,7 @@ import {
  * answer 503 with the reason, and `/multica/config` carries that reason to the
  * island, instead of the plugin failing and taking the rail row down with it.
  */
-export const inject = ["webServer"];
+export const inject = ["webServer", "connection"];
 
 /** Same path the island reads; kept here so the two faces cannot drift. */
 export const CONFIG_PATH = `${PROXY_PREFIX}/config`;
