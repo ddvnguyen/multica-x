@@ -42,7 +42,26 @@ expect_fail_naming() {
 #    itself rather than surfacing later as a confusing probe failure.
 expect_pass "check should pass on a clean tree"
 
-# 2. A component nothing imports fails the check and is named.
+# 2. A colocated test under a wildcard directory is a vitest entry point, not a
+#    library module: the runner finds it by glob, so nothing importing it is
+#    normal. Guarding them made every test written beside a components/ui
+#    primitive break this check.
+colocated="$ui_dir/zz-colocated.test.tsx"
+track "$colocated"
+cat >"$colocated" <<'EOF'
+import { describe, expect, it } from "vitest"
+
+describe("colocated probe", () => {
+  it("exists", () => {
+    expect(true).toBe(true)
+  })
+})
+EOF
+expect_pass "a colocated *.test.tsx under components/ui must not count as a dead module"
+
+# 3. A component nothing imports fails the check and is named — and the test
+#    file beside it is still not reported, so the exemption above stays narrow
+#    rather than excusing everything in the directory.
 probe="$ui_dir/zz-unused-export-probe.tsx"
 track "$probe"
 cat >"$probe" <<'EOF'
@@ -50,10 +69,21 @@ export function UnusedExportProbe() {
   return null
 }
 EOF
-expect_fail_naming "zz-unused-export-probe.tsx" \
-  "check should fail when packages/ui gains a zero-reference component"
+# The test imports it, so this also pins that a component whose only consumer
+# is its own test stays dead — the same reason `vi.mock("...")` is not an edge.
+cat >"$colocated" <<'EOF'
+import { UnusedExportProbe } from "./zz-unused-export-probe"
 
-# 3. Importing it from a consumer clears the check — the guard tracks real
+export const probeUsage = UnusedExportProbe
+EOF
+expect_fail_naming "zz-unused-export-probe.tsx" \
+  "check should fail when packages/ui gains a component only its own test imports"
+if grep -Fq "zz-colocated.test.tsx" "$out"; then
+  fail "a colocated test must not be reported, even beside a dead sibling"
+fi
+rm -f "$colocated"
+
+# 4. Importing it from a consumer clears the check — the guard tracks real
 #    usage rather than just counting files.
 importer="$root_dir/packages/views/zz-probe-importer.tsx"
 track "$importer"
@@ -63,7 +93,7 @@ EOF
 expect_pass "check should pass once a consumer imports the component"
 rm -f "$importer" "$probe"
 
-# 4. Basename collision. 17 of the 59 guarded files share a name with some
+# 5. Basename collision. 17 of the 59 guarded files share a name with some
 #    other file in the repo, so a check that matched relative imports by
 #    basename would pass this dead component. `option-card` is real:
 #    packages/views/onboarding/components/option-card.tsx is imported as
@@ -79,7 +109,7 @@ expect_fail_naming "components/ui/option-card.tsx" \
   "a same-named file elsewhere must not mark a dead ui component as used"
 rm -f "$collide"
 
-# 5. Two dead components importing only each other are still dead. Liveness is
+# 6. Two dead components importing only each other are still dead. Liveness is
 #    reachability from outside the guarded directories, not a reference count.
 pair_a="$ui_dir/zz-cycle-a.tsx"
 pair_b="$ui_dir/zz-cycle-b.tsx"
@@ -102,7 +132,7 @@ if ! grep -Fq "zz-cycle-b.tsx" "$out"; then
 fi
 rm -f "$pair_a" "$pair_b"
 
-# 6. A commented-out import is not an edge. This is the state a component
+# 7. A commented-out import is not an edge. This is the state a component
 #    passes through the moment its last real importer is deleted, so a text
 #    scan would keep vouching for it exactly when it stops being used.
 comment_probe="$ui_dir/zz-comment-probe.tsx"
