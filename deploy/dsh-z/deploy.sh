@@ -13,13 +13,20 @@
 # (multica-be-z, moct-backend-z, multica-daemon-z) and only ADDs the role and
 # database on the shared Postgres cluster. It never kills any process by PID
 # and never touches the live control plane (multica_backend_1, multica-*,
-# dsh-x, dsh-z, moct-backend, moct-x units/containers).
+# dsh-x, moct-backend, moct-x units/containers). The lane's own web unit
+# (dsh-z.service — NOT prod: "rotating test lane") is the one E2 acceptance
+# surface that is explicitly in scope: it is restarted by phase 11 and receives
+# the plugin row env/patches by phase 9c, but only when DSH_Z_WEB_UNIT names it.
 #
 # Usage: bash deploy/dsh-z/deploy.sh   (run from anywhere; reads dsh-z.env)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# systemctl --user show reports an empty SourcePath for pre-existing units
+# like dsh-z.service, so phase 9c resolves the unit file from the real home
+# itself; capture HOME before phase 9 repoints it at the lane home.
+REAL_HOME="$HOME"
 # shellcheck source=dsh-z.env
 source "$SCRIPT_DIR/dsh-z.env"
 
@@ -354,6 +361,13 @@ umask 077
 {
   echo "MULTICA_WORKSPACES_ROOT=$MULTICA_Z_WORKSPACES_ROOT"
   echo "MULTICA_WORKSPACE_ID=$MULTICA_Z_WORKSPACE_ID"
+  # MULTICA_DSH_PATH is probed before the bare "dsh" name (envOrDefault in
+  # agents_probe.go): pinning the lane release CLI makes the daemon launch the
+  # dsh version the runtime bundle's peers require instead of the nvm 0.2.0.
+  # Keep the guard: a stale absolute pin hard-misses (no login-shell rescue).
+  if [ -n "${DSH_Z_DSH_BIN:-}" ] && [ -x "$DSH_Z_DSH_BIN" ]; then
+    echo "MULTICA_DSH_PATH=$DSH_Z_DSH_BIN"
+  fi
 } > "$LANE_ROOT/data/multica-daemon-z.env"
 umask 022
 
@@ -376,7 +390,8 @@ systemctl --user restart "$MULTICA_DAEMON_Z_UNIT"
 # The spec itself is never echoed: an npm spec may carry credentials.
 log "phase 9b: dsh runtime profile"
 
-DSH_BIN="$(command -v dsh 2>/dev/null || true)"
+DSH_BIN="${DSH_Z_DSH_BIN:-}"
+[ -z "$DSH_BIN" ] && DSH_BIN="$(command -v dsh 2>/dev/null || true)"
 LANE_DSH_PROFILE="$LANE_HOME/.dsh/profiles/multica"
 dsh_profile_names_runtime() {
   [ -f "$LANE_DSH_PROFILE/package.json" ] || return 1
@@ -393,7 +408,9 @@ elif [ -z "${DSH_Z_RUNTIME_BUNDLE:-}" ]; then
   log "skip dsh runtime: @multica-ai/dsh-runtime is unpublished (multica#6936) and DSH_Z_RUNTIME_BUNDLE is unset;"
   log "  the lane daemon registers its other runtimes only (the live dsh-x daemon is in the same state)."
 elif [ -z "$DSH_BIN" ]; then
-  log "skip dsh runtime: no dsh binary on PATH (DSH_Z_RUNTIME_BUNDLE is set)"
+  log "skip dsh runtime: no dsh binary (DSH_Z_DSH_BIN unset and nothing on PATH)"
+elif [ ! -x "$DSH_BIN" ]; then
+  log "skip dsh runtime: DSH_Z_DSH_BIN does not point at an executable release CLI: $DSH_BIN"
 else
   log "installing dsh runtime profile from the DSH_Z_RUNTIME_BUNDLE candidate"
   if HOME="$LANE_HOME" "$DSH_BIN" plugin --profile multica add "$DSH_Z_RUNTIME_BUNDLE" \
@@ -401,6 +418,106 @@ else
     log "dsh runtime profile installed -> $LANE_DSH_PROFILE"
   else
     log "WARN: dsh runtime profile install failed; the daemon keeps dsh unregistered (rerun to retry)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Phase 9c — Multica plugin row in the lane web profile (E2)
+# ---------------------------------------------------------------------------
+# `packages/dsh-plugin` is the forked board inside the dsh web shell: a host
+# row proxying /multica/* to multica-be z plus a client bundle mounting the
+# React 19 island from the sidebar rail row. The bundle is built once by
+# build-plugin-bundle.sh (deploy/dsh-z/ does not run pnpm workspaces); this
+# phase installs it into the profile the web unit boots and writes the
+# unit-side wiring (row patch + MULTICA_DSH_TOKEN env). install/verify differs
+# between the two dsh profile roots: the runtime profile (9b) is probed from
+# HOME only ($LANE_HOME/.dsh/profiles/multica), while the WEB profile's store
+# is $DSH_HOME/profiles/web — the same DSH_HOME the web unit sets.
+log "phase 9c: multica dsh-plugin row"
+have_user_unit() {
+  # Exact column-1 match inside awk: a trailing `| grep -q` would exit at the
+  # first match and SIGPIPE the still-writing awk, which pipefail turns into
+  # rc=141 and a false "unit missing" (race, seen live).
+  systemctl --user list-unit-files --no-legend 2>/dev/null |
+    awk -v u="$1" '$1 == u { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+if [ -z "${DSH_Z_PLUGIN_BUNDLE:-}" ] || [ ! -f "$DSH_Z_PLUGIN_BUNDLE/lib/index.js" ]; then
+  log "skip multica plugin: DSH_Z_PLUGIN_BUNDLE unset or empty — run deploy/dsh-z/build-plugin-bundle.sh from a checkout with node_modules"
+elif [ -z "${DSH_Z_WEB_UNIT:-}" ] || ! have_user_unit "$DSH_Z_WEB_UNIT"; then
+  log "skip multica plugin config: $DSH_Z_WEB_UNIT is not an existing user unit; install the bundle manually with:"
+  log "  DSH_HOME=$LANE_HOME $DSH_BIN plugin --profile web add $DSH_Z_PLUGIN_BUNDLE"
+else
+  DSH_BIN="${DSH_Z_DSH_BIN:-}"
+  [ -z "$DSH_BIN" ] && DSH_BIN="$(command -v dsh 2>/dev/null || true)"
+  WEB_HOME="$LANE_HOME"
+  if [ -z "$DSH_BIN" ]; then
+    log "WARN: no dsh on PATH; skip plugin install into $LANE_HOME/profiles/web"
+  else
+    WEB_PROFILE="$WEB_HOME/profiles/web"
+    mkdir -p "$WEB_HOME/profiles"
+
+    dsh_plugin_bin() { # run `dsh plugin --profile web` with the web's own profile root
+      DSH_HOME="$WEB_HOME" HOME="$WEB_HOME" "$DSH_BIN" plugin --profile web "$@"
+    }
+
+    installed_row_matches() { # true when the profile already carries this exact bundle
+      local installed="$WEB_PROFILE/node_modules/@multica/dsh-plugin/package.json"
+      [ -f "$installed" ] && diff -q "$DSH_Z_PLUGIN_BUNDLE/package.json" "$installed" >/dev/null 2>&1
+    }
+
+    if installed_row_matches; then
+      log "@multica/dsh-plugin already installed in $WEB_PROFILE ($(node -p "require('$WEB_PROFILE/node_modules/@multica/dsh-plugin/package.json').version"))"
+    else
+      log "installing @multica/dsh-plugin into $WEB_PROFILE"
+      dsh_plugin_bin add "$DSH_Z_PLUGIN_BUNDLE" >/dev/null
+    fi
+
+    if ! node -p "require('$WEB_PROFILE/node_modules/@multica/dsh-plugin/package.json').version" >/dev/null 2>&1; then
+      log "WARN: @multica/dsh-plugin install failed; rerun deploy/dsh-z/deploy.sh to retry"
+    fi
+  fi
+
+  # Row config: the bundle ships placeholder values; the lane's row overrides
+  # the SAME id in the --patch chain (later layers win), so config lives in
+  # the lane and never mutates a node_modules copy. The token deliberately
+  # stays out of this file (patch files are world-readable): it comes from the
+  # unit env as MULTICA_DSH_TOKEN, which the plugin reads in the shell.
+  umask 022
+  {
+    echo "- id: multica-dsh-plugin"
+    echo "  name: '@multica/dsh-plugin'"
+    echo "  config:"
+    echo "    serverUrl: http://127.0.0.1:$MULTICA_BE_Z_PORT"
+    echo "    token: ''"
+    echo "    workspaceSlug: $MULTICA_Z_WS_SLUG"
+  } > "$LANE_ROOT/data/multica-row.yml"
+
+  # Unit side: inject the extra env file (MULTICA_DSH_TOKEN = MULTICA_Z_PAT)
+  # and the --patch of the row, both guarded so reruns do not stack lines.
+  umask 077
+  {
+    echo "MULTICA_DSH_TOKEN=$MULTICA_Z_PAT"
+  } > "$LANE_ROOT/data/dsh-web.env"
+  umask 022
+  # Resolve the real unit file: phase 9 already set HOME=$LANE_HOME, but the
+  # systemd user unit dir is per-USER, not per-HOME.
+  WEB_UNIT_FILE=""
+  for web_unit_candidate in \
+    "$REAL_HOME/.config/systemd/user/$DSH_Z_WEB_UNIT" \
+    "/etc/systemd/user/$DSH_Z_WEB_UNIT" \
+    "$REAL_HOME/.local/share/systemd/user/$DSH_Z_WEB_UNIT"; do
+    if [ -f "$web_unit_candidate" ]; then WEB_UNIT_FILE="$web_unit_candidate"; break; fi
+  done
+  if [ -n "$WEB_UNIT_FILE" ]; then
+    grep -q "^EnvironmentFile=-$LANE_ROOT/data/dsh-web.env" "$WEB_UNIT_FILE" \
+      || sed -i "/^\[Service\]/a EnvironmentFile=-$LANE_ROOT/data/dsh-web.env" "$WEB_UNIT_FILE"
+    if ! grep -q "multica-row.yml" "$WEB_UNIT_FILE"; then
+      sed -i "s|--patch $LANE_ROOT/data/overlay.yml|--patch $LANE_ROOT/data/overlay.yml --patch $LANE_ROOT/data/multica-row.yml|" "$WEB_UNIT_FILE"
+    fi
+    systemctl --user daemon-reload
+  else
+    log "WARN: cannot locate the unit file of $DSH_Z_WEB_UNIT; wire its env/patch manually"
   fi
 fi
 
@@ -425,10 +542,27 @@ mc --profile "$MULTICA_Z_PROFILE" agent list >/dev/null \
 mc --profile "$MULTICA_Z_PROFILE" issue list >/dev/null \
   || die "lane profile cannot read workspace state from multica-be z (issue list failed)"
 
+# ---------------------------------------------------------------------------
+# Phase 11 — restart the lane web so the plugin row and env go live (E2)
+# ---------------------------------------------------------------------------
+log "phase 11: lane web"
+
+if [ -n "${DSH_Z_WEB_UNIT:-}" ]; then
+  systemctl --user restart "$DSH_Z_WEB_UNIT"
+  # wait_http on the web root: the shell must answer before acceptance opens it
+  wait_http "http://127.0.0.1:3180/" 60 '' \
+    || { journalctl --user -u "$DSH_Z_WEB_UNIT" -n 30 --no-pager >&2; die "lane web http://127.0.0.1:3180/ did not come up"; }
+  log "lane web up on http://127.0.0.1:3180/ (unit $DSH_Z_WEB_UNIT, profile web, multica row patch applied)"
+else
+  log "skip phase 11: DSH_Z_WEB_UNIT unset, so the multica row needs a manual web restart:"
+  log "  systemctl --user restart dsh-z.service"
+fi
+
 log "lane z is up:"
 log "  multica-be z   http://127.0.0.1:$MULTICA_BE_Z_PORT  (unit $MULTICA_BE_Z_UNIT)"
 log "  postgres       $MULTICA_Z_DB_ROLE @ 127.0.0.1:$MULTICA_Z_DB_PORT/$MULTICA_Z_DB_NAME"
 log "  moct-be z      http://127.0.0.1:$MOCT_BE_Z_PORT  (unit $MOCT_BE_Z_UNIT, db $MOCT_Z_DB_PATH)"
 log "  lane daemon    profile $MULTICA_Z_PROFILE, home $LANE_HOME (unit $MULTICA_DAEMON_Z_UNIT)"
 log "  workspace      $MULTICA_Z_WS_SLUG = $MULTICA_Z_WORKSPACE_ID"
+log "  lane web       http://127.0.0.1:3180/ (unit ${DSH_Z_WEB_UNIT:-manual}, multica plugin row)"
 log "done"
