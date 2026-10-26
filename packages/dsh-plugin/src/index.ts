@@ -1,13 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
-import type { DshHostContext } from "./dsh";
+import type { DshHostContext } from "./dsh.js";
 import {
   MulticaProxy,
   PROXY_PREFIX,
   PROXY_WS_PATH,
   resolveSettings,
   sendJson,
-} from "./proxy";
+} from "./proxy.js";
 
 /**
  * Host face of the Multica panel.

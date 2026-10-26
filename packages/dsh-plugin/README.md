@@ -77,3 +77,17 @@ pnpm --filter @multica/dsh-plugin typecheck
 `build` writes `lib/index.js` (host) and `lib/client.js` (the wrapped client
 bundle). The client bundle is generated, not hand-edited: `scripts/wrap-client.mjs`
 wraps the Vite output in the module-loader preamble dsh expects.
+
+## The host half ships as emitted
+
+dsh imports `lib/*.js` as bare Node ESM, so the compiled output has to be
+loadable without a bundler or a post-processing step:
+
+- relative imports are written with their extension (`./proxy.js`), which tsc
+  resolves to the `.ts` source and emits verbatim;
+- `ws` is loaded through [`src/ws.ts`](src/ws.ts) — `createRequire` at module
+  scope — because it is CommonJS-only and the host's conditions can otherwise
+  select its browser build, which has no `WebSocketServer`.
+
+Both constraints fail at dsh boot, not at build, which is why the lane's bundle
+script loads the emitted entry as ESM before it ships it.
