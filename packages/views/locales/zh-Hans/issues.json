@@ -35,6 +35,22 @@
     "steer_step": "{{name}} 插话",
     "steer_step_read": "已读取"
   },
+  "agent_question": {
+    "ask_title": "Agent 需要你的回答",
+    "plan_title": "计划等待审批",
+    "single_choice": "选择一项",
+    "multiple_choices": "可多选",
+    "answer_placeholder": "你的回答",
+    "answer_label": "你的回答：{{question}}",
+    "other_placeholder": "或写下你自己的回答",
+    "approve": "批准计划",
+    "request_changes": "要求修改",
+    "plan_hint": "可以批准，也可以说明要改什么。",
+    "send": "回答",
+    "sending": "发送中…",
+    "sent": "回答已发送",
+    "failed": "回答发送失败，请重试。"
+  },
   "working_filter_error": {
     "title": "无法加载智能体正在处理的任务"
   },

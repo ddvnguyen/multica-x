@@ -36,6 +36,22 @@
     "steer_step": "{{name}} added",
     "steer_step_read": "Read"
   },
+  "agent_question": {
+    "ask_title": "The agent needs your answer",
+    "plan_title": "Plan ready for review",
+    "single_choice": "Pick one",
+    "multiple_choices": "Pick any",
+    "answer_placeholder": "Your answer",
+    "answer_label": "Your answer to: {{question}}",
+    "other_placeholder": "Or write your own answer",
+    "approve": "Approve plan",
+    "request_changes": "Request changes",
+    "plan_hint": "Approve it, or say what to change.",
+    "send": "Answer",
+    "sending": "Sending...",
+    "sent": "Answer sent",
+    "failed": "Could not send your answer. Try again."
+  },
   "working_filter_error": {
     "title": "Couldn't load issues with working agents"
   },

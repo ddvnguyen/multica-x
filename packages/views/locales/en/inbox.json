@@ -74,6 +74,7 @@
     "review_requested": "Review requested",
     "task_completed": "Run completed",
     "task_failed": "Run failed",
+    "agent_question": "Needs your answer",
     "agent_blocked": "Agent blocked",
     "agent_completed": "Agent completed",
     "reaction_added": "Reacted",

@@ -36,6 +36,22 @@
     "steer_step": "{{name}} a ajouté",
     "steer_step_read": "Lu"
   },
+  "agent_question": {
+    "ask_title": "L'agent attend votre réponse",
+    "plan_title": "Plan à valider",
+    "single_choice": "Choisissez une option",
+    "multiple_choices": "Choisissez-en plusieurs",
+    "answer_placeholder": "Votre réponse",
+    "answer_label": "Votre réponse à : {{question}}",
+    "other_placeholder": "Ou écrivez votre propre réponse",
+    "approve": "Approuver le plan",
+    "request_changes": "Demander des modifications",
+    "plan_hint": "Approuvez-le, ou indiquez ce qu'il faut changer.",
+    "send": "Répondre",
+    "sending": "Envoi…",
+    "sent": "Réponse envoyée",
+    "failed": "Impossible d'envoyer votre réponse. Réessayez."
+  },
   "working_filter_error": {
     "title": "Impossible de charger les tâches en cours de traitement par les agents"
   },

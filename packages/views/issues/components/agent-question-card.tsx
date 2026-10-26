@@ -1,0 +1,252 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import {
+  agentAnswerText,
+  isAnsweredDraft,
+  isPlanReview,
+  planApprovalAnswer,
+  type AgentAnswerDraft,
+  type AgentQuestion,
+} from "@multica/core/issues/agent-question";
+import { useCreateTaskSupplement } from "@multica/core/issues/mutations";
+import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
+import { Input } from "@multica/ui/components/ui/input";
+import { cn } from "@multica/ui/lib/utils";
+import { Check, ClipboardList, HelpCircle, Loader2 } from "lucide-react";
+import { ReadonlyContent } from "../../editor";
+import { useT } from "../../i18n";
+
+/**
+ * The ask/plan card: a parked run's question, answered in place.
+ *
+ * Ported from the team-room's decision card (moct-dsh-team-room), which already
+ * proved this shape: an open card is a form answered once, and its answer is
+ * not shown as given until the backend has taken it. What changed here is where
+ * the answer goes — to one named running turn, as an additional message, rather
+ * than through the comment router — and where the question comes from, which is
+ * the daemon's `question` transcript row (M-109) rather than a team-service
+ * call.
+ *
+ * Two shapes, one component, because they are one exchange: a question offers
+ * its options, a plan review offers its plan and a verdict. The daemon maps a
+ * plan review answered with exactly its approve label onto the bridge's
+ * approval selection; every other reply reaches the backend as the member's own
+ * words, which is why the pick is sent as the option's label rather than a
+ * separate field.
+ */
+export function AgentQuestionCard({
+  issueId,
+  taskId,
+  questions,
+}: {
+  issueId: string;
+  /** The running turn this answer is delivered to. */
+  taskId: string;
+  questions: readonly AgentQuestion[];
+}) {
+  const { t } = useT("issues");
+  const answer = useCreateTaskSupplement(issueId);
+  const [drafts, setDrafts] = useState<readonly AgentAnswerDraft[]>(() =>
+    questions.map(() => ({ selected: [], text: "" })),
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+  const plan = useMemo(() => isPlanReview(questions), [questions]);
+  const approveLabel = useMemo(() => planApprovalAnswer(questions), [questions]);
+  const ready = drafts.every(isAnsweredDraft);
+  const pending = answer.isPending;
+
+  const pick = (index: number, option: number, multiple: boolean, checked: boolean) => {
+    setDrafts((current) => current.map((draft, at) => {
+      if (at !== index) return draft;
+      if (!multiple) return { ...draft, selected: [option] };
+      const selected = checked
+        ? [...new Set([...draft.selected, option])].sort((left, right) => left - right)
+        : draft.selected.filter((entry) => entry !== option);
+      return { ...draft, selected };
+    }));
+  };
+
+  const write = (index: number, text: string) => {
+    setDrafts((current) => current.map((draft, at) => (at === index ? { ...draft, text } : draft)));
+  };
+
+  const send = (content: string) => {
+    if (content === "" || pending) return;
+    setError(null);
+    answer.mutate(
+      { taskId, content },
+      {
+        onSuccess: () => setSent(true),
+        onError: () => setError(t(($) => $.agent_question.failed)),
+      },
+    );
+  };
+
+  // A plan review's two verdicts are buttons, not options: "request changes"
+  // has to carry the member's words, so it shares the field below them.
+  const planDetail = plan ? questions[0]?.detail : undefined;
+
+  return (
+    <section
+      aria-label={plan ? t(($) => $.agent_question.plan_title) : t(($) => $.agent_question.ask_title)}
+      data-agent-question={plan ? "plan" : "ask"}
+      className="mt-2 min-w-0 rounded-md border border-border bg-muted/40 px-3 py-2.5"
+    >
+      <p className="flex items-center gap-1.5 text-caption font-medium text-foreground">
+        {plan
+          ? <ClipboardList aria-hidden className="size-3.5 shrink-0 text-info" />
+          : <HelpCircle aria-hidden className="size-3.5 shrink-0 text-info" />}
+        {plan ? t(($) => $.agent_question.plan_title) : t(($) => $.agent_question.ask_title)}
+      </p>
+
+      {planDetail !== undefined && (
+        <div className="mt-2 max-h-56 overflow-y-auto rounded-xs bg-background/70 px-2.5 py-2 text-caption">
+          <ReadonlyContent content={planDetail} />
+        </div>
+      )}
+
+      <div className="mt-2 space-y-3">
+        {questions.map((question, index) => {
+          const draft = drafts[index] ?? { selected: [], text: "" };
+          return (
+            <fieldset key={question.id} disabled={pending || sent} data-agent-question-question={index}>
+              <legend className="text-body text-foreground">
+                {questions.length > 1 && (
+                  <span className="mr-1.5 text-muted-foreground">{index + 1}.</span>
+                )}
+                {question.question}
+              </legend>
+              {!plan && question.options.length > 0 && (
+                <>
+                  <p className="mt-0.5 text-caption text-muted-foreground">
+                    {question.multiSelect
+                      ? t(($) => $.agent_question.multiple_choices)
+                      : t(($) => $.agent_question.single_choice)}
+                  </p>
+                  <div className="mt-1.5 space-y-1">
+                    {question.options.map((option, optionIndex) => {
+                      const chosen = draft.selected.includes(optionIndex);
+                      return (
+                        <label
+                          key={`${question.id}:${optionIndex}`}
+                          data-chosen={chosen ? "" : undefined}
+                          className={cn(
+                            "flex cursor-pointer items-start gap-2 rounded-xs border px-2 py-1.5 text-caption",
+                            chosen ? "border-brand/60 bg-brand/7 dark:bg-brand/12" : "border-transparent hover:bg-accent/40",
+                          )}
+                        >
+                          {question.multiSelect ? (
+                            <Checkbox
+                              className="mt-0.5"
+                              checked={chosen}
+                              onCheckedChange={(value) => pick(index, optionIndex, true, value === true)}
+                            />
+                          ) : (
+                            <input
+                              type="radio"
+                              className="mt-0.5 size-3.5 accent-brand"
+                              name={`${question.id}:${index}`}
+                              checked={chosen}
+                              onChange={() => pick(index, optionIndex, false, true)}
+                            />
+                          )}
+                          <span className="min-w-0">
+                            <span className="block text-foreground">{option.label}</span>
+                            {option.description !== undefined && (
+                              <span className="block text-micro text-muted-foreground">{option.description}</span>
+                            )}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              {(plan || question.options.length === 0) && (
+                <Input
+                  className="mt-1.5 h-8 text-caption"
+                  value={draft.text}
+                  maxLength={2000}
+                  placeholder={t(($) => $.agent_question.answer_placeholder)}
+                  aria-label={t(($) => $.agent_question.answer_label, {
+                    question: question.header ?? question.question,
+                  })}
+                  onChange={(event) => write(index, event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.nativeEvent.isComposing || plan) return;
+                    event.preventDefault();
+                    send(agentAnswerText(questions, drafts));
+                  }}
+                />
+              )}
+              {!plan && question.options.length > 0 && (
+                <Input
+                  className="mt-1.5 h-8 text-caption"
+                  value={draft.text}
+                  maxLength={2000}
+                  placeholder={t(($) => $.agent_question.other_placeholder)}
+                  aria-label={t(($) => $.agent_question.answer_label, {
+                    question: question.header ?? question.question,
+                  })}
+                  onChange={(event) => write(index, event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    send(agentAnswerText(questions, drafts));
+                  }}
+                />
+              )}
+            </fieldset>
+          );
+        })}
+      </div>
+
+      <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
+        {error !== null && (
+          <span role="alert" className="mr-auto text-caption text-destructive">{error}</span>
+        )}
+        {sent ? (
+          <span className="flex items-center gap-1.5 text-caption text-success">
+            <Check aria-hidden className="size-3.5" />{t(($) => $.agent_question.sent)}
+          </span>
+        ) : plan ? (
+          <>
+            <span className="mr-auto text-caption text-muted-foreground">
+              {t(($) => $.agent_question.plan_hint)}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={pending || !ready}
+              onClick={() => send(agentAnswerText(questions, drafts))}
+            >
+              {t(($) => $.agent_question.request_changes)}
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              disabled={pending || approveLabel === null}
+              onClick={() => send(approveLabel ?? "")}
+            >
+              {pending && <Loader2 className="animate-spin motion-reduce:animate-none" />}
+              {t(($) => $.agent_question.approve)}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="xs"
+            variant="default"
+            disabled={pending || !ready}
+            onClick={() => send(agentAnswerText(questions, drafts))}
+          >
+            {pending && <Loader2 className="animate-spin motion-reduce:animate-none" />}
+            {pending ? t(($) => $.agent_question.sending) : t(($) => $.agent_question.send)}
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}

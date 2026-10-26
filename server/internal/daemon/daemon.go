@@ -9724,19 +9724,28 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					flushFirstVisible()
 				case agent.MessageQuestion:
 					// Ask/plan parity (M-109): the backend is parked on this
-					// question. Surface it as a durable transcript line —
+					// question. Surface it as a durable transcript row —
 					// the member answers by commenting on the issue, and
 					// the steered reply reaches the backend via the
-					// supplement loop. Text type keeps the server's task
-					// message contract untouched.
+					// supplement loop. The row carries both halves: the
+					// rendering in Content for every reader, and the
+					// structured questions in Input for the client's card
+					// and for the server's ask notification.
+					//
+					// `question` is an additive type at the task-message
+					// boundary: a client that predates it parses the row as
+					// `text` (its schema's fallback) and renders the same
+					// line it renders today, so installed clients keep
+					// reading the question rather than dropping the row.
 					taskLog.Info("agent question parked", "call_id", msg.CallID)
 					mu.Lock()
 					sealPendingLocked()
 					s := msgSeq.Add(1)
 					batch = append(batch, TaskMessageData{
 						Seq:       int(s),
-						Type:      "text",
+						Type:      "question",
 						Content:   msg.Content,
+						Input:     redact.InputMap(msg.Input),
 						CreatedAt: observedAt,
 					})
 					mu.Unlock()

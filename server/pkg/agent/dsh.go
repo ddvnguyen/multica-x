@@ -508,7 +508,12 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 		state.pendingCallID = callID
 		state.pendingQuestions = append([]dshQuestion(nil), frame.Questions...)
 		state.mu.Unlock()
-		trySend(ch, Message{Type: MessageQuestion, CallID: callID, Content: renderDshQuestions(frame.Questions)})
+		trySend(ch, Message{
+			Type:    MessageQuestion,
+			CallID:  callID,
+			Content: renderDshQuestions(frame.Questions),
+			Input:   dshQuestionInput(frame.Questions),
+		})
 	case "usage":
 		key := frame.Model
 		if frame.Provider != "" {
@@ -537,6 +542,57 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 			state.result.SessionID = state.sessionID
 		}
 	}
+}
+
+// dshQuestionInput is the structured half of a question row: the same list the
+// bridge sent, in a shape a client can build a form from.
+//
+// The row carries both halves and needs them both. `content` stays the human
+// rendering, so a client that does not know this payload — or a mirror that
+// stores nothing but text — still shows the member the question and its
+// options. `input.questions` is what lets the fork's Inbox render the ask as
+// the card the member answers in place instead of retyping a reply. Lives
+// under the same `input` key tool calls use, so the transcript row needs no new
+// column.
+//
+// Keys are snake_case (multi_select) to match the server-side JSON conventions
+// the client parses; the bridge's camelCase is flattened here, at the one
+// boundary that owns the translation.
+func dshQuestionInput(questions []dshQuestion) map[string]any {
+	list := make([]any, 0, len(questions))
+	for _, question := range questions {
+		options := make([]any, 0, len(question.Options))
+		for _, option := range question.Options {
+			entry := map[string]any{"label": option.Label}
+			if option.Description != "" {
+				entry["description"] = option.Description
+			}
+			options = append(options, entry)
+		}
+		item := map[string]any{
+			"id":       question.ID,
+			"question": question.Question,
+			"options":  options,
+		}
+		if question.Header != "" {
+			item["header"] = question.Header
+		}
+		if question.Detail != "" {
+			item["detail"] = question.Detail
+		}
+		if question.MultiSelect {
+			item["multi_select"] = true
+		}
+		if question.Intent != nil {
+			intent := map[string]any{"kind": question.Intent.Kind}
+			if question.Intent.Approve != "" {
+				intent["approve"] = question.Intent.Approve
+			}
+			item["intent"] = intent
+		}
+		list = append(list, item)
+	}
+	return map[string]any{"questions": list}
 }
 
 // renderDshQuestions renders parked questions for the transcript line the
