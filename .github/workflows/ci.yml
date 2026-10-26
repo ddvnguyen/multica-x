@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # multica-moct is where the dsh integration lane merges; without it here no
+    # PR into that branch ever gets checks.
+    branches: [main, multica-moct]
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
