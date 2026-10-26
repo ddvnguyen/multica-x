@@ -342,6 +342,33 @@ func TestJWTSecretBootError(t *testing.T) {
 	}
 }
 
+// TestListenAddr pins the MULTICA_BIND_HOST address contract: unset or blank
+// keeps the historical all-interfaces ":port" default (Compose self-host
+// depends on it), while a set host binds the listener — the lane-z provisioner
+// relies on that path to keep multica-be z loopback-only. IPv6 hosts must
+// come out bracketed, or net.Listen would fail.
+func TestListenAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"empty_host_keeps_all_interfaces_default", "", ":4390"},
+		{"whitespace_host_keeps_all_interfaces_default", "  ", ":4390"},
+		{"loopback_host_binds_that_interface", "127.0.0.1", "127.0.0.1:4390"},
+		{"localhost_host_binds_that_interface", "localhost", "localhost:4390"},
+		{"ipv6_host_is_bracketed", "::1", "[::1]:4390"},
+		{"prebracketed_ipv6_host_is_normalized", "[::1]", "[::1]:4390"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := listenAddr(tt.host, "4390"); got != tt.want {
+				t.Errorf("listenAddr(%q, \"4390\") = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestNewMainHTTPServerTimeouts pins the production timeout defaults on the
 // public HTTP server. These are safety settings, not tuning: removing them,
 // resetting them to zero, or making ReadTimeout/WriteTimeout non-zero would
