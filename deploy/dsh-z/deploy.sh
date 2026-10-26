@@ -368,6 +368,11 @@ umask 077
   if [ -n "${DSH_Z_DSH_BIN:-}" ] && [ -x "$DSH_Z_DSH_BIN" ]; then
     echo "MULTICA_DSH_PATH=$DSH_Z_DSH_BIN"
   fi
+  # MOCT seam (M-101, docs/moct-seam.md): non-empty enables the pre-run
+  # inject and the `moct` MCP overlay for this daemon; empty keeps it off.
+  if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
+    echo "MOCT_BASE_URL=$LANE_MOCT_BASE_URL"
+  fi
 } > "$LANE_ROOT/data/multica-daemon-z.env"
 umask 022
 
