@@ -44,7 +44,7 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `dsh-z.env` | committed, non-secret lane config: ports, DB DSN (password placeholder), lane home, refs |
+| `dsh-z.env` | committed, non-secret lane config: ports, DB DSN (password placeholder), lane home, refs, `LANE_MOCT_BASE_URL` (the MOCT seam switch, `docs/moct-seam.md`) |
 | `deploy.sh` | idempotent provisioner (the only file you run) |
 | `lane-cli.sh` | lane CLI wrapper: strips every `MULTICA_*` env var and sets HOME to the lane home, so calls never leak to the live control plane |
 | `units/*.service` | systemd user unit templates; deploy.sh substitutes placeholders and installs them `0600` into `~/.config/systemd/user/` |
