@@ -166,6 +166,14 @@ type Config struct {
 	// prefers a matching, executable override over resolving the profile's
 	// command_name on PATH. nil/empty means "always resolve via PATH".
 	ProfileCommandOverrides map[string]string
+
+	// MoctBaseURL is the base URL of this host's moct-be, the memory plane
+	// (M-97 decision 3). Empty — the default everywhere but a lane that runs
+	// moct-be — switches the whole MOCT seam off: no pre-run inject, no `moct`
+	// MCP server in a task's config. The daemon is the side that knows this
+	// URL: moct-be is reached on the daemon host's loopback, which the server
+	// cannot know (docs/moct-seam.md).
+	MoctBaseURL string
 }
 
 // Overrides allows CLI flags to override environment variables and defaults.
@@ -623,6 +631,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	// MOCT seam (docs/moct-seam.md). Deliberately not a MULTICA_* variable: it
+	// names a DIFFERENT backend, and the same value is handed to the `moct-mcp`
+	// stdio server as MOCT_BASE_URL — one name, no translation. Empty = off.
+	moctBaseURL := strings.TrimSpace(os.Getenv("MOCT_BASE_URL"))
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -669,6 +682,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		QwenArgs:                        qwenArgs,
 		QwenpawArgs:                     qwenpawArgs,
 		ProfileCommandOverrides:         profileCommandOverrides,
+		MoctBaseURL:                     moctBaseURL,
 	}, nil
 }
 

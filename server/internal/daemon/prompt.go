@@ -104,6 +104,7 @@ func buildJoinedWakeupsBlock(notes string) string {
 type promptOpts struct {
 	sharedLocalDirectory    bool
 	worktreeReplayConflicts []string
+	moctInject              string
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
@@ -117,6 +118,16 @@ type PromptOption func(*promptOpts)
 // has to be told (issue #7344).
 func WithSharedLocalDirectory() PromptOption {
 	return func(o *promptOpts) { o.sharedLocalDirectory = true }
+}
+
+// WithMoctInject hands BuildPrompt the MOCT memory block fetched for this
+// claim (docs/moct-seam.md out-path 1). Unlike every other run-scoped block
+// it is PREPENDED rather than appended: it is context the run has not seen
+// before and the seam contract puts it ahead of the task's own instruction.
+// The block is fetched once per claim, so a resumed session's retry sees the
+// same memory instead of a second, possibly different, fetch.
+func WithMoctInject(block string) PromptOption {
+	return func(o *promptOpts) { o.moctInject = block }
 }
 
 // WithWorktreeReplayConflicts names the files whose merge this turn has to
@@ -212,6 +223,13 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	// The MOCT memory block is the one run-scoped block that goes in FRONT of
+	// the task instruction, per the seam contract (docs/moct-seam.md). The
+	// rule below still holds for everything else — and for the block itself
+	// once it is in place: it does not change again within a session.
+	if opts.moctInject != "" {
+		body = opts.moctInject + body
+	}
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
