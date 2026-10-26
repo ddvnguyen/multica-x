@@ -7962,6 +7962,25 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 			effectiveMcpConfig = merged
 		}
+		// MOCT memory tools (M-101, docs/moct-seam.md out-path 2). The entry
+		// names the `multica moct-mcp` stdio server and carries the run's D2
+		// refs as env, so a tool call can only read or write inside this run's
+		// scope. Merged last and by server name, exactly like the per-task
+		// overlay the server sends: a saved `moct` entry of the agent's own
+		// would be a stale placeholder, the live scoped one wins.
+		//
+		// Never fatal. The seam is off (no MOCT_BASE_URL), the binary cannot
+		// be located or the base URL does not parse — all skip the entry with
+		// a warning; the task runs with whatever MCP servers it already had.
+		if moctConfig, ok := moctMCPConfig(d.cfg.MoctBaseURL, task); !ok {
+			if strings.TrimSpace(d.cfg.MoctBaseURL) != "" {
+				taskLog.Warn("moct: MCP server not added; running without memory tools")
+			}
+		} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, moctConfig); mergeErr != nil {
+			taskLog.Warn("moct: could not merge MCP server; running without memory tools", "error", mergeErr)
+		} else {
+			effectiveMcpConfig = merged
+		}
 		if provider == "cursor" {
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
 		}
@@ -8462,6 +8481,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
 	var promptOptions []PromptOption
+	// MOCT pre-run memory inject (M-101, docs/moct-seam.md out-path 1). Fetched
+	// once per claim and carried on promptOptions, so the fresh-session retry's
+	// own BuildPrompt reuses the same block instead of fetching a second time.
+	// Any failure — moct-be down, slow or 5xx — logs and continues WITHOUT
+	// memory: nothing on this path may fail or stall a task.
+	if moctBlock := moctInjectPrompt(ctx, d.cfg.MoctBaseURL, task, taskLog); moctBlock != "" {
+		promptOptions = append(promptOptions, WithMoctInject(moctBlock))
+	}
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}

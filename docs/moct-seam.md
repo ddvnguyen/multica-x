@@ -39,9 +39,18 @@ Rules learned from moct-be (live-verified):
   `multica:agent:*` string. There is no expert registry to maintain.
 - `workspaceId` and `expertId` are **required** on every read (400 without).
 
+## Configuration — one switch for both halves
+
+`MOCT_BASE_URL` on the **daemon** (e.g. `http://127.0.0.1:8310`) turns the
+seam on: the daemon then fetches the inject block on claim and adds the `moct`
+MCP server to every task it runs. Unset — the default everywhere but a lane
+that runs moct-be — nothing changes: no block, no MCP entry, no warning. The
+same value is forwarded to the stdio server as its `MOCT_BASE_URL`.
+
 ## Out-path 1 — pre-run inject
 
-On claim, the daemon (child M-101) calls:
+On claim, the daemon calls (`moctInjectPrompt` in
+`server/internal/daemon/moct_memory.go`):
 
 ```
 GET /team/v1/memory/inject?workspaceId=<multica:ws:…>&expertId=<multica:agent:…>
@@ -54,18 +63,24 @@ prompt-ready block, newest/highest priority first, capped by
 `layerTokens` (default 1000). Only `status:"active"` records inject.
 
 The daemon prepends the entries to the task prompt. Go type:
-`moct.Inject` / `moct.Injection`.
+`moct.Inject` / `moct.Injection`; the prompt hook is `WithMoctInject`, and it
+is the one run-scoped block that goes *ahead* of the task instruction rather
+than behind it.
 
 **Narrowing semantics (live):** the inject buckets match `home {kind,ref}`
 exactly per bucket — task, channel, team, expert — so `taskRef` really does
 scope the block to one issue. Omitting a ref skips that bucket.
 
-## Out-path 2 — on-demand tools (`multica moct-mcp`, child M-101)
+## Out-path 2 — on-demand tools (`multica moct-mcp`)
 
-A stdio MCP server named `moct` on the per-task MCP overlay
-(`server/internal/handler/mcp_overlay.go`, overlay wins by server name),
-built on `server/internal/moct/`. Refs are passed as **env**, never as tool
-arguments — a run cannot read or write outside its own scope:
+A stdio MCP server named `moct`, added by the daemon to the task's merged MCP
+config and merged by server name — the same overlay-wins rule as the per-task
+overlay (`server/internal/handler/mcp_overlay.go:22`, implemented on the daemon
+side by `mergeTaskRemoteMCPConfig`). The entry is `server/internal/moctmcp/`
+served by the `multica moct-mcp` subcommand, built on `server/internal/moct/`.
+The command is the running `multica` binary itself, so there is no second
+artifact to install. Refs are passed as **env**, never as tool arguments — a
+run cannot read or write outside its own scope:
 
 | Env | Value |
 |---|---|
@@ -126,6 +141,12 @@ the caller logs a warning and proceeds **without memory**:
 Any error on the inject path degrades the same way; no error on this path
 is ever fatal to a run. Client validation errors (missing scope, >10 ids)
 are programming bugs and are returned as plain errors.
+
+The stdio server follows the same rule from the other side: a moct-be that is
+down, unconfigured or unparseable makes every tool call answer `isError:true`,
+and `multica moct-mcp` stays alive. An ACP/dsh runtime fails a whole session
+when a stdio MCP server exits (`server/pkg/agent/acp_session.go`), so exiting
+would be exactly the "memory blocks a task" failure this contract forbids.
 
 ## Live-check verdict
 
