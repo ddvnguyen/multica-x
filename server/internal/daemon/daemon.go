@@ -9722,6 +9722,25 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					})
 					mu.Unlock()
 					flushFirstVisible()
+				case agent.MessageQuestion:
+					// Ask/plan parity (M-109): the backend is parked on this
+					// question. Surface it as a durable transcript line —
+					// the member answers by commenting on the issue, and
+					// the steered reply reaches the backend via the
+					// supplement loop. Text type keeps the server's task
+					// message contract untouched.
+					taskLog.Info("agent question parked", "call_id", msg.CallID)
+					mu.Lock()
+					sealPendingLocked()
+					s := msgSeq.Add(1)
+					batch = append(batch, TaskMessageData{
+						Seq:       int(s),
+						Type:      "text",
+						Content:   msg.Content,
+						CreatedAt: observedAt,
+					})
+					mu.Unlock()
+					flushFirstVisible()
 				}
 			case <-drainCtx.Done():
 				goto drainDone
