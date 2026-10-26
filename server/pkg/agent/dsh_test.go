@@ -149,3 +149,202 @@ func writeDshFixture(t *testing.T, body string) string {
 	}
 	return path
 }
+
+func TestDshBackendQuestionAnswerRoundTrip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"questions":true}}'
+IFS= read -r execute
+case "$execute" in *'"type":"execute"'*) ;; *) exit 8 ;; esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-q","session_id":"session-q","resumed":false}'
+printf '%s\n' '{"v":1,"type":"question","request_id":"task-q","call_id":"q-1","questions":[{"id":"plan","question":"Approve this plan and leave plan mode?","header":"Plan review","detail":"# Plan\n1. do the thing","options":[{"label":"Approve"},{"label":"Keep planning"}],"intent":{"kind":"plan-review","approve":"Approve","callId":"c9"}}]}'
+IFS= read -r answer
+printf '%s\n' "$answer" | grep -q '"type":"answer"' || exit 7
+printf '%s\n' "$answer" | grep -q '"request_id":"task-q"' || exit 7
+printf '%s\n' "$answer" | grep -q '"call_id":"q-1"' || exit 7
+printf '%s\n' "$answer" | grep -q '"id":"plan"' || exit 7
+printf '%s\n' "$answer" | grep -q '"selected":\["Approve"\]' || exit 7
+printf '%s\n' '{"v":1,"type":"tool_result","request_id":"task-q","call_id":"c9","name":"exit_plan_mode","output":"approved","is_error":false}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed","session_id":"session-q","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-q", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "plan it", ExecOptions{Cwd: t.TempDir(), Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var supplementErr error
+	supplementCalls := 0
+	var questionContent string
+	for message := range session.Messages {
+		if message.Type != MessageQuestion {
+			continue
+		}
+		questionContent = message.Content
+		if message.CallID != "q-1" {
+			t.Fatalf("question call id = %q, want q-1", message.CallID)
+		}
+		if !session.SupplementReady() {
+			t.Fatal("SupplementReady false while the question is parked")
+		}
+		supplementCalls++
+		supplementErr = session.Supplement(context.Background(),
+			"[ADDITIONAL GUIDANCE] Human \"Alice\" added guidance while you were working.\n\nHuman message:\nApprove")
+	}
+	if supplementCalls != 1 {
+		t.Fatalf("question messages = %d, want 1", supplementCalls)
+	}
+	if supplementErr != nil {
+		t.Fatalf("Supplement: %v", supplementErr)
+	}
+	for _, want := range []string{"Plan review", "Approve this plan", "# Plan", "reply *Approve*"} {
+		if !strings.Contains(questionContent, want) {
+			t.Fatalf("question transcript missing %q:\n%s", want, questionContent)
+		}
+	}
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("bad result: %#v", result)
+	}
+	if err := session.Supplement(context.Background(), "again"); err == nil || !strings.Contains(err.Error(), "no question is pending") {
+		t.Fatalf("second Supplement should report no pending question, got %v", err)
+	}
+}
+
+func TestDshBackendSupplementRefusedWithoutQuestionsCapability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// An old bridge: ready frame without the questions capability. Its stdin
+	// parser rejects unknown command types, so the daemon must refuse the
+	// supplement without writing anything — the fixture completes only when
+	// no extra stdin line arrives.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+IFS= read -r execute
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-old","session_id":"session-old","resumed":false}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-old","status":"completed","session_id":"session-old","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-old", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "hello", ExecOptions{Cwd: t.TempDir(), Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	supplementErr := make(chan error, 1)
+	for message := range session.Messages {
+		if message.Type == MessageStatus {
+			if !session.SupplementReady() {
+				t.Fatal("SupplementReady false after the session frame")
+			}
+			go func() {
+				supplementErr <- session.Supplement(context.Background(), "answer me")
+			}()
+		}
+	}
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("run should complete without the answer line being written: %#v", result)
+	}
+	if err := <-supplementErr; err == nil || !strings.Contains(err.Error(), "questions") {
+		t.Fatalf("Supplement should refuse a bridge without the questions capability, got %v", err)
+	}
+}
+
+func TestAnswerDshQuestionMappings(t *testing.T) {
+	var sent []dshAnswerCommand
+	state := &dshRunState{
+		requestID:        "task-1",
+		questionsCapable: true,
+		writeAnswer: func(command dshAnswerCommand) error {
+			sent = append(sent, command)
+			return nil
+		},
+	}
+	if err := answerDshQuestion(state, "Human message:\nanything"); err == nil || !strings.Contains(err.Error(), "no question is pending") {
+		t.Fatalf("expected no-pending error, got %v", err)
+	}
+
+	state.pendingCallID = "q-1"
+	state.pendingQuestions = []dshQuestion{
+		{ID: "plan", Question: "Approve?", Intent: &dshQuestionIntent{Kind: "plan-review", Approve: "Approve"}},
+	}
+	// The supplement framing must be stripped; only the member's word "approve"
+	// (case-insensitively matching the approve label) selects the option.
+	if err := answerDshQuestion(state, "[ADDITIONAL GUIDANCE] Human \"Bob\" added guidance.\n\nHuman message:\napprove"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("answers sent = %d, want 1", len(sent))
+	}
+	command := sent[0]
+	if command.Version != DshProtocolVersion || command.Type != "answer" || command.RequestID != "task-1" || command.CallID != "q-1" {
+		t.Fatalf("bad answer command: %#v", command)
+	}
+	if len(command.Answers) != 1 || command.Answers[0].ID != "plan" ||
+		len(command.Answers[0].Selected) != 1 || command.Answers[0].Selected[0] != "Approve" ||
+		command.Answers[0].Custom != "" {
+		t.Fatalf("approve label should map to the approval selection: %#v", command.Answers[0])
+	}
+	if state.pendingCallID != "" {
+		t.Fatal("pending question should clear after a delivered answer")
+	}
+
+	// Any other reply is free-text feedback, delivered as custom text.
+	state.pendingCallID = "q-2"
+	state.pendingQuestions = []dshQuestion{
+		{ID: "plan", Question: "Approve?", Intent: &dshQuestionIntent{Kind: "plan-review", Approve: "Approve"}},
+		{ID: "mode", Question: "Which mode?"},
+	}
+	if err := answerDshQuestion(state, "use the blue deployment"); err != nil {
+		t.Fatal(err)
+	}
+	command = sent[1]
+	if len(command.Answers) != 2 || command.Answers[0].Custom != "use the blue deployment" ||
+		len(command.Answers[0].Selected) != 0 || command.Answers[1].Custom != "use the blue deployment" {
+		t.Fatalf("free-text replies should answer every question as custom text: %#v", command.Answers)
+	}
+
+	// A bridge that predates the capability is refused before any write.
+	refused := &dshRunState{pendingCallID: "q-3"}
+	if err := answerDshQuestion(refused, "Human message:\nhi"); err == nil || !strings.Contains(err.Error(), "questions") {
+		t.Fatalf("expected capability refusal, got %v", err)
+	}
+}
+
+func TestRenderDshQuestions(t *testing.T) {
+	got := renderDshQuestions([]dshQuestion{{
+		ID: "q1", Question: "Ship it?", Header: "Confirm",
+		Options: []dshQuestionOption{{Label: "Yes", Description: "Ship now"}, {Label: "No"}},
+	}})
+	for _, want := range []string{"Confirm", "Ship it?", "- Yes — Ship now", "- No"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendering missing %q:\n%s", want, got)
+		}
+	}
+	plan := renderDshQuestions([]dshQuestion{{
+		ID: "p", Question: "Approve this plan?", Detail: "# Plan\n1. step",
+		Intent: &dshQuestionIntent{Kind: "plan-review", Approve: "Approve"},
+	}})
+	for _, want := range []string{"📋 Plan review", "reply *Approve*"} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("plan rendering missing %q:\n%s", want, plan)
+		}
+	}
+}
+
+func TestDshSupplementContentStripsFraming(t *testing.T) {
+	framed := "[ADDITIONAL GUIDANCE] Human \"Alice\" added guidance while you were working.\n\n- Preserve and complete the original objective.\n\nHuman message:\nuse staging"
+	if got := dshSupplementContent(framed); got != "use staging" {
+		t.Fatalf("content = %q, want %q", got, "use staging")
+	}
+	if got := dshSupplementContent("raw reply"); got != "raw reply" {
+		t.Fatalf("unframed content = %q", got)
+	}
+}
