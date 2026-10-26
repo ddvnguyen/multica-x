@@ -7,20 +7,27 @@ import {
 import {
   BOARD_ROUTE,
   createIslandNavigation,
-  HIDDEN_AREAS,
+  ISLAND_FAMILIES,
+  islandRouteKey,
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
 import {
+  AgentDetailPage,
+  AgentsPage,
+  ChatPage,
   CoreProvider,
   createIssueViewStore,
   ErrorBoundary,
+  InboxPage,
   IssueDetailRoute,
   IssuesPage,
   NavigationProvider,
   PortalContainerProvider,
   RESOURCES,
   setCurrentWorkspace,
+  SkillDetailPage,
+  SkillsPage,
   useWorkspaceList,
   ViewStoreProvider,
   WorkspaceSlugProvider,
@@ -215,7 +222,37 @@ function WorkspaceGate({
   );
 }
 
-/** The two places this panel owns: the board and one issue. */
+/**
+ * The five places the island renders, plus their detail depth.
+ *
+ * The rail row decides where an island opens; from there the fork's pages
+ * navigate the way they do in the web app, so a link between two of these views
+ * (an inbox row falling back to its issue, an agent's "message" link) lands on
+ * the matching page instead of doing nothing. dsh gives a plugin no way to move
+ * the shell's rail selection, so the row keeps marking the entry the reader came
+ * through while the island follows the reader.
+ */
+function IslandPage({ route }: { route: IslandRoute }) {
+  switch (route.view) {
+    case "board":
+      return <IssuesPage />;
+    case "issue":
+      return <IssueDetailRoute routeId={route.issueId} />;
+    case "agents":
+      return <AgentsPage />;
+    case "agent":
+      return <AgentDetailPage agentId={route.agentId} />;
+    case "skills":
+      return <SkillsPage />;
+    case "skill":
+      return <SkillDetailPage skillId={route.skillId} />;
+    case "inbox":
+      return <InboxPage />;
+    case "chat":
+      return <ChatPage />;
+  }
+}
+
 export function IslandPages({
   slug,
   initialRoute = BOARD_ROUTE,
@@ -240,22 +277,19 @@ export function IslandPages({
 
   useEffect(() => {
     if (refused === null) return;
-    // One line, once per destination: the refused areas are a deliberate
-    // scoping decision (see HIDDEN_AREAS), not a bug to report per click.
+    // One line, once per destination: a refused path is a deliberate scoping
+    // decision (the five views below, or a Q8 surface), not a bug to report per
+    // click.
     console.info(
-      `[multica] ${refused} is not part of the dsh panel (hidden: ${HIDDEN_AREAS.join(", ")})`,
+      `[multica] ${refused} is not one of the dsh panel's views (${ISLAND_FAMILIES.join(", ")})`,
     );
   }, [refused]);
 
   return (
     <ViewStoreProvider store={viewStore}>
       <NavigationProvider value={navigation}>
-        <ErrorBoundary resetKeys={[route.view, route.view === "issue" ? route.issueId : ""]}>
-          {route.view === "board" ? (
-            <IssuesPage />
-          ) : (
-            <IssueDetailRoute routeId={route.issueId} />
-          )}
+        <ErrorBoundary resetKeys={[islandRouteKey(route)]}>
+          <IslandPage route={route} />
         </ErrorBoundary>
       </NavigationProvider>
     </ViewStoreProvider>

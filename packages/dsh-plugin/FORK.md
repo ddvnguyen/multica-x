@@ -1,9 +1,9 @@
 # Fork provenance
 
-This package renders the Multica board and issue page inside DeepSeek Harness.
-What it renders is not a re-implementation: it is this repository, which is a
-fork of Multica. This file records which fork, what it may consume, and how it
-is expected to diverge.
+This package renders five Multica views — issues, agents, skills, inbox, chat —
+inside DeepSeek Harness. What it renders is not a re-implementation: it is this
+repository, which is a fork of Multica. This file records which fork, what it may
+consume, and how it is expected to diverge.
 
 ## Bases
 
@@ -64,7 +64,7 @@ is not. Rules, in order:
 1. Move the fork base to the new commit and read the diff for anything in
    `packages/core`, `packages/ui` or `packages/views` that the exports in
    `src/fork.ts` depend on.
-2. `pnpm --filter @multica/dsh-plugin test` — the island tests render the board
-   and an issue against a stubbed backend, so a changed provider or route
-   contract shows up there rather than in a browser.
+2. `pnpm --filter @multica/dsh-plugin test` — the island tests render each of the
+   five views (board, agents, skills, inbox, chat) against a stubbed backend, so a
+   changed provider or route contract shows up there rather than in a browser.
 3. `pnpm lint` in the package for the gate, then the workspace `pnpm -w build`.

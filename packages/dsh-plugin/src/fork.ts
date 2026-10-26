@@ -24,11 +24,15 @@ export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";
 
-// The two surfaces this panel renders.
+// The five surfaces the sidebar menu opens, plus their detail depth.
 export {
   IssuesPage,
   IssueDetailRoute,
 } from "@multica/views/issues/components";
+export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
+export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
+export { InboxPage } from "@multica/views/inbox";
+export { ChatPage } from "@multica/views/chat";
 
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
