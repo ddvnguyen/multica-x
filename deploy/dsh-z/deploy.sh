@@ -506,6 +506,11 @@ else
     echo "    serverUrl: http://127.0.0.1:$MULTICA_BE_Z_PORT"
     echo "    token: ''"
     echo "    workspaceSlug: $MULTICA_Z_WS_SLUG"
+    # The browser's memory seam (M-121, docs/moct-seam.md out-path 3). Empty
+    # keeps /moct answering 503 and the memory surfaces hidden.
+    if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
+      echo "    moctUrl: $LANE_MOCT_BASE_URL"
+    fi
   } > "$LANE_ROOT/data/multica-row.yml"
 
   # Unit side: inject the extra env file (MULTICA_DSH_TOKEN = MULTICA_Z_PAT)
