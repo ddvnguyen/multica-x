@@ -80,6 +80,52 @@ type AgentMcpServer struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type AgentPlan struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	Title             string             `json:"title"`
+	Status            string             `json:"status"`
+	Revision          int32              `json:"revision"`
+	SubmittedRevision pgtype.Int4        `json:"submitted_revision"`
+	Sections          []byte             `json:"sections"`
+	ApprovedBy        pgtype.UUID        `json:"approved_by"`
+	ApprovedAt        pgtype.Timestamptz `json:"approved_at"`
+	CancelledAt       pgtype.Timestamptz `json:"cancelled_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AgentPlanReview struct {
+	ID           pgtype.UUID        `json:"id"`
+	PlanID       pgtype.UUID        `json:"plan_id"`
+	PlanRevision int32              `json:"plan_revision"`
+	Verdict      string             `json:"verdict"`
+	Comments     []byte             `json:"comments"`
+	Note         pgtype.Text        `json:"note"`
+	ReviewedBy   pgtype.UUID        `json:"reviewed_by"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type AgentQuestionCard struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Status      string             `json:"status"`
+	Context     pgtype.Text        `json:"context"`
+	Questions   []byte             `json:"questions"`
+	Answers     []byte             `json:"answers"`
+	AnsweredBy  pgtype.UUID        `json:"answered_by"`
+	AnsweredAt  pgtype.Timestamptz `json:"answered_at"`
+	WithdrawnAt pgtype.Timestamptz `json:"withdrawn_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AgentRuntime struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
