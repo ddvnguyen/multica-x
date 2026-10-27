@@ -36,6 +36,29 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 need git; need node; need curl; need podman; need pnpm; need openssl
 
+# Project the lane's credential refs into an env-file body. The managed
+# credential document ($LANE_HOME/.credentials.yaml, 0600, never committed)
+# holds the lane's `refs:` entries; every env file written below is rebuilt
+# from scratch on each redeploy, so keys are emitted here instead of being
+# hand-dropped and silently lost (M-103). Values are unquoted or
+# double-quoted YAML scalars, go straight into the 0600 file, and are never
+# passed through log().
+emit_lane_credential_refs() {
+  [ -f "$LANE_HOME/.credentials.yaml" ] || return 0
+  awk '
+    /^refs:[[:space:]]*$/      { in_refs = 1; next }
+    in_refs && /^[^[:space:]]/ { in_refs = 0 }
+    in_refs && /^  [A-Za-z_][A-Za-z0-9_]*:[[:space:]]/ {
+      line = $0
+      sub(/^  /, "", line)
+      key = line; sub(/:[[:space:]].*$/, "", key)
+      val = line; sub(/^[^:]*:[[:space:]]*/, "", val)
+      if (val ~ /^".*"$/) { sub(/^"/, "", val); sub(/"$/, "", val) }
+      if (length(val) > 0) print key "=" val
+    }
+  ' "$LANE_HOME/.credentials.yaml"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 0 — preflight
 # ---------------------------------------------------------------------------
@@ -258,6 +281,7 @@ umask 077
 {
   echo "MULTICA_WORKSPACES_ROOT=$MULTICA_Z_WORKSPACES_ROOT"
   echo "MULTICA_WORKSPACE_ID=${MULTICA_Z_WORKSPACE_ID:-}"
+  emit_lane_credential_refs
 } > "$LANE_ROOT/data/multica-daemon-z.env"
 umask 022
 
@@ -373,6 +397,10 @@ umask 077
   if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
     echo "MOCT_BASE_URL=$LANE_MOCT_BASE_URL"
   fi
+  # Lane credentials (M-103): the OpenCode Go account key the dsh run
+  # profile authenticates with — without it every lane run dies at
+  # MISSING_CREDENTIAL before any model call.
+  emit_lane_credential_refs
 } > "$LANE_ROOT/data/multica-daemon-z.env"
 umask 022
 
@@ -515,9 +543,13 @@ else
 
   # Unit side: inject the extra env file (MULTICA_DSH_TOKEN = MULTICA_Z_PAT)
   # and the --patch of the row, both guarded so reruns do not stack lines.
+  # The lane credential refs ride along: this file is rebuilt from scratch
+  # here, so a hand-dropped key would not survive the next plugin deploy
+  # (M-103).
   umask 077
   {
     echo "MULTICA_DSH_TOKEN=$MULTICA_Z_PAT"
+    emit_lane_credential_refs
   } > "$LANE_ROOT/data/dsh-web.env"
   umask 022
   # Resolve the real unit file: phase 9 already set HOME=$LANE_HOME, but the
