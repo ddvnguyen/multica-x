@@ -11,7 +11,7 @@ import type { NavigationAdapter } from "../fork";
  * Q8 — hide, do not delete. The fork still ships GitHub and Slack integrations,
  * billing, autopilots and squads; this panel simply never exposes them. There
  * is no dashboard chrome here (no sidebar, no command palette), and a
- * navigation to anything outside the five families below is refused rather than
+ * navigation to anything outside the six families below is refused rather than
  * mounted, so a stray link in a shared component cannot open a surface the epic
  * asked to keep out of dsh. The code stays in the fork.
  */
@@ -23,13 +23,14 @@ export const HIDDEN_AREAS = [
   "squads",
 ] as const;
 
-/** The five families of page, each named after its path segment. */
+/** The six families of page, each named after its path segment. */
 export const ISLAND_FAMILIES = [
   "issues",
   "agents",
   "skills",
   "inbox",
   "chat",
+  "settings",
 ] as const;
 
 export type IslandFamily = (typeof ISLAND_FAMILIES)[number];
@@ -52,7 +53,8 @@ export type IslandRoute =
   | WithQuery<{ view: "skills" }>
   | WithQuery<{ view: "skill"; skillId: string }>
   | WithQuery<{ view: "inbox" }>
-  | WithQuery<{ view: "chat" }>;
+  | WithQuery<{ view: "chat" }>
+  | WithQuery<{ view: "settings" }>;
 
 export const BOARD_ROUTE: IslandRoute = { view: "board" };
 
@@ -63,6 +65,7 @@ export const FAMILY_ROOTS: Record<IslandFamily, IslandRoute> = {
   skills: { view: "skills" },
   inbox: { view: "inbox" },
   chat: { view: "chat" },
+  settings: { view: "settings" },
 };
 
 function isFamily(segment: string): segment is IslandFamily {
@@ -80,9 +83,9 @@ function normalizeQuery(raw: string): string {
  * Read an island route out of a workspace path.
  *
  * `/w/issues` and `/w/issues/MUL-12` are the board and one issue; `/w/agents`,
- * `/w/skills`, `/w/inbox` and `/w/chat` are the other four entries, with
- * `/w/agents/<id>` and `/w/skills/<id>` as their detail depth. `null` means the
- * path is not one of the places this panel owns.
+ * `/w/skills`, `/w/inbox`, `/w/chat` and `/w/settings` are the other five
+ * entries, with `/w/agents/<id>` and `/w/skills/<id>` as their detail depth.
+ * `null` means the path is not one of the places this panel owns.
  */
 export function parseIslandRoute(path: string): IslandRoute | null {
   const hash = path.indexOf("#");
@@ -122,6 +125,9 @@ function parseFamilyPath(
       return id === undefined ? { view: "inbox" } : null;
     case "chat":
       return id === undefined ? { view: "chat" } : null;
+    case "settings":
+      // The settings page addresses its tab through the query, not a segment.
+      return id === undefined ? { view: "settings" } : null;
   }
 }
 
@@ -145,6 +151,8 @@ export function islandPathname(slug: string, route: IslandRoute): string {
       return `${base}/inbox`;
     case "chat":
       return `${base}/chat`;
+    case "settings":
+      return `${base}/settings`;
   }
 }
 

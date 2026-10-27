@@ -25,6 +25,11 @@ import {
  * - `main` (a `keyed` slot) gets one cell per entry: the seat the React 19
  *   island mounts into, opening at that entry's own view. `priority: -100` is
  *   the additive convention the shipped panels use; nothing shipped is replaced.
+ *
+ * The sixth row is Settings: the fork's own page, with the surfaces this panel
+ * does not render hidden and one MOCT group added. It is a rail row and not a
+ * route inside another row because a settings page is a destination a reader
+ * returns to, and the shell's rail is where destinations live.
  */
 export interface MulticaEntry {
   /** `sidebar.panellist` list id, and the `main` cell key it addresses. */
@@ -37,7 +42,7 @@ export interface MulticaEntry {
   glyph: RailGlyph;
 }
 
-/** The five entries, in the order the Owner named them. */
+/** The six entries, in the order the Owner named them. */
 export const MULTICA_ENTRIES: readonly MulticaEntry[] = [
   {
     id: "multica",
@@ -68,6 +73,12 @@ export const MULTICA_ENTRIES: readonly MulticaEntry[] = [
     label: "Multica Chat",
     route: FAMILY_ROOTS.chat,
     glyph: "chat",
+  },
+  {
+    id: "multica-settings",
+    label: "Multica Settings",
+    route: FAMILY_ROOTS.settings,
+    glyph: "settings",
   },
 ];
 

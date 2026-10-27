@@ -54,12 +54,12 @@ describe("client apply", () => {
 
     const rows = byName(registrations, "sidebar.panellist");
     const seats = byName(registrations, "main");
-    expect(rows).toHaveLength(5);
-    expect(seats).toHaveLength(5);
-    expect(MULTICA_ENTRIES).toHaveLength(5);
+    expect(rows).toHaveLength(6);
+    expect(seats).toHaveLength(6);
+    expect(MULTICA_ENTRIES).toHaveLength(6);
   });
 
-  it("labels the five entries and keeps the rail order", () => {
+  it("labels the six entries and keeps the rail order", () => {
     const { ctx, registrations } = fakeSlots();
     apply(ctx);
 
@@ -70,12 +70,13 @@ describe("client apply", () => {
       "Multica Skills",
       "Multica Inbox",
       "Multica Chat",
+      "Multica Settings",
     ]);
     // A list slot has no grouping API: adjacent order is the grouping, and each
     // row's id is its own, so no shipped row is replaced.
-    expect(rows.map((entry) => entry.options.order)).toEqual([30, 31, 32, 33, 34]);
+    expect(rows.map((entry) => entry.options.order)).toEqual([30, 31, 32, 33, 34, 35]);
     for (const row of rows) expect(row.options.key).toBeUndefined();
-    expect(new Set(rows.map((entry) => entry.options.id)).size).toBe(5);
+    expect(new Set(rows.map((entry) => entry.options.id)).size).toBe(6);
     expect(rows[0]?.options.id).toBe(MULTICA_PANEL_ID);
   });
 
@@ -113,6 +114,7 @@ describe("client apply", () => {
       FAMILY_ROOTS.skills,
       FAMILY_ROOTS.inbox,
       FAMILY_ROOTS.chat,
+      FAMILY_ROOTS.settings,
     ]);
     configureHostRuntime(null);
   });
@@ -134,7 +136,14 @@ describe("seat component", () => {
   });
 
   it("sizes the rail glyph from the owner props", () => {
-    for (const glyph of ["issues", "agents", "skills", "inbox", "chat"] as const) {
+    for (const glyph of [
+      "issues",
+      "agents",
+      "skills",
+      "inbox",
+      "chat",
+      "settings",
+    ] as const) {
       const Icon = createRailIcon(createElement as never, glyph);
       const element = Icon({ size: 18 }) as {
         type: string;

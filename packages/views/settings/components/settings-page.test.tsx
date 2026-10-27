@@ -332,6 +332,79 @@ describe("SettingsPage information architecture", () => {
   });
 });
 
+describe("SettingsPage host-supplied groups and hidden pages", () => {
+  const moctGroup = {
+    key: "moct",
+    label: "MOCT",
+    mark: <span aria-hidden="true" />,
+    entries: [
+      {
+        value: "moct-memory",
+        label: "Memory",
+        icon: () => null,
+        content: <div>MoctMemory</div>,
+      },
+    ],
+  };
+
+  it("appends a host group after the built-in ones", () => {
+    navigationState.search = "tab=moct-memory";
+    renderWithI18n(<SettingsPage extraGroups={[moctGroup]} />);
+
+    const group = within(nav()).getByRole("region", { name: "MOCT" });
+    expect(within(group).getByRole("link", { name: "Memory" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByText("MoctMemory")).toBeInTheDocument();
+  });
+
+  it("leaves hidden pages out of the navigation and the compact selector", () => {
+    renderWithI18n(<SettingsPage hiddenTabs={["code", "channels"]} />);
+
+    expect(within(nav()).queryByRole("link", { name: "Code" })).toBeNull();
+    expect(within(nav()).queryByRole("link", { name: "Messaging" })).toBeNull();
+    // A page beside the hidden ones is untouched.
+    expect(within(nav()).getByRole("link", { name: "MCP servers" })).toBeInTheDocument();
+
+    const selector = screen.getByRole("combobox", { name: "Go to settings page" });
+    expect(within(selector).queryByRole("option", { name: "Code" })).toBeNull();
+    expect(within(selector).getByRole("option", { name: "MCP servers" })).toBeInTheDocument();
+  });
+
+  it("drops a subgroup and a group that hidden pages emptied", () => {
+    renderWithI18n(<SettingsPage hiddenTabs={["code", "channels", "mcp"]} />);
+
+    expect(
+      within(nav()).queryByRole("group", { name: "Connections & extensions" }),
+    ).toBeNull();
+    // The workspace group survives: only one of its subgroups emptied.
+    expect(within(nav()).getByRole("group", { name: "Issues & workflow" })).toBeInTheDocument();
+  });
+
+  it("falls back to the first page a hidden tab's URL can open", () => {
+    navigationState.search = "tab=shortcuts";
+    renderWithI18n(<SettingsPage hiddenTabs={["shortcuts"]} />);
+
+    expect(screen.queryByText("KeyboardShortcutsTab")).toBeNull();
+    expect(screen.getByText("AccountTab")).toBeInTheDocument();
+  });
+
+  it("keeps hidden pages and host pages searchable exactly as shown", () => {
+    renderWithI18n(<SettingsPage extraGroups={[moctGroup]} hiddenTabs={["code"]} />);
+    const input = screen.getByRole("searchbox", { name: "Search settings" });
+
+    // Code is gone from the index, not just the navigation.
+    fireEvent.change(input, { target: { value: "github" } });
+    expect(screen.getByText("No matching settings")).toBeInTheDocument();
+
+    // A host group's page is reachable by name.
+    fireEvent.change(input, { target: { value: "memory" } });
+    const results = screen.getByRole("listbox", { name: "Search settings" });
+    expect(within(results).getByRole("option", { name: /Memory/ })).toBeInTheDocument();
+  });
+});
+
 describe("SettingsPage search", () => {
   it("finds settings inside pages and opens the one chosen", () => {
     renderWithI18n(<SettingsPage />);

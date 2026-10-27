@@ -32,11 +32,18 @@ describe("parseIslandRoute", () => {
     });
   });
 
-  it("reads the other four entries of the menu", () => {
+  it("reads the other five entries of the menu", () => {
     expect(parseIslandRoute("/demo/agents")).toEqual({ view: "agents" });
     expect(parseIslandRoute("/demo/skills")).toEqual({ view: "skills" });
     expect(parseIslandRoute("/demo/inbox")).toEqual({ view: "inbox" });
     expect(parseIslandRoute("/demo/chat")).toEqual({ view: "chat" });
+    expect(parseIslandRoute("/demo/settings")).toEqual({ view: "settings" });
+    // Settings addresses its page through the query, never a segment.
+    expect(parseIslandRoute("/demo/settings?tab=moct-memory")).toEqual({
+      view: "settings",
+      query: "tab=moct-memory",
+    });
+    expect(parseIslandRoute("/demo/settings/billing")).toBeNull();
   });
 
   it("reads the detail depth of the families that have one", () => {
@@ -82,6 +89,8 @@ describe("islandPath", () => {
       { view: "inbox" as const },
       { view: "chat" as const, query: "session=abc" },
       { view: "inbox" as const, query: "view=archived" },
+      { view: "settings" as const },
+      { view: "settings" as const, query: "tab=moct-connection" },
     ];
     for (const route of routes) {
       expect(parseIslandRoute(islandPath("demo", route))).toEqual(route);
@@ -97,6 +106,7 @@ describe("islandPath", () => {
     expect(islandPathname("demo", FAMILY_ROOTS.skills)).toBe("/demo/skills");
     expect(islandPathname("demo", FAMILY_ROOTS.inbox)).toBe("/demo/inbox");
     expect(islandPathname("demo", FAMILY_ROOTS.chat)).toBe("/demo/chat");
+    expect(islandPathname("demo", FAMILY_ROOTS.settings)).toBe("/demo/settings");
   });
 });
 
@@ -112,7 +122,7 @@ describe("islandParent", () => {
 });
 
 describe("islandRouteKey", () => {
-  it("separates the six rendered places", () => {
+  it("separates the rendered places", () => {
     expect(
       new Set([
         islandRouteKey(BOARD_ROUTE),
@@ -123,8 +133,9 @@ describe("islandRouteKey", () => {
         islandRouteKey({ view: "skill", skillId: "s" }),
         islandRouteKey(FAMILY_ROOTS.inbox),
         islandRouteKey(FAMILY_ROOTS.chat),
+        islandRouteKey(FAMILY_ROOTS.settings),
       ]).size,
-    ).toBe(8);
+    ).toBe(9);
   });
 });
 

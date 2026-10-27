@@ -12,6 +12,7 @@ import {
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
+import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
 import {
   AgentDetailPage,
   AgentsPage,
@@ -26,6 +27,7 @@ import {
   PortalContainerProvider,
   RESOURCES,
   setCurrentWorkspace,
+  SettingsPage,
   SkillDetailPage,
   SkillsPage,
   useWorkspaceList,
@@ -46,6 +48,10 @@ export interface IslandAppProps {
   preferredSlug?: string;
   /** Origin-less WebSocket URL on the dsh origin. */
   wsUrl: string;
+  /** Same-origin path of the realtime channel, shown in settings. */
+  wsPath: string;
+  /** Why the host cannot proxy, when it cannot; shown in settings. */
+  problem: string | null;
   /** Place to mount at; the board unless a deep link asked for one issue. */
   initialRoute?: IslandRoute;
 }
@@ -126,6 +132,8 @@ export function IslandBoot({
       portalHost={portalHost}
       preferredSlug={config.workspaceSlug}
       wsUrl={islandWebSocketUrl(config.wsPath, window.location)}
+      wsPath={config.wsPath}
+      problem={config.problem}
       initialRoute={initialRoute}
     />
   );
@@ -135,6 +143,8 @@ export function IslandApp({
   portalHost,
   preferredSlug,
   wsUrl,
+  wsPath,
+  problem,
   initialRoute,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
@@ -154,7 +164,12 @@ export function IslandApp({
       syncUserLocale={false}
     >
       <PortalContainerProvider container={portalHost}>
-        <WorkspaceGate preferredSlug={preferredSlug} initialRoute={initialRoute} />
+        <WorkspaceGate
+          preferredSlug={preferredSlug}
+          wsPath={wsPath}
+          problem={problem}
+          initialRoute={initialRoute}
+        />
       </PortalContainerProvider>
     </CoreProvider>
   );
@@ -180,9 +195,13 @@ function detectOs(): string {
  */
 function WorkspaceGate({
   preferredSlug,
+  wsPath,
+  problem,
   initialRoute,
 }: {
   preferredSlug?: string;
+  wsPath: string;
+  problem: string | null;
   initialRoute?: IslandRoute;
 }) {
   const { workspaces, ready } = useWorkspaceList();
@@ -217,13 +236,20 @@ function WorkspaceGate({
   }
   return (
     <WorkspaceSlugProvider slug={workspace.slug}>
-      <IslandPages slug={workspace.slug} initialRoute={initialRoute} />
+      <IslandPages
+        slug={workspace.slug}
+        wsPath={wsPath}
+        problem={problem}
+        initialRoute={initialRoute}
+      />
     </WorkspaceSlugProvider>
   );
 }
 
 /**
- * The five places the island renders, plus their detail depth.
+ * The places the island renders without host-supplied props, plus their detail
+ * depth. Settings is the one entry mounted separately: it needs the MOCT group
+ * and the hidden-page list above.
  *
  * The rail row decides where an island opens; from there the fork's pages
  * navigate the way they do in the web app, so a link between two of these views
@@ -232,7 +258,12 @@ function WorkspaceGate({
  * the shell's rail selection, so the row keeps marking the entry the reader came
  * through while the island follows the reader.
  */
-function IslandPage({ route }: { route: IslandRoute }) {
+function IslandPage({
+  route,
+}: {
+  /** Settings is mounted by `IslandPages`; it needs props this switch lacks. */
+  route: Exclude<IslandRoute, { view: "settings" }>;
+}) {
   switch (route.view) {
     case "board":
       return <IssuesPage />;
@@ -255,14 +286,22 @@ function IslandPage({ route }: { route: IslandRoute }) {
 
 export function IslandPages({
   slug,
+  wsPath,
+  problem,
   initialRoute = BOARD_ROUTE,
 }: {
   slug: string;
+  wsPath: string;
+  problem: string | null;
   initialRoute?: IslandRoute;
 }) {
   const [route, setRoute] = useState<IslandRoute>(initialRoute);
   const [refused, setRefused] = useState<string | null>(null);
   const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+  const moctGroup = useMemo(
+    () => createMoctGroup({ workspaceSlug: slug, wsPath, problem }),
+    [slug, wsPath, problem],
+  );
 
   const navigation = useMemo(
     () =>
@@ -289,7 +328,17 @@ export function IslandPages({
     <ViewStoreProvider store={viewStore}>
       <NavigationProvider value={navigation}>
         <ErrorBoundary resetKeys={[islandRouteKey(route)]}>
-          <IslandPage route={route} />
+          {route.view === "settings" ? (
+            // The fork's page, scoped to what this shell can actually render:
+            // no billing, integrations, plugins or shortcut reference, plus the
+            // one group that only exists here.
+            <SettingsPage
+              extraGroups={[moctGroup]}
+              hiddenTabs={HIDDEN_SETTINGS_TABS}
+            />
+          ) : (
+            <IslandPage route={route} />
+          )}
         </ErrorBoundary>
       </NavigationProvider>
     </ViewStoreProvider>

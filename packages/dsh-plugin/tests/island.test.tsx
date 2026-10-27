@@ -83,6 +83,20 @@ function stubBackend(
     if (url.startsWith("/multica/api/me")) {
       return json({ id: "user-1", name: "Ada", email: "ada@example.test" });
     }
+    // The memory seam the settings page reads through the host's /moct prefix.
+    if (url.startsWith("/moct/status")) {
+      return json({ ok: true, schema: 8, reachable: true });
+    }
+    if (url.startsWith("/moct/team/v1/memory/usage")) {
+      return json({
+        workspaceId: "multica:ws:ws-1",
+        capTokens: 1200,
+        injectLayerTokens: { min: 200, max: 4000 },
+        homes: [
+          { home: "team:demo", usedTokens: 640, records: 3, blockedPending: 1, largest: [] },
+        ],
+      });
+    }
     if (url.startsWith("/multica/api/issues/grouped")) {
       return json({
         groups: [
@@ -207,6 +221,7 @@ describe("mountIsland", () => {
     { entry: "skills", route: { view: "skills" }, text: "Skills" },
     { entry: "inbox", route: { view: "inbox" }, text: "Inbox" },
     { entry: "chat", route: { view: "chat" }, text: "Chat" },
+    { entry: "settings", route: { view: "settings" }, text: "Settings" },
   ];
 
   for (const { entry, route, text } of entries) {
@@ -230,6 +245,67 @@ describe("mountIsland", () => {
       expect(document.querySelector("style[data-multica-styles]")).toBeNull();
     });
   }
+
+  it("opens settings with the MOCT group and without the surfaces this panel hides", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "settings" } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("MOCT");
+    });
+
+    const labels = [...(host.shadowRoot?.querySelectorAll("nav a") ?? [])].map((link) =>
+      (link.textContent ?? "").trim(),
+    );
+    // The group this shell adds, in the second sidebar's own group chrome.
+    expect(labels).toEqual(expect.arrayContaining(["Memory", "Connection"]));
+    // Kept pages stay where the fork put them.
+    expect(labels).toEqual(
+      expect.arrayContaining(["Profile", "Preferences", "MCP servers"]),
+    );
+    for (const hidden of [
+      "Billing",
+      "Code",
+      "Messaging",
+      "Plugins",
+      "Connected apps",
+      "Keyboard shortcuts",
+    ]) {
+      expect(labels).not.toContain(hidden);
+    }
+  });
+
+  it("reads the memory plane on the MOCT page and nowhere else", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, {
+        initialRoute: { view: "settings", query: "tab=moct-memory" },
+      }),
+    );
+
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).toContain("Reachable");
+      expect(text).toContain("1200 tokens");
+      expect(text).toContain("640 tokens · 3 records");
+      expect(text).toContain("1 waiting for approval");
+    });
+    expect(requests).toContain("/moct/status");
+    expect(requests).toContain("/moct/team/v1/memory/usage");
+  });
+
+  it("does not touch the memory plane from another page", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: BOARD_ROUTE }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+    expect(requests.some((url) => url.startsWith("/moct"))).toBe(false);
+  });
 
   it("explains a host that is not configured instead of rendering an empty page", async () => {
     stubBackend({ problem: "token is not set" });
