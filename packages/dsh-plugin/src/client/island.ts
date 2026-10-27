@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import islandCss from "./island.css?inline";
 import { IslandBoot } from "./island-app";
+import { ISLAND_CSS, createPopupSeat } from "./popup-seat";
 
 /**
  * The React 19 island.
@@ -12,14 +12,17 @@ import { IslandBoot } from "./island-app";
  * between them, a shadow root, which is what keeps Tailwind's preflight and
  * utility classes out of the shell's document.
  *
- * `:root` is rewritten to `:host` because inside a shadow tree `:root` matches
- * nothing: the fork's design tokens would otherwise be injected and never land.
+ * `:root` is rewritten to `:host` (`popup-seat.ts`) because inside a shadow
+ * tree `:root` matches nothing: the fork's design tokens would otherwise be
+ * injected and never land.
  */
 
 /** Everything the shell needs to tear one island down again. */
 interface IslandHandle {
   root: Root;
   theme: MutationObserver | null;
+  /** The popup seat in the shell's overlay layer, when the shell has one. */
+  popupSeat: HTMLElement | null;
 }
 
 export interface MountIslandOptions {
@@ -28,10 +31,6 @@ export interface MountIslandOptions {
 }
 
 const handles = new WeakMap<HTMLElement, IslandHandle>();
-
-export function shadowStyles(css: string): string {
-  return css.replace(/:root\b/g, ":host");
-}
 
 /** Is the shell currently dark? dsh exposes both a class and a data attribute. */
 export function shellPrefersDark(doc: Document): boolean {
@@ -53,7 +52,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
 
   const style = doc.createElement("style");
   style.dataset.multicaStyles = "";
-  style.textContent = shadowStyles(islandCss);
+  style.textContent = ISLAND_CSS;
 
   const surface = doc.createElement("div");
   surface.className = "multica-island-surface";
@@ -62,15 +61,20 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   rootElement.className = "multica-island-root";
   rootElement.dataset.multicaRoot = "";
 
-  const portalHost = doc.createElement("div");
-  portalHost.className = "multica-island-portals";
-  portalHost.dataset.multicaPortals = "";
+  const popupSeat = createPopupSeat(doc);
+  const portalHost =
+    popupSeat?.portalHost ?? createInSurfacePortalHost(surface);
 
-  surface.append(rootElement, portalHost);
+  surface.append(rootElement);
   shadow.append(style, surface);
 
   const syncTheme = (): void => {
-    surface.classList.toggle("dark", shellPrefersDark(doc));
+    const dark = shellPrefersDark(doc);
+    surface.classList.toggle("dark", dark);
+    // The popup seat lives outside this shadow root, so it must follow the
+    // shell's theme itself: popups are children of the portal host, and the
+    // `dark` class on that container is what the fork's utilities match on.
+    portalHost.classList.toggle("dark", dark);
   };
   syncTheme();
 
@@ -97,7 +101,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   root.render(
     createElement(IslandBoot, { portalHost, initialRoute: options.initialRoute }),
   );
-  handles.set(host, { root, theme });
+  handles.set(host, { root, theme, popupSeat: popupSeat?.seat ?? null });
 }
 
 export function unmountIsland(host: HTMLElement): void {
@@ -106,7 +110,19 @@ export function unmountIsland(host: HTMLElement): void {
   handles.delete(host);
   handle.theme?.disconnect();
   handle.root.unmount();
+  // The seat sits in the shell's own overlay layer, outside this host's
+  // shadow root — nothing else would ever remove it.
+  handle.popupSeat?.remove();
   host.shadowRoot?.replaceChildren();
+}
+
+/** The fallback portal container: inside the surface, as it was. */
+function createInSurfacePortalHost(surface: HTMLElement): HTMLElement {
+  const portalHost = surface.ownerDocument.createElement("div");
+  portalHost.className = "multica-island-portals";
+  portalHost.dataset.multicaPortals = "";
+  surface.append(portalHost);
+  return portalHost;
 }
 
 /** True while an island is mounted on this element. For tests and diagnostics. */

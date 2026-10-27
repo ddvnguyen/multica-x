@@ -42,7 +42,8 @@
     "build": "pnpm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.client-types.json && vite build --logLevel warn && node scripts/wrap-client.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && node scripts/check-fork-entry.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "ws": "^8.18.3"
@@ -53,6 +54,7 @@
     "@multica/tsconfig": "workspace:*",
     "@multica/ui": "workspace:*",
     "@multica/views": "workspace:*",
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/vite": "catalog:",
     "@testing-library/jest-dom": "catalog:",
     "@testing-library/react": "catalog:",

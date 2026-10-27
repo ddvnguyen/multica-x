@@ -58,6 +58,7 @@ import type { Attachment } from "@multica/core/types";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { cn } from "@multica/ui/lib/utils";
 import { copyImage } from "@multica/ui/lib/clipboard";
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import {
   UI_EASE_OUT,
@@ -412,6 +413,7 @@ export function AttachmentPreviewModal({
   locate,
   onOpenOverview,
 }: AttachmentPreviewModalProps & { onExitComplete?: () => void }) {
+  const portalContainer = usePortalContainer();
   const download = useDownloadAttachment();
   const shouldReduceMotion = useReducedMotion() ?? false;
   const state = normalize(source);
@@ -588,7 +590,7 @@ export function AttachmentPreviewModal({
         </motion.div>
       )}
     </AnimatePresence>,
-    document.body,
+    portalContainer ?? document.body,
   );
 }
 

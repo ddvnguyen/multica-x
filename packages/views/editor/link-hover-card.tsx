@@ -15,6 +15,7 @@ import { computePosition, offset, flip, shift } from "@floating-ui/dom";
 import { ExternalLink, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useAppOrigin } from "../navigation";
@@ -138,6 +139,7 @@ function LinkHoverCard({
   onCardEnter: () => void;
   onCardLeave: () => void;
 }) {
+  const portalContainer = usePortalContainer();
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const [positioned, setPositioned] = useState(false);
   const slug = useWorkspaceSlug();
@@ -228,7 +230,7 @@ function LinkHoverCard({
         <ExternalLink className="size-3.5" />
       </Button>
     </div>,
-    document.body,
+    portalContainer ?? document.body,
   );
 }
 

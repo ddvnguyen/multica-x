@@ -3,11 +3,13 @@
 /**
  * EditorBubbleMenu — floating formatting toolbar for text selection.
  *
- * Positioned with @floating-ui/dom (computePosition + autoUpdate) and
- * portaled to document.body via createPortal. This escapes ALL overflow
- * containers in the ancestor chain (Card overflow:hidden, scrollable
- * containers, etc.) while autoUpdate monitors every ancestor scroll
- * container to keep the menu anchored to the selection.
+ * Positioned with @floating-ui/dom (computePosition + autoUpdate) and rendered
+ * inline as a fixed-position element — no portal of its own. `fixed` escapes
+ * the overflow containers in the ancestor chain (Card overflow:hidden,
+ * scrollable containers, etc.) as long as none establishes a containing
+ * block; autoUpdate monitors every ancestor scroll container to keep the menu
+ * anchored to the selection. The nested Popover/Tooltip overlays portal
+ * through `usePortalContainer`, so they follow the island's popup seat.
  *
  * Key design decisions:
  * - contextElement on the virtual reference tells Floating UI where to
