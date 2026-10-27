@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isIslandMounted, mountIsland, shadowStyles, unmountIsland } from "../src/client/island";
+import { isIslandMounted, mountIsland, unmountIsland } from "../src/client/island";
+import { shadowStyles } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
 
@@ -297,5 +298,99 @@ describe("mountIsland", () => {
     act(() => unmountIsland(host));
     expect(isIslandMounted(host)).toBe(false);
     expect(host.shadowRoot?.childNodes.length).toBe(0);
+  });
+});
+
+describe("popup seat", () => {
+  function overlayLayer(): HTMLElement {
+    const layer = document.createElement("div");
+    layer.dataset.shellOverlay = "";
+    document.body.append(layer);
+    return layer;
+  }
+
+  it("seats the island's portals in the shell's overlay layer", async () => {
+    stubBackend();
+    const layer = overlayLayer();
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    const seat = layer.querySelector<HTMLElement>("[data-multica-popup-seat]");
+    expect(seat).not.toBeNull();
+    // Zero-size, inert, above the app layer: the shell's own overlay-layer
+    // pattern, so the seat itself blocks nothing and steals no clicks.
+    expect(seat?.style.position).toBe("absolute");
+    expect(seat?.style.width).toBe("0px");
+    expect(seat?.style.height).toBe("0px");
+    expect(seat?.style.zIndex).toBe("60");
+    expect(seat?.style.pointerEvents).toBe("none");
+
+    // The portal container lives inside the seat's shadow root — outside the
+    // panel's stacking context, still under the island's stylesheet.
+    const seatShadow = seat?.shadowRoot;
+    expect(seatShadow?.querySelector("style[data-multica-styles]")).not.toBeNull();
+    const portalHost = seatShadow?.querySelector("[data-multica-portals]");
+    expect(portalHost).not.toBeNull();
+    expect(portalHost?.parentNode).toBe(seatShadow);
+
+    // One portal seat: the panel's own shadow root keeps the page, not the
+    // popups — popups must not render below the shell's overlay layer again.
+    expect(host.shadowRoot?.querySelector("[data-multica-portals]")).toBeNull();
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+  });
+
+  it("follows the shell's theme on the seat", async () => {
+    stubBackend();
+    const layer = overlayLayer();
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    const portalHost = layer
+      .querySelector("[data-multica-popup-seat]")
+      ?.shadowRoot?.querySelector("[data-multica-portals]");
+    expect(portalHost?.classList.contains("dark")).toBe(false);
+
+    act(() => {
+      document.documentElement.classList.add("dark");
+    });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 20);
+    await promise;
+    expect(portalHost?.classList.contains("dark")).toBe(true);
+    act(() => {
+      document.documentElement.classList.remove("dark");
+    });
+  });
+
+  it("removes the seat from the shell's layer on unmount", async () => {
+    stubBackend();
+    const layer = overlayLayer();
+    const host = hostElement();
+    act(() => mountIsland(host));
+    expect(layer.querySelector("[data-multica-popup-seat]")).not.toBeNull();
+
+    act(() => unmountIsland(host));
+    expect(layer.querySelector("[data-multica-popup-seat]")).toBeNull();
+    expect(host.shadowRoot?.childNodes.length).toBe(0);
+  });
+
+  it("falls back inside the surface when the shell has no overlay layer", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    expect(document.querySelector("[data-multica-popup-seat]")).toBeNull();
+    const portalHost = host.shadowRoot?.querySelector("[data-multica-portals]");
+    expect(portalHost).not.toBeNull();
+    expect(
+      portalHost?.parentElement?.classList.contains("multica-island-surface"),
+    ).toBe(true);
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
   });
 });

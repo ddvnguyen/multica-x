@@ -44,6 +44,17 @@ export default [
     },
   },
   {
+    // The browser harness and its playwright config are dev-only surfaces —
+    // never part of the client artifact — so their imports may be devDeps.
+    files: ["e2e/**/*.{ts,tsx}", "playwright.config.ts"],
+    rules: {
+      "import-x/no-extraneous-dependencies": [
+        "error",
+        { devDependencies: true, peerDependencies: true },
+      ],
+    },
+  },
+  {
     // Build-time Node scripts: the two globals they actually use.
     files: ["scripts/**/*.mjs"],
     languageOptions: {
