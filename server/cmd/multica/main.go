@@ -64,6 +64,7 @@ func init() {
 	daemonCmd.GroupID = groupRuntime
 	runtimeCmd.GroupID = groupRuntime
 	moctMCPCmd.GroupID = groupRuntime
+	askPlanMCPCmd.GroupID = groupRuntime
 
 	// Additional commands
 	authCmd.GroupID = groupAdditional
@@ -89,6 +90,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(runtimeCmd)
 	rootCmd.AddCommand(moctMCPCmd)
+	rootCmd.AddCommand(askPlanMCPCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(userCmd)
 	rootCmd.AddCommand(loginCmd)
