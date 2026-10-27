@@ -74,6 +74,45 @@ describe("InlineCommentRun", () => {
     expect(row.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("shows a parked ask as a card on the run, answered into that turn", async () => {
+    vi.mocked(api.listTaskMessages).mockResolvedValue([
+      { task_id: id, issue_id: "issue", seq: 1, type: "text", content: "Reading the fork.", created_at: "2026-09-07T00:00:01Z" },
+      { task_id: id, issue_id: "issue", seq: 2, type: "text", content: "❓ The agent needs your answer",
+        created_at: "2026-09-07T00:00:05Z",
+        input: { questions: [{ id: "q1", question: "Which checkout?", options: [{ label: "Web" }, { label: "Mobile" }] }] } },
+    ]);
+    setup(task({ supplement_capability: "task-supplement-v1", can_supplement: true }));
+    expect(await screen.findByText("Which checkout?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Answer" })).toBeInTheDocument();
+  });
+
+  it("drops the card once the member's answer reached the turn", async () => {
+    vi.mocked(api.listTaskMessages).mockResolvedValue([
+      { task_id: id, issue_id: "issue", seq: 2, type: "text", content: "❓ The agent needs your answer",
+        created_at: "2026-09-07T00:00:05Z",
+        input: { questions: [{ id: "q1", question: "Which checkout?", options: [{ label: "Web" }] }] } },
+    ]);
+    const { client } = setup(task({ supplement_capability: "task-supplement-v1", can_supplement: true }));
+    await screen.findByText("Which checkout?");
+    act(() => client.setQueryData<TimelineEntry[]>(issueKeys.timeline("issue"), [{
+      id: "answer", type: "comment", actor_type: "member", actor_id: "user", content: "Web",
+      created_at: "2026-09-07T00:00:08Z",
+      supplements: [{ task_id: id, agent_id: "agent", status: "delivered", delivered_at: "2026-09-07T00:00:09Z" }],
+    }]));
+    await waitFor(() => expect(screen.queryByText("Which checkout?")).not.toBeInTheDocument());
+  });
+
+  it("does not offer the card for a run that cannot take an answer", async () => {
+    vi.mocked(api.listTaskMessages).mockResolvedValue([
+      { task_id: id, issue_id: "issue", seq: 1, type: "text", content: "❓ The agent needs your answer",
+        created_at: "2026-09-07T00:00:05Z",
+        input: { questions: [{ id: "q1", question: "Which checkout?", options: [{ label: "Web" }] }] } },
+    ]);
+    setup(task());
+    await waitFor(() => expect(screen.getByText("❓ The agent needs your answer")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+  });
+
   it("offers no run-level message box: messages go through the thread composer", async () => {
     vi.mocked(api.listTaskMessages).mockResolvedValue(messages);
     setup(task({ supplement_capability: "task-supplement-v1", can_supplement: true }));

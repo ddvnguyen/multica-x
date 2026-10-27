@@ -16,6 +16,9 @@ export type InboxItemType =
   | "review_requested"
   | "task_completed"
   | "task_failed"
+  // A run parked on a question or a plan review (M-109). Action required:
+  // the run cannot continue until a member answers it.
+  | "agent_question"
   | "agent_blocked"
   | "agent_completed"
   | "reaction_added"

@@ -180,11 +180,13 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed"
 	var supplementErr error
 	supplementCalls := 0
 	var questionContent string
+	var questionInput map[string]any
 	for message := range session.Messages {
 		if message.Type != MessageQuestion {
 			continue
 		}
 		questionContent = message.Content
+		questionInput = message.Input
 		if message.CallID != "q-1" {
 			t.Fatalf("question call id = %q, want q-1", message.CallID)
 		}
@@ -204,6 +206,22 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed"
 	for _, want := range []string{"Plan review", "Approve this plan", "# Plan", "reply *Approve*"} {
 		if !strings.Contains(questionContent, want) {
 			t.Fatalf("question transcript missing %q:\n%s", want, questionContent)
+		}
+	}
+	// The structured half: the client builds the answer form from this, so the
+	// option labels, the plan detail and the approval label all have to survive
+	// the trip in a JSON-decoded shape.
+	encoded, err := json.Marshal(questionInput)
+	if err != nil {
+		t.Fatalf("encode question input: %v", err)
+	}
+	for _, want := range []string{
+		`"questions":[`, `"id":"plan"`, `"header":"Plan review"`,
+		`"detail":"# Plan\n1. do the thing"`, `"label":"Approve"`, `"label":"Keep planning"`,
+		`"intent":{"approve":"Approve","kind":"plan-review"}`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("question input missing %q:\n%s", want, encoded)
 		}
 	}
 	result := <-session.Result

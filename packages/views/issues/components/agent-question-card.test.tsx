@@ -1,0 +1,136 @@
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "@multica/core/api";
+import type { AgentQuestion } from "@multica/core/issues/agent-question";
+import { renderWithI18n } from "../../test/i18n";
+import { AgentQuestionCard } from "./agent-question-card";
+
+vi.mock("@multica/core/api", () => ({ api: { createTaskSupplement: vi.fn() } }));
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace" }));
+vi.mock("../../editor", () => ({
+  ReadonlyContent: ({ content }: { content: string }) => <div data-testid="plan-detail">{content}</div>,
+}));
+
+const TASK = "turn-1";
+
+function comment(content: string) {
+  return {
+    id: `comment-${content.length}`, issue_id: "issue", author_type: "member", author_id: "user",
+    content, type: "comment", parent_id: null, created_at: "2026-10-26T12:00:10Z",
+    updated_at: "2026-10-26T12:00:10Z", reactions: [], attachments: [], issue_revision: null,
+  };
+}
+
+function question(overrides: Partial<AgentQuestion> = {}): AgentQuestion {
+  return {
+    id: "q1",
+    question: "Which checkout should this land in?",
+    options: [{ label: "Web", description: "The Next.js app" }, { label: "Mobile" }],
+    multiSelect: false,
+    ...overrides,
+  } as AgentQuestion;
+}
+
+const plan: AgentQuestion = {
+  id: "plan",
+  question: "Approve this plan?",
+  detail: "1. Read the fork\n2. Wire the card",
+  options: [{ label: "Approve" }, { label: "Keep planning" }],
+  multiSelect: false,
+  intent: { kind: "plan-review", approve: "Approve" },
+};
+
+function render(questions: AgentQuestion[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  renderWithI18n(
+    <QueryClientProvider client={client}>
+      <AgentQuestionCard issueId="issue" taskId={TASK} questions={questions} />
+    </QueryClientProvider>,
+  );
+  return client;
+}
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("AgentQuestionCard", () => {
+  it("shows the question with its options and descriptions", () => {
+    render([question()]);
+    expect(screen.getByText("Which checkout should this land in?")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Web/ })).toBeInTheDocument();
+    expect(screen.getByText("The Next.js app")).toBeInTheDocument();
+    expect(screen.getByText("Pick one")).toBeInTheDocument();
+  });
+
+  it("answers a pick with the option's own label, steered into the running turn", async () => {
+    vi.mocked(api.createTaskSupplement).mockResolvedValue(comment("Web") as never);
+    render([question()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
+      "issue", TASK, "Web", expect.any(String),
+    ));
+  });
+
+  it("sends the member's own words when they do not pick an option", async () => {
+    vi.mocked(api.createTaskSupplement).mockResolvedValue(comment("Neither") as never);
+    render([question()]);
+    fireEvent.change(screen.getByPlaceholderText("Or write your own answer"), { target: { value: "Neither — use the CLI" } });
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
+      "issue", TASK, "Neither — use the CLI", expect.any(String),
+    ));
+  });
+
+  it("offers a checkbox per option when the backend allows several", () => {
+    render([question({ multiSelect: true })]);
+    expect(screen.getByRole("checkbox", { name: /Web/ })).toBeInTheDocument();
+    expect(screen.getByText("Pick any")).toBeInTheDocument();
+  });
+
+  it("keeps the answer button disabled until there is something to send", () => {
+    render([question()]);
+    expect(screen.getByRole("button", { name: "Answer" })).toBeDisabled();
+  });
+
+  it("shows the plan and approves with exactly the label the daemon matches", async () => {
+    vi.mocked(api.createTaskSupplement).mockResolvedValue(comment("Approve") as never);
+    render([plan]);
+    expect(screen.getByTestId("plan-detail")).toHaveTextContent("1. Read the fork");
+    fireEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
+      "issue", TASK, "Approve", expect.any(String),
+    ));
+  });
+
+  it("sends a revision request as the member's words", async () => {
+    vi.mocked(api.createTaskSupplement).mockResolvedValue(comment("Split step 2") as never);
+    render([plan]);
+    fireEvent.change(screen.getByPlaceholderText("Your answer"), { target: { value: "Split step 2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
+      "issue", TASK, "Split step 2", expect.any(String),
+    ));
+  });
+
+  it("reports a send that failed instead of claiming it went through", async () => {
+    vi.mocked(api.createTaskSupplement).mockRejectedValue(new Error("nope"));
+    render([question()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not send your answer. Try again.");
+    expect(screen.queryByText("Answer sent")).not.toBeInTheDocument();
+  });
+
+  it("marks the answer as sent once the server took it", async () => {
+    vi.mocked(api.createTaskSupplement).mockResolvedValue(comment("Web") as never);
+    render([question()]);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    expect(await screen.findByText("Answer sent")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+  });
+});

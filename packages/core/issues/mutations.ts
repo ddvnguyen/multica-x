@@ -46,7 +46,8 @@ import type {
   MoveIssueRequest,
   UpdateIssueRequest,
 } from "../types";
-import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
+import type { Comment, TimelineEntry, IssueSubscriber, Reaction } from "../types";
+import { createSafeId } from "../utils";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
 import { applyCommentDeletion, removeCommentSubtree } from "./comment-deletion";
 import { configStore } from "../config";
@@ -821,6 +822,54 @@ export function useBatchDeleteIssues() {
 
 type TimelineCache = TimelineEntry[];
 
+/**
+ * Fold a comment the server already accepted into the timeline cache.
+ *
+ * Two writers can land the same row: the `comment:created` broadcast and the
+ * mutation's own success handler. The broadcast is faster and usually wins, so
+ * this dedupes by id and only fills in what the broadcast could not know — the
+ * delivery receipts, which are created after it.
+ */
+function applyCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  comment: Comment,
+): void {
+  if (comment.issue_revision) {
+    onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
+  } else {
+    invalidateIssueOwnerProjections(qc, wsId, issueId);
+  }
+  invalidateLastActivitySortedIssueLists(qc, wsId);
+  const entry: TimelineEntry = {
+    type: "comment",
+    id: comment.id,
+    actor_type: comment.author_type,
+    actor_id: comment.author_id,
+    content: comment.content,
+    parent_id: comment.parent_id,
+    comment_type: comment.type,
+    reactions: comment.reactions ?? [],
+    attachments: comment.attachments ?? [],
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    supplements: comment.supplements,
+  };
+  const steered = !!comment.supplements?.length;
+  qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
+    if (!old) return [entry];
+    if (old.some((e) => e.id === entry.id)) {
+      return steered
+        ? old.map((e) => (e.id === entry.id && !e.supplements?.length ? { ...e, supplements: entry.supplements } : e))
+        : old;
+    }
+    return sortTimelineEntriesAsc([...old, entry]);
+  });
+  // A steered turn now lists this comment among its inputs.
+  if (steered) qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+}
+
 export function useCreateComment(issueId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
@@ -842,42 +891,7 @@ export function useCreateComment(issueId: string) {
       steerTaskIds?: string[];
     }) => api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds),
     onSuccess: (comment) => {
-      if (comment.issue_revision) {
-        onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
-      } else {
-        invalidateIssueOwnerProjections(qc, wsId, issueId);
-      }
-      invalidateLastActivitySortedIssueLists(qc, wsId);
-      const entry: TimelineEntry = {
-        type: "comment",
-        id: comment.id,
-        actor_type: comment.author_type,
-        actor_id: comment.author_id,
-        content: comment.content,
-        parent_id: comment.parent_id,
-        comment_type: comment.type,
-        reactions: comment.reactions ?? [],
-        attachments: comment.attachments ?? [],
-        created_at: comment.created_at,
-        updated_at: comment.updated_at,
-        supplements: comment.supplements,
-      };
-      const steered = !!comment.supplements?.length;
-      // Dedupe by id: the `comment:created` WS event may have already added
-      // this entry from the broadcast path before this onSuccess fires. Skip
-      // the append if the entry is already in the cache — but keep the
-      // steering receipts, which that broadcast predates.
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
-        if (!old) return [entry];
-        if (old.some((e) => e.id === entry.id)) {
-          return steered
-            ? old.map((e) => (e.id === entry.id && !e.supplements?.length ? { ...e, supplements: entry.supplements } : e))
-            : old;
-        }
-        return sortTimelineEntriesAsc([...old, entry]);
-      });
-      // A steered turn now lists this comment among its inputs.
-      if (steered) qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+      applyCreatedComment(qc, wsId, issueId, comment);
       // Posting a comment changes the trigger answer itself (the enqueued
       // task now dedupes follow-up triggers), so cached previews for this
       // issue are stale the moment the create lands.
@@ -890,6 +904,30 @@ export function useCreateComment(issueId: string) {
     // reference, which forces every memoized CommentCard subtree to
     // re-render (visible as a flash across sibling threads during AI
     // streaming).
+  });
+}
+
+/**
+ * Answer a specific running turn.
+ *
+ * The turn is named, so this needs none of the comment router's fallbacks: no
+ * mention to resolve, no assignee to fall back to. That matters for a parked
+ * ask, where the run that asked may belong to an agent this issue is not
+ * assigned to, and where the answer must reach that run rather than start a
+ * new one.
+ *
+ * `client_request_id` is minted once per submitted answer: a double click
+ * retries the same intent instead of posting the answer twice.
+ */
+export function useCreateTaskSupplement(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ taskId, content }: { taskId: string; content: string }) =>
+      api.createTaskSupplement(issueId, taskId, content, createSafeId()),
+    onSuccess: (comment) => {
+      applyCreatedComment(qc, wsId, issueId, comment);
+    },
   });
 }
 

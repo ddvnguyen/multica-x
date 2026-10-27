@@ -2862,6 +2862,26 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Add one message to one exact running turn.
+   *
+   * Unlike a comment this needs no mention or assignee to route it: the turn
+   * is named, so the server binds the comment to it and the daemon delivers it
+   * as additional input. That is what a parked question is answered with — a
+   * reply that has to reach the turn that asked, not start another one.
+   */
+  async createTaskSupplement(
+    issueId: string,
+    taskId: string,
+    content: string,
+    clientRequestId: string,
+  ): Promise<Comment> {
+    return this.fetch(`/api/issues/${issueId}/tasks/${taskId}/supplements`, {
+      method: "POST",
+      body: JSON.stringify({ content, client_request_id: clientRequestId }),
+    });
+  }
+
   async retryTaskSupplement(issueId: string, taskId: string, commentId: string): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/tasks/${taskId}/supplements/${commentId}/retry`, {
       method: "POST",
