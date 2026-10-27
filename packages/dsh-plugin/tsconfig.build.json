@@ -7,6 +7,6 @@
     "outDir": "lib",
     "rootDir": "src"
   },
-  "include": ["src/index.ts", "src/proxy.ts", "src/ws.ts", "src/dsh.ts"],
+  "include": ["src/index.ts", "src/proxy.ts", "src/moct-proxy.ts", "src/ws.ts", "src/dsh.ts"],
   "exclude": ["node_modules", "lib", "tests", "src/client"]
 }

@@ -27,7 +27,8 @@ strings. Builders: `WorkspaceRef`, `ExpertRef`, `IssueRef`, `ProjectRef` in
 | `expertId` | `multica:agent:<uuid>` (agent's knowledge profile) |
 | `taskRef` / tag `{kind:"task"}` / inject `taskRef` | `multica:issue:<uuid>` |
 | tag `{kind:"channel"}` / inject `channelRef` | `multica:project:<uuid>` |
-| `actor` on writes | `{kind:"member", id:"multica:agent:<uuid>"}` |
+| `actor` on agent writes | `{kind:"member", id:"multica:agent:<uuid>"}` |
+| `actor` on human writes (browser seam) | `{kind:"human", id:"multica:user:<uuid>"}` |
 
 Rules learned from moct-be (live-verified):
 
@@ -118,6 +119,32 @@ Write semantics the tool must surface to the agent (live-verified):
 - Types allowed at a task home: `decision` (and `task`, which Multica refs
   cannot satisfy — see above). A `decision` requires
   `attrs.decidedBy` and `attrs.sourceRef`.
+
+## Out-path 3 — browser reads (`/moct` in the dsh plugin)
+
+The dsh panel reads memory through its own host proxy, never moct-be: the
+browser calls `/moct/...` on the dsh origin and
+`packages/dsh-plugin/src/moct-proxy.ts` re-issues the request with the scope
+the browser is not allowed to choose.
+
+- Allow-list, and nothing else: `GET /team/v1/memory`,
+  `POST /team/v1/memory/get`, `GET /team/v1/memory/:id/versions`,
+  `GET /team/v1/memory/usage`, `POST /team/v1/memory/:id/{approve,retract}`,
+  and a host-authored `/moct/status`. Notes, settings, inject, rule-feed and
+  the other record verbs are a proxy-side 404.
+- `workspaceId` is `multica:ws:<uuid>` resolved from `/api/workspaces` by the
+  row's `workspaceSlug` (a slug that is not readable is a 503, never a fall
+  back), `actor` is `{kind:"human", id:"multica:user:<uuid>"}` from
+  `/api/me`, and an agent page addresses `expertId` only after the agent is
+  confirmed in that workspace. `all=1` on reads.
+- A by-id route reads the record back through a scoped `POST /memory/get`
+  first; an id from another workspace is a 404 and never reaches a verb. A
+  record with no workspace (`workspace_id IS NULL`) is readable but cannot be
+  approved or retracted from one workspace.
+- The acting human is the owner of the plugin's personal access token, so
+  approvals are made **as that user**, and a token whose owner is not an
+  owner/admin of the workspace is refused. A bridge that carries a live dsh
+  session's own Multica identity would remove that limitation.
 
 ## Scope semantics (search / get)
 

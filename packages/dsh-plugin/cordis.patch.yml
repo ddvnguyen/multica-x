@@ -15,3 +15,7 @@
         # Workspace the island opens. Empty selects the first workspace the
         # token can read.
         workspaceSlug: ''
+        # moct-be, for the browser's memory seam (docs/moct-seam.md out-path 3).
+        # Leave empty and set MOCT_BASE_URL in the dsh process instead; with
+        # neither set, /moct answers 503 and the memory surfaces stay hidden.
+        moctUrl: ''
