@@ -8008,6 +8008,32 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		} else {
 			effectiveMcpConfig = merged
 		}
+		// ask/plan tools (S1-A2, M-119). The entry names the `multica
+		// askplan-mcp` stdio server and carries this run's server URL, mat_
+		// token and workspace/task ids as env, so a tool call can only park
+		// the run that owns the token. Merged by server name after moct,
+		// same contract as every other overlay entry; multica-be only —
+		// nothing here reaches MOCT.
+		//
+		// Never fatal. No issue on the task (ask/plan is issue-only, so the
+		// absence is by design and stays silent), a missing token, an
+		// unusable URL, an unlocatable binary, or a runtime that cannot
+		// carry MCP servers (builtin pi below its MCP-extension floor —
+		// pkg/agent SupportsTaskMCP mirrors pi.go's launch gate) all skip
+		// the entry with a warning; the task runs with whatever MCP servers
+		// it already had.
+		if askPlanConfig, ok := askPlanMCPConfig(d.cfg.ServerBaseURL, task); !ok {
+			if task.IssueID != "" {
+				taskLog.Warn("ask/plan: MCP server not added; running without ask/plan tools")
+			}
+		} else if !agent.SupportsTaskMCP(provider, resolvedVersion, !usesCustomProfileCommand) {
+			taskLog.Warn("ask/plan: MCP server not added; runtime cannot carry MCP servers",
+				"provider", provider, "cli_version", resolvedVersion)
+		} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, askPlanConfig); mergeErr != nil {
+			taskLog.Warn("ask/plan: could not merge MCP server; running without ask/plan tools", "error", mergeErr)
+		} else {
+			effectiveMcpConfig = merged
+		}
 		if provider == "cursor" {
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
 		}

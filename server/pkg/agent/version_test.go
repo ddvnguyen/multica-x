@@ -23,6 +23,36 @@ func TestTaskSupplementVersionGate(t *testing.T) {
 	}
 }
 
+// The ask/plan (and every other) overlay entry must be skipped when the
+// runtime's own MCP gate would refuse the launch: builtin pi below
+// piMcpMinVersion, or with a version that cannot be verified, fails the
+// start — the daemon degrades to no MCP servers instead. Non-pi providers
+// and custom pi profiles carry the overlay unconditionally.
+func TestTaskMCPVersionGate(t *testing.T) {
+	for _, tc := range []struct {
+		provider, version string
+		builtin           bool
+		want              bool
+	}{
+		{"pi", piMcpMinVersion, true, true},
+		{"pi", "1.0.0", true, true},
+		{"pi", "0.98.0", true, false},
+		{"pi", "", true, false},
+		{"pi", "not-a-version", true, false},
+		{"pi", "0.98.0", false, true}, // custom profile: no floor (validatePiMcpVersion)
+		{"pi", "", false, true},
+		{"omp", "", true, true},
+		{"dsh", "0.2.1", true, true},
+		{"codex", "", true, true},
+		{"claude", "2.1.109", true, true},
+	} {
+		if got := SupportsTaskMCP(tc.provider, tc.version, tc.builtin); got != tc.want {
+			t.Errorf("SupportsTaskMCP(%s, %q, builtin=%v)=%v, want %v",
+				tc.provider, tc.version, tc.builtin, got, tc.want)
+		}
+	}
+}
+
 func TestParseSemver(t *testing.T) {
 	tests := []struct {
 		input   string

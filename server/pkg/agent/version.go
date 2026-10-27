@@ -162,6 +162,28 @@ func SupportsTaskSupplement(provider, version string) bool {
 	return err == nil && !detected.lessThan(floor)
 }
 
+// SupportsTaskMCP reports whether this provider can carry daemon-injected MCP
+// servers (the per-task overlay: saved agent config, remote broker, moct,
+// ask/plan) into a launch without failing it. Every provider consumes the
+// overlay without a version floor except builtin pi, whose gate lives in
+// pi.go: preparePiMcpExtension refuses to start when the MCP extension needs
+// a Pi newer than piMcpMinVersion, and an unparseable version fails closed
+// there ("could not verify detected version"). Pre-checking the same floor
+// lets the daemon skip the overlay entry and run the task without tools
+// instead of failing the launch — and a custom profile skips the floor
+// entirely (validatePiMcpVersion), so only builtin pi is gated.
+func SupportsTaskMCP(provider, version string, builtinRuntime bool) bool {
+	if provider != "pi" || !builtinRuntime {
+		return true
+	}
+	detected, err := parseSemver(version)
+	if err != nil {
+		return false
+	}
+	floor, _ := parseSemver(piMcpMinVersion)
+	return !detected.lessThan(floor)
+}
+
 // versionRe matches version strings like "2.1.100", "v2.0.0", or
 // "2.1.100 (Claude Code)" — it extracts the first three numeric components.
 var versionRe = regexp.MustCompile(`v?(\d+)\.(\d+)\.(\d+)`)
