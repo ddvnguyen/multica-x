@@ -804,6 +804,9 @@ importers:
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.2.2(vite@8.0.1(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.3)(@types/node@25.5.0)(jiti@2.7.0)(terser@5.47.1)(yaml@2.9.0))
+      '@tanstack/react-query':
+        specifier: 'catalog:'
+        version: 5.96.2(react@19.2.3)
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.9.1

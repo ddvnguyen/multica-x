@@ -1,5 +1,6 @@
-import { createElement } from "react";
-import { describe, expect, it } from "vitest";
+import { render } from "@testing-library/react";
+import { createElement, type ReactElement } from "react";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { DshClientContext } from "../src/dsh";
 import {
   apply,
@@ -10,6 +11,13 @@ import {
 } from "../src/client/index";
 import { FAMILY_ROOTS } from "../src/client/navigation";
 import { createRailIcon, createSeatComponent } from "../src/client/seat";
+import { setUnread, startUnreadPoll } from "../src/client/unread-store";
+
+// `apply` starts the page-lifetime unread poller; stop the one it started so
+// no interval outlives this file. A repeat call returns the live stop.
+afterAll(() => {
+  startUnreadPoll()();
+});
 
 interface Registration {
   options: Record<string, unknown>;
@@ -140,7 +148,6 @@ describe("seat component", () => {
       "issues",
       "agents",
       "skills",
-      "inbox",
       "chat",
       "settings",
     ] as const) {
@@ -153,6 +160,19 @@ describe("seat component", () => {
       expect(element.props.width).toBe(18);
       expect(element.props.height).toBe(18);
     }
+
+    // The inbox row alone wraps its glyph in the dot's host span; the svg
+    // inside keeps the same sizing contract as the other five rows.
+    const Icon = createRailIcon(createElement as never, "inbox");
+    const wrapper = Icon({ size: 18 }) as {
+      type: string;
+      props: { children: Array<{ type: string; props: Record<string, unknown> }> };
+    };
+    expect(wrapper.type).toBe("span");
+    const svg = wrapper.props.children[0];
+    expect(svg?.type).toBe("svg");
+    expect(svg?.props.width).toBe(18);
+    expect(svg?.props.height).toBe(18);
   });
 
   it("draws a different shape for every entry", () => {
@@ -162,5 +182,69 @@ describe("seat component", () => {
       return JSON.stringify(element.props.children);
     });
     expect(new Set(drawn).size).toBe(MULTICA_ENTRIES.length);
+  });
+});
+
+/**
+ * The inbox rail icon typed the way this test's React 19 renders it in JSX:
+ * the host's `createElement` types its result as `unknown`, but the component
+ * returns elements at runtime.
+ */
+function inboxRailIcon(): (props: { size?: number }) => ReactElement {
+  return createRailIcon(createElement as never, "inbox") as (
+    props: { size?: number },
+  ) => ReactElement;
+}
+
+describe("inbox rail dot", () => {
+  afterEach(() => {
+    setUnread(0);
+  });
+
+  it("starts hidden with an empty store and follows the store", () => {
+    setUnread(0);
+    const Icon = inboxRailIcon();
+    const { container, rerender } = render(<Icon />);
+
+    const host = container.querySelector("span");
+    expect(host).not.toBeNull();
+    expect(host?.style.position).toBe("relative");
+    expect(host?.style.display).toBe("inline-flex");
+    expect(host?.querySelector("svg")).not.toBeNull();
+
+    const dot = host?.querySelector<HTMLElement>("[data-multica-inbox-dot]");
+    expect(dot).not.toBeNull();
+    expect(dot?.getAttribute("data-multica-inbox-dot")).toBe("");
+    expect(dot?.getAttribute("aria-hidden")).toBe("true");
+    expect(dot?.style.display).toBe("none");
+
+    setUnread(3);
+    expect(dot?.style.display).toBe("block");
+
+    // A re-render must not lose the paint: React writes only the style
+    // properties that changed between renders, and the dot's style prop
+    // never changes — the store's imperative `display` write stands.
+    rerender(<Icon />);
+    expect(dot?.style.display).toBe("block");
+
+    setUnread(0);
+    expect(dot?.style.display).toBe("none");
+  });
+
+  it("detaches the dot when the row unmounts", () => {
+    setUnread(2);
+    const Icon = inboxRailIcon();
+    const { container, unmount } = render(<Icon />);
+
+    const dot = container.querySelector<HTMLElement>("[data-multica-inbox-dot]");
+    expect(dot).not.toBeNull();
+    expect(dot?.style.display).toBe("block");
+
+    unmount();
+    expect(dot?.style.display).toBe("none");
+
+    // Detached: later counts no longer reach this node.
+    setUnread(9);
+    expect(dot?.style.display).toBe("none");
   });
 });

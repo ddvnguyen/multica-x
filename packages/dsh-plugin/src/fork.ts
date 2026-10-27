@@ -18,6 +18,15 @@ export { CoreProvider, setCurrentWorkspace } from "@multica/core/platform";
 export { WorkspaceSlugProvider } from "@multica/core/paths";
 export { useWorkspaceList } from "@multica/core/workspace";
 
+// The account-level inbox unread summary the rail dot reports on: the same
+// options object `InboxPage` reads through `useInboxUnreadCount`, so the dot
+// and the page share one cache entry and one request.
+export {
+  inboxUnreadSummaryEnabled,
+  inboxUnreadSummaryOptions,
+} from "@multica/core/inbox/queries";
+export type { InboxWorkspaceUnread } from "@multica/core/types/inbox";
+
 // Navigation and view state.
 export { NavigationProvider } from "@multica/views/navigation";
 export type { NavigationAdapter } from "@multica/views/navigation";

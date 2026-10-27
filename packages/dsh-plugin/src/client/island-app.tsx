@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ISLAND_API_BASE,
   islandWebSocketUrl,
   loadIslandConfig,
   type IslandConfig,
@@ -13,6 +14,7 @@ import {
 } from "./navigation";
 import { createIslandStorage } from "./storage";
 import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
+import { UnreadReporter } from "./unread-reporter";
 import {
   AgentDetailPage,
   AgentsPage,
@@ -37,9 +39,6 @@ import {
 
 /** Bumping this changes the client identity multica-be records for the panel. */
 export const ISLAND_VERSION = "0.1.0";
-
-/** The API surface the island reaches: the host's proxy, never multica-be. */
-export const ISLAND_API_BASE = "/multica";
 
 export interface IslandAppProps {
   /** Where Base UI portals render, inside the island's shadow root. */
@@ -236,6 +235,10 @@ function WorkspaceGate({
   }
   return (
     <WorkspaceSlugProvider slug={workspace.slug}>
+      {/* Beside the app itself, inside CoreProvider's QueryClientProvider:
+          the reporter observes the summary key the inbox page reads and
+          writes the rail dot's store. */}
+      <UnreadReporter workspaceId={workspace.id} />
       <IslandPages
         slug={workspace.slug}
         wsPath={wsPath}
