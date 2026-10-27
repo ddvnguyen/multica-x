@@ -1,4 +1,4 @@
-import { isIslandMounted, mountIsland, unmountIsland } from "./island";
+import { attachIsland, detachIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 
 /**
@@ -18,17 +18,17 @@ export type HostCreateElement = (
   ...children: unknown[]
 ) => unknown;
 
-/** Every seat currently mounted, so a detached one can be torn down. */
-const seats = new Set<HTMLElement>();
-
-const SEAT_STYLE = {
-  display: "block",
-  position: "relative",
-  flex: "1 1 auto",
-  minWidth: 0,
-  minHeight: 0,
-  height: "100%",
-} as const;
+/**
+ * The seat the island currently lives in.
+ *
+ * dsh mounts exactly one `main` cell at a time, so "the seat that was attached
+ * last" is "the seat on screen". That is the only node whose removal may
+ * detach the island: the shell swaps cells in one commit, and the outgoing
+ * seat's ref goes `null` *after* the incoming one has already claimed the
+ * island — sweeping every seat that ever existed would tear down the island
+ * that just moved.
+ */
+let activeSeat: HTMLElement | null = null;
 
 /**
  * Ref callback for a seat host.
@@ -38,20 +38,18 @@ const SEAT_STYLE = {
  * sweep runs one microtask later, once the commit that dropped the node has
  * finished. A re-render re-attaches the same node (the ref identity is stable
  * per seat) and leaves it connected, which is what keeps a re-render from
- * tearing down a live island.
+ * detaching a live island.
  */
 export function attachSeat(node: HTMLElement | null, route: IslandRoute): void {
   if (node !== null) {
-    seats.add(node);
-    mountIsland(node, { initialRoute: route });
+    activeSeat = node;
+    attachIsland(node, route);
     return;
   }
   queueMicrotask(() => {
-    for (const host of [...seats]) {
-      if (!host.isConnected && isIslandMounted(host)) {
-        unmountIsland(host);
-        seats.delete(host);
-      }
+    if (activeSeat !== null && !activeSeat.isConnected) {
+      detachIsland();
+      activeSeat = null;
     }
   });
 }
@@ -59,9 +57,18 @@ export function attachSeat(node: HTMLElement | null, route: IslandRoute): void {
 export interface SeatOptions {
   /** Panel id this seat belongs to; it is the rail row and the `main` key. */
   panelId: string;
-  /** Where the island opens: the entry the rail row stands for. */
-  initialRoute: IslandRoute;
+  /** The entry this seat opens, and re-opens on every re-attach. */
+  route: IslandRoute;
 }
+
+const SEAT_STYLE = {
+  display: "block",
+  position: "relative",
+  flex: "1 1 auto",
+  minWidth: 0,
+  minHeight: 0,
+  height: "100%",
+} as const;
 
 /**
  * The main-column seat: an empty element the island owns.
@@ -75,7 +82,7 @@ export function createSeatComponent(
 ) {
   // Created once per registration: a stable ref identity is what tells React
   // "same node" across re-renders instead of detach-then-attach.
-  const ref = (node: HTMLElement | null): void => attachSeat(node, seat.initialRoute);
+  const ref = (node: HTMLElement | null): void => attachSeat(node, seat.route);
   return function MulticaSeat() {
     return createElement("div", {
       ref,

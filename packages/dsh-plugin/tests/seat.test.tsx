@@ -102,7 +102,7 @@ describe("client apply", () => {
     for (const entry of MULTICA_ENTRIES) {
       const Seat = createSeatComponent(createElement as never, {
         panelId: entry.id,
-        initialRoute: entry.route,
+        route: entry.route,
       });
       const element = Seat() as { type: string; props: Record<string, unknown> };
       expect(element.props["data-multica-panel"]).toBe(entry.id);
@@ -125,7 +125,7 @@ describe("seat component", () => {
     configureHostRuntime(createElement as never);
     const Seat = createSeatComponent(createElement as never, {
       panelId: MULTICA_PANEL_ID,
-      initialRoute: FAMILY_ROOTS.issues,
+      route: FAMILY_ROOTS.issues,
     });
     // React 18 calls a component as a plain function; a hook here would throw.
     const element = Seat() as { type: string; props: Record<string, unknown> };

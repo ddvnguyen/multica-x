@@ -46,7 +46,7 @@ export default [
   {
     // The browser harness and its playwright config are dev-only surfaces —
     // never part of the client artifact — so their imports may be devDeps.
-    files: ["e2e/**/*.{ts,tsx}", "playwright.config.ts"],
+    files: ["e2e/**/*.{ts,tsx,mjs}", "playwright.config.ts"],
     rules: {
       "import-x/no-extraneous-dependencies": [
         "error",
@@ -55,10 +55,12 @@ export default [
     },
   },
   {
-    // Build-time Node scripts: the two globals they actually use.
-    files: ["scripts/**/*.mjs"],
+    // Build-time and lane-measurement Node scripts. The perf script also holds
+    // functions it hands to `page.evaluate`, so `document` is a browser global
+    // in the same file.
+    files: ["scripts/**/*.mjs", "e2e/perf/**/*.mjs"],
     languageOptions: {
-      globals: { console: "readonly", process: "readonly" },
+      globals: { console: "readonly", process: "readonly", document: "readonly" },
     },
   },
 ];

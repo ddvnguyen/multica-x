@@ -1,5 +1,6 @@
 import { createElement as bundledCreateElement } from "react";
 import type { DshClientContext } from "../dsh";
+import { startIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 import { FAMILY_ROOTS } from "./navigation";
 import {
@@ -111,7 +112,7 @@ export function apply(ctx: DshClientContext): void {
     const railIcon = createRailIcon(createElement, entry.glyph);
     const seat = createSeatComponent(createElement, {
       panelId: entry.id,
-      initialRoute: entry.route,
+      route: entry.route,
     });
 
     ctx.slots.inject("sidebar.panellist", () =>
@@ -137,4 +138,32 @@ export function apply(ctx: DshClientContext): void {
       ),
     );
   });
+
+  warmIsland();
+}
+
+/** One warm-up per page: `apply` runs once, and a retry would only duplicate it. */
+let warming = false;
+
+/**
+ * Build the island ahead of the first rail click.
+ *
+ * The shell keeps only the selected `main` cell mounted, so the island is not
+ * created until something claims a seat — and that claim is the click that used
+ * to pay for the whole boot: config, workspace, ~30 queries, a WebSocket and
+ * 292 KB of stylesheet. `apply` runs during shell boot, so the build waits for
+ * an idle window instead of competing with the shell's first paint. A browser
+ * without an idle scheduler falls back to a short timer; the island is created
+ * detached either way, and `attachIsland` picks up whatever is already there.
+ */
+function warmIsland(): void {
+  if (warming || typeof document === "undefined") return;
+  warming = true;
+  const idle = (globalThis as { requestIdleCallback?: (fn: () => void, options?: { timeout: number }) => unknown })
+    .requestIdleCallback;
+  if (typeof idle === "function") {
+    idle(() => startIsland(document), { timeout: 2000 });
+    return;
+  }
+  setTimeout(() => startIsland(document), 200);
 }
