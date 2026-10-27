@@ -180,6 +180,74 @@ func TestMoctInjectPromptFetchesAndRenders(t *testing.T) {
 	}
 }
 
+// The workspace switch (S2-C, M-123): a claim that says "no pre-run memory"
+// must not touch moct-be at all — not a fetch it discards, not a warning.
+func TestMoctInjectPromptSkippedWhenWorkspaceSwitchedItOff(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.WriteString(w, `{"entries":[{"id":"rec-1","type":"convention","title":"Off","body":"x"}]}`)
+	}))
+	defer srv.Close()
+
+	task := moctTestTask()
+	off := false
+	task.MoctMemoryInject = &off
+
+	var logs strings.Builder
+	block := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
+	if block != "" {
+		t.Fatalf("switch off produced a block: %q", block)
+	}
+	if hits != 0 {
+		t.Fatalf("switch off still called moct-be %d time(s)", hits)
+	}
+	if strings.Contains(logs.String(), "running without memory") {
+		t.Errorf("a deliberate switch-off is not a degradation and must not warn: %q", logs.String())
+	}
+}
+
+// The three states of the claim field: an explicit true injects, and an absent
+// field (a server predating the switch) keeps the old behavior — memory.
+func TestMoctInjectPromptHonorsExplicitTrueAndAbsentFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"entries":[{"id":"rec-1","type":"convention","title":"On","body":"x"}]}`)
+	}))
+	defer srv.Close()
+
+	on := true
+	for name, flag := range map[string]*bool{
+		"explicit true": &on,
+		"field absent":  nil,
+	} {
+		task := moctTestTask()
+		task.MoctMemoryInject = flag
+		block := moctInjectPrompt(context.Background(), srv.URL, task, moctTestLogger())
+		if !strings.Contains(block, "#### [convention] On") {
+			t.Errorf("%s: expected a block, got %q", name, block)
+		}
+	}
+}
+
+// The wire contract the server's claim field depends on: false survives the
+// trip, and an absent field stays nil rather than collapsing to false.
+func TestTaskMoctMemoryInjectDecodesAbsentAsNil(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"id":"t1"}`), &task); err != nil {
+		t.Fatalf("decode claim without the field: %v", err)
+	}
+	if task.MoctMemoryInject != nil {
+		t.Fatalf("absent moct_memory_inject = %v, want nil", *task.MoctMemoryInject)
+	}
+
+	if err := json.Unmarshal([]byte(`{"id":"t1","moct_memory_inject":false}`), &task); err != nil {
+		t.Fatalf("decode claim with the field: %v", err)
+	}
+	if task.MoctMemoryInject == nil || *task.MoctMemoryInject {
+		t.Fatalf("moct_memory_inject:false decoded as %v, want a false pointer", task.MoctMemoryInject)
+	}
+}
+
 // The seam's failure mode: moct-be down means a prompt identical to the one a
 // run without this feature would get, plus a warning. Never an error.
 func TestMoctInjectPromptDegradesWhenMoctBeDown(t *testing.T) {

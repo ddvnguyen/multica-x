@@ -1393,6 +1393,7 @@ type Project struct {
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
 	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Settings    []byte             `json:"settings"`
 }
 
 type ProjectResource struct {

@@ -57,6 +57,33 @@ UPDATE workspace SET
 WHERE id = $1
 RETURNING *;
 
+-- name: SetWorkspaceSetting :one
+-- One key of settings, written in SQL rather than by round-tripping the whole
+-- object through the handler: two admins editing different keys at the same
+-- time must not overwrite each other. The jsonb_typeof guard matches the
+-- migration-551 precedent — an old client could have stored a non-object, and
+-- jsonb_set on an array is an error rather than a no-op.
+UPDATE workspace SET
+    settings = jsonb_set(
+        CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END,
+        ARRAY[sqlc.arg('key')::text],
+        sqlc.arg('value')::jsonb,
+        true
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+RETURNING *;
+
+-- name: RemoveWorkspaceSetting :one
+-- The inverse of SetWorkspaceSetting: a cleared key falls back to the code's
+-- default instead of pinning today's default value into the row.
+UPDATE workspace SET
+    settings = CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END
+               - sqlc.arg('key')::text,
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+RETURNING *;
+
 -- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1

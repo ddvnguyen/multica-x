@@ -46,6 +46,31 @@ UPDATE project SET
 WHERE id = $1
 RETURNING *;
 
+-- name: SetProjectSetting :one
+-- One key of the project's settings object (S2-C, M-123), written in SQL for
+-- the same reason as SetWorkspaceSetting: the row is not round-tripped, so a
+-- concurrent edit of another key cannot be lost.
+UPDATE project SET
+    settings = jsonb_set(
+        CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END,
+        ARRAY[sqlc.arg('key')::text],
+        sqlc.arg('value')::jsonb,
+        true
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
+-- name: RemoveProjectSetting :one
+-- Clearing a key is what returns the project to the workspace default; it
+-- must not persist the current default as if the project had chosen it.
+UPDATE project SET
+    settings = CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END
+               - sqlc.arg('key')::text,
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
 -- name: DeleteProject :exec
 -- Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
 DELETE FROM project WHERE id = $1 AND workspace_id = $2;
