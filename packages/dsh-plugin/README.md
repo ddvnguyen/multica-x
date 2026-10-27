@@ -75,9 +75,16 @@ events before the fork sees them), and `extraGroups` appends the one group that
 only exists in dsh. Hidden pages leave the navigation, the compact selector and
 the search index together, so no result lands on a page that is not there.
 
-The MOCT group is that one dsh-only group. Its **Memory** tab reads the seam
-(S2-B): the plane's health, its schema, and where the always-load context budget
-is spent. Its **Connection** tab (S2-C) shows how the panel is wired, whether
+The MOCT group is that one dsh-only group. Its **Memory** tab (S2-D) is the
+workspace's memory overview: the plane's health, its schema and where the
+always-load context budget is spent (S2-B), then the records themselves —
+filtered and searched by the seam's own parameters (type, status, home,
+keyword) and, on this page, by agent — with one record's versions and the two
+decisions a human makes about a pending one, **Approve** and **Reject** (moct's
+`approve` and `retract`; the seam has no `reject` verb). It opens on pending
+records, which is the queue that needs a human, and it writes nothing else: a
+record's text belongs to its writer. Its **Connection** tab (S2-C) shows how the
+panel is wired, whether
 moct-be answers, and whether a run gets the pre-run memory block; that switch is
 the panel's first write, and it is rendered from the server's answer — including
 `editable`, which the server derives from the reader's workspace role, so a

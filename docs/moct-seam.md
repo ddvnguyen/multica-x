@@ -154,6 +154,36 @@ the browser is not allowed to choose.
   owner/admin of the workspace is refused. A bridge that carries a live dsh
   session's own Multica identity would remove that limitation.
 
+### The panel's memory overview (S2-D)
+
+The dsh panel's MOCT → **Memory** page is that seam's reader
+(`packages/dsh-plugin/src/client/moct-memory.tsx`). What it can say about a
+record is bounded by the seven routes above, and it adds no eighth:
+
+- **Filters that are moct's**: `q`, `types`, `homes`, `status` and the page's
+  `limit`/`cursor` go to `GET /memory` as the reader set them; the host replaces
+  only the scope around them. The `homes` filter is a home **kind**
+  (`task`/`channel`/`team`/`expert`), and `status` accepts `all`.
+- **The agent filter is the page's own.** moct has no per-agent query: a read is
+  scoped by workspace and by the reader, `all=1` drops the tag filter, and every
+  `decision` carries a team tag, so naming an expert would not narrow the set.
+  The page therefore narrows the records it has **loaded** — matching the
+  profile a record is homed on, its `expert` tag, or its writer — and says so
+  next to the control, with the seam's own total still shown.
+- **Decisions**: `approve` and `retract`, each with `baseVersion` = the version
+  the reader was shown, and nothing else — the host adds `workspaceId` and the
+  actor. "Reject" in the panel is `retract`; no moct verb was added for it. The
+  page offers a decision only while a record is `pending` and belongs to a
+  workspace, and it opens on `status=pending`, because an unapproved worker
+  write is what a human is there to read. A refusal (not an owner/admin, a
+  version that moved, a home whose always-load set is full) is shown as moct
+  answered it and the record is re-read.
+- **Versions** come from `GET /memory/:id/versions` after the host's scoped
+  `POST /memory/get` has confirmed the id belongs to this workspace; the
+  record's `links` ride on that same `get`. Nothing on the page edits a record:
+  text, home and pin belong to the writer, and `PATCH`, `purge`, `restore`,
+  `widen` and the note route stay a proxy-side 404.
+
 ## Panel settings (S2-C, M-123)
 
 Two settings the dsh panel's MOCT group reads and writes, both ordinary
