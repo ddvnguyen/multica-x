@@ -538,6 +538,19 @@ func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reas
 	}, nil)
 }
 
+// ReportTaskBlocked is the S1-A1 park report: the daemon observed the task's
+// blocked status on its cancel poll, interrupted the local agent, and reports
+// the session it had built so the answer's resume run can continue it. Best-
+// effort by contract — a failure (old server without the route, transient
+// error) leaves the parked row without a session, and the documented
+// degradation applies: the answer run starts fresh. Idempotent server-side.
+func (c *Client) ReportTaskBlocked(ctx context.Context, taskID, sessionID, workDir string) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/blocked", taskID), map[string]any{
+		"session_id": sessionID,
+		"work_dir":   workDir,
+	}, nil)
+}
+
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
 	// BranchName: a cancelled worktree task has already finalized — its

@@ -707,7 +707,7 @@ SET status = 'failed',
 FROM agent_task_queue AS task
 WHERE supplement.task_id = task.id
   AND task.id = ANY($1::uuid[])
-  AND task.status IN ('completed', 'failed', 'cancelled')
+  AND task.status IN ('completed', 'failed', 'cancelled', 'blocked')
   AND supplement.status IN ('pending', 'delivering')
 `
 
@@ -715,6 +715,12 @@ WHERE supplement.task_id = task.id
 // agent_task_queue update. Re-checking the persisted task status makes an
 // accidental early call a no-op while preserving the task-row -> supplement
 // lock order used by creation and delivery acknowledgement.
+//
+// S1-A1: 'blocked' joins the re-check set — the daemon interrupted the parked
+// run, so its pending supplements can never be delivered (CreateTaskSupplement
+// requires running). Settling them here, in the block transaction, keeps the
+// same "commit atomically with the status change or not at all" invariant the
+// terminal paths hold; the later cancel settles them as a no-op.
 func (q *Queries) SettleTerminalTaskSupplements(ctx context.Context, taskIds []pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, settleTerminalTaskSupplements, taskIds)
 	if err != nil {

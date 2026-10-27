@@ -1598,6 +1598,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/supplements/claim", h.ClaimTaskSupplement)
 		r.Post("/tasks/{taskId}/supplements/{commentId}/ack", h.AckTaskSupplement)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
+		// S1-A1 (M-118): the daemon observed the task parked (blocked) on its
+		// cancel poll, interrupted the local agent, and reports the session so
+		// the answer's resume run can continue it. Idempotent CAS, mirroring
+		// the wait-local-directory precedent above.
+		r.Post("/tasks/{taskId}/blocked", h.BlockTask)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
@@ -1741,6 +1746,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// S1-A1 (M-118) ask/plan. Agent side is task-token
+					// authenticated (the mat_ middleware stamps X-Task-ID; the
+					// handlers refuse anything but the caller's own running
+					// issue task). Human side is gated by RequireHumanActor,
+					// same as the supplement route: a task token must never
+					// answer its own card or verdict its own plan.
+					r.Post("/tasks/{taskId}/ask", h.SubmitAsk)
+					r.Post("/tasks/{taskId}/plans", h.CreatePlan)
+					r.Put("/plans/{planId}/sections", h.WritePlanSection)
+					r.Post("/plans/{planId}/submit", h.SubmitPlan)
+					r.With(handler.RequireHumanActor).Post("/question-cards/{cardId}/answer", h.AnswerQuestionCard)
+					r.With(handler.RequireHumanActor).Post("/plans/{planId}/verdict", h.ReviewPlan)
+					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {

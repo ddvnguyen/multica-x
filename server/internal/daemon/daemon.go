@@ -5592,7 +5592,7 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 // trivially testable; the polling goroutine in watchTaskCancellation is just
 // I/O around it.
 //
-// Two conditions trigger cancellation:
+// Three conditions trigger cancellation:
 //
 //  1. status is a terminal state — "completed", "failed", or "cancelled"
 //     (isAgentTaskTerminal). The server has already finalized the task: user
@@ -5603,7 +5603,12 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 //     CompleteTask/FailTask callback is guaranteed to fail and just adds log
 //     noise. Reusing isAgentTaskTerminal keeps this set in lockstep with the
 //     GC's notion of a terminal task.
-//  2. err is a 404 with "task not found" — the task row was deleted while
+//  2. status is "blocked" (isAgentTaskParked, S1-A1) — the agent's ask/plan
+//     parked the task awaiting a human answer. The run is over (the daemon
+//     interrupted it); only the row stays behind as the resume anchor. The
+//     interrupt path reports the session via the park report, NOT a cancel
+//     ack, so the answer's resume run can continue it.
+//  3. err is a 404 with "task not found" — the task row was deleted while
 //     the agent was running. Without this we'd let the local agent keep
 //     emitting tool calls against a dead task for its full timeout window.
 //
@@ -5614,7 +5619,32 @@ func shouldInterruptAgent(status string, err error) bool {
 	if err != nil {
 		return isTaskNotFoundError(err)
 	}
-	return isAgentTaskTerminal(status)
+	return isAgentTaskTerminal(status) || isAgentTaskParked(status)
+}
+
+// reportInterruptedTask sends the right post-interrupt report. The interrupt
+// fires for BOTH terminal states and the S1-A1 parked state, and the two need
+// different fates: a terminal task gets the ordinary cancel ack, while a
+// parked (blocked) task gets the park report carrying the session so the
+// answer's resume run can continue it. One extra GetTaskStatus on this rare
+// path picks the branch; a status that moved again (park → cancelled in the
+// window) falls back to the cancel ack, which the server applies by CAS.
+func (d *Daemon) reportInterruptedTask(ctx context.Context, taskID string, ack TaskCancelAck, result TaskResult, taskLog *slog.Logger) {
+	if status, statusErr := d.client.GetTaskStatus(ctx, taskID); statusErr == nil && isAgentTaskParked(status) {
+		taskLog.Info("task parked on human answer, reporting session",
+			"session_recorded", result.SessionID != "")
+		if parkErr := d.client.ReportTaskBlocked(ctx, taskID, result.SessionID, result.WorkDir); parkErr != nil {
+			// Best-effort: an old server without the route answers 404, and a
+			// transient failure leaves the parked row without a session. Both
+			// degrade to the documented behaviour — the answer run starts
+			// fresh — so this must never be fatal.
+			taskLog.Warn("park report failed; answer run will start fresh", "error", parkErr)
+		}
+		return
+	}
+	if ackErr := d.client.AckTaskCancelled(ctx, taskID, ack); ackErr != nil {
+		taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
+	}
 }
 
 // watchTaskCancellation polls the server for the task's status on the given
@@ -5835,9 +5865,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			ack.ErrorMessage = preserved.Error()
 			ack.FailureReason = "local_directory_error"
 		}
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
-			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
-		}
+		d.reportInterruptedTask(ctx, task.ID, ack, result, taskLog)
 		return
 	default:
 	}
@@ -5883,10 +5911,9 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// payload only to a cancelled row (status CAS), because for
 		// completed/failed rows the complete/fail callback is the
 		// authoritative channel and a stale run's late ack must not touch
-		// them.
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}); ackErr != nil {
-			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
-		}
+		// them. A parked (blocked) row instead takes the park report, which
+		// records the session for the answer's resume run.
+		d.reportInterruptedTask(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}, result, taskLog)
 		return
 	}
 

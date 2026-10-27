@@ -862,6 +862,16 @@ func isAgentTaskTerminal(status string) bool {
 	}
 }
 
+// isAgentTaskParked reports whether the task is blocked on a human answer
+// (S1-A1 ask/plan). It is deliberately NOT part of isAgentTaskTerminal: GC
+// must keep the parked workdir alive so the answer's resume run can continue
+// the session (Architect amendment 2). The daemon's cancel poll DOES interrupt
+// on it — the run is over, only the row stays behind — and the interrupt path
+// reports the session via the park report instead of a cancel ack.
+func isAgentTaskParked(status string) bool {
+	return status == "blocked"
+}
+
 // gcTaskDirOwner returns authoritative provenance only when both the marker
 // and its position under WorkspacesRoot agree. Missing GC metadata is not
 // ownership proof: partially prepared roots have .task_owner, while arbitrary

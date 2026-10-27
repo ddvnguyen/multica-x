@@ -305,16 +305,114 @@ func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsB
 	return items, nil
 }
 
+const blockAgentTask = `-- name: BlockAgentTask :one
+UPDATE agent_task_queue
+SET status = 'blocked',
+    trigger_evidence_kind = $2,
+    trigger_evidence_ref_id = $3,
+    wait_reason = $4
+WHERE id = $1 AND status = 'running'
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
+`
+
+type BlockAgentTaskParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	TriggerEvidenceKind  pgtype.Text `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID pgtype.UUID `json:"trigger_evidence_ref_id"`
+	WaitReason           pgtype.Text `json:"wait_reason"`
+}
+
+// S1-A1: running -> blocked ("awaiting human"). Called by the ask/plan submit
+// handler after it inserted the question card / plan-review inbox item, in the
+// same transaction. The CAS on 'running' makes a double submit or a task that
+// already finished a no-op instead of a resurrection. trigger_evidence_kind /
+// _ref_id name the parked card (question_answer / plan_verdict) so the resume
+// task and the UI can find it; the free-text kind needs no migration
+// (established by 184_agent_task_attribution).
+func (q *Queries) BlockAgentTask(ctx context.Context, arg BlockAgentTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, blockAgentTask,
+		arg.ID,
+		arg.TriggerEvidenceKind,
+		arg.TriggerEvidenceRefID,
+		arg.WaitReason,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.WorkflowStep,
+	)
+	return i, err
+}
+
 const cancelAgentTask = `-- name: CancelAgentTask :one
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+WHERE id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
 // Automatic cancellation without an explicit persisted failure reason. Unlike
 // CancelAgentTaskByUser, this deliberately leaves recovery inputs replayable.
+// S1-A1: 'blocked' included so any cancel of a parked task frees the slot.
 func (q *Queries) CancelAgentTask(ctx context.Context, id pgtype.UUID) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, cancelAgentTask, id)
 	var i AgentTaskQueue
@@ -439,7 +537,7 @@ SET status = 'cancelled',
       )
     END
 WHERE task.id = $1
-  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.workflow_step
 `
 
@@ -454,6 +552,9 @@ type CancelAgentTaskByUserParams struct {
 // delegated-failure recovery signal planned into this task. Server-initiated
 // cancellations keep using CancelAgentTask / CancelAgentTaskWithReason so a
 // stale plan, claim failure, or other automatic repair can still be replayed.
+// S1-A1: 'blocked' included — this is the human "cancel a parked task" path
+// (amendment 3); the service withdraws the task's open card / cancels its open
+// plan in the same transaction.
 func (q *Queries) CancelAgentTaskByUser(ctx context.Context, arg CancelAgentTaskByUserParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, cancelAgentTaskByUser,
 		arg.ID,
@@ -537,7 +638,7 @@ SET status = 'cancelled',
     cancelled_by_type = 'system',
     cancelled_by_id = NULL,
     cancelled_by_name = NULL
-WHERE id = $3 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+WHERE id = $3 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
@@ -554,6 +655,7 @@ type CancelAgentTaskWithReasonParams struct {
 // the run surfaces as an unexplained "cancelled", and the only trace is a 4xx
 // in a daemon log the user never sees. Retrying cannot help either (the task is
 // refused for a durable reason), so this terminal state carries its explanation.
+// S1-A1: 'blocked' included for the same free-the-parked-slot reason.
 func (q *Queries) CancelAgentTaskWithReason(ctx context.Context, arg CancelAgentTaskWithReasonParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, cancelAgentTaskWithReason, arg.Error, arg.FailureReason, arg.ID)
 	var i AgentTaskQueue
@@ -626,7 +728,7 @@ const cancelAgentTasksByAgent = `-- name: CancelAgentTasksByAgent :many
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE agent_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+WHERE agent_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
@@ -635,6 +737,8 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // Mirrors the shape of CancelAgentTasksByIssue / CancelPendingTasksByIssueAndAgent
 // (also :many + RETURNING + completed_at) so the three sibling cancel paths
 // behave consistently.
+// S1-A1: 'blocked' included — "cancel all tasks for this agent" must free a
+// parked slot too (the service withdraws the open card in the same tx).
 func (q *Queries) CancelAgentTasksByAgent(ctx context.Context, agentID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByAgent, agentID)
 	if err != nil {
@@ -720,7 +824,7 @@ const cancelAgentTasksByChatSession = `-- name: CancelAgentTasksByChatSession :m
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
@@ -729,6 +833,8 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // has nowhere to land. Must run BEFORE the chat_session row is deleted —
 // the FK ON DELETE SET NULL would otherwise nullify chat_session_id and we
 // could no longer reach those tasks.
+// S1-A1: 'blocked' included for family uniformity; chat tasks never park
+// (ask/plan is issue-task only), so the predicate is a no-op for them today.
 func (q *Queries) CancelAgentTasksByChatSession(ctx context.Context, chatSessionID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByChatSession, chatSessionID)
 	if err != nil {
@@ -811,18 +917,58 @@ func (q *Queries) CancelAgentTasksByChatSession(ctx context.Context, chatSession
 }
 
 const cancelAgentTasksByIssue = `-- name: CancelAgentTasksByIssue :many
+
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
+// ============================================================================
+// S1-A1 STATUS SWEEP (migration 588, 'blocked')
+//
+// 'blocked' means: the agent's ask/plan parked this task awaiting a human
+// answer; the daemon interrupted the run and reported the session back (park
+// report). It is NOT terminal (GC keeps the parked workdir) and NOT in-flight
+// (the agent slot is released — ReconcileAgentStatus maps it to idle). Every
+// hardcoded status tuple in this file got an explicit decision:
+//
+//	CANCEL family (include 'blocked'):
+//	  CancelAgentTasksByIssue, CancelPendingTasksByIssueAndAgent,
+//	  CancelPendingTasksByIssueAndAgentInThread, CancelAgentTasksByAgent,
+//	  CancelAgentTasksByTriggerComment, CancelAgentTasksByChatSession,
+//	  CancelAgentTask, CancelAgentTaskByUser, CancelAgentTaskWithReason.
+//	  A human cancelling (issue/agent/comment/session/task) frees the parked
+//	  slot; the service layer also withdraws the task's open question card /
+//	  cancels its open plan in the same transaction (amendment 3).
+//	  CancelQueuedAgentTask / CancelQueuedAgentTasksForSession stay
+//	  queued-only by design (chat queue editing) — a chat task never blocks.
+//
+//	EXCLUDE 'blocked' (parked by design, not stuck / not executing):
+//	  ClaimAgentTask serialization guard, StartAgentTask, LockAgentTaskStartClaim,
+//	  MarkAgentTaskWaitingLocalDirectory, ReclaimStaleDispatched*,
+//	  ExtendAgentTaskPrepareLease, FailAgentTask, CompleteAgentTask,
+//	  RecoverOrphanedTasksForRuntime (amendment 2: never orphaned),
+//	  FailStaleTasks, ExpireStaleQueuedTasks, FailExpiredRuntimeReconnectRetries,
+//	  GetLastTaskSession (resume goes through rerun_of_task_id, never the
+//	  (agent, issue) fallback), CountRunning/HasActive* capacity checks,
+//	  RefreshAgentStatusFromTasks, chat/channel/squad/wakeup/supplement
+//	  tuples (chat tasks never block; a blocked issue task holds no chat
+//	  row). Each site below carries its own one-line decision where the
+//	  exclusion could surprise a reader.
+//
+// ============================================================================
 // Cancels every active task on the issue and returns the affected rows so the
 // caller can reconcile each agent's status and broadcast task:cancelled events
 // (#1587). Prior :exec form silently dropped that info, leaving agents stuck at
 // status="working" with no self-correction. Only issue-deletion cleanup calls
 // this now; a status flip to cancelled/done no longer does (MUL-4465).
+//
+// S1-A1: 'blocked' (parked on a human answer, migration 588) is included —
+// deleting the issue withdraws its question cards with it, and a parked task
+// must not outlive its issue. Full sweep table: see the S1-A1 status sweep
+// note above CancelAgentTasksByIssue in the first task-status query.
 func (q *Queries) CancelAgentTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByIssue, issueID)
 	if err != nil {
@@ -910,7 +1056,7 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL,
     context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('comment_change_cancelled_task_id', id::text)
 WHERE (trigger_comment_id = $1 OR $1 = ANY(coalesced_comment_ids))
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
@@ -918,6 +1064,8 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // The body may already have been embedded as either the primary trigger or a
 // coalesced input; cancellation prevents an agent from acting on a stale or
 // deleted version. Must run before deletion clears trigger_comment_id.
+// S1-A1: 'blocked' included — a parked question asked from a deleted comment
+// is itself stale; cancelling withdraws its card (service layer, same tx).
 func (q *Queries) CancelAgentTasksByTriggerComment(ctx context.Context, triggerCommentID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByTriggerComment, triggerCommentID)
 	if err != nil {
@@ -1004,7 +1152,7 @@ UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
 WHERE issue_id = $1 AND agent_id = $2
-  AND status IN ('queued', 'dispatched', 'deferred')
+  AND status IN ('queued', 'dispatched', 'deferred', 'blocked')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
 
@@ -1029,6 +1177,12 @@ type CancelPendingTasksByIssueAndAgentParams struct {
 // Everything that has NOT begun executing is still cleared, including deferred
 // escalations, so rerun keeps its prior "replace the pending plan" behaviour for
 // those rows.
+//
+// S1-A1: 'blocked' IS cleared here (unlike running/waiting_local_directory):
+// a parked task holds no executing agent, and a manual rerun is the member
+// explicitly replacing the pending work — leaving the parked card would later
+// enqueue a second run from a stale answer. The service layer withdraws the
+// open card / cancels the open plan with the same transaction.
 func (q *Queries) CancelPendingTasksByIssueAndAgent(ctx context.Context, arg CancelPendingTasksByIssueAndAgentParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelPendingTasksByIssueAndAgent, arg.IssueID, arg.AgentID)
 	if err != nil {
@@ -1115,7 +1269,7 @@ UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
 WHERE issue_id = $1 AND agent_id = $2
-  AND status IN ('queued', 'dispatched', 'deferred')
+  AND status IN ('queued', 'dispatched', 'deferred', 'blocked')
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3::uuid)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
 `
@@ -1128,6 +1282,7 @@ type CancelPendingTasksByIssueAndAgentInThreadParams struct {
 
 // Cancel only the not-yet-started plan in the selected thread. Other threads
 // retain their queues; running tasks are stopped explicitly through CancelTask.
+// S1-A1: 'blocked' included for the same reason as CancelPendingTasksByIssueAndAgent.
 func (q *Queries) CancelPendingTasksByIssueAndAgentInThread(ctx context.Context, arg CancelPendingTasksByIssueAndAgentInThreadParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelPendingTasksByIssueAndAgentInThread, arg.IssueID, arg.AgentID, arg.ThreadCommentID)
 	if err != nil {
@@ -1573,6 +1728,9 @@ WHERE id = (
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
           WHERE active.agent_id = atq.agent_id
+            -- S1-A1: 'blocked' deliberately NOT in this serialization set — a
+            -- parked task holds no executing agent, so the answer's resume task
+            -- (same issue+agent) must be claimable while the parked row exists.
             AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
             AND (
               (atq.issue_id IS NOT NULL AND active.issue_id = atq.issue_id)
@@ -3695,10 +3853,14 @@ type FailStaleTasksParams struct {
 // the legacy pure-wall-clock behavior for that (rare / historical) case.
 //
 // waiting_local_directory rows are intentionally excluded: the daemon owns
-// the wait (with its own ctx-driven timeout) and a legitimate queue ahead
-// of this task can exceed the dispatch / running timeouts without being
+// the wait (with its own ctx-driven timeout) and a legitimate queue ahead of
+// this task can exceed the dispatch / running timeouts without being
 // "stuck". If the daemon dies, RecoverOrphanedTasksForRuntime reclaims
 // those rows at restart.
+//
+// S1-A1: 'blocked' also excluded — a parked task waits for a human, not for
+// a liveness signal; no wall clock may reap it. Cancellation is the only exit
+// besides the answer/verdict re-queue.
 func (q *Queries) FailStaleTasks(ctx context.Context, arg FailStaleTasksParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failStaleTasks,
 		arg.DispatchTimeoutSecs,
@@ -4369,6 +4531,10 @@ type GetLastTaskSessionRow struct {
 // Find resume context for an agent/issue from completed, failed, or cancelled
 // execution tasks. Manual rerun uses its exact source task instead; its fresh
 // flag also protects older claim handlers during mixed-version deployment.
+//
+// S1-A1: 'blocked' rows are deliberately invisible here — the (agent, issue)
+// fallback must never resurrect a parked session behind the answer's back; a
+// parked task resumes ONLY through its named rerun source (rerun_of_task_id).
 //
 // Reduce to the newest terminal row per session before applying safety filters;
 // otherwise an older healthy row could revive the same poisoned session.
@@ -8003,6 +8169,11 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // them to the auto-retry path. waiting_local_directory rows are included
 // because the daemon holding the path lock is the same process that just
 // died — without us, the row would sit waiting forever.
+//
+// S1-A1: 'blocked' deliberately EXCLUDED (Architect amendment 2) — a parked
+// task is parked by design, not an orphan of a dead daemon. It survives the
+// restart so the human can still answer; the answer's resume task then starts
+// fresh if the park report never recorded a session (documented degradation).
 func (q *Queries) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, recoverOrphanedTasksForRuntime, runtimeID)
 	if err != nil {
@@ -8104,6 +8275,10 @@ RETURNING a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_
 // let a task parked on a local_directory mutex masquerade as executing work.
 // The status guard makes a correct status a no-op: :one returns no rows, so
 // callers neither rewrite updated_at nor publish a redundant status event.
+//
+// S1-A1: 'blocked' maps to idle (deliberately not in the working set) — the
+// daemon interrupted the run and released the slot; the agent may take new
+// work while the parked card awaits its human answer.
 func (q *Queries) RefreshAgentStatusFromTasks(ctx context.Context, id pgtype.UUID) (Agent, error) {
 	row := q.db.QueryRow(ctx, refreshAgentStatusFromTasks, id)
 	var i Agent
@@ -8423,6 +8598,94 @@ type SetAgentTaskErrorIfEmptyParams struct {
 func (q *Queries) SetAgentTaskErrorIfEmpty(ctx context.Context, arg SetAgentTaskErrorIfEmptyParams) error {
 	_, err := q.db.Exec(ctx, setAgentTaskErrorIfEmpty, arg.Error, arg.FailureReason, arg.ID)
 	return err
+}
+
+const setBlockedTaskSession = `-- name: SetBlockedTaskSession :one
+UPDATE agent_task_queue
+SET session_id = $2,
+    work_dir = COALESCE($3, work_dir)
+WHERE id = $1 AND status = 'blocked'
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step
+`
+
+type SetBlockedTaskSessionParams struct {
+	ID        pgtype.UUID `json:"id"`
+	SessionID pgtype.Text `json:"session_id"`
+	WorkDir   pgtype.Text `json:"work_dir"`
+}
+
+// S1-A1 park report: the daemon observed the blocked status on its cancel
+// poll, interrupted the local agent, and reports the session it had built so
+// the answer's resume run can continue it. Idempotent by the status CAS — a
+// late report after cancellation/completion matches no row and changes
+// nothing. Session only: work_dir is already on the row from StartTask.
+// Deliberately NOT a terminal transition: no completed_at, no settlement.
+func (q *Queries) SetBlockedTaskSession(ctx context.Context, arg SetBlockedTaskSessionParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, setBlockedTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.WorkflowStep,
+	)
+	return i, err
 }
 
 const setDeferredChannelIssueTaskRuntimeOverlay = `-- name: SetDeferredChannelIssueTaskRuntimeOverlay :execrows

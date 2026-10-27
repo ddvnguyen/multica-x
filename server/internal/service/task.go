@@ -2637,7 +2637,11 @@ func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UU
 		if err != nil {
 			return err
 		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
+		if err := SettleTerminalTaskState(ctx, qtx, cancelled...); err != nil {
+			return err
+		}
+		// S1-A1 amendment 3: issue teardown withdraws parked cards/plans too.
+		return SettleParkedAskPlanForTasks(ctx, qtx, cancelled)
 	}); err != nil {
 		return err
 	}
@@ -2688,7 +2692,11 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 		if err != nil {
 			return err
 		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
+		if err := SettleTerminalTaskState(ctx, qtx, cancelled...); err != nil {
+			return err
+		}
+		// S1-A1 amendment 3: cancel-all withdraws this agent's parked cards.
+		return SettleParkedAskPlanForTasks(ctx, qtx, cancelled)
 	}); err != nil {
 		return nil, err
 	}
@@ -2716,7 +2724,13 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 		if err != nil {
 			return err
 		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
+		if err := SettleTerminalTaskState(ctx, qtx, cancelled...); err != nil {
+			return err
+		}
+		// S1-A1 amendment 3: a parked question asked from a deleted comment is
+		// itself stale, so cancelling withdraws its card / plan in the same
+		// transaction — otherwise a cancelled task leaves an answerable card.
+		return SettleParkedAskPlanForTasks(ctx, qtx, cancelled)
 	}); err != nil {
 		return nil, err
 	}
@@ -2977,6 +2991,12 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 			// CancelAgentTaskByUser appends the recovery receipt in the same
 			// statement, so the returned row already carries it.
 			if err := SettleTerminalTaskState(ctx, qtx, cancelled); err != nil {
+				return err
+			}
+			// S1-A1 amendment 3: a cancelled parked task withdraws its open
+			// question card / cancels its open plan in the same transaction,
+			// so no card outlives the task that asked it.
+			if err := SettleParkedAskPlanForTasks(ctx, qtx, []db.AgentTaskQueue{cancelled}); err != nil {
 				return err
 			}
 			if !cancelled.ChatSessionID.Valid {
@@ -5809,7 +5829,13 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 			if err != nil {
 				return err
 			}
-			return SettleTerminalTaskState(ctx, qtx, cancelled...)
+			if err := SettleTerminalTaskState(ctx, qtx, cancelled...); err != nil {
+				return err
+			}
+			// S1-A1 amendment 3: a rerun supersedes a parked ask/plan in the
+			// same thread; its card/plan must not survive to answer into a
+			// run the member already replaced.
+			return SettleParkedAskPlanForTasks(ctx, qtx, cancelled)
 		})
 		if cerr != nil {
 			slog.Warn("rerun: cancel pending tasks failed",
@@ -6021,7 +6047,15 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 		if err != nil {
 			return err
 		}
-		return SettleTerminalTaskState(ctx, qtx, failed...)
+		if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+			return err
+		}
+		// S1-A1 amendment 3: any batch terminate that may include a parked
+		// (blocked) task withdraws its open card / plan in the same
+		// transaction. No-op for tasks that never parked. Without this a
+		// cancelled task — e.g. one cleared by agent archive — would leave an
+		// answerable card behind.
+		return SettleParkedAskPlanForTasks(ctx, qtx, failed)
 	}); err != nil {
 		return nil, err
 	}

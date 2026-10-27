@@ -528,6 +528,7 @@ type AgentTaskResponse struct {
 	WakeupSystemRule         string               `json:"wakeup_system_rule,omitempty"`      // set when a platform rule (e.g. child_done) started the run
 	WakeupJoined             string               `json:"wakeup_joined,omitempty"`           // wakeups that fired while this run waited to start and joined it instead of queuing their own
 	HandoffNote              string               `json:"handoff_note,omitempty"`            // legacy assignment handoff instruction retained for installed clients; rendered by the daemon only in the per-turn prompt
+	TriggerEvidenceKind      string               `json:"trigger_evidence_kind,omitempty"`   // S1-A1: question_answer / plan_verdict names a parked ask/plan resume
 	SquadID                  string               `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName                string               `json:"squad_name,omitempty"`              // display name for the picker squad
 	ParentIssueID            string               `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
@@ -842,6 +843,10 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.HandoffNote.Valid {
 		handoffNote = t.HandoffNote.String
 	}
+	triggerEvidenceKind := ""
+	if t.TriggerEvidenceKind.Valid {
+		triggerEvidenceKind = t.TriggerEvidenceKind.String
+	}
 	return AgentTaskResponse{
 		// Task-scoped provenance must not transfer through copied retry context.
 		CancelledByCommentChange: t.Status == "cancelled" && cancellation.TaskID != "" && cancellation.TaskID == uuidToString(t.ID),
@@ -871,6 +876,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:         textToPtr(t.TriggerSummary),
 		HandoffNote:            handoffNote,
+		TriggerEvidenceKind:    triggerEvidenceKind,
 		WakeupID:               wakeupContext.ID,
 		WakeupSystemRule:       wakeupContext.SystemRule,
 		WakeupJoined:           service.JoinedWakeupNotes(t.Context),

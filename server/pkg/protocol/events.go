@@ -35,6 +35,7 @@ const (
 	EventTaskDispatch              = "task:dispatch"                // queued → dispatched (daemon claim)
 	EventTaskRunning               = "task:running"                 // dispatched → running (daemon started)
 	EventTaskWaitingLocalDirectory = "task:waiting_local_directory" // dispatched → waiting_local_directory (daemon parked on a busy local_directory path)
+	EventTaskBlocked               = "task:blocked"                 // running → blocked (S1-A1: ask/plan parked the run awaiting a human)
 	EventTaskProgress              = "task:progress"
 	EventTaskCompleted             = "task:completed" // running → completed
 	EventTaskFailed                = "task:failed"    // running → failed

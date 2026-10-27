@@ -271,6 +271,13 @@ func buildPromptBody(task Task, provider string) string {
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
+	// S1-A1 (M-118): a run resumed from a parked ask/plan carries the human's
+	// answer or verdict in the handoff note. Render it as the answer/verdict
+	// block (mirroring the [WAKEUP] pattern) so the agent reads it as the
+	// human's reply to its own parked question/plan, not as a scoping note.
+	if task.TriggerEvidenceKind == "question_answer" || task.TriggerEvidenceKind == "plan_verdict" {
+		return buildAskPlanResumePrompt(task)
+	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
@@ -289,6 +296,27 @@ func buildPromptBody(task Task, provider string) string {
 	// treat the read as mandatory)", which read as if comment-triggered turns
 	// did not (MUL-6984).
 	fmt.Fprintf(&b, "For comment history, workflow step 2 applies. Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
+	return b.String()
+}
+
+// buildAskPlanResumePrompt renders the resumed run's prompt for an answer or
+// plan verdict (S1-A1). The handoff note carries the human's reply; it is
+// presented as the answer to the agent's own parked question/plan, and the
+// run continues the same issue and session.
+func buildAskPlanResumePrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
+	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	if task.TriggerEvidenceKind == "plan_verdict" {
+		b.WriteString("[PLAN VERDICT]\n")
+	} else {
+		b.WriteString("[ANSWER]\n")
+	}
+	if task.HandoffNote != "" {
+		b.WriteString(strings.TrimSpace(task.HandoffNote))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("This run resumes the session that asked the question or proposed the plan; continue the task with the human's reply above. Start by running `multica issue get " + task.IssueID + " --output json` to confirm the current state, then proceed.\n")
 	return b.String()
 }
 
