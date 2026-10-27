@@ -308,15 +308,22 @@ describe("MoctProxy allow-list", () => {
 describe("MoctProxy workspace injection", () => {
   it("replaces every client-supplied scope value on a read", async () => {
     const fixture = await startFixture();
+    // The filter vocabulary the Memory page (S2-D) builds its queries from:
+    // q, types, homes, status, limit and cursor are the reader's; every scope
+    // value around them is the host's.
     await fetch(
       `${fixture.base}${MOCT_PREFIX}/team/v1/memory?workspaceId=multica:ws:${OTHER_WORKSPACE}` +
-        `&expertId=multica:agent:${OTHER_WORKSPACE}&all=0&types=decision&limit=99&attrs=x&cursor=abc`,
+        `&expertId=multica:agent:${OTHER_WORKSPACE}&all=0&q=suite&types=decision&homes=expert&status=all` +
+        `&limit=99&attrs=x&cursor=abc`,
     );
     const url = new URL(fixture.moct[0]!.url, "http://moct.invalid");
     expect(url.searchParams.getAll("workspaceId")).toEqual([`multica:ws:${WORKSPACE}`]);
     expect(url.searchParams.getAll("expertId")).toEqual([`multica:user:${ACTOR}`]);
     expect(url.searchParams.getAll("all")).toEqual(["1"]);
+    expect(url.searchParams.get("q")).toBe("suite");
     expect(url.searchParams.get("types")).toBe("decision");
+    expect(url.searchParams.get("homes")).toBe("expert");
+    expect(url.searchParams.get("status")).toBe("all");
     expect(url.searchParams.get("limit")).toBe("20");
     expect(url.searchParams.get("cursor")).toBe("abc");
     expect(url.searchParams.has("attrs")).toBe(false);

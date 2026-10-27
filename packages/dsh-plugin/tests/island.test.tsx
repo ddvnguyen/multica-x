@@ -106,6 +106,38 @@ function stubBackend(
         ],
       });
     }
+    // The record list the Memory tab opens on: one pending rule, which is what
+    // a worker's write looks like before a human approves it.
+    if (url.startsWith("/moct/team/v1/memory?")) {
+      return json({
+        results: [
+          {
+            id: "mem_1",
+            workspaceId: "multica:ws:ws-1",
+            type: "rule",
+            title: "Always run the package suite",
+            body: "Run the package suite before pushing.",
+            home: { kind: "expert", ref: "multica:agent:agent-1" },
+            tags: [{ kind: "expert", ref: "multica:agent:agent-1" }],
+            status: "pending",
+            authorKind: "member",
+            authorId: "multica:agent:agent-1",
+            version: 1,
+            tokens: 12,
+            createdAt: "2026-10-27T10:00:00Z",
+            updatedAt: "2026-10-27T10:00:00Z",
+          },
+        ],
+        total: 1,
+        nextCursor: null,
+      });
+    }
+    if (url.startsWith("/moct/team/v1/memory/get")) {
+      return json({ records: [], missing: ["mem_1"] });
+    }
+    if (url.startsWith("/moct/team/v1/memory/mem_1/versions")) {
+      return json({ versions: [] });
+    }
     if (url.startsWith("/multica/api/issues/grouped")) {
       return json({
         groups: [
@@ -311,9 +343,15 @@ describe("mountIsland", () => {
       expect(text).toContain("1200 tokens");
       expect(text).toContain("640 tokens · 3 records");
       expect(text).toContain("1 waiting for approval");
+      // ... and the records themselves, which is what S2-D added: the page
+      // opens on the queue that needs a human.
+      expect(text).toContain("Always run the package suite");
+      expect(text).toContain("1 of 1 records");
     });
     expect(requests).toContain("/moct/status");
     expect(requests).toContain("/moct/team/v1/memory/usage");
+    const list = requests.find((url) => url.startsWith("/moct/team/v1/memory?"));
+    expect(new URLSearchParams(list?.split("?")[1] ?? "").get("status")).toBe("pending");
   });
 
   it("does not touch the memory plane from another page", async () => {

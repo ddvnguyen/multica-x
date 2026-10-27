@@ -1,11 +1,14 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * The M-116 harness suite.
+ * The island harness suite.
  *
- * One spec (`e2e/island-overlays.spec.ts`) drives the island boundary in a
- * real browser — jsdom cannot reproduce shadow-DOM hit-testing. The dev
- * server is the harness vite config; nothing else must be running.
+ * The specs under `e2e/` drive the island in a real Chromium against harness
+ * pages: shadow-DOM hit-testing (M-116), the keep-alive island's relayout
+ * (M-130), and the MOCT memory page's picker and layout (M-124). jsdom has no
+ * layout and delivers no pointer events, so none of the three can be told
+ * apart there. The dev server is the harness vite config; nothing else must
+ * be running.
  */
 export default defineConfig({
   testDir: "./e2e",

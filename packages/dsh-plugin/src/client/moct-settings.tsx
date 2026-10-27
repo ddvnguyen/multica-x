@@ -14,6 +14,19 @@ import {
   type ExtraSettingsGroup,
 } from "../fork";
 import { ISLAND_API_BASE } from "./config";
+import { MoctMemoryTab } from "./moct-memory";
+import {
+  ActionButton,
+  callJson,
+  Failure,
+  MOCT_STATUS_PATH,
+  parseMoctStatus,
+  RefreshButton,
+  Status,
+  useSeamRead,
+  type Load,
+  type MoctConnection,
+} from "./moct-seam";
 
 /**
  * The MOCT group in the settings page.
@@ -26,10 +39,10 @@ import { ISLAND_API_BASE } from "./config";
  *
  * Three tabs, three planes:
  *
- * - Memory reads the seam (S2-B): the plane's health, its schema, and where the
- *   always-load context budget is spent. Read-only: the seam exposes memory
- *   verbs (approve, retract), but a settings page is the wrong place to decide
- *   a record.
+ * - Memory (S2-D) is the workspace's memory overview, in `./moct-memory`: the
+ *   plane's health and budget, the records themselves, and the two decisions a
+ *   human makes about a pending one. Its own module because it is a page, not a
+ *   setting.
  * - Connection (S2-C) says how this panel is wired and whether a run gets the
  *   pre-run memory block at all. The switch is the panel's first write, so it
  *   is surfaced as the server's, not the panel's: the answer to a write is the
@@ -56,41 +69,6 @@ export const HIDDEN_SETTINGS_TABS = [
   // reference would document bindings that do not reach it here.
   "shortcuts",
 ] as const;
-
-/** What the host's `/moct/status` says about the memory plane. */
-export interface MoctStatus {
-  ok: boolean;
-  schema: number | null;
-  reachable: boolean;
-}
-
-/** One home's use of the always-load cap, from `/moct/team/v1/memory/usage`. */
-export interface MoctHomeUsage {
-  home: string;
-  usedTokens: number;
-  records: number;
-  blockedPending: number;
-}
-
-export interface MoctUsage {
-  capTokens: number | null;
-  homes: MoctHomeUsage[];
-}
-
-/** How this panel is wired, as the host half reported it at boot. */
-export interface MoctConnection {
-  /** Workspace the panel speaks as; empty means the first readable one. */
-  workspaceSlug: string;
-  /** Workspace UUID the settings writes address. Empty when unresolved. */
-  workspaceId: string;
-  /** Same-origin realtime path. */
-  wsPath: string;
-  /** Why the host cannot proxy, when it cannot. Never a credential. */
-  problem: string | null;
-}
-
-export const MOCT_STATUS_PATH = "/moct/status";
-export const MOCT_USAGE_PATH = "/moct/team/v1/memory/usage";
 
 /** The ask/plan wait the server ships: ten minutes (M-123). */
 export const MOCT_DEFAULT_TIMEOUT_SECONDS = 600;
@@ -142,53 +120,6 @@ export function moctApiPaths(workspaceId: string) {
     memory: `${workspace}/moct`,
     projects: `${ISLAND_API_BASE}/api/projects`,
   };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function wholeNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
-}
-
-/** A status answer, with the defaults a missing field deserves. */
-export function parseMoctStatus(body: unknown): MoctStatus {
-  const record = asRecord(body);
-  return {
-    ok: record["ok"] === true,
-    schema: wholeNumber(record["schema"]),
-    reachable: record["reachable"] === true,
-  };
-}
-
-/**
- * A usage answer.
- *
- * moct-be's `homes` is the part a reader acts on: it is where the always-load
- * cap is actually spent. An entry without a home name is not one this page can
- * label, so it is dropped rather than rendered as an empty row.
- */
-export function parseMoctUsage(body: unknown): MoctUsage {
-  const record = asRecord(body);
-  const homes = Array.isArray(record["homes"])
-    ? record["homes"].flatMap((entry) => {
-        const home = asRecord(entry);
-        const name = home["home"];
-        if (typeof name !== "string" || name === "") return [];
-        return [
-          {
-            home: name,
-            usedTokens: wholeNumber(home["usedTokens"]) ?? 0,
-            records: wholeNumber(home["records"]) ?? 0,
-            blockedPending: wholeNumber(home["blockedPending"]) ?? 0,
-          },
-        ];
-      })
-    : [];
-  return { capTokens: wholeNumber(record["capTokens"]), homes };
 }
 
 /**
@@ -256,151 +187,14 @@ export function parseMoctProjectOptions(body: unknown): MoctProjectOption[] {
   return options.sort((a, b) => a.title.localeCompare(b.title));
 }
 
-type Load<T> =
-  | { state: "loading" }
-  | { state: "ready"; value: T }
-  | { state: "error"; message: string };
-
-interface Answer<T> {
-  ok: boolean;
-  status: number;
-  parsed: T | null;
-  message: string | null;
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
-/** One JSON request, with the server's own error text when it refuses. */
-async function callJson<T>(
-  path: string,
-  parse: (body: unknown) => T,
-  init: { method: "GET" | "PUT"; body?: unknown } = { method: "GET" },
-): Promise<Answer<T>> {
-  try {
-    const response = await fetch(path, {
-      method: init.method,
-      headers:
-        init.body === undefined
-          ? { accept: "application/json" }
-          : { accept: "application/json", "content-type": "application/json" },
-      credentials: "same-origin",
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    });
-    const body: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      const reason = asRecord(body)["error"];
-      return {
-        ok: false,
-        status: response.status,
-        parsed: null,
-        message:
-          typeof reason === "string" && reason !== "" ? reason : `responded ${response.status}`,
-      };
-    }
-    return { ok: true, status: response.status, parsed: parse(body), message: null };
-  } catch (cause) {
-    return {
-      ok: false,
-      status: 0,
-      parsed: null,
-      message: cause instanceof Error ? cause.message : String(cause),
-    };
-  }
-}
-
-/**
- * One read from the seam, with an explicit error state.
- *
- * A failure is shown, never defaulted: "unreachable" and "no records" are
- * different answers, and a settings page that quietly renders zeros for a dead
- * service is worse than one that says it is down.
- */
-function useSeamRead<T>(path: string, parse: (body: unknown) => T) {
-  const [attempt, setAttempt] = useState(0);
-  const [load, setLoad] = useState<Load<T>>({ state: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoad({ state: "loading" });
-    fetch(path, {
-      headers: { accept: "application/json" },
-      credentials: "same-origin",
-    })
-      .then(async (response) => {
-        const body: unknown = await response.json().catch(() => null);
-        if (cancelled) return;
-        if (!response.ok) {
-          const reason = asRecord(body)["error"];
-          setLoad({
-            state: "error",
-            message:
-              typeof reason === "string" && reason !== ""
-                ? reason
-                : `responded ${response.status}`,
-          });
-          return;
-        }
-        setLoad({ state: "ready", value: parse(body) });
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setLoad({
-          state: "error",
-          message: cause instanceof Error ? cause.message : String(cause),
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path, parse, attempt]);
-
-  return [load, () => setAttempt((current) => current + 1)] as const;
-}
-
-function RefreshButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex h-8 items-center rounded-lg border border-input px-2.5 text-label font-medium text-foreground transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring"
-    >
-      Refresh
-    </button>
-  );
-}
-
-function ActionButton({
-  children,
-  label,
-  onClick,
-  disabled = false,
-}: {
-  children: ReactNode;
-  label?: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      disabled={disabled}
-      className="inline-flex h-8 items-center rounded-lg border border-input px-2.5 text-label font-medium text-foreground transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {children}
-    </button>
-  );
-}
-
-function Status({ value }: { value: string }) {
-  return <span className="text-body text-muted-foreground">{value}</span>;
-}
-
-function Failure({ message }: { message: string }) {
-  return (
-    <span role="alert" className="text-body text-destructive">
-      {message}
-    </span>
-  );
+function wholeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
 /** Minutes as the editor shows them: whole when they are, otherwise one decimal. */
@@ -414,89 +208,6 @@ export function secondsFromMinutes(input: string): number | null {
   const minutes = Number.parseFloat(input.trim());
   if (!Number.isFinite(minutes) || minutes <= 0) return null;
   return Math.round(minutes * 60);
-}
-
-/**
- * The memory plane: reachability, schema, and where the budget is spent.
- */
-export function MoctMemoryTab() {
-  const [status, reloadStatus] = useSeamRead(MOCT_STATUS_PATH, parseMoctStatus);
-  const [usage, reloadUsage] = useSeamRead(MOCT_USAGE_PATH, parseMoctUsage);
-
-  const health =
-    status.state === "loading"
-      ? "Checking…"
-      : status.state === "error"
-        ? status.message
-        : !status.value.reachable
-          ? "Unreachable"
-          : status.value.ok
-            ? "Reachable"
-            : "Reachable, not healthy";
-
-  return (
-    <SettingsTab title="Memory">
-      <SettingsSection
-        title="Service"
-        action={
-          <RefreshButton
-            onClick={() => {
-              reloadStatus();
-              reloadUsage();
-            }}
-          />
-        }
-      >
-        <SettingsCard>
-          <SettingsRow label="Status">
-            <Status value={health} />
-          </SettingsRow>
-          <SettingsRow label="Schema">
-            <Status
-              value={
-                status.state === "ready" && status.value.schema !== null
-                  ? String(status.value.schema)
-                  : "Not reported"
-              }
-            />
-          </SettingsRow>
-        </SettingsCard>
-      </SettingsSection>
-      <SettingsSection title="Context budget">
-        <SettingsCard>
-          <SettingsRow label="Cap per task">
-            <Status
-              value={
-                usage.state === "ready" && usage.value.capTokens !== null
-                  ? `${usage.value.capTokens} tokens`
-                  : "Not reported"
-              }
-            />
-          </SettingsRow>
-          {usage.state === "error" ? (
-            <SettingsRow label="Usage">
-              <Status value={usage.message} />
-            </SettingsRow>
-          ) : null}
-          {(usage.state === "ready" ? usage.value.homes : []).map((home) => (
-            <SettingsRow
-              key={home.home}
-              label={home.home}
-              description={
-                home.blockedPending > 0
-                  ? `${home.blockedPending} waiting for approval`
-                  : undefined
-              }
-            >
-              <Status
-                value={`${home.usedTokens} tokens · ${home.records} records`}
-              />
-            </SettingsRow>
-          ))}
-        </SettingsCard>
-      </SettingsSection>
-    </SettingsTab>
-  );
 }
 
 /**
@@ -1020,7 +731,7 @@ export function createMoctGroup(connection: MoctConnection): ExtraSettingsGroup 
         value: "moct-memory",
         label: "Memory",
         icon: MemoryIcon,
-        content: <MoctMemoryTab />,
+        content: <MoctMemoryTab connection={connection} />,
       },
       {
         value: "moct-connection",

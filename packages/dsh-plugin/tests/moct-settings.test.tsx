@@ -8,8 +8,8 @@ import {
   parseMoctInteractions,
   parseMoctMemorySettings,
   secondsFromMinutes,
-  type MoctConnection,
 } from "../src/client/moct-settings";
+import type { MoctConnection } from "../src/client/moct-seam";
 
 /**
  * The two S2-C tabs, driven the way the settings page mounts them: over a
