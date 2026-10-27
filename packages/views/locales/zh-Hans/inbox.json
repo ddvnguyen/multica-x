@@ -73,6 +73,7 @@
     "task_completed": "运行已完成",
     "task_failed": "运行失败",
     "agent_question": "等待你的回答",
+    "plan_review": "计划等待审批",
     "agent_blocked": "智能体被阻塞",
     "agent_completed": "智能体已完成",
     "reaction_added": "添加了表情反应",

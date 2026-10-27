@@ -128,6 +128,13 @@ export const issueKeys = {
     ] as const,
   detail: (wsId: string, id: string) =>
     [...issueKeys.all(wsId), "detail", id] as const,
+  /** S1-A1 ask/plan state for one issue — the single read behind the M-120
+   *  panel. Its own segment so answering a card or verdicting a plan
+   *  invalidates only this, never the issue detail beside it. */
+  askPlanAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "ask-plan"] as const,
+  askPlan: (wsId: string, id: string) =>
+    [...issueKeys.askPlanAll(wsId), id] as const,
   /** Resolve a bare issue identifier (e.g. "MUL-123") to an issue. */
   identifier: (wsId: string, identifier: string) =>
     [...issueKeys.all(wsId), "identifier", identifier] as const,
@@ -443,6 +450,24 @@ export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+  });
+}
+
+/**
+ * The issue's open ask/plan state: parked question cards plus the one open
+ * plan (M-120).
+ *
+ * Neither state has a transcript row of its own — the card and the plan are
+ * their own tables (migrations 585/586), and the inbox row that announced them
+ * carries only an id — so the panel reads both through this one call. On
+ * malformed JSON `parseWithFallback` answers the empty state, which renders no
+ * panel rather than a broken one.
+ */
+export function issueAskPlanOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.askPlan(wsId, issueId),
+    queryFn: () => api.getIssueAskPlan(wsId, issueId),
+    enabled: !!wsId && !!issueId,
   });
 }
 

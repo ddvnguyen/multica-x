@@ -8,6 +8,8 @@ import {
 } from "@tanstack/react-query";
 import { api } from "../api";
 import { issueKeys } from "./queries";
+import type { AgentAnswerDraft } from "./agent-question";
+import type { PlanVerdictBody } from "./ask-plan";
 import { projectKeys } from "../projects/queries";
 import { inboxKeys, type ArchivedInboxCache } from "../inbox/queries";
 import {
@@ -927,6 +929,64 @@ export function useCreateTaskSupplement(issueId: string) {
       api.createTaskSupplement(issueId, taskId, content, createSafeId()),
     onSuccess: (comment) => {
       applyCreatedComment(qc, wsId, issueId, comment);
+    },
+  });
+}
+
+/**
+ * Answer one open question card (S1-A1, M-120).
+ *
+ * The server records the answer and enqueues the resume run in one
+ * transaction, so success means the card is closed for good: the ask-plan
+ * read is invalidated to drop it from the panel, and the per-issue task list
+ * so the parked task's row shows the queued resume without waiting for a
+ * realtime event. A 409 (`card_closed`, `run_already_queued`) throws through
+ * as `ApiError` and invalidates nothing — the panel re-reads on its own when
+ * it decides to.
+ */
+export function useAnswerQuestionCard(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      cardId,
+      answers,
+    }: {
+      cardId: string;
+      answers: readonly AgentAnswerDraft[];
+    }) => api.answerQuestionCard(wsId, cardId, answers),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+    },
+  });
+}
+
+/**
+ * Record one verdict on an `in_review` plan (S1-A1, M-120).
+ *
+ * Every verdict resumes the parked run, so the task list refreshes like above.
+ * `approve` additionally rewrites the issue description inside the same
+ * transaction as the verdict, so that one path also refreshes the issue
+ * detail — the promotion and the verdict can never disagree on screen.
+ */
+export function useReviewPlan(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      verdict,
+    }: {
+      planId: string;
+      verdict: PlanVerdictBody;
+    }) => api.reviewPlan(wsId, planId, verdict),
+    onSuccess: (_result, variables) => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+      if (variables.verdict.verdict === "approve") {
+        void qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+      }
     },
   });
 }

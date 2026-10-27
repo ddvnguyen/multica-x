@@ -35,28 +35,37 @@ import { useT } from "../../i18n";
  * approval selection; every other reply reaches the backend as the member's own
  * words, which is why the pick is sent as the option's label rather than a
  * separate field.
+ *
+ * Two transports, one form. Without `submit` this is the transcript card: the
+ * answer goes to the named turn as a supplement. With it (the S1-A1 card,
+ * M-120) the same drafts go to `/question-cards/{id}/answer`. The form, its
+ * readiness rule and its pending/sent/error lifecycle are identical either
+ * way, which is the point of the seam — the card has no idea which one it is.
  */
 export function AgentQuestionCard({
   issueId,
   taskId,
   questions,
+  submit,
 }: {
   issueId: string;
   /** The running turn this answer is delivered to. */
   taskId: string;
   questions: readonly AgentQuestion[];
+  /** Deliver the form's drafts somewhere other than the run's supplement path. */
+  submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>;
 }) {
   const { t } = useT("issues");
-  const answer = useCreateTaskSupplement(issueId);
+  const supplement = useCreateTaskSupplement(issueId);
   const [drafts, setDrafts] = useState<readonly AgentAnswerDraft[]>(() =>
     questions.map(() => ({ selected: [], text: "" })),
   );
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const [pending, setPending] = useState(false);
   const plan = useMemo(() => isPlanReview(questions), [questions]);
   const approveLabel = useMemo(() => planApprovalAnswer(questions), [questions]);
   const ready = drafts.every(isAnsweredDraft);
-  const pending = answer.isPending;
 
   const pick = (index: number, option: number, multiple: boolean, checked: boolean) => {
     setDrafts((current) => current.map((draft, at) => {
@@ -73,15 +82,52 @@ export function AgentQuestionCard({
     setDrafts((current) => current.map((draft, at) => (at === index ? { ...draft, text } : draft)));
   };
 
-  const send = (content: string) => {
-    if (content === "" || pending) return;
+  /**
+   * One submission: pending for its whole flight, then sent or an inline
+   * error. Both transports run through it, so the disabled/enabled states and
+   * the "sent" terminal state cannot drift apart between the two cards.
+   *
+   * With a caller-supplied transport the rejection carries the server's own
+   * business message ("the question card is no longer open") and that is what
+   * the member needs to read; the supplement path keeps its translated line,
+   * since a supplement failure has nothing more specific to say.
+   */
+  const run = async (deliver: () => Promise<unknown>): Promise<void> => {
+    if (pending) return;
     setError(null);
-    answer.mutate(
-      { taskId, content },
-      {
-        onSuccess: () => setSent(true),
-        onError: () => setError(t(($) => $.agent_question.failed)),
-      },
+    setPending(true);
+    try {
+      await deliver();
+      setSent(true);
+    } catch (cause) {
+      const detail =
+        submit !== undefined && cause instanceof Error && cause.message !== ""
+          ? cause.message
+          : null;
+      setError(detail ?? t(($) => $.agent_question.failed));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  /** The plan review's two verdicts — always the transcript's supplement. */
+  const send = (content: string): void => {
+    if (content === "" || pending) return;
+    void run(() => supplement.mutateAsync({ taskId, content }));
+  };
+
+  /**
+   * Answer the question form, through whichever transport this card was given.
+   * An empty form is not a submission — that is the Enter key landing on a
+   * field with nothing in it — and `agentAnswerText` is empty exactly then.
+   */
+  const answerForm = (): void => {
+    const content = agentAnswerText(questions, drafts);
+    if (content === "" || pending) return;
+    void run(
+      submit !== undefined
+        ? () => submit(drafts)
+        : () => supplement.mutateAsync({ taskId, content }),
     );
   };
 
@@ -178,7 +224,7 @@ export function AgentQuestionCard({
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" || event.nativeEvent.isComposing || plan) return;
                     event.preventDefault();
-                    send(agentAnswerText(questions, drafts));
+                    answerForm();
                   }}
                 />
               )}
@@ -195,7 +241,7 @@ export function AgentQuestionCard({
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
                     event.preventDefault();
-                    send(agentAnswerText(questions, drafts));
+                    answerForm();
                   }}
                 />
               )}
@@ -240,7 +286,7 @@ export function AgentQuestionCard({
             size="xs"
             variant="default"
             disabled={pending || !ready}
-            onClick={() => send(agentAnswerText(questions, drafts))}
+            onClick={() => answerForm()}
           >
             {pending && <Loader2 className="animate-spin motion-reduce:animate-none" />}
             {pending ? t(($) => $.agent_question.sending) : t(($) => $.agent_question.send)}

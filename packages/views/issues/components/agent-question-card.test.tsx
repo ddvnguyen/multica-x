@@ -2,7 +2,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "@multica/core/api";
-import type { AgentQuestion } from "@multica/core/issues/agent-question";
+import type { AgentAnswerDraft, AgentQuestion } from "@multica/core/issues/agent-question";
 import { renderWithI18n } from "../../test/i18n";
 import { AgentQuestionCard } from "./agent-question-card";
 
@@ -41,11 +41,14 @@ const plan: AgentQuestion = {
   intent: { kind: "plan-review", approve: "Approve" },
 };
 
-function render(questions: AgentQuestion[]) {
+function render(
+  questions: AgentQuestion[],
+  submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   renderWithI18n(
     <QueryClientProvider client={client}>
-      <AgentQuestionCard issueId="issue" taskId={TASK} questions={questions} />
+      <AgentQuestionCard issueId="issue" taskId={TASK} questions={questions} submit={submit} />
     </QueryClientProvider>,
   );
   return client;
@@ -132,5 +135,36 @@ describe("AgentQuestionCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Answer" }));
     expect(await screen.findByText("Answer sent")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
+  });
+
+  it("hands the drafts to a caller-supplied transport and leaves the supplement alone", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledWith([{ selected: [0], text: "" }]));
+    expect(api.createTaskSupplement).not.toHaveBeenCalled();
+    expect(await screen.findByText("Answer sent")).toBeInTheDocument();
+  });
+
+  it("reports the transport's refusal message rather than the generic one", async () => {
+    const submit = vi.fn().mockRejectedValue(new Error("the question card is no longer open"));
+    render([question()], submit);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the question card is no longer open",
+    );
+    expect(screen.queryByText("Answer sent")).not.toBeInTheDocument();
+  });
+
+  it("does not submit a form that has nothing in it", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    const [other] = screen.getAllByRole("textbox");
+    fireEvent.keyDown(other!, { key: "Enter" });
+    expect(submit).not.toHaveBeenCalled();
   });
 });

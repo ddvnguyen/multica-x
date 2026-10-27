@@ -52,6 +52,19 @@
     "sent": "Answer sent",
     "failed": "Could not send your answer. Try again."
   },
+  "ask_plan": {
+    "plan_draft": "The agent is preparing this plan — there is nothing to review yet.",
+    "plan_changes_requested": "Changes requested. Waiting for the agent to revise and resubmit.",
+    "section_empty": "No content in this section yet.",
+    "comments_heading": "Your comments",
+    "comments_empty": "No comments yet.",
+    "comment_placeholder": "What should change?",
+    "add_comment": "Add comment",
+    "remove_comment": "Remove comment",
+    "cancel": "Cancel plan",
+    "cancel_confirm": "Click again to cancel",
+    "failed": "Could not record your review. Try again."
+  },
   "working_filter_error": {
     "title": "Couldn't load issues with working agents"
   },

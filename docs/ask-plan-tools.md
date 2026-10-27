@@ -40,6 +40,14 @@ run that owns the token.
    re-queues a run resuming the same session, rendering `[ANSWER]` /
    `[PLAN VERDICT]` in its prompt.
 
+The member's surface is the island's ask/plan panel —
+`packages/views/issues/components/ask-plan-panel.tsx` (M-120), mounted on the
+issue page, which is also what the Inbox detail pane renders. It reads the one
+S1-A1 island endpoint `GET /issues/{id}/ask-plan` and posts back to
+`POST /question-cards/{cardId}/answer` and `POST /plans/{planId}/verdict`;
+the dsh rail's **Multica Inbox** row carries an unread dot while either state
+is waiting.
+
 ## Failure and degradation
 
 A failed call is a **tool error**, never a protocol error and never an exit —

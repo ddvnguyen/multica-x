@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeIssueStatusCategory } from "../issues/config/status";
+import type { IssueAskPlan } from "../issues/ask-plan";
 import type {
   WorkflowHandoffPreview,
   IssueWorkflow,
@@ -2836,6 +2837,78 @@ export const ArchivedInboxFacetsSchema = z.object({
 }));
 
 export const EMPTY_INBOX_ITEMS: InboxItem[] = [];
+
+// S1-A1 (M-118) ask/plan — the island read `GET /issues/{id}/ask-plan`.
+//
+// Same leniency contract as the inbox rows above: every object is loose, so a
+// field the server grows later cannot blank the panel; the fields the panel
+// actually branches on are enforced. `questions` and `sections` are stored
+// tool-contract JSONB written verbatim by the agent, which is why their inner
+// keys are checked strictly — the server re-reads them with the same shapes
+// (`service/askplan.go:455`, `:475`).
+//
+// The annotation is load-bearing: `parseWithFallback` casts, so annotating the
+// schema is what makes typecheck catch a drift between this and
+// `IssueAskPlan`.
+
+export const AskPlanSectionSchema = z
+  .object({
+    sectionId: z.string(),
+    heading: z.string(),
+    markdown: z.string(),
+  })
+  .loose();
+
+export const AskPlanQuestionSchema = z
+  .object({
+    prompt: z.string(),
+    multiple: z.boolean(),
+    // Always an array in stored JSON: `validateAskRequest` refuses a card
+    // outside 2-4 options, and Go marshals an omitted slice as null — hence
+    // the catch, so a legacy null degrades to "options the form cannot show"
+    // instead of dropping the card.
+    options: z
+      .array(z.object({ label: z.string(), description: z.string().optional() }).loose())
+      .catch([]),
+  })
+  .loose();
+
+export const AskPlanQuestionCardSchema = z
+  .object({
+    id: z.string(),
+    issue_id: z.string(),
+    task_id: z.string(),
+    agent_id: z.string(),
+    status: z.string(),
+    context: z.string().nullish(),
+    questions: z.array(AskPlanQuestionSchema),
+    answers: z
+      .array(z.object({ selected: z.array(z.number()), text: z.string() }).loose())
+      .optional(),
+  })
+  .loose();
+
+export const AgentPlanSchema = z
+  .object({
+    id: z.string(),
+    issue_id: z.string(),
+    task_id: z.string(),
+    title: z.string(),
+    status: z.string(),
+    revision: z.number(),
+    submitted_revision: z.number().optional(),
+    sections: z.array(AskPlanSectionSchema),
+    approved_by: z.string().nullish(),
+  })
+  .loose();
+
+export const IssueAskPlanSchema: z.ZodType<IssueAskPlan> = z
+  .object({
+    question_cards: z.array(AskPlanQuestionCardSchema),
+    plan: AgentPlanSchema.nullish(),
+  })
+  .loose();
+
 
 // Billing schemas (cloud-billing proxy surface)
 //
