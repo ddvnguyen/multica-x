@@ -85,15 +85,15 @@ export function createSeatComponent(
   };
 }
 
-/** The five glyphs, one per entry, drawn so they read at rail size. */
-export type RailGlyph = "issues" | "agents" | "skills" | "inbox" | "chat";
+/** The six glyphs, one per entry, drawn so they read at rail size. */
+export type RailGlyph = "issues" | "agents" | "skills" | "inbox" | "chat" | "settings";
 
 /**
  * The sidebar rail glyph.
  *
  * dsh renders `sidebar.panellist` occupants inside its own button; the icon is
  * geometry only, sized from the owner props, so it inherits the shell's colour
- * and active state. The collapsed rail shows no labels, so the five entries are
+ * and active state. The collapsed rail shows no labels, so the six entries are
  * told apart here.
  */
 export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyph) {
@@ -159,6 +159,16 @@ function glyphGeometry(
           key: "a",
           d: "M4.5 5.5h15v10h-10l-5 4.5Z",
         }),
+      ];
+    case "settings":
+      // Upstream's own gear (lucide `Settings`, v1.0.1), so the rail row is the
+      // page it opens rather than a second icon for the same idea.
+      return [
+        createElement("path", {
+          key: "a",
+          d: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",
+        }),
+        createElement("circle", { key: "b", cx: 12, cy: 12, r: 3 }),
       ];
   }
 }

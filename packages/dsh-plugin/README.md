@@ -9,7 +9,7 @@ Two halves, one package:
 | Face | Entry | Runs in | Owns |
 | --- | --- | --- | --- |
 | host | `src/index.ts` | the dsh process | `/multica` HTTP + WebSocket transport, and the `/moct` memory seam |
-| client | `src/client/index.ts` | the dsh browser shell | five rail rows, their `main` seats, the React 19 island |
+| client | `src/client/index.ts` | the dsh browser shell | six rail rows, their `main` seats, the React 19 island |
 
 The host half exists so the Multica credential never leaves the dsh process: the
 island calls `/multica/api/*` on its own origin, the host half forwards to the
@@ -47,10 +47,10 @@ reason, and the panel says what is missing instead of the rail row disappearing.
 
 ## The sidebar menu
 
-Five rail rows, one per Multica view. Each row is a `sidebar.panellist` entry
+Six rail rows, one per Multica view. Each row is a `sidebar.panellist` entry
 with its own list id, and each id addresses a `main` cell of the same key — that
 pairing is how dsh turns "select this row" into "render this panel", so the menu
-is five rows rather than a dropdown the plugin would have to position inside
+is six rows rather than a dropdown the plugin would have to position inside
 someone else's column.
 
 | Row | Opens |
@@ -60,12 +60,20 @@ someone else's column.
 | Multica Skills | skill management, and one skill at `skills/<id>` |
 | Multica Inbox | the question/approval inbox an agent's `ask` and plan reviews land in |
 | Multica Chat | the chat view, thread selection in `?session=` |
+| Multica Settings | the fork's settings page, with the MOCT group added and the web-only groups hidden |
 
 Each entry opens the fork's own page for that surface, under the same
 `CoreProvider`; nothing is re-implemented and nothing is outlined in an iframe.
-The island's router maps those five families of workspace path (plus the detail
+The island's router maps those six families of workspace path (plus the detail
 depth above) and refuses everything else, so a shared component cannot open a
 surface the panel does not own.
+
+Settings is the fork's page with two additive props: `hiddenTabs` drops the
+pages this shell cannot render (billing, GitHub hosting, messaging channels,
+plugins, connected apps, the shortcut reference — the island swallows key
+events before the fork sees them), and `extraGroups` appends the one group that
+only exists in dsh. Hidden pages leave the navigation, the compact selector and
+the search index together, so no result lands on a page that is not there.
 
 The row chooses where an island *opens*; from there the fork's pages navigate as
 they do in the web app — an inbox row that no longer resolves falls back to its
@@ -73,10 +81,10 @@ issue, for instance — and the row keeps marking the entry the reader came
 through. dsh gives a plugin no way to move the shell's rail selection, so the
 island follows the reader instead of fighting the rail.
 
-Not mapped: the creation flows (`agents/new`, the AI builder) and settings.
-They are real routes in the fork, but they are authoring surfaces rather than
-views of what already exists, so a "New agent" click logs one line and stays put
-rather than opening a page this cut does not cover.
+Not mapped: the creation flows (`agents/new`, the AI builder). They are real
+routes in the fork, but they are authoring surfaces rather than views of what
+already exists, so a "New agent" click logs one line and stays put rather than
+opening a page this cut does not cover.
 
 ## How it renders
 

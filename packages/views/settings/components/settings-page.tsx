@@ -67,6 +67,31 @@ import { WakeupsTab } from "./wakeups-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
+/**
+ * Drop the pages a host hides, then any subgroup or group they emptied.
+ *
+ * The alternative — hiding at the render site — would leave the pages in
+ * `allEntries`, and therefore in the search index and the compact selector.
+ */
+function visibleGroups(
+  groups: SettingsScopeGroup[],
+  hiddenTabs: readonly string[],
+): SettingsScopeGroup[] {
+  if (hiddenTabs.length === 0) return groups;
+  const hidden = new Set(hiddenTabs);
+  return groups
+    .map((group) => ({
+      ...group,
+      subgroups: group.subgroups
+        .map((subgroup) => ({
+          ...subgroup,
+          entries: subgroup.entries.filter((item) => !hidden.has(item.value)),
+        }))
+        .filter((subgroup) => subgroup.entries.length > 0),
+    }))
+    .filter((group) => group.subgroups.length > 0);
+}
+
 export interface ExtraSettingsTab {
   value: string;
   label: string;
@@ -74,9 +99,32 @@ export interface ExtraSettingsTab {
   content: React.ReactNode;
 }
 
+/**
+ * A whole scope group a host appends after the built-in ones.
+ *
+ * The host owns the label and the mark because it is describing its own plane
+ * (a transport, a device, a service) that core settings know nothing about.
+ */
+export interface ExtraSettingsGroup {
+  key: string;
+  label: string;
+  mark: React.ReactNode;
+  /** Trailing detail beside the label, in the same slot as "Workspace". */
+  tag?: string;
+  entries: ExtraSettingsTab[];
+}
+
 interface SettingsPageProps {
   /** Device settings supplied by the desktop platform. */
   extraDeviceTabs?: ExtraSettingsTab[];
+  /** Scope groups a host appends after the built-in ones. */
+  extraGroups?: ExtraSettingsGroup[];
+  /**
+   * Pages this host does not offer: removed from the navigation, the compact
+   * selector and the search index, so a result never lands on a page that is
+   * not there to open.
+   */
+  hiddenTabs?: readonly string[];
 }
 
 type SettingsEntry = ExtraSettingsTab & {
@@ -92,7 +140,7 @@ interface SettingsSubgroup {
 }
 
 interface SettingsScopeGroup {
-  key: "personal" | "workspace" | "device";
+  key: string;
   label: string;
   /** Leading mark: whose settings these are. */
   mark: React.ReactNode;
@@ -104,7 +152,11 @@ interface SettingsScopeGroup {
 const FLASH_MS = 1600;
 const ANCHOR_WAIT_MS = 1500;
 
-export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
+export function SettingsPage({
+  extraDeviceTabs = [],
+  extraGroups = [],
+  hiddenTabs = [],
+}: SettingsPageProps = {}) {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
   const workspaceName = workspace?.name ?? t(($) => $.page.workspace_fallback);
@@ -127,7 +179,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
     options: { wide?: boolean; adminOnly?: boolean } = {},
   ): SettingsEntry => ({ value, label, icon, content, ...options });
 
-  const groups: SettingsScopeGroup[] = [
+  const builtGroups: SettingsScopeGroup[] = [
     {
       key: "personal",
       label: t(($) => $.page.groups.personal),
@@ -279,14 +331,29 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
         ]
       : []),
   ];
+  const groups = visibleGroups(
+    [
+      ...builtGroups,
+      ...extraGroups.map((group) => ({
+        key: group.key,
+        label: group.label,
+        mark: group.mark,
+        tag: group.tag,
+        subgroups: [{ key: group.key, entries: group.entries }],
+      })),
+    ],
+    hiddenTabs,
+  );
   const allEntries = groups.flatMap((group) =>
     group.subgroups.flatMap((subgroup) => subgroup.entries),
   );
   const location = resolveSettingsLocation(navigation.searchParams);
   const candidate =
     location.tab === "billing" && !billingEnabled ? "workspace" : location.tab;
-  const active =
-    allEntries.find((item) => item.value === candidate) ?? allEntries[0]!;
+  // A hidden page falls back to the first one the host does offer, which is
+  // also what an unknown `?tab=` has always done.
+  const active: SettingsEntry | undefined =
+    allEntries.find((item) => item.value === candidate) ?? allEntries[0];
   const href = (value: string) =>
     settingsHref(navigation.pathname, navigation.searchParams, value);
 
@@ -357,16 +424,16 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
       cancelled = true;
       if (flashTimer) clearTimeout(flashTimer);
     };
-  }, [active.value, location.section]);
+  }, [active?.value, location.section]);
 
   const navItem = (item: SettingsEntry) => (
     <li key={item.value}>
       <AppLink
         href={href(item.value)}
-        aria-current={active.value === item.value ? "page" : undefined}
+        aria-current={active?.value === item.value ? "page" : undefined}
         className={cn(
           "flex min-h-8 items-center gap-2.5 rounded-lg px-3 py-1.5 text-body transition-colors focus-visible:outline-2 focus-visible:outline-ring",
-          active.value === item.value
+          active?.value === item.value
             ? "bg-surface-selected font-medium text-surface-selected-foreground hover:bg-surface-selected"
             : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
         )}
@@ -447,7 +514,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
           <select
             id="settings-navigation"
             className="h-10 w-full rounded-lg border border-input bg-background px-3 text-body text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-            value={active.value}
+            value={active?.value ?? ""}
             onChange={(event) => navigation.push(href(event.target.value))}
           >
             {groups.flatMap((group) =>
@@ -567,16 +634,16 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
       </aside>
       <div
         ref={contentRef}
-        key={`${active.value}:${location.integration ?? ""}`}
+        key={`${active?.value ?? ""}:${location.integration ?? ""}`}
         className="min-w-0 flex-1 overflow-y-auto overscroll-contain"
       >
         <div
           className={cn(
             "mx-auto w-full px-4 py-6 sm:px-6 md:px-10 md:py-8",
-            active.wide ? "max-w-5xl" : "max-w-4xl",
+            active?.wide ? "max-w-5xl" : "max-w-4xl",
           )}
         >
-          {active.content}
+          {active?.content}
         </div>
       </div>
     </div>

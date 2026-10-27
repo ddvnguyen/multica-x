@@ -34,6 +34,17 @@ export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
 export { InboxPage } from "@multica/views/inbox";
 export { ChatPage } from "@multica/views/chat";
 
+// The settings page itself, plus the layout it hands a host-supplied group, so
+// the MOCT tabs look like every other settings page instead of a second design.
+export {
+  SettingsPage,
+  SettingsCard,
+  SettingsRow,
+  SettingsSection,
+  SettingsTab,
+} from "@multica/views/settings";
+export type { ExtraSettingsGroup } from "@multica/views/settings";
+
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";
