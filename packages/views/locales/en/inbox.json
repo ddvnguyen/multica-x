@@ -75,6 +75,7 @@
     "task_completed": "Run completed",
     "task_failed": "Run failed",
     "agent_question": "Needs your answer",
+    "plan_review": "Plan ready for review",
     "agent_blocked": "Agent blocked",
     "agent_completed": "Agent completed",
     "reaction_added": "Reacted",

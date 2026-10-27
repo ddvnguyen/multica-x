@@ -9,6 +9,7 @@ import {
   type HostCreateElement,
   type RailGlyph,
 } from "./seat";
+import { startUnreadPoll } from "./unread-store";
 
 /**
  * Browser face of the Multica panel.
@@ -106,6 +107,13 @@ export function configureHostRuntime(createElement: HostCreateElement | null): v
 }
 
 export function apply(ctx: DshClientContext): void {
+  // The rail dot's baseline count. The browser half has no teardown path —
+  // `apply` returns void and the slot registrations below are unregistered by
+  // the shell, not by this module — so the poller lives as long as the page;
+  // the store's own guard makes a repeated `apply` share it rather than start
+  // a second timer.
+  startUnreadPoll();
+
   const createElement = hostCreateElement ?? (bundledCreateElement as HostCreateElement);
 
   MULTICA_ENTRIES.forEach((entry, index) => {

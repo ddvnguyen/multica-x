@@ -111,6 +111,7 @@ import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
+import { AskPlanPanel } from "./ask-plan-panel";
 import { WakeupsSection } from "./wakeups-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
@@ -3629,6 +3630,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </IssueContextMenuProvider>
             );
           })()}
+
+          {/* Open ask/plan (S1-A1 / M-120). Neither state has a transcript row
+              of its own — the card and the plan are their own tables — so the
+              timeline cannot carry them. It sits above Activity so a member who
+              arrived from the inbox notification meets it before the run. */}
+          <AskPlanPanel issueId={id} />
 
           <div className="my-8 border-t" />
 

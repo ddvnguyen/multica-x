@@ -81,5 +81,6 @@
     "autopilot_title_limit": "Autopilot \"{{title}}\" was not started because this workspace has reached its limit of {{limit}} runs for the current period. The allowance resets {{resetAt}}.",
     "autopilot_limit": "This workspace has reached its limit of {{limit}} autopilot runs for the current period. This execution was not started. The allowance resets {{resetAt}}."
   },
-  "type.agent_question": "Needs your answer"
+  "type.agent_question": "Needs your answer",
+  "type.plan_review": "Plan ready for review"
 }

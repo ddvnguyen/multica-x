@@ -30,6 +30,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     task_completed: t(($) => $.types.task_completed),
     task_failed: t(($) => $.types.task_failed),
     agent_question: t(($) => $.types.agent_question),
+    plan_review: t(($) => $.types.plan_review),
     agent_blocked: t(($) => $.types.agent_blocked),
     agent_completed: t(($) => $.types.agent_completed),
     reaction_added: t(($) => $.types.reaction_added),

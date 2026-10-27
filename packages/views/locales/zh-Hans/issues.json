@@ -51,6 +51,19 @@
     "sent": "回答已发送",
     "failed": "回答发送失败，请重试。"
   },
+  "ask_plan": {
+    "plan_draft": "智能体正在准备该计划，暂时没有可审阅的内容。",
+    "plan_changes_requested": "已请求修改，正在等待智能体修订并重新提交。",
+    "section_empty": "该章节暂无内容。",
+    "comments_heading": "你的评论",
+    "comments_empty": "还没有评论。",
+    "comment_placeholder": "需要改动什么？",
+    "add_comment": "添加评论",
+    "remove_comment": "删除评论",
+    "cancel": "取消计划",
+    "cancel_confirm": "再次点击以取消",
+    "failed": "无法记录你的审阅，请重试。"
+  },
   "working_filter_error": {
     "title": "无法加载智能体正在处理的任务"
   },

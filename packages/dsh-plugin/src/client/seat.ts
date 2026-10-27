@@ -1,5 +1,6 @@
 import { attachIsland, detachIsland } from "./island";
 import type { IslandRoute } from "./navigation";
+import { attachUnreadBadge } from "./unread-store";
 
 /**
  * The components the dsh shell renders for this plugin.
@@ -102,26 +103,95 @@ export type RailGlyph = "issues" | "agents" | "skills" | "inbox" | "chat" | "set
  * geometry only, sized from the owner props, so it inherits the shell's colour
  * and active state. The collapsed rail shows no labels, so the six entries are
  * told apart here.
+ *
+ * The inbox row alone is wrapped in the unread dot's host: a relative box the
+ * dot anchors to (the shell renders the row inside `.panelGlyph`, an
+ * inline-flex that does not clip) plus the stable ref that keeps the dot
+ * painted from `unread-store`. Every other glyph renders exactly as before.
  */
 export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyph) {
+  if (glyph !== "inbox") {
+    return function MulticaRailIcon({ size = 16 }: { size?: number }) {
+      return railSvg(createElement, glyph, size);
+    };
+  }
+
+  // `createRailIcon` runs once per entry, so this ref closure exists once per
+  // entry: no per-render allocation, and — like every component this file
+  // exports — no hooks. The shell renders these with its React 18, which
+  // would find no React 19 dispatcher for a hook.
+  let detachDot: (() => void) | null = null;
+  const dotHostRef = (node: HTMLElement | null) => {
+    if (node !== null) {
+      const dot = node.querySelector<HTMLElement>("[data-multica-inbox-dot]");
+      detachDot = dot === null ? null : attachUnreadBadge(dot);
+      return;
+    }
+    // React passes null on unmount: detach exactly what this closure attached.
+    detachDot?.();
+    detachDot = null;
+  };
+
   return function MulticaRailIcon({ size = 16 }: { size?: number }) {
     return createElement(
-      "svg",
-      {
-        width: size,
-        height: size,
-        viewBox: "0 0 24 24",
-        fill: "none",
-        stroke: "currentColor",
-        strokeWidth: 1.6,
-        strokeLinecap: "round",
-        strokeLinejoin: "round",
+      "span",
+      { ref: dotHostRef, style: INBOX_GLYPH_HOST_STYLE },
+      railSvg(createElement, glyph, size),
+      createElement("span", {
+        // The hook-free store paints this node's `display` directly.
+        "data-multica-inbox-dot": "",
+        // Decorative: the row's accessible name is the shell's static
+        // aria-label, which the plugin must not mutate.
         "aria-hidden": "true",
-        focusable: "false",
-      },
-      ...glyphGeometry(createElement, glyph),
+        style: INBOX_DOT_STYLE,
+      }),
     );
   };
+}
+
+/** The glyph box the dot anchors to, inside the shell's `.panelGlyph`. */
+const INBOX_GLYPH_HOST_STYLE = {
+  position: "relative",
+  display: "inline-flex",
+} as const;
+
+/**
+ * The dot itself. The colour is the shell's own accent token, so the dot
+ * follows shell theming; the fallback keeps it visible if the shell ever
+ * renames the token.
+ */
+const INBOX_DOT_STYLE = {
+  position: "absolute",
+  top: -1,
+  right: -1,
+  width: 7,
+  height: 7,
+  borderRadius: 9999,
+  background: "var(--dsw-alias-state-business-primary, currentColor)",
+} as const;
+
+/** One glyph's SVG, shared by every rail row. */
+function railSvg(
+  createElement: HostCreateElement,
+  glyph: RailGlyph,
+  size: number,
+): unknown {
+  return createElement(
+    "svg",
+    {
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: 1.6,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    ...glyphGeometry(createElement, glyph),
+  );
 }
 
 function glyphGeometry(

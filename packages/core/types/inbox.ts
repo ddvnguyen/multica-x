@@ -19,6 +19,10 @@ export type InboxItemType =
   // A run parked on a question or a plan review (M-109). Action required:
   // the run cannot continue until a member answers it.
   | "agent_question"
+  // An agent submitted a plan for review through the ask/plan tools (S1-A1).
+  // Action required for the same reason: the run is parked until a member
+  // approves, requests changes or cancels.
+  | "plan_review"
   | "agent_blocked"
   | "agent_completed"
   | "reaction_added"

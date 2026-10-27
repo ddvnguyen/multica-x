@@ -1,6 +1,17 @@
 /** Where the host half answers the island's boot questions. */
 export const ISLAND_CONFIG_PATH = "/multica/config";
 
+/** The API surface the island reaches: the host's proxy, never multica-be. */
+export const ISLAND_API_BASE = "/multica";
+
+/**
+ * The account-level unread summary behind the rail's inbox dot.
+ *
+ * One constant built from `ISLAND_API_BASE` so the poller and the island's own
+ * client cannot drift onto different paths.
+ */
+export const UNREAD_SUMMARY_PATH = `${ISLAND_API_BASE}/api/inbox/unread-summary`;
+
 export interface IslandConfig {
   /** Same-origin path of the realtime channel. */
   wsPath: string;

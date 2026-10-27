@@ -52,6 +52,19 @@
     "sent": "Réponse envoyée",
     "failed": "Impossible d'envoyer votre réponse. Réessayez."
   },
+  "ask_plan": {
+    "plan_draft": "L'agent prépare ce plan — il n'y a encore rien à relire.",
+    "plan_changes_requested": "Modifications demandées. En attente de la révision de l'agent.",
+    "section_empty": "Aucun contenu dans cette section pour l'instant.",
+    "comments_heading": "Vos commentaires",
+    "comments_empty": "Aucun commentaire.",
+    "comment_placeholder": "Que faut-il changer ?",
+    "add_comment": "Ajouter un commentaire",
+    "remove_comment": "Supprimer le commentaire",
+    "cancel": "Annuler le plan",
+    "cancel_confirm": "Cliquez à nouveau pour annuler",
+    "failed": "Impossible d'enregistrer votre relecture. Réessayez."
+  },
   "working_filter_error": {
     "title": "Impossible de charger les tâches en cours de traitement par les agents"
   },

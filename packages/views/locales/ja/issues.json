@@ -51,6 +51,19 @@
     "sent": "回答を送信しました",
     "failed": "回答を送信できませんでした。もう一度お試しください。"
   },
+  "ask_plan": {
+    "plan_draft": "エージェントがこの計画を準備中です。まだレビューできる段階ではありません。",
+    "plan_changes_requested": "変更を要求しました。エージェントの修正と再提出を待っています。",
+    "section_empty": "このセクションにはまだ内容がありません。",
+    "comments_heading": "あなたのコメント",
+    "comments_empty": "コメントはまだありません。",
+    "comment_placeholder": "何を変更すべきですか？",
+    "add_comment": "コメントを追加",
+    "remove_comment": "コメントを削除",
+    "cancel": "計画をキャンセル",
+    "cancel_confirm": "もう一度クリックでキャンセル",
+    "failed": "レビューを記録できませんでした。もう一度お試しください。"
+  },
   "working_filter_error": {
     "title": "エージェントが作業中のタスクを読み込めませんでした"
   },
