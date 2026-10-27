@@ -1,6 +1,13 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isIslandMounted, mountIsland, unmountIsland } from "../src/client/island";
+import {
+  isIslandAttached,
+  isIslandMounted,
+  islandHost,
+  mountIsland,
+  resetIsland,
+  unmountIsland,
+} from "../src/client/island";
 import { shadowStyles } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
@@ -17,8 +24,10 @@ const mounted: HTMLElement[] = [];
 
 afterEach(() => {
   // The island owns listeners and a live WebSocket; leaving one mounted would
-  // leak that work into the next test in this file.
+  // leak that work into the next test in this file. `resetIsland` also covers
+  // the keep-alive host, which the seat tests create outside `mounted`.
   for (const host of mounted.splice(0)) unmountIsland(host);
+  resetIsland();
   document.body.replaceChildren();
   requests.length = 0;
   vi.unstubAllGlobals();
@@ -146,6 +155,17 @@ function hostElement(): HTMLElement {
   document.body.append(host);
   mounted.push(host);
   return host;
+}
+
+/** A `main` cell: an empty element the shell hands the island. */
+function seatElement(): HTMLElement {
+  const seat = document.createElement("div");
+  document.body.append(seat);
+  return seat;
+}
+
+function configRequests(): string[] {
+  return requests.filter((url) => url.startsWith("/multica/config"));
 }
 
 async function settle(assertion: () => void, timeoutMs = 3000): Promise<void> {
@@ -329,14 +349,18 @@ describe("mountIsland", () => {
     });
   });
 
-  it("tears a seat down once the rail moves away from it", async () => {
+  it("detaches the island when the rail moves away, without tearing it down", async () => {
     stubBackend();
-    const seat = document.createElement("div");
-    document.body.append(seat);
-    mounted.push(seat);
+    const seat = seatElement();
 
     act(() => attachSeat(seat, BOARD_ROUTE));
-    expect(isIslandMounted(seat)).toBe(true);
+    const host = islandHost();
+    expect(host).not.toBeNull();
+    expect(host?.parentElement).toBe(seat);
+    await settle(() => {
+      expect(host?.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+    const configCalls = configRequests();
 
     // The shell detaches the ref before it removes the node, so the sweep runs a
     // microtask later — after the commit — and only for a node that really left.
@@ -344,23 +368,93 @@ describe("mountIsland", () => {
       seat.remove();
       attachSeat(null, BOARD_ROUTE);
     });
-    expect(isIslandMounted(seat)).toBe(false);
+
+    // Out of the document, still built: the tree, the query cache and the
+    // socket are exactly what the next click reuses instead of paying again.
+    expect(isIslandAttached()).toBe(false);
+    expect(host?.isConnected).toBe(false);
+    expect(isIslandMounted(host as HTMLElement)).toBe(true);
+    expect(configRequests()).toHaveLength(configCalls.length);
+    expect(host?.shadowRoot?.querySelector("[data-multica-root]")).not.toBeNull();
   });
 
-  it("keeps a seat alive across a re-attach", async () => {
+  it("moves the same island into the next seat and opens that entry", async () => {
     stubBackend();
-    const seat = document.createElement("div");
-    document.body.append(seat);
-    mounted.push(seat);
+    const issues = seatElement();
+    const agents = seatElement();
+
+    act(() => attachSeat(issues, BOARD_ROUTE));
+    await settle(() => {
+      expect(islandHost()?.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+    const host = islandHost() as HTMLElement;
+    const configCalls = configRequests();
+
+    await act(async () => {
+      issues.remove();
+      attachSeat(null, BOARD_ROUTE);
+      attachSeat(agents, { view: "agents" });
+    });
+
+    // Same host element, same React root: the panel moved rather than rebuilt.
+    expect(islandHost()).toBe(host);
+    expect(host.parentElement).toBe(agents);
+    expect(host.isConnected).toBe(true);
+    expect(configRequests()).toHaveLength(configCalls.length);
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).toContain("Agents");
+      expect(text).not.toContain("Connecting to Multica");
+    });
+  });
+
+  it("keeps a seat attached across a re-render", async () => {
+    stubBackend();
+    const seat = seatElement();
 
     act(() => {
       attachSeat(seat, BOARD_ROUTE);
-      // A re-render detaches and re-attaches the same node.
+      // A re-render detaches and re-attaches the same node; the node never left
+      // the document, so nothing may be torn down.
       attachSeat(null, BOARD_ROUTE);
       attachSeat(seat, BOARD_ROUTE);
     });
     await act(async () => {});
-    expect(isIslandMounted(seat)).toBe(true);
+    expect(isIslandAttached()).toBe(true);
+    expect(islandHost()?.parentElement).toBe(seat);
+  });
+
+  it("presses outside once on detach, and only when something is open", async () => {
+    stubBackend();
+    const seat = seatElement();
+    act(() => attachSeat(seat, BOARD_ROUTE));
+    const host = islandHost() as HTMLElement;
+    const portals = host.shadowRoot?.querySelector("[data-multica-portals]");
+    expect(portals).not.toBeNull();
+
+    const presses: string[] = [];
+    const record = (event: Event): void => {
+      presses.push(event.type);
+    };
+    document.body.addEventListener("pointerdown", record);
+
+    // Nothing portalled: a detach must not reach the shell's own dismiss layers.
+    await act(async () => {
+      seat.remove();
+      attachSeat(null, BOARD_ROUTE);
+    });
+    expect(presses).toEqual([]);
+
+    // A popup is not a child of the panel, so leaving would leave it on screen
+    // over the next panel; the synthetic outside press is what closes it.
+    act(() => attachSeat(seat, BOARD_ROUTE));
+    act(() => portals?.appendChild(document.createElement("div")));
+    await act(async () => {
+      seat.remove();
+      attachSeat(null, BOARD_ROUTE);
+    });
+    expect(presses).toEqual(["pointerdown"]);
+    document.body.removeEventListener("pointerdown", record);
   });
 
   it("is idempotent per host and tears down cleanly", async () => {
@@ -374,6 +468,20 @@ describe("mountIsland", () => {
     act(() => unmountIsland(host));
     expect(isIslandMounted(host)).toBe(false);
     expect(host.shadowRoot?.childNodes.length).toBe(0);
+  });
+
+  it("builds one island for the page and hands it to every seat", async () => {
+    stubBackend();
+    const first = seatElement();
+    const second = seatElement();
+
+    act(() => attachSeat(first, BOARD_ROUTE));
+    const host = islandHost();
+    act(() => attachSeat(second, { view: "inbox" }));
+    expect(islandHost()).toBe(host);
+    expect(host?.parentElement).toBe(second);
+    // One config read for the whole page, however many seats come and go.
+    expect(configRequests()).toHaveLength(1);
   });
 });
 

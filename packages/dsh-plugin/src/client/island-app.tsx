@@ -52,8 +52,8 @@ export interface IslandAppProps {
   wsPath: string;
   /** Why the host cannot proxy, when it cannot; shown in settings. */
   problem: string | null;
-  /** Place to mount at; the board unless a deep link asked for one issue. */
-  initialRoute?: IslandRoute;
+  /** Entry the seat asked for; the board unless a deep link named one issue. */
+  route?: IslandRoute;
 }
 
 const SUPPORTED = ["en", "zh-Hans", "ko", "ja", "fr"] as const;
@@ -86,10 +86,10 @@ export function detectLocale(): Locale {
  */
 export function IslandBoot({
   portalHost,
-  initialRoute,
+  route,
 }: {
   portalHost: HTMLElement;
-  initialRoute?: IslandRoute;
+  route?: IslandRoute;
 }) {
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -134,7 +134,7 @@ export function IslandBoot({
       wsUrl={islandWebSocketUrl(config.wsPath, window.location)}
       wsPath={config.wsPath}
       problem={config.problem}
-      initialRoute={initialRoute}
+      route={route}
     />
   );
 }
@@ -145,7 +145,7 @@ export function IslandApp({
   wsUrl,
   wsPath,
   problem,
-  initialRoute,
+  route,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
   const locale = useMemo(detectLocale, []);
@@ -168,7 +168,7 @@ export function IslandApp({
           preferredSlug={preferredSlug}
           wsPath={wsPath}
           problem={problem}
-          initialRoute={initialRoute}
+          route={route}
         />
       </PortalContainerProvider>
     </CoreProvider>
@@ -197,12 +197,12 @@ function WorkspaceGate({
   preferredSlug,
   wsPath,
   problem,
-  initialRoute,
+  route,
 }: {
   preferredSlug?: string;
   wsPath: string;
   problem: string | null;
-  initialRoute?: IslandRoute;
+  route?: IslandRoute;
 }) {
   const { workspaces, ready } = useWorkspaceList();
   const workspace = useMemo(() => {
@@ -240,7 +240,7 @@ function WorkspaceGate({
         slug={workspace.slug}
         wsPath={wsPath}
         problem={problem}
-        initialRoute={initialRoute}
+        route={route}
       />
     </WorkspaceSlugProvider>
   );
@@ -288,16 +288,30 @@ export function IslandPages({
   slug,
   wsPath,
   problem,
-  initialRoute = BOARD_ROUTE,
+  route: entryRoute = BOARD_ROUTE,
 }: {
   slug: string;
   wsPath: string;
   problem: string | null;
-  initialRoute?: IslandRoute;
+  /** The entry the seat asked for; a rail click re-renders this tree with it. */
+  route?: IslandRoute;
 }) {
-  const [route, setRoute] = useState<IslandRoute>(initialRoute);
+  const [route, setRoute] = useState<IslandRoute>(entryRoute);
   const [refused, setRefused] = useState<string | null>(null);
   const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+
+  // The keep-alive island re-renders this tree instead of remounting it, so a
+  // new entry arrives as a prop and has to be folded into the state the
+  // navigation writes. Adjusting during render (not in an effect) means the
+  // first commit after a rail click is already the new page, not the previous
+  // one for a frame. A re-attach of the same entry keeps whatever the reader
+  // had open in that family.
+  const [entry, setEntry] = useState(() => islandRouteKey(entryRoute));
+  const requested = islandRouteKey(entryRoute);
+  if (entry !== requested) {
+    setEntry(requested);
+    setRoute(entryRoute);
+  }
   const moctGroup = useMemo(
     () => createMoctGroup({ workspaceSlug: slug, wsPath, problem }),
     [slug, wsPath, problem],
