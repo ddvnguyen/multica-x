@@ -1759,12 +1759,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/question-cards/{cardId}/answer", h.AnswerQuestionCard)
 					r.With(handler.RequireHumanActor).Post("/plans/{planId}/verdict", h.ReviewPlan)
 					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
+					// S2-C (M-123) settings the dsh panel's MOCT group reads: the
+					// ask/plan interaction timeout (with its per-project overrides)
+					// and the pre-run memory switch. Reads are member-visible —
+					// neither value describes a person — and the writes below are
+					// admin-gated.
+					r.Get("/interactions", h.GetInteractions)
+					r.Get("/moct", h.GetMoctSettings)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.Put("/interactions", h.UpdateInteractions)
+					r.Put("/moct", h.UpdateMoctSettings)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2176,6 +2185,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					r.Post("/workflow", h.SetProjectWorkflow)
+					// The project's own ask/plan wait (S2-C, M-123). The handler
+					// gates on workspace owner/admin; the route stays member-level
+					// like the rest of this group so a non-admin gets a 403 with a
+					// reason instead of the group's member-shaped refusal.
+					r.Put("/interactions", h.SetProjectInteractions)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

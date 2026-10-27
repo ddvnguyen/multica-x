@@ -45,8 +45,16 @@ Rules learned from moct-be (live-verified):
 `MOCT_BASE_URL` on the **daemon** (e.g. `http://127.0.0.1:8310`) turns the
 seam on: the daemon then fetches the inject block on claim and adds the `moct`
 MCP server to every task it runs. Unset — the default everywhere but a lane
-that runs moct-be — nothing changes: no block, no MCP entry, no warning. The
-same value is forwarded to the stdio server as its `MOCT_BASE_URL`.
+that runs moct-be — nothing changes: no block, no MCP entry, no warning.The same value is forwarded to the stdio server as its `MOCT_BASE_URL`.
+
+`MOCT_BASE_URL` says a host *can* reach moct-be. A workspace says whether it
+*wants* memory: `workspace.settings.moct_memory_inject` (S2-C, M-123) turns the
+pre-run block off for that workspace. The server reads it on every claim and
+sends `moct_memory_inject` on the claim response; the daemon fetches the inject
+block only when the field is absent (a server that predates the switch) or true.
+Absent means ON, end to end: the switch only ever subtracts, and upgrading a
+deployment must not strip memory from every workspace that never touched it. The
+`moct` MCP tools are not affected — that is the agent's deliberate pull.
 
 ## Out-path 1 — pre-run inject
 
@@ -145,6 +153,27 @@ the browser is not allowed to choose.
   approvals are made **as that user**, and a token whose owner is not an
   owner/admin of the workspace is refused. A bridge that carries a live dsh
   session's own Multica identity would remove that limitation.
+
+## Panel settings (S2-C, M-123)
+
+Two settings the dsh panel's MOCT group reads and writes, both ordinary
+multica-be routes behind the same session gate as everything else:
+
+| Route | Who | Meaning |
+|---|---|---|
+| `GET /api/workspaces/{id}/moct` | member | `{memory_inject, memory_inject_set, editable}` |
+| `PUT /api/workspaces/{id}/moct` | owner/admin | flips the pre-run switch above |
+| `GET /api/workspaces/{id}/interactions` | member | the ask/plan wait, its bounds, `editable`, and every project override |
+| `PUT /api/workspaces/{id}/interactions` | owner/admin | `{timeout_seconds}`; `null` clears back to the default |
+| `PUT /api/projects/{id}/interactions` | owner/admin | `{timeout_seconds}`; `null` clears back to the workspace value |
+
+The values live in the existing `workspace.settings` / `project.settings`
+objects under `moct_memory_inject` and `ask_plan_timeout_seconds`, one key per
+request (`SetWorkspaceSetting` / `SetProjectSetting`) so two admins editing
+different keys cannot overwrite each other. `ask_plan_timeout_seconds` is
+bounded to 60–86400 seconds and defaults to 600; it is **stored and surfaced
+only** — no route here cancels a parked run or resumes one, and a cleared key
+falls back to the compiled-in default rather than pinning today's value.
 
 ## Scope semantics (search / get)
 

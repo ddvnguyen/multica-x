@@ -98,6 +98,12 @@ type Task struct {
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
 	WorkspaceContext string `json:"workspace_context,omitempty"`
+	// MoctMemoryInject is the workspace's pre-run memory switch (S2-C, M-123).
+	// nil means the claim came from a server that predates the switch, so the
+	// daemon keeps injecting exactly as it did; false is the only value that
+	// suppresses the MOCT inject block. The `moct` MCP server is unaffected —
+	// that is the agent's deliberate pull, not the automatic block.
+	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
 	// IssueStatuses mirrors the claim payload's active CUSTOM status catalog
 	// (MUL-6460): key/name/category/description per status, already in catalog
 	// order. Rendered into the brief's status-command line; empty (including on
@@ -155,9 +161,9 @@ type Task struct {
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
 	WakeupID                      string                 `json:"wakeup_id,omitempty"`
-	WakeupSystemRule              string                 `json:"wakeup_system_rule,omitempty"` // a platform rule (e.g. child_done) started the run
-	WakeupJoined                  string                 `json:"wakeup_joined,omitempty"`      // wakeups that joined this run instead of queuing their own
-	HandoffNote                   string                 `json:"handoff_note,omitempty"`       // legacy assignment handoff instruction; rendered only in the per-turn prompt
+	WakeupSystemRule              string                 `json:"wakeup_system_rule,omitempty"`    // a platform rule (e.g. child_done) started the run
+	WakeupJoined                  string                 `json:"wakeup_joined,omitempty"`         // wakeups that joined this run instead of queuing their own
+	HandoffNote                   string                 `json:"handoff_note,omitempty"`          // legacy assignment handoff instruction; rendered only in the per-turn prompt
 	TriggerEvidenceKind           string                 `json:"trigger_evidence_kind,omitempty"` // S1-A1: question_answer / plan_verdict names a parked ask/plan resume; the prompt renders the handoff as the answer/verdict block
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader

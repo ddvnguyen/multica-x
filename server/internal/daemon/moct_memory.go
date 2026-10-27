@@ -37,11 +37,18 @@ const moctMemoryServerName = "moct"
 
 // moctInjectPrompt fetches and renders the pre-run memory block for task.
 //
-// Returns "" when the seam is off on this daemon or anything went wrong — the
-// caller simply does not add the prompt option, and the task prompt is then
-// byte-identical to what it was before this feature existed.
+// Returns "" when the seam is off on this daemon, the workspace switched the
+// pre-run block off (S2-C, M-123), or anything went wrong — the caller simply
+// does not add the prompt option, and the task prompt is then byte-identical to
+// what it was before this feature existed.
 func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *slog.Logger) string {
 	if strings.TrimSpace(baseURL) == "" {
+		return ""
+	}
+	// The switch only ever subtracts. A nil flag is a claim from a server that
+	// predates it (or a workspace read that failed on the server side), and the
+	// run then gets memory exactly as it did before the switch existed.
+	if task.MoctMemoryInject != nil && !*task.MoctMemoryInject {
 		return ""
 	}
 	params, ok := moctScopeParams(task)

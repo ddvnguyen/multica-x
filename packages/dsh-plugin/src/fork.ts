@@ -54,6 +54,20 @@ export {
 } from "@multica/views/settings";
 export type { ExtraSettingsGroup } from "@multica/views/settings";
 
+// Form primitives the MOCT tabs edit with. Taken from the fork rather than
+// styled here so a settings control looks and behaves like the web app's own,
+// including the Base UI keyboard and popup behaviour the shell's event handling
+// would otherwise have to reproduce.
+export { Input } from "@multica/ui/components/ui/input";
+export { Switch } from "@multica/ui/components/ui/switch";
+export {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
+
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";

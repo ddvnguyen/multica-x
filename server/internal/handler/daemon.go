@@ -3615,6 +3615,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
 		}
+		// MOCT pre-run memory switch (S2-C, M-123). Read here, on every claim,
+		// so an admin's change lands on the next run with nothing to restart.
+		// An absent key means on (moctInjectEnabled); a failed workspace read
+		// leaves the field nil, which the daemon reads as "keep injecting" —
+		// memory must never disappear because a lookup failed.
+		inject := moctInjectEnabled(ws)
+		resp.MoctMemoryInject = &inject
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",
 			"task_id", uuidToString(task.ID),

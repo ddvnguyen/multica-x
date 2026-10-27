@@ -389,6 +389,15 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// MoctMemoryInject is the workspace's pre-run memory switch (S2-C, M-123)
+	// as it stands for this claim. The daemon fetches the MOCT inject block only
+	// when this is nil (a server that predates the switch: keep the behavior the
+	// daemon had) or true. false is the one value that suppresses it — the
+	// switch only ever turns memory off, never on, because a workspace that
+	// never touched it still injects exactly as before. The `moct` MCP tools are
+	// unaffected: they are a deliberate pull, not the automatic block.
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —

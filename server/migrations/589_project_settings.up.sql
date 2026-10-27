@@ -1,0 +1,11 @@
+-- S2-C (M-123): a settings JSONB on project, the same shape workspace has had
+-- since 001. The first reader is the ask/plan interaction timeout the dsh
+-- panel's MOCT → Interactions tab edits: a workspace default (stored in
+-- workspace.settings) with a per-project override here, so a project that
+-- waits longer for a human answer than the workspace's ten minutes does not
+-- need its own copy of every other setting.
+--
+-- Deliberately NOT NULL DEFAULT '{}': every existing reader of a project row
+-- treats the column as an object of keys it may not know, and an absent column
+-- would make "no override" and "empty settings" two different states.
+ALTER TABLE project ADD COLUMN settings JSONB NOT NULL DEFAULT '{}';

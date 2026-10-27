@@ -241,6 +241,7 @@ function WorkspaceGate({
       <UnreadReporter workspaceId={workspace.id} />
       <IslandPages
         slug={workspace.slug}
+        workspaceId={workspace.id}
         wsPath={wsPath}
         problem={problem}
         route={route}
@@ -289,11 +290,14 @@ function IslandPage({
 
 export function IslandPages({
   slug,
+  workspaceId,
   wsPath,
   problem,
   route: entryRoute = BOARD_ROUTE,
 }: {
   slug: string;
+  /** The resolved workspace UUID the MOCT settings tabs write to. */
+  workspaceId: string;
   wsPath: string;
   problem: string | null;
   /** The entry the seat asked for; a rail click re-renders this tree with it. */
@@ -316,8 +320,8 @@ export function IslandPages({
     setRoute(entryRoute);
   }
   const moctGroup = useMemo(
-    () => createMoctGroup({ workspaceSlug: slug, wsPath, problem }),
-    [slug, wsPath, problem],
+    () => createMoctGroup({ workspaceSlug: slug, workspaceId, wsPath, problem }),
+    [slug, workspaceId, wsPath, problem],
   );
 
   const navigation = useMemo(

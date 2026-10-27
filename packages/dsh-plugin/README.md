@@ -75,6 +75,17 @@ events before the fork sees them), and `extraGroups` appends the one group that
 only exists in dsh. Hidden pages leave the navigation, the compact selector and
 the search index together, so no result lands on a page that is not there.
 
+The MOCT group is that one dsh-only group. Its **Memory** tab reads the seam
+(S2-B): the plane's health, its schema, and where the always-load context budget
+is spent. Its **Connection** tab (S2-C) shows how the panel is wired, whether
+moct-be answers, and whether a run gets the pre-run memory block; that switch is
+the panel's first write, and it is rendered from the server's answer — including
+`editable`, which the server derives from the reader's workspace role, so a
+member sees the state and an owner/admin edits it. Its **Interactions** tab
+(S2-C) holds the ask/plan wait: a workspace default (ten minutes) with a
+per-project override. The wait is stored and surfaced only — nothing in this
+panel cancels a parked run or resumes one.
+
 The row chooses where an island *opens*; from there the fork's pages navigate as
 they do in the web app — an inbox row that no longer resolves falls back to its
 issue, for instance — and the row keeps marking the entry the reader came
