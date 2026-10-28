@@ -36,28 +36,11 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 need git; need node; need curl; need podman; need pnpm; need openssl
 
-# Project the lane's credential refs into an env-file body. The managed
-# credential document ($LANE_HOME/.credentials.yaml, 0600, never committed)
-# holds the lane's `refs:` entries; every env file written below is rebuilt
-# from scratch on each redeploy, so keys are emitted here instead of being
-# hand-dropped and silently lost (M-103). Values are unquoted or
-# double-quoted YAML scalars, go straight into the 0600 file, and are never
-# passed through log().
-emit_lane_credential_refs() {
-  [ -f "$LANE_HOME/.credentials.yaml" ] || return 0
-  awk '
-    /^refs:[[:space:]]*$/      { in_refs = 1; next }
-    in_refs && /^[^[:space:]]/ { in_refs = 0 }
-    in_refs && /^  [A-Za-z_][A-Za-z0-9_]*:[[:space:]]/ {
-      line = $0
-      sub(/^  /, "", line)
-      key = line; sub(/:[[:space:]].*$/, "", key)
-      val = line; sub(/^[^:]*:[[:space:]]*/, "", val)
-      if (val ~ /^".*"$/) { sub(/^"/, "", val); sub(/"$/, "", val) }
-      if (length(val) > 0) print key "=" val
-    }
-  ' "$LANE_HOME/.credentials.yaml"
-}
+# Shared credential-ref emitter (M-103). Sourced so deploy and sync share one
+# code path (M-126 amendment 1).
+_DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=credential-refs.sh
+. "$_DEPLOY_DIR/credential-refs.sh"
 
 # ---------------------------------------------------------------------------
 # Phase 0 — preflight
@@ -281,6 +264,10 @@ umask 077
 {
   echo "MULTICA_WORKSPACES_ROOT=$MULTICA_Z_WORKSPACES_ROOT"
   echo "MULTICA_WORKSPACE_ID=${MULTICA_Z_WORKSPACE_ID:-}"
+  echo "DSH_HOME=$LANE_HOME"
+  if [ -n "${LANE_AGENT_DEFAULT_MODEL:-}" ]; then
+    echo "LANE_AGENT_DEFAULT_MODEL=$LANE_AGENT_DEFAULT_MODEL"
+  fi
   emit_lane_credential_refs
 } > "$LANE_ROOT/data/multica-daemon-z.env"
 umask 022
@@ -385,6 +372,12 @@ umask 077
 {
   echo "MULTICA_WORKSPACES_ROOT=$MULTICA_Z_WORKSPACES_ROOT"
   echo "MULTICA_WORKSPACE_ID=$MULTICA_Z_WORKSPACE_ID"
+  # Credential/home split (M-126/M-132): point DSH_HOME at the lane home so
+  # the stdio dsh child sees the lane credentials instead of home/.dsh.
+  echo "DSH_HOME=$LANE_HOME"
+  if [ -n "${LANE_AGENT_DEFAULT_MODEL:-}" ]; then
+    echo "LANE_AGENT_DEFAULT_MODEL=$LANE_AGENT_DEFAULT_MODEL"
+  fi
   # MULTICA_DSH_PATH is probed before the bare "dsh" name (envOrDefault in
   # agents_probe.go): pinning the lane release CLI makes the daemon launch the
   # dsh version the runtime bundle's peers require instead of the nvm 0.2.0.

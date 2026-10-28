@@ -8,6 +8,13 @@ provisioned by one idempotent script:
 bash deploy/dsh-z/deploy.sh
 ```
 
+To re-sync only the lane runtime config (daemon env, `DSH_HOME`, credential refs)
+without a full redeploy or a daemon restart:
+
+```bash
+bash deploy/dsh-z/sync-runtime-config.sh
+```
+
 The script only ever touches its own units and its own database. It never
 kills any process by PID (per the lane safety rule, compare with
 `multica daemon status` first anyway), never talks to the live control plane
