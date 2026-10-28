@@ -1,16 +1,20 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  attachIsland,
+  detachIsland,
   isIslandAttached,
   isIslandMounted,
   islandHost,
   mountIsland,
   resetIsland,
+  startIsland,
   unmountIsland,
 } from "../src/client/island";
 import { shadowStyles } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
+import { useModalStore } from "../src/fork";
 
 /**
  * The island is a second React tree inside a shadow root, so these tests drive
@@ -613,6 +617,80 @@ describe("popup seat", () => {
 
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+  });
+});
+
+describe("modal store", () => {
+  /**
+   * The fork's pages do not own their dialogs: they call
+   * `useModalStore.open(...)` and one component renders whatever it names. The
+   * island mounted no such component, so on lane z every dialog — create
+   * issue, delete confirm, set parent — was a click that did nothing (M-146).
+   */
+  it("renders the dialog a page opens, inside the island's shadow root", async () => {
+    stubBackend();
+    let host!: HTMLElement;
+    act(() => {
+      host = startIsland(document);
+    });
+    const seat = seatElement();
+    act(() => attachIsland(seat, BOARD_ROUTE));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+
+    act(() => useModalStore.getState().open("create-issue"));
+
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector("[role='dialog']")).not.toBeNull();
+    });
+
+    // Portalled into the island's own container: the dialog has to be styled by
+    // the island's sheet and clickable through its popup seat, which is only
+    // true inside this shadow root.
+    const portals = host.shadowRoot?.querySelector("[data-multica-portals]");
+    expect(portals?.querySelector("[role='dialog']")).not.toBeNull();
+    expect(document.querySelector("[role='dialog']")).toBeNull();
+
+    act(() => useModalStore.getState().close());
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector("[role='dialog']")).toBeNull();
+    });
+  });
+
+  /**
+   * A dialog is a child of the portal container, not of the panel, and Base
+   * UI's outside press does not dismiss a modal. Detaching the panel therefore
+   * has to close it through the store, or a rail click leaves it open for the
+   * next attach.
+   */
+  it("closes an open dialog when the island is detached", async () => {
+    stubBackend();
+    let host!: HTMLElement;
+    act(() => {
+      host = startIsland(document);
+    });
+    const seat = seatElement();
+    act(() => attachIsland(seat, BOARD_ROUTE));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+
+    act(() => useModalStore.getState().open("create-issue"));
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector("[role='dialog']")).not.toBeNull();
+    });
+
+    act(() => detachIsland());
+    expect(isIslandAttached()).toBe(false);
+    expect(useModalStore.getState().modal).toBeNull();
+
+    act(() => attachIsland(seat, BOARD_ROUTE));
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector("[role='dialog']")).toBeNull();
     });
   });
 });

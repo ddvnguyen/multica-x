@@ -26,6 +26,7 @@ import {
   InboxPage,
   IssueDetailRoute,
   IssuesPage,
+  ModalRegistry,
   NavigationProvider,
   PortalContainerProvider,
   RESOURCES,
@@ -374,6 +375,18 @@ export function IslandPages({
             <IslandPage route={route} extraAgentSections={agentMemorySections} />
           )}
         </ErrorBoundary>
+        {/* The fork's pages ask for a dialog through `useModalStore` and one
+            component renders whatever it names; the web and desktop layouts
+            mount it, and the island had no equivalent, so every dialog in the
+            panel (create issue, delete confirm, set parent, …) was a no-op
+            (M-146). It sits here rather than beside `UnreadReporter` because
+            the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
+            (`packages/views/modals/create-issue.tsx:244`) and would throw
+            outside `NavigationProvider`. Inside `IslandPages` it is also
+            outside the route switch, so a dialog survives a page change; the
+            portal container comes from `IslandApp`, so it renders into the
+            island's shadow root and not the shell's document. */}
+        <ModalRegistry />
       </NavigationProvider>
     </ViewStoreProvider>
   );
