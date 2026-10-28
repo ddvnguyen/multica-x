@@ -116,8 +116,18 @@ Inside is a shadow root. The fork's stylesheet is compiled to one string, `:root
 is rewritten to `:host`, and the result is attached to the shadow root — so
 Tailwind's preflight, the fork's design tokens and its utility classes cannot
 reach dsh's document, and dsh's CSS cannot reach in. Overlays (dialogs, menus,
-tooltips, popovers) render into a portal seat inside the same shadow root, which
-is what keeps them styled and focus-trapped inside the island.
+tooltips, popovers) render into a portal seat *outside* that shadow root — the
+shell's own `[data-shell-overlay]` layer when it has one, otherwise a seat the
+island puts on the document — and the seat carries its own copy of the
+stylesheet, so they stay styled without sitting in the panel's stacking context.
+
+They must stay out of the panel: Base UI decides whether a press was "outside" by
+walking up from the pressed element, and that walk stops at a shadow boundary. A
+popup rendered inside the panel therefore never saw a press in the panel as
+outside, and any inert marker Base UI had put on the page read as post-render
+content — two pickers stacked, Escape ignored, outside presses dropped (M-148).
+`src/client/popup-seat.ts` owns that boundary, including moving the seat into
+dsh's overlay layer when the shell mounts it after the plugin's warm-up.
 
 One thing a shadow root cannot carry is Tailwind v4's `@property` rules:
 Chromium does not register them from a stylesheet inside a shadow tree, so every
@@ -194,12 +204,19 @@ The suite found two behaviours beyond the styling:
   now also runs on the portal container);
 - Tab left an open dialog, because Base UI's focus guards compare
   `document.activeElement` with themselves and inside a shadow tree that is the
-  host, so the guards never fired (`src/client/focus-guards.ts`).
+  host, so the guards never fired (`src/client/focus-guards.ts`);
+- popups stayed stacked and could not be dismissed, a second finding with the
+  same cause and its own suite, `e2e/island-popups.spec.ts`: it drives the
+  Runtime → Model picker sequence in all three overlay-layer arrangements and
+  asserts one layer at a time, Escape closing the top layer, an outside click
+  closing it, and tooltips that come and go with the pointer.
 
-The harness runs against the dev server; `?mode=reference|island`, `?theme=light|dark`
-and `?shim=off` are the switches, and `?shim=off` is what
+The harness runs against the dev server; `?mode=reference|island`, `?theme=light|dark`,
+`?shim=off` and `?seat=off|late` are the switches. `?shim=off` is what
 `island-parity.spec.ts` uses to prove the gate could fail: without the shim the
-island's borders and shadows are `none` again.
+island's borders and shadows are `none` again. `?seat=off` removes the shell's
+overlay layer before the island is built and `?seat=late` keeps it out until the
+spec mounts it, which are the two arrangements lane z hit.
 
 ## The host half ships as emitted
 

@@ -200,8 +200,27 @@ function seatElement(): HTMLElement {
   return seat;
 }
 
+/**
+ * The island's portal container, wherever the seat currently keeps it.
+ *
+ * It lives in a seat outside the panel — and each seat hides it in its own
+ * shadow root, which a document selector cannot see through.
+ */
+function portalHostElement(): HTMLElement | null {
+  for (const seat of document.querySelectorAll<HTMLElement>("[data-multica-popup-seat]")) {
+    const portals = seat.shadowRoot?.querySelector<HTMLElement>("[data-multica-portals]");
+    if (portals !== null && portals !== undefined) return portals;
+  }
+  return null;
+}
+
 function configRequests(): string[] {
   return requests.filter((url) => url.startsWith("/multica/config"));
+}
+
+/** The dialog the modal store opened, wherever the seat keeps it. */
+function dialogElement(): Element | null {
+  return portalHostElement()?.querySelector("[role='dialog']") ?? null;
 }
 
 async function settle(assertion: () => void, timeoutMs = 3000): Promise<void> {
@@ -237,7 +256,10 @@ describe("mountIsland", () => {
     expect(shadow).not.toBeNull();
     expect(shadow?.querySelector("style[data-multica-styles]")).not.toBeNull();
     expect(shadow?.querySelector("[data-multica-root]")).not.toBeNull();
-    expect(shadow?.querySelector("[data-multica-portals]")).not.toBeNull();
+    // No pages and no popups: overlays render in the seat, outside this shadow
+    // root, or Base UI cannot tell an outside press from an inside one.
+    expect(shadow?.querySelector("[data-multica-portals]")).toBeNull();
+    expect(portalHostElement()).not.toBeNull();
 
     // Styles are shadow-local: the document itself carries no island sheet.
     expect(document.querySelector("style[data-multica-styles]")).toBeNull();
@@ -471,8 +493,11 @@ describe("mountIsland", () => {
     const seat = seatElement();
     act(() => attachSeat(seat, BOARD_ROUTE));
     const host = islandHost() as HTMLElement;
-    const portals = host.shadowRoot?.querySelector("[data-multica-portals]");
+    const portals = portalHostElement();
     expect(portals).not.toBeNull();
+    // The portal container is not in the panel: it renders into the seat, which
+    // is what makes a detach lose it unless the press below happens.
+    expect(host.shadowRoot?.querySelector("[data-multica-portals]")).toBeNull();
 
     const presses: string[] = [];
     const record = (event: Event): void => {
@@ -603,21 +628,55 @@ describe("popup seat", () => {
     expect(host.shadowRoot?.childNodes.length).toBe(0);
   });
 
-  it("falls back inside the surface when the shell has no overlay layer", async () => {
+  it("keeps its own seat on the document when the shell has no overlay layer", async () => {
     stubBackend();
     const host = hostElement();
     act(() => mountIsland(host));
 
-    expect(document.querySelector("[data-multica-popup-seat]")).toBeNull();
-    const portalHost = host.shadowRoot?.querySelector("[data-multica-portals]");
-    expect(portalHost).not.toBeNull();
-    expect(
-      portalHost?.parentElement?.classList.contains("multica-island-surface"),
-    ).toBe(true);
+    // No layer to join: the seat covers the viewport itself, so popups land
+    // above the panel instead of inside its stacking context. What it must not
+    // do is move back into the panel's shadow root — a press inside the island
+    // would then read as an outside press Base UI drops (M-148).
+    const seat = document.querySelector<HTMLElement>("[data-multica-popup-seat]");
+    expect(seat).not.toBeNull();
+    expect(seat?.parentElement).toBe(document.body);
+    expect(seat?.style.position).toBe("fixed");
+    expect(seat?.style.pointerEvents).toBe("none");
+    expect(seat?.shadowRoot?.querySelector("[data-multica-portals]")).not.toBeNull();
+    expect(host.shadowRoot?.querySelector("[data-multica-portals]")).toBeNull();
 
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
     });
+  });
+
+  it("moves into the shell's overlay layer when it is mounted after warm-up", async () => {
+    stubBackend();
+    const host = hostElement();
+    // Lane z: the plugin warms the island up from a hook and the shell paints
+    // its chrome — overlay layer included — a moment later.
+    act(() => mountIsland(host));
+    const portalHost = portalHostElement();
+    expect(portalHost?.getRootNode()).toBe(
+      document.querySelector("[data-multica-popup-seat]")?.shadowRoot,
+    );
+    expect(document.querySelector("[data-multica-popup-seat]")?.parentElement).toBe(document.body);
+
+    const layer = overlayLayer();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 20);
+    await act(async () => {
+      await promise;
+    });
+
+    // Same portal container, new home: React's portals follow it, so an open
+    // popup is not rebuilt — and the seat now stacks with the shell's overlays.
+    const seat = layer.querySelector<HTMLElement>("[data-multica-popup-seat]");
+    expect(seat).not.toBeNull();
+    expect(seat?.shadowRoot?.querySelector("[data-multica-portals]")).toBe(portalHost);
+    // One seat, not two: the document-level one is dropped as the layer takes
+    // the container over.
+    expect(document.querySelectorAll("[data-multica-popup-seat]")).toHaveLength(1);
   });
 });
 
@@ -671,19 +730,18 @@ describe("modal store", () => {
     act(() => useModalStore.getState().open("create-issue"));
 
     await settle(() => {
-      expect(host.shadowRoot?.querySelector("[role='dialog']")).not.toBeNull();
+      expect(dialogElement()).not.toBeNull();
     });
 
     // Portalled into the island's own container: the dialog has to be styled by
-    // the island's sheet and clickable through its popup seat, which is only
-    // true inside this shadow root.
-    const portals = host.shadowRoot?.querySelector("[data-multica-portals]");
-    expect(portals?.querySelector("[role='dialog']")).not.toBeNull();
+    // the island's sheet, which the seat's shadow root carries.
+    expect(dialogElement()).not.toBeNull();
     expect(document.querySelector("[role='dialog']")).toBeNull();
+    expect(host.shadowRoot?.querySelector("[role='dialog']")).toBeNull();
 
     act(() => useModalStore.getState().close());
     await settle(() => {
-      expect(host.shadowRoot?.querySelector("[role='dialog']")).toBeNull();
+      expect(dialogElement()).toBeNull();
     });
   });
 
@@ -708,7 +766,7 @@ describe("modal store", () => {
 
     act(() => useModalStore.getState().open("create-issue"));
     await settle(() => {
-      expect(host.shadowRoot?.querySelector("[role='dialog']")).not.toBeNull();
+      expect(dialogElement()).not.toBeNull();
     });
 
     act(() => detachIsland());
@@ -717,7 +775,7 @@ describe("modal store", () => {
 
     act(() => attachIsland(seat, BOARD_ROUTE));
     await settle(() => {
-      expect(host.shadowRoot?.querySelector("[role='dialog']")).toBeNull();
+      expect(dialogElement()).toBeNull();
     });
   });
 });

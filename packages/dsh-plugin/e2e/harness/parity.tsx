@@ -32,6 +32,12 @@ import {
 import { Input } from "@multica/ui/components/ui/input";
 import { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@multica/ui/components/ui/tooltip";
 import islandCss from "../../src/client/island.css?inline";
 import { ISLAND_CSS, ISLAND_PROPERTY_RULES, createPopupSeat } from "../../src/client/popup-seat";
 import { restoreShadowFocusGuards } from "../../src/client/focus-guards";
@@ -62,6 +68,14 @@ const params = new URLSearchParams(window.location.search);
 const mode: Mode = params.get("mode") === "island" ? "island" : "reference";
 const dark = params.get("theme") === "dark";
 const shim = params.get("shim") !== "off";
+// `?seat=off` is the shell-less arrangement: no overlay layer at all, so the
+// island seats overlays on the document. `?seat=late` is lane z's: the layer is
+// missing when the island is built and the spec mounts it afterwards, which is
+// what dsh does when its chrome mounts after a plugin's warm-up.
+const seatParam = params.get("seat");
+if (seatParam === "off" || seatParam === "late") {
+  document.querySelector("[data-shell-overlay]")?.remove();
+}
 
 interface Boundary {
   /** Where the fixtures render: the island's root, or a document div. */
@@ -124,17 +138,12 @@ function islandBoundary(): Boundary {
   surface.append(root);
   shadow.append(style, surface);
 
+  // Production builds the seat before the page: `createPopupSeat` finds the
+  // shell's layer when there is one, and otherwise seats overlays on the
+  // document until the layer shows up.
   const seat = createPopupSeat(document);
-  const portalHost =
-    seat?.portalHost ??
-    (() => {
-      const fallback = document.createElement("div");
-      fallback.className = "multica-island-portals";
-      fallback.dataset.multicaPortals = "";
-      surface.append(fallback);
-      return fallback;
-    })();
-  if (seat !== null) portalHost.classList.toggle("dark", dark);
+  const portalHost = seat.portalHost;
+  portalHost.classList.toggle("dark", dark);
 
   // The guard production installs on the island's root, and on the portal
   // container its overlays render into (a dialog's input is not a child of the
@@ -147,6 +156,20 @@ function islandBoundary(): Boundary {
 }
 
 const boundary = mode === "island" ? islandBoundary() : referenceBoundary();
+
+if (seatParam === "late") {
+  // The shell paints its overlay layer after the plugin booted. The spec drives
+  // the moment — a timer here would make "the popup was already open when the
+  // layer arrived" a race — so this only exposes the shell's own step.
+  Object.assign(window, {
+    __mountShellLayer: () => {
+      if (document.querySelector("[data-shell-overlay]") !== null) return;
+      const layer = document.createElement("div");
+      layer.dataset.shellOverlay = "";
+      document.body.append(layer);
+    },
+  });
+}
 
 /** What a dsh hotkey handler would see: keys that reached the document. */
 const shellKeys: string[] = [];
@@ -364,6 +387,121 @@ function ToastSurface() {
   );
 }
 
+/**
+ * The Runtime / Model pickers, in the shape the fork builds them.
+ *
+ * `PropertyPicker` wraps its trigger in a tooltip that is open only while the
+ * popover is closed, and wraps every row in its own tooltip — the arrangement
+ * the lane-z report is about. Two pickers side by side are also the "one popup
+ * at a time" case: the Model trigger is outside the Runtime popover, so opening
+ * it has to dismiss Runtime through the outside-press path.
+ */
+function PickerRow({
+  testId,
+  label,
+  hint,
+  selected,
+  onSelect,
+}: {
+  testId: string;
+  label: string;
+  hint: string;
+  selected?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            data-picker-item=""
+            data-testid={testId}
+            onClick={onSelect}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body hover:bg-accent"
+          >
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            {selected ? <span aria-hidden="true">✓</span> : null}
+          </button>
+        }
+      />
+      <TooltipContent data-testid="picker-tooltip" side="top">
+        {hint}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function PickersSurface() {
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [runtimeHover, setRuntimeHover] = useState(false);
+
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border bg-card p-3">
+      <p className="text-xs text-muted-foreground">Dsh Engineer</p>
+      <div className="flex items-center gap-2">
+        {/* The trigger tooltip is open only while the popover is closed, as
+            `PropertyPicker` does, so the two never stack on one anchor. */}
+        <Popover open={runtimeOpen} onOpenChange={(v: boolean) => { console.log("RUNTIME_ONOPENCHANGE", v); setRuntimeOpen(v); }}>
+          <Tooltip open={runtimeHover && !runtimeOpen} onOpenChange={setRuntimeHover}>
+            <TooltipTrigger
+              render={
+                <PopoverTrigger
+                  data-testid="runtime-picker-trigger"
+                  className="rounded-lg border border-border px-3 py-1.5 text-sm"
+                >
+                  Runtime: lane-z
+                </PopoverTrigger>
+              }
+            />
+            <TooltipContent side="top">Runtime the agent runs on</TooltipContent>
+          </Tooltip>
+          <PopoverContent data-testid="runtime-picker" className="w-72 rounded-lg bg-popover shadow-md ring-1 ring-border">
+            <PickerRow
+              testId="runtime-row-lane-z"
+              label="lane-z · online"
+              hint="dsh-z lane, 2 runtimes"
+              selected
+              onSelect={() => setRuntimeOpen(false)}
+            />
+            <PickerRow
+              testId="runtime-row-local"
+              label="local · offline"
+              hint="This machine"
+              onSelect={() => setRuntimeOpen(false)}
+            />
+          </PopoverContent>
+        </Popover>
+
+        <Popover open={modelOpen} onOpenChange={setModelOpen}>
+          <PopoverTrigger
+            data-testid="model-picker-trigger"
+            className="rounded-lg border border-border px-3 py-1.5 text-sm"
+          >
+            Model: opus
+          </PopoverTrigger>
+          <PopoverContent data-testid="model-picker" className="w-72 rounded-lg bg-popover shadow-md ring-1 ring-border">
+            <PickerRow
+              testId="model-row-opus"
+              label="claude-opus"
+              hint="Most capable"
+              selected
+              onSelect={() => setModelOpen(false)}
+            />
+            <PickerRow
+              testId="model-row-sonnet"
+              label="claude-sonnet"
+              hint="Faster"
+              onSelect={() => setModelOpen(false)}
+            />
+          </PopoverContent>
+        </Popover>
+      </div>
+    </section>
+  );
+}
+
 function CommandPalette({
   open,
   onOpenChange,
@@ -408,6 +546,9 @@ function ParityFixtures() {
       <BoardSurface />
       <IssueSurface />
       <MechanismBoxes />
+      <TooltipProvider>
+        <PickersSurface />
+      </TooltipProvider>
       <div className="flex items-center gap-3">
         <Button data-testid="dialog-trigger" onClick={openDialog}>
           New issue

@@ -53,13 +53,12 @@
 
 /* The container the island's popups render into.
  *
- * Inside the panel it is the fallback seat: a relative stacking context above
- * the page the island renders. When the shell exposes its overlay layer, the
- * same class is the shadow-internal container of the popup seat there — and
- * that seat inherits the layer's own pointer-events pattern: the seat is
- * inert (`pointer-events:none`), this container re-enables hit-testing for
- * every popup under it. Dropping the `auto` would let the seat swallow each
- * popup click one layer deeper than the bug this seat exists to fix. */
+ * It is the shadow-internal container of the popup seat (`popup-seat.ts`):
+ * a relative stacking context whose popups are positioned against it. The seat
+ * is inert (`pointer-events:none`, like the overlay layer around it), so this
+ * container re-enables hit-testing for every popup under it. Dropping the
+ * `auto` would let the seat swallow each popup click one layer deeper than the
+ * bug this seat exists to fix. */
 .multica-island-portals {
   position: relative;
   z-index: 60;

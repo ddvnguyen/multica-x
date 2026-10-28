@@ -87,6 +87,12 @@ test("typing in a dialog input never reaches the shell's shortcuts", async ({ pa
   // clicked at all.
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("dialog-content")).toHaveCount(0);
+
+  // A modal layer keeps Escape to itself — Base UI stops it once the dialog has
+  // handled it — so the shell still sees nothing here. The key the boundary
+  // deliberately shares is the one that closes a non-modal layer, which the
+  // popup suite drives.
+  await clearShellKeys(page);
   await page.locator("#shell-input").click();
   await page.keyboard.type("jj");
   expect(await shellKeys(page)).toEqual(["j", "j"]);
