@@ -1725,6 +1725,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// are admin-gated below).
 					r.Get("/runtime-profiles", h.ListRuntimeProfiles)
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
+					// Per-workspace accounts (freebuff-desktop) — member-visible listing.
+					r.Get("/accounts", h.ListWorkspaceAccounts)
 					// Freebuff browser login. The account client on the
 					// daemon's machine owns the login, so it asks here
 					// whether a login was requested and reports the
@@ -1794,6 +1796,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Put("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
+					// Per-workspace accounts (freebuff-desktop).
+					r.Post("/accounts", h.CreateWorkspaceAccount)
+					r.Route("/accounts/{accountId}", func(r chi.Router) {
+						r.Patch("/", h.UpdateWorkspaceAccount)
+						r.Put("/", h.UpdateWorkspaceAccount)
+						r.Delete("/", h.DeleteWorkspaceAccount)
+					})
 					// Publishing. The author uploads an artifact bundle and we
 					// store it; a version is immutable once published, so
 					// there is no update route here by design.

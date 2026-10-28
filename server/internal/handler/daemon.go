@@ -2600,18 +2600,50 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
+	// Resolve the workspace account for freebuff-desktop runtimes (M-153).
+	// Credentials stay on the daemon machine: we only forward endpoint +
+	// credential_ref, never a secret. 'any' picks the first enabled account
+	// for the provider (lease is a known gap; documented in the PR).
+	accountMode := agent.AccountMode
+	accountEndpoint := ""
+	accountCredentialRef := ""
+	accountID := uuidToString(agent.AccountID)
+	if accountMode == "specific" && agent.AccountID.Valid {
+		if acc, err := h.Queries.GetWorkspaceAccount(r.Context(), agent.AccountID); err == nil {
+			accountEndpoint = acc.Endpoint.String
+			accountCredentialRef = acc.CredentialRef.String
+		}
+	} else if accountMode == "any" {
+		accounts, err := h.Queries.ListWorkspaceAccountsByProvider(r.Context(), db.ListWorkspaceAccountsByProviderParams{
+			WorkspaceID: agent.WorkspaceID,
+			Provider:    "freebuff-desktop",
+		})
+		if err == nil && len(accounts) > 0 {
+			accountID = uuidToString(accounts[0].ID)
+			accountEndpoint = accounts[0].Endpoint.String
+			accountCredentialRef = accounts[0].CredentialRef.String
+		}
+	}
+	if accountMode == "" {
+		accountMode = "default"
+	}
+
 	resp.Agent = &TaskAgentData{
-		ID:                    uuidToString(agent.ID),
-		Name:                  agent.Name,
-		Instructions:          agent.Instructions,
-		CustomEnv:             customEnv,
+		ID:                   uuidToString(agent.ID),
+		Name:                 agent.Name,
+		Instructions:         agent.Instructions,
+		CustomEnv:            customEnv,
 		CustomArgs:            customArgs,
-		McpConfig:             mcpConfig,
-		Model:                 agent.Model.String,
-		ThinkingLevel:         agent.ThinkingLevel.String,
-		ServiceTier:           agent.ServiceTier.String,
-		RuntimeConfig:         runtimeConfig,
+		McpConfig:            mcpConfig,
+		Model:                agent.Model.String,
+		ThinkingLevel:        agent.ThinkingLevel.String,
+		ServiceTier:          agent.ServiceTier.String,
+		RuntimeConfig:        runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
+		AccountMode:          accountMode,
+		AccountID:            accountID,
+		AccountEndpoint:      accountEndpoint,
+		AccountCredentialRef: accountCredentialRef,
 	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That

@@ -119,7 +119,9 @@ type AgentResponse struct {
 	ThinkingLevel string `json:"thinking_level"`
 	// ServiceTier is the runtime-native Codex execution tier persisted for
 	// this agent (empty = inherit local Codex configuration).
-	ServiceTier string `json:"service_tier"`
+	ServiceTier  string `json:"service_tier"`
+	AccountMode  string `json:"account_mode"`
+	AccountID    string `json:"account_id,omitempty"`
 	// ComposioToolkitAllowlist is the subset of Composio toolkit slugs this
 	// agent is allowed to mount as MCP at task dispatch — for ANY run that
 	// passes the agent's invocation permission, using the agent OWNER's
@@ -233,6 +235,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		Model:                    a.Model.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
+		AccountMode:              a.AccountMode,
+		AccountID:                uuidToString(a.AccountID),
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
 		Skills:                   []AgentSkillSummary{},
@@ -790,6 +794,10 @@ type TaskAgentData struct {
 	Model                 string                      `json:"model,omitempty"`
 	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
 	ServiceTier           string                      `json:"service_tier,omitempty"`
+	AccountMode           string                      `json:"account_mode,omitempty"`
+	AccountID             string                      `json:"account_id,omitempty"`
+	AccountEndpoint       string                      `json:"account_endpoint,omitempty"`
+	AccountCredentialRef  string                      `json:"account_credential_ref,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
@@ -1322,6 +1330,33 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// accountModeValue returns the value to pass to sqlc for account_mode, or nil
+// when unset so the column default ('default') applies.
+func modeOr(mode, def string) string {
+	if strings.TrimSpace(mode) == "" {
+		return def
+	}
+	return strings.TrimSpace(mode)
+}
+
+func accountModeValue(mode string) interface{} {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return nil
+	}
+	return mode
+}
+
+// parseUUIDOrNil returns a valid pgtype.UUID only when s parses; otherwise an
+// invalid (NULL) value.
+func parseUUIDOrNil(s string) pgtype.UUID {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return pgtype.UUID{}
+	}
+	return parseUUID(s)
+}
+
 type CreateAgentRequest struct {
 	Name                 string                     `json:"name"`
 	Description          string                     `json:"description"`
@@ -1345,6 +1380,11 @@ type CreateAgentRequest struct {
 	Model              string                     `json:"model"`
 	ThinkingLevel      string                     `json:"thinking_level"`
 	ServiceTier        string                     `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153).
+	// AccountMode: "default" | "specific" | "any". AccountID is required
+	// when mode is "specific".
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1638,6 +1678,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		AccountMode:              accountModeValue(req.AccountMode),
+		AccountID:                parseUUIDOrNil(req.AccountID),
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1744,6 +1786,10 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
+	// omitted preserves; present sets account_mode (+ account_id when specific).
+	AccountMode *string `json:"account_mode"`
+	AccountID   *string `json:"account_id"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -2251,6 +2297,26 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// account selection handling (M-153). account_mode is tri-state: omitted
+	// preserves, present sets. When mode != 'specific', account_id is cleared.
+	shouldClearAccount := false
+	if req.AccountMode != nil {
+		mode := strings.TrimSpace(*req.AccountMode)
+		if mode == "" || mode == "default" || mode == "any" {
+			params.AccountMode = pgtype.Text{String: modeOr(mode, "default"), Valid: true}
+			shouldClearAccount = true
+		} else {
+			params.AccountMode = pgtype.Text{String: mode, Valid: true}
+			if req.AccountID != nil && strings.TrimSpace(*req.AccountID) != "" {
+				params.AccountID = parseUUID(*req.AccountID)
+			}
+		}
+	}
+	if req.AccountID != nil && req.AccountMode == nil {
+		// account_id update without mode: only apply when mode is specific.
+		params.AccountID = parseUUID(*req.AccountID)
+	}
+
 	// composio_toolkit_allowlist handling (MUL-3869). Tri-state semantics
 	// mirror thinking_level (see above): omitted → no change, null →
 	// ClearAgentComposioToolkitAllowlist, slice → wholesale replace.
@@ -2385,6 +2451,23 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent composio_toolkit_allowlist failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist")
+			return
+		}
+	}
+	if shouldClearAccount {
+		mode := "default"
+		if req.AccountMode != nil {
+			if m := strings.TrimSpace(*req.AccountMode); m != "" {
+				mode = m
+			}
+		}
+		updated, err = h.Queries.ClearAgentAccount(r.Context(), db.ClearAgentAccountParams{
+			ID:          updated.ID,
+			AccountMode: pgtype.Text{String: mode, Valid: true},
+		})
+		if err != nil {
+			slog.Warn("clear agent account failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear agent account")
 			return
 		}
 	}

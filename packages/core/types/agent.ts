@@ -611,6 +611,8 @@ export interface Agent {
    * account defaults remain authoritative.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   /** Runtime-local skills this agent must not inherit. Older servers omit it. */
@@ -723,6 +725,8 @@ export interface StoredAgentDraft {
   model: string;
   thinking_level: string;
   service_tier: string;
+  account_mode?: string;
+  account_id?: string;
   skill_ids: string[];
   permission_scope: AgentPermissionScope;
   member_ids: string[];
@@ -827,6 +831,8 @@ export interface UpdateAgentRequest {
    * clears it, and a non-empty value stores a runtime-catalog ID.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
 }
 
 /**

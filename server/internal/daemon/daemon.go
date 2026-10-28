@@ -8651,6 +8651,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
 	}
+	// freebuff-desktop account injection (M-153): resolved account is layered
+	// UNDER the agent's custom_env so custom_env wins.
+	if task.Agent != nil && task.Agent.AccountMode != "default" && task.Agent.AccountMode != "" {
+		if agentCustomEnv == nil {
+			agentCustomEnv = map[string]string{}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountEndpoint); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_URL"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_URL"] = v
+			}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountCredentialRef); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = v
+			}
+		}
+	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
