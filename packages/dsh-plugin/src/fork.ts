@@ -39,6 +39,9 @@ export {
   IssueDetailRoute,
 } from "@multica/views/issues/components";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
+// The agent page's extension point, so a host-supplied section (the MOCT
+// Memory tab) rides the fork's own layout instead of a second design.
+export type { ExtraAgentSection } from "@multica/views/agents";
 export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
 export { InboxPage } from "@multica/views/inbox";
 export { ChatPage } from "@multica/views/chat";

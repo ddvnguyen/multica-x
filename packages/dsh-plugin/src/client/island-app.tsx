@@ -14,6 +14,7 @@ import {
 } from "./navigation";
 import { createIslandStorage } from "./storage";
 import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
+import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
 import {
   AgentDetailPage,
@@ -264,9 +265,12 @@ function WorkspaceGate({
  */
 function IslandPage({
   route,
+  /** The agent page's host sections (the MOCT Memory tab); absent, a stock page. */
+  extraAgentSections,
 }: {
   /** Settings is mounted by `IslandPages`; it needs props this switch lacks. */
   route: Exclude<IslandRoute, { view: "settings" }>;
+  extraAgentSections?: ReturnType<typeof createAgentMemorySections>;
 }) {
   switch (route.view) {
     case "board":
@@ -276,7 +280,12 @@ function IslandPage({
     case "agents":
       return <AgentsPage />;
     case "agent":
-      return <AgentDetailPage agentId={route.agentId} />;
+      return (
+        <AgentDetailPage
+          agentId={route.agentId}
+          extraSections={extraAgentSections}
+        />
+      );
     case "skills":
       return <SkillsPage />;
     case "skill":
@@ -323,6 +332,10 @@ export function IslandPages({
     () => createMoctGroup({ workspaceSlug: slug, workspaceId, wsPath, problem }),
     [slug, workspaceId, wsPath, problem],
   );
+  const agentMemorySections = useMemo(
+    () => createAgentMemorySections({ workspaceSlug: slug, workspaceId, wsPath, problem }),
+    [slug, workspaceId, wsPath, problem],
+  );
 
   const navigation = useMemo(
     () =>
@@ -358,7 +371,7 @@ export function IslandPages({
               hiddenTabs={HIDDEN_SETTINGS_TABS}
             />
           ) : (
-            <IslandPage route={route} />
+            <IslandPage route={route} extraAgentSections={agentMemorySections} />
           )}
         </ErrorBoundary>
       </NavigationProvider>

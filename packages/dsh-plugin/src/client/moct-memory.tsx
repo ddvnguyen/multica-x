@@ -471,7 +471,7 @@ function parseDirectory(body: unknown, entries: (value: unknown) => unknown[]): 
  * refs shown as moct sent them — a missing label is not a reason to hide a
  * record, and neither list is authoritative for anything on this page.
  */
-function useMemoryDirectory(workspaceId: string, workspaceSlug: string): MemoryDirectory {
+export function useMemoryDirectory(workspaceId: string, workspaceSlug: string): MemoryDirectory {
   const [directory, setDirectory] = useState<MemoryDirectory>({
     agents: [],
     projects: [],
