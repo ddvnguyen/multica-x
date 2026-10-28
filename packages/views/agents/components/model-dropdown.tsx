@@ -40,6 +40,8 @@ export function ModelDropdown({
   onAutomaticChange = onChange,
   disabled,
   account,
+  accounts,
+  onAccountChange,
 }: {
   runtimeId: string | null;
   runtimeOnline: boolean;

@@ -4704,47 +4704,44 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 	// once per account with that account's env, tagging each model. A failing
 	// account is logged and skipped, never failing the whole request.
 	var models []agent.Model
+	var unavailable []agent.UnavailableModel
 	fallback := false
-	runDiscovery := func(acc protocol.DaemonModelAccount) error {
-		if acc.Endpoint != "" {
-			os.Setenv("FREEBUFF_DESKTOP_URL", acc.Endpoint)
-		}
-		if acc.CredentialRef != "" {
-			os.Setenv("FREEBUFF_DESKTOP_CREDENTIAL_REF", acc.CredentialRef)
-		}
-		defer func() {
-			if acc.Endpoint != "" {
-				os.Unsetenv("FREEBUFF_DESKTOP_URL")
-			}
-			if acc.CredentialRef != "" {
-				os.Unsetenv("FREEBUFF_DESKTOP_CREDENTIAL_REF")
-			}
-		}()
+	runDiscovery := func(acc protocol.DaemonModelAccount) {
 		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
 		if err != nil {
 			d.logger.Warn("model discovery failed for account", "account", acc.ID, "error", err)
-			return err
+			return
 		}
 		if cat.Fallback {
 			fallback = true
 		}
-		seen := map[string]bool{}
-		for _, m := range models {
-			seen[m.ID] = true
+		idx := map[string]int{}
+		for i, m := range models {
+			idx[m.ID] = i
 		}
 		for _, m := range cat.Models {
-			if seen[m.ID] {
-				continue
-			}
 			m2 := m
 			if acc.ID != "" {
 				m2.AccountID = acc.ID
 				m2.AccountLabel = acc.Label
+				m2.AccountIDs = []string{acc.ID}
+				m2.AccountLabels = []string{acc.Label}
 			}
-			models = append(models, m2)
-			seen[m.ID] = true
+			if i, ok := idx[m.ID]; ok {
+				models[i].AccountIDs = appendUniqueStr(models[i].AccountIDs, acc.ID)
+				models[i].AccountLabels = appendUniqueStr(models[i].AccountLabels, acc.Label)
+				if models[i].AccountID == "" {
+					models[i].AccountID = acc.ID
+					models[i].AccountLabel = acc.Label
+				}
+			} else {
+				models = append(models, m2)
+				idx[m.ID] = len(models) - 1
+			}
 		}
-		return nil
+		for _, u := range cat.Unavailable {
+			unavailable = append(unavailable, u)
+		}
 	}
 	if len(accounts) == 0 {
 		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
@@ -4756,10 +4753,11 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 			return
 		}
 		models = cat.Models
+		unavailable = cat.Unavailable
 		fallback = cat.Fallback
 	} else {
 		for _, acc := range accounts {
-			_ = runDiscovery(acc)
+			runDiscovery(acc)
 		}
 		if len(models) == 0 && len(accounts) > 0 {
 			// all accounts failed: report failure
@@ -4862,7 +4860,14 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 		}
 		wire = append(wire, entry)
 	}
-	unavailableWire := make([]unavailableModelWire, 0)
+	unavailableWire := make([]unavailableModelWire, 0, len(unavailable))
+	for _, m := range unavailable {
+		unavailableWire = append(unavailableWire, unavailableModelWire{
+			ID:     m.ID,
+			Label:  m.Label,
+			Reason: m.Reason,
+		})
+	}
 	d.reportModelListResult(ctx, rt, requestID, map[string]any{
 		"status":    "completed",
 		"models":    wire,
@@ -10880,4 +10885,16 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+func appendUniqueStr(slice []string, v string) []string {
+	if v == "" {
+		return slice
+	}
+	for _, s := range slice {
+		if s == v {
+			return slice
+		}
+	}
+	return append(slice, v)
 }
