@@ -9,14 +9,26 @@ import {
   MULTICA_ENTRIES,
   MULTICA_PANEL_ID,
 } from "../src/client/index";
+import { resetIsland } from "../src/client/island";
 import { FAMILY_ROOTS } from "../src/client/navigation";
 import { createRailIcon, createSeatComponent } from "../src/client/seat";
 import { setUnread, startUnreadPoll } from "../src/client/unread-store";
 
 // `apply` starts the page-lifetime unread poller; stop the one it started so
 // no interval outlives this file. A repeat call returns the live stop.
-afterAll(() => {
+afterAll(async () => {
   startUnreadPoll()();
+  // `apply` also warms the island on a 200ms timer, outside act, and nothing
+  // in this file seats it. Vitest runs this file's tests as one macrotask, so
+  // that timer can only fire once this hook yields — a mount in the gap before
+  // vitest closes the jsdom environment leaves a pending react flush that
+  // fires after the close and fails the run with "window is not defined".
+  // Yield past the warm-up window, then tear the keep-alive host down the way
+  // island.test's afterEach does.
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 250);
+  await promise;
+  resetIsland();
 });
 
 interface Registration {
