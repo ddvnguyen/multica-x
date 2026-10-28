@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +35,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/dshsession"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -5194,6 +5196,44 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 
 // Task Messages (live agent output)
 
+// runtimeProviderCache caches runtimeID → provider. A runtime's provider is
+// fixed for its lifetime, so a positive entry never goes stale; misses (the
+// runtime was deleted) are not cached, letting a race with unbinding resolve
+// itself. Sized by the number of runtimes the process has ever gated on.
+var runtimeProviderCache sync.Map
+
+// taskRuntimeProvider resolves the provider of the runtime a task ran on. The
+// transcript path branches on exactly one value — "dsh" — and every other
+// value takes the legacy task_message path.
+func (h *Handler) taskRuntimeProvider(ctx context.Context, runtimeID pgtype.UUID) string {
+	if !runtimeID.Valid {
+		return ""
+	}
+	key := uuidToString(runtimeID)
+	if v, ok := runtimeProviderCache.Load(key); ok {
+		return v.(string)
+	}
+	rt, err := h.Queries.GetAgentRuntime(ctx, runtimeID)
+	if err != nil {
+		// An unresolvable runtime is treated as non-dsh: the legacy path.
+		return ""
+	}
+	provider := strings.ToLower(strings.TrimSpace(rt.Provider))
+	runtimeProviderCache.Store(key, provider)
+	return provider
+}
+
+// dshOwnedTranscript reports whether this task's transcript is owned by the
+// dsh session store: a dsh-runtime task whose transcript rows the drain path
+// sinks (M-102). The session pointer is pinned mid-run by the existing
+// PinTaskSession path, so it is the only reliable signal here.
+func (h *Handler) dshOwnedTranscript(ctx context.Context, task db.AgentTaskQueue) bool {
+	if h.taskRuntimeProvider(ctx, task.RuntimeID) != "dsh" {
+		return false
+	}
+	return task.SessionID.Valid && strings.TrimSpace(task.SessionID.String) != ""
+}
+
 type TaskMessageRequest struct {
 	// CallID is an opaque tool-call identity scoped to one backend execution.
 	CallID  string         `json:"call_id,omitempty"`
@@ -5240,6 +5280,40 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	task, wsID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
+	}
+
+	// M-102: a dsh-runtime task owns its transcript in the dsh session store
+	// the dsh surfaces read locally, so transcript frames (text / thinking /
+	// tool / error) must not become task_message rows and must not fan out as
+	// task:message events — the dsh sidebar and inspector are the viewers.
+	// The one exception is the `question` type: it is control plane, not
+	// transcript. It drives the ask/plan flow (M-109), the question inbox
+	// notification (notification_listeners.go) and the answer correlation, and
+	// it is what the parked question card renders from — so a sunk task keeps
+	// writing and publishing its questions, and nothing downstream has to know
+	// that the rest of its transcript lives elsewhere.
+	//
+	// Telegram is the consumer the verdict named explicitly: with no
+	// task:message events the outbound streamer never opens a partial message
+	// for a dsh run, and the final reply still lands through EventChatDone —
+	// nothing dangles (see integrations/telegram/outbound.go). The web live
+	// stream simply carries no progressive frames for dsh runs; the transcript
+	// dialog reads the dsh session instead, and dsh-side live-follow is
+	// M-142's slice, deliberately not this one.
+	if h.taskRuntimeProvider(r.Context(), task.RuntimeID) == "dsh" {
+		questions := make([]TaskMessageRequest, 0, len(req.Messages))
+		for _, m := range req.Messages {
+			if m.Type == "question" {
+				questions = append(questions, m)
+			}
+		}
+		if len(questions) == 0 {
+			// Still a 200: the daemon's flush treats it as delivered and the
+			// pulse keeps running; there is simply nothing to persist.
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		req.Messages = questions
 	}
 
 	// Broadcast reach is deliberately unchanged: only issue- and chat-backed
@@ -5593,6 +5667,8 @@ func (h *Handler) GetActiveTaskForIssue(w http.ResponseWriter, r *http.Request) 
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	// Run rows carry the "Open session" action for dsh-owned runs (M-102).
+	h.hydrateDshSessionURLs(r.Context(), tasks, resp)
 	// Same issue-facing attribution surface as ListTasksByIssue — hydrate names.
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
@@ -5796,6 +5872,8 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, issue.WorkspaceID, tasks, resp)
+	// Run rows carry the "Open session" action for dsh-owned runs (M-102).
+	h.hydrateDshSessionURLs(r.Context(), tasks, resp)
 	// Execution-log rows render the "on behalf of <member>" badge, so this
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
 	// one batch) — otherwise the badge falls back to "someone" on issue detail.
@@ -5810,6 +5888,41 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// hydrateDshSessionURLs stamps dsh_session_url onto the run rows whose runtime
+// is a dsh runtime with a pinned session (M-102). One batched provider lookup
+// covers the whole list — the same N+1-avoidance rule the other hydrators
+// follow. Display metadata: a lookup failure leaves every row without a link.
+func (h *Handler) hydrateDshSessionURLs(ctx context.Context, rows []db.AgentTaskQueue, resp []AgentTaskResponse) {
+	if h.dshWebURL == "" || len(resp) == 0 {
+		return
+	}
+	ids := make([]pgtype.UUID, 0, len(rows))
+	for _, t := range rows {
+		if t.RuntimeID.Valid {
+			ids = append(ids, t.RuntimeID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	runtimes, err := h.Queries.GetAgentRuntimes(ctx, ids)
+	if err != nil {
+		return
+	}
+	dshRuntime := make(map[string]bool, len(runtimes))
+	for _, rt := range runtimes {
+		if strings.EqualFold(strings.TrimSpace(rt.Provider), "dsh") {
+			dshRuntime[uuidToString(rt.ID)] = true
+		}
+	}
+	base := strings.TrimRight(h.dshWebURL, "/")
+	for i, t := range rows {
+		if t.SessionID.Valid && strings.TrimSpace(t.SessionID.String) != "" && dshRuntime[uuidToString(t.RuntimeID)] {
+			resp[i].DshSessionURL = base
+		}
+	}
 }
 
 // hydrateTaskUsage attaches each run's own token usage to the execution-log
@@ -5966,12 +6079,97 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 
 	issueID := uuidToString(task.IssueID)
 
+	// M-102: a dsh-runtime task's transcript is owned by the dsh session
+	// store, not the task_message table — the drain path sinks its frames.
+	// Render from the session when the store is configured and the session is
+	// readable, appending this task's stored rows (its questions — the only
+	// control-plane rows a sunk task writes) after the session stream, so the
+	// parked-question card still has its row. The session read is anchored
+	// after the highest row seq, keeping the stream append-only across reads:
+	// `since` paging stays meaningful while a run is in flight. Any failure to
+	// read the store (not configured, session not yet created, truncated read)
+	// falls back to the plain rows below rather than failing the dialog.
+	if h.dshOwnedTranscript(r.Context(), task) {
+		if payloads, ok := h.dshTranscriptPayloads(r.Context(), task, taskID, issueID, messages); ok {
+			writeJSON(w, http.StatusOK, payloads)
+			return
+		}
+	}
+
 	resp := make([]protocol.TaskMessagePayload, len(messages))
 	for i, m := range messages {
 		resp[i] = taskMessageToPayload(m, taskID, issueID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// dshTranscriptPayloads renders one dsh-owned task's transcript from the dsh
+// session store. ok=false means "fall back to the legacy rows" — every
+// unreadable state (store unset, invalid session pointer, unreadable session)
+// is a fallback, not an error page.
+func (h *Handler) dshTranscriptPayloads(ctx context.Context, task db.AgentTaskQueue, taskID, issueID string, rows []db.TaskMessage) ([]protocol.TaskMessagePayload, bool) {
+	if h.dshSessionStore == "" {
+		return nil, false
+	}
+	sessionID := strings.TrimSpace(task.SessionID.String)
+	if !dshsession.ValidateSessionID(sessionID) {
+		return nil, false
+	}
+	workDir := ""
+	if task.WorkDir.Valid {
+		workDir = strings.TrimSpace(task.WorkDir.String)
+	}
+	events, err := dshsession.ReadTranscript(h.dshSessionStore, workDir, sessionID)
+	if err != nil {
+		slog.Debug("dsh transcript read fell back to rows", "task_id", taskID, "error", err)
+		return nil, false
+	}
+
+	// Anchor the session stream after the highest stored row seq so both seq
+	// spaces stay disjoint and each read sees an append-only numbering.
+	base := 0
+	for _, m := range rows {
+		if int(m.Seq) > base {
+			base = int(m.Seq)
+		}
+	}
+	entries := dshsession.Translate(events)
+	if len(entries) == 0 && len(rows) == 0 {
+		return nil, false
+	}
+
+	resp := make([]protocol.TaskMessagePayload, 0, len(entries)+len(rows))
+	for _, m := range rows {
+		resp = append(resp, taskMessageToPayload(m, taskID, issueID))
+	}
+	for _, e := range entries {
+		var input map[string]any
+		if e.Input != "" {
+			_ = json.Unmarshal([]byte(e.Input), &input)
+		}
+		resp = append(resp, protocol.TaskMessagePayload{
+			TaskID:    taskID,
+			IssueID:   issueID,
+			Seq:       base + e.Seq,
+			Type:      e.Type,
+			Tool:      e.Tool,
+			CallID:    e.CallID,
+			Content:   e.Content,
+			Input:     input,
+			Output:    e.Output,
+			CreatedAt: epochMilliToRFC3339(e.CreatedAt),
+		})
+	}
+	return resp, true
+}
+
+// epochMilliToRFC3339 formats a dsh event timestamp the way task rows do.
+func epochMilliToRFC3339(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 // GetIssueUsage returns aggregated token usage for all tasks belonging to an issue.

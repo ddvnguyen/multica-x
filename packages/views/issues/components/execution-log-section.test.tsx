@@ -21,6 +21,9 @@ vi.mock("../../common/task-transcript", () => ({
   TranscriptButton: ({ title }: { title?: string }) => (
     <button type="button">{title ?? "Transcript"}</button>
   ),
+  DshSessionButton: ({ title }: { title?: string }) => (
+    <button type="button">{title ?? "Open session"}</button>
+  ),
 }));
 
 vi.mock("./terminate-task-confirm-dialog", () => ({

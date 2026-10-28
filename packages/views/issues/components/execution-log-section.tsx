@@ -18,7 +18,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { formatDuration } from "../../agents/components/agent-activity-hover-content";
-import { TranscriptButton } from "../../common/task-transcript";
+import { DshSessionButton, TranscriptButton } from "../../common/task-transcript";
 import { cancellationActorLabel, cancelReasonLabel, failureReasonLabel } from "../../agents/components/tabs/task-failure";
 import { useT } from "../../i18n";
 import { compareActiveIssueTasks } from "./active-task-order";
@@ -603,6 +603,7 @@ export function ActiveTaskRow({
             onOpenChange={onTranscriptOpenChange}
           />
         )}
+        <DshSessionButton task={task} title={t(($) => $.execution_log.open_session_tooltip)} />
         <Tooltip>
           <TooltipTrigger
             render={
@@ -717,6 +718,7 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
           </RowStatus>
           <RowActions>
             <TranscriptButton task={task} agentName="" title={t(($) => $.execution_log.transcript_tooltip)} />
+            <DshSessionButton task={task} title={t(($) => $.execution_log.open_session_tooltip)} />
             {canRetryRun(task) && <RetryRunButton task={task} issueId={issueId} />}
           </RowActions>
         </div>

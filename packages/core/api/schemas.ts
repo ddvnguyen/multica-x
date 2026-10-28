@@ -2117,6 +2117,9 @@ export const AgentTaskSchema = z.object({
   relative_work_dir: z.string().optional().catch(undefined),
   durable_work_dir: z.string().optional().catch(undefined),
   relative_durable_work_dir: z.string().optional().catch(undefined),
+  // Base URL of the dsh web app whose sidebar lists this run's session;
+  // set only for dsh-runtime tasks (dsh session store owns the transcript).
+  dsh_session_url: z.string().optional().catch(undefined),
   branch_name: z.string().optional().catch(undefined),
   attribution: TaskAttributionSchema.optional(),
   // Per-run token usage. Same independent-degradation rule as the coverage

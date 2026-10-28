@@ -423,6 +423,13 @@ export interface AgentTask {
    */
   relative_durable_work_dir?: string;
   /**
+   * Base URL of the dsh web app whose sidebar lists this run's session.
+   * Set ONLY for dsh-runtime tasks whose transcript is owned by the dsh
+   * session store; every other runtime (and older backends) omit the field
+   * entirely — render the "Open session" affordance only when present.
+   */
+  dsh_session_url?: string;
+  /**
    * Git branch this run delivered its work on. Set only by worktree-mode
    * local_directory tasks, where the agent never touches the user's working
    * copy — the branch is the only pointer to what it produced.

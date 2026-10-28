@@ -8709,11 +8709,25 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnv["REASONIX_STATE_HOME"] = reasonixStateHome
 	}
 	if provider == "dsh" {
-		dshSessionRoot, err := prepareDshTaskSessionRoot(d.cfg.Profile, task.RuntimeID, task.AgentID)
-		if err != nil {
-			return TaskResult{}, fmt.Errorf("prepare dsh session root: %w", err)
+		// M-102: with MESSAGE_SINK=dsh the transcript is owned by the dsh
+		// session store every dsh surface on this machine reads, so the
+		// session must land in that shared store — leave
+		// MULTICA_DSH_SESSION_ROOT unset and the runtime bridge's patch
+		// (MULTICA_DSH_SESSION_ROOT ?? dshHomePath('sessions')) falls back to
+		// $DSH_HOME/sessions. Resume still works: the session id is pinned
+		// mid-run and resumed by id, and prior-session eligibility keeps
+		// resolving it the same way. Without the flag the private per-
+		// runtime/agent root stays the default (capability-gated, M-97 rule 4).
+		if d.cfg.MessageSink == "dsh" {
+			taskLog.Info("dsh message sink enabled; session goes to the shared dsh store",
+				"dsh_home", os.Getenv("DSH_HOME"))
+		} else {
+			dshSessionRoot, err := prepareDshTaskSessionRoot(d.cfg.Profile, task.RuntimeID, task.AgentID)
+			if err != nil {
+				return TaskResult{}, fmt.Errorf("prepare dsh session root: %w", err)
+			}
+			agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		}
-		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
@@ -8935,8 +8949,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
-	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	// M-102: a dsh task under MESSAGE_SINK=dsh owns its transcript in the dsh
+	// session store — transcript frames are not reported (the server's
+	// drain-path gate drops them anyway, so this side only saves the bytes),
+	// and the thinking-level warning row is transcript, not control plane.
+	dshSink := provider == "dsh" && d.cfg.MessageSink == "dsh"
+	if !dshSink {
+		d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
+	}
+	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq, dshSink)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -8997,7 +9018,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// equal across the two, or the brief was not byte-stable.
 		initContext = newInitContext(provider, runtimeBrief, memoryPart, freshPrompt, memoryBlock, task)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq, dshSink)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -9461,7 +9482,7 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32, dshSink bool) (agent.Result, int32, error) {
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
@@ -9654,6 +9675,22 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			toSend := batch
 			batch = nil
 			mu.Unlock()
+
+			// M-102: under MESSAGE_SINK=dsh the transcript is owned by the dsh
+			// session store, so only the `question` rows are reported — the
+			// ask/plan flow and its inbox notification still work, and the
+			// seq counter above kept advancing so question rows stay in their
+			// true order. The server's drain-path gate enforces the same
+			// split, so a server without it still records questions only.
+			if dshSink {
+				kept := toSend[:0]
+				for _, m := range toSend {
+					if m.Type == "question" {
+						kept = append(kept, m)
+					}
+				}
+				toSend = kept
+			}
 
 			if len(toSend) > 0 {
 				sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

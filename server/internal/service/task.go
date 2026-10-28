@@ -3230,6 +3230,21 @@ func deleteUserChatInput(ctx context.Context, qtx *db.Queries, inputOwnerID pgty
 	return qtx.DeleteUserChatMessageByTask(ctx, inputOwnerID)
 }
 
+// taskTranscriptIsSessionOwned reports whether the task's transcript lives in
+// an external session store rather than in task_message rows (M-102): a dsh
+// runtime whose session pointer the daemon pinned mid-run. One runtime lookup
+// on a rare path (task cancellation finalization).
+func taskTranscriptIsSessionOwned(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue) bool {
+	if !task.RuntimeID.Valid || !task.SessionID.Valid || strings.TrimSpace(task.SessionID.String) == "" {
+		return false
+	}
+	rt, err := qtx.GetAgentRuntime(ctx, task.RuntimeID)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(rt.Provider), "dsh")
+}
+
 func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.AgentTaskQueue, opts CancelTaskOptions) *CancelledChatMessageResult {
 	if !task.ChatSessionID.Valid {
 		return nil
@@ -3246,18 +3261,11 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 		if err != nil {
 			return fmt.Errorf("list cancelled chat task messages: %w", err)
 		}
-		restorable := !hasMessages
+		// M-102: a dsh-owned task keeps its transcript in the dsh session
+		// store, so "no rows" does not mean "nothing happened" — the run may
+		// have produced a whole session. Its input is spent either way.
+		restorable := !hasMessages && !taskTranscriptIsSessionOwned(ctx, qtx, task)
 		if restorable {
-			// Channel-ingested user messages are the durable record of what
-			// the platform sender wrote — the sender has no Multica composer
-			// to restore a draft into. The gate is the immutable per-message
-			// channel_ingested stamp, NOT the channel_chat_session_binding
-			// row: archiving a session or rebinding an installation deletes
-			// the binding while the messages (and a still-cancellable task)
-			// remain. Keyed by the input-batch owner id so an auto-retry
-			// clone (which inherits chat_input_task_id) reaches the same
-			// verdict as its parent. A channel task settles as "Stopped."
-			// below instead of deleting its sealed input batch.
 			channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, chatInputOwnerID(task))
 			if err != nil {
 				return fmt.Errorf("check cancelled chat channel provenance: %w", err)
@@ -3418,7 +3426,10 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		if err != nil {
 			return fmt.Errorf("list cancelled chat task messages: %w", err)
 		}
-		restorable := !hasMessages
+		// M-102: same dsh-owned rule as finalizeCancelledChatMessage — a
+		// sunk task's transcript lives in the dsh session store, so "no rows"
+		// must not restore-delete its input.
+		restorable := !hasMessages && !taskTranscriptIsSessionOwned(ctx, qtx, claimed)
 		if restorable {
 			// Same immutable-provenance guard as finalizeCancelledChatMessage:
 			// channel tasks never restore-delete their sealed input. The sync
