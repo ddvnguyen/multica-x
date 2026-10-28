@@ -22,7 +22,7 @@ type WorkspaceAccountResponse struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
-func workspaceAccountToResponse(a db.WorkspaceAccount) WorkspaceAccountResponse {
+func workspaceAccountToResponse(a db.WorkspaceAccount, includeSecret bool) WorkspaceAccountResponse {
 	resp := WorkspaceAccountResponse{
 		ID:          uuidToString(a.ID),
 		WorkspaceID: uuidToString(a.WorkspaceID),
@@ -35,7 +35,7 @@ func workspaceAccountToResponse(a db.WorkspaceAccount) WorkspaceAccountResponse 
 	if a.Endpoint.Valid {
 		resp.Endpoint = a.Endpoint.String
 	}
-	if a.CredentialRef.Valid {
+	if includeSecret && a.CredentialRef.Valid {
 		resp.CredentialRef = a.CredentialRef.String
 	}
 	return resp
@@ -57,7 +57,7 @@ func (h *Handler) ListWorkspaceAccounts(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]WorkspaceAccountResponse, 0, len(accounts))
 	for _, a := range accounts {
-		out = append(out, workspaceAccountToResponse(a))
+		out = append(out, workspaceAccountToResponse(a, false))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
 }
@@ -68,9 +68,6 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// admin/owner only
-	if !h.requireWorkspaceAdmin(w, r, wsID) {
-		return
-	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
 	if !ok {
 		return
@@ -116,16 +113,13 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to create account")
 		return
 	}
-	writeJSON(w, http.StatusCreated, workspaceAccountToResponse(created))
+	writeJSON(w, http.StatusCreated, workspaceAccountToResponse(created, true))
 }
 
 func (h *Handler) UpdateWorkspaceAccount(w http.ResponseWriter, r *http.Request) {
 	wsID := strings.TrimSpace(chi.URLParam(r, "id"))
 	accountID := strings.TrimSpace(chi.URLParam(r, "accountId"))
 	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
-		return
-	}
-	if !h.requireWorkspaceAdmin(w, r, wsID) {
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
@@ -185,16 +179,13 @@ func (h *Handler) UpdateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	_ = wsUUID
-	writeJSON(w, http.StatusOK, workspaceAccountToResponse(updated))
+	writeJSON(w, http.StatusOK, workspaceAccountToResponse(updated, true))
 }
 
 func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request) {
 	wsID := strings.TrimSpace(chi.URLParam(r, "id"))
 	accountID := strings.TrimSpace(chi.URLParam(r, "accountId"))
 	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
-		return
-	}
-	if !h.requireWorkspaceAdmin(w, r, wsID) {
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
@@ -205,24 +196,19 @@ func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// demote dependant agents
-	_ = h.Queries.DemoteAgentsOnAccountDelete(r.Context(), accUUID)
-	// verify belongs to workspace
-	if _, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
+	// verify belongs to workspace FIRST (no cross-workspace tampering)
+	existing, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
 		ID: accUUID, WorkspaceID: wsUUID,
-	}); err != nil {
+	})
+	if err != nil || uuidToString(existing.WorkspaceID) != wsID {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
+	// demote dependant agents, then delete
+	_ = h.Queries.DemoteAgentsOnAccountDelete(r.Context(), accUUID)
 	if err := h.Queries.DeleteWorkspaceAccount(r.Context(), accUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete account")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (h *Handler) requireWorkspaceAdmin(w http.ResponseWriter, r *http.Request, wsID string) bool {
-	// best-effort: reuse member check; admin check done via middleware ideally.
-	// Here we just require membership; router should gate admin.
-	return true
 }

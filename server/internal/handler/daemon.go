@@ -2629,21 +2629,21 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 
 	resp.Agent = &TaskAgentData{
-		ID:                   uuidToString(agent.ID),
-		Name:                 agent.Name,
-		Instructions:         agent.Instructions,
-		CustomEnv:            customEnv,
+		ID:                    uuidToString(agent.ID),
+		Name:                  agent.Name,
+		Instructions:          agent.Instructions,
+		CustomEnv:             customEnv,
 		CustomArgs:            customArgs,
-		McpConfig:            mcpConfig,
-		Model:                agent.Model.String,
-		ThinkingLevel:        agent.ThinkingLevel.String,
-		ServiceTier:          agent.ServiceTier.String,
-		RuntimeConfig:        runtimeConfig,
+		McpConfig:             mcpConfig,
+		Model:                 agent.Model.String,
+		ThinkingLevel:         agent.ThinkingLevel.String,
+		ServiceTier:           agent.ServiceTier.String,
+		RuntimeConfig:         runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
-		AccountMode:          accountMode,
-		AccountID:            accountID,
-		AccountEndpoint:      accountEndpoint,
-		AccountCredentialRef: accountCredentialRef,
+		AccountMode:           accountMode,
+		AccountID:             accountID,
+		AccountEndpoint:       accountEndpoint,
+		AccountCredentialRef:  accountCredentialRef,
 	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That

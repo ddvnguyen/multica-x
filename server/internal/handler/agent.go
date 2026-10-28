@@ -119,9 +119,9 @@ type AgentResponse struct {
 	ThinkingLevel string `json:"thinking_level"`
 	// ServiceTier is the runtime-native Codex execution tier persisted for
 	// this agent (empty = inherit local Codex configuration).
-	ServiceTier  string `json:"service_tier"`
-	AccountMode  string `json:"account_mode"`
-	AccountID    string `json:"account_id,omitempty"`
+	ServiceTier string `json:"service_tier"`
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id,omitempty"`
 	// ComposioToolkitAllowlist is the subset of Composio toolkit slugs this
 	// agent is allowed to mount as MCP at task dispatch — for ANY run that
 	// passes the agent's invocation permission, using the agent OWNER's
@@ -1348,13 +1348,17 @@ func accountModeValue(mode string) interface{} {
 }
 
 // parseUUIDOrNil returns a valid pgtype.UUID only when s parses; otherwise an
-// invalid (NULL) value.
+// invalid (NULL) value. Never panics on bad input.
 func parseUUIDOrNil(s string) pgtype.UUID {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return pgtype.UUID{}
 	}
-	return parseUUID(s)
+	u, err := util.ParseUUID(s)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return u
 }
 
 type CreateAgentRequest struct {
@@ -1655,6 +1659,35 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if !canUseRuntimeForAgent(member, runtime) {
 		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
 		return
+	}
+
+	// Account selection validation (M-153).
+	mode := strings.TrimSpace(req.AccountMode)
+	if mode != "" && mode != "default" && mode != "specific" && mode != "any" {
+		writeError(w, http.StatusBadRequest, "invalid account_mode")
+		return
+	}
+	if mode == "specific" && strings.TrimSpace(req.AccountID) == "" {
+		writeError(w, http.StatusBadRequest, "account_id is required when account_mode is specific")
+		return
+	}
+	if strings.TrimSpace(req.AccountID) != "" {
+		accUUID, err := util.ParseUUID(strings.TrimSpace(req.AccountID))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid account_id")
+			return
+		}
+		acc, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
+			ID: accUUID, WorkspaceID: wsUUID,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "account not found in workspace")
+			return
+		}
+		if !acc.Enabled {
+			writeError(w, http.StatusBadRequest, "account is disabled")
+			return
+		}
 	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
@@ -2293,6 +2326,43 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 				"existing service_tier %q is not valid for runtime %q; pass service_tier=\"\" to clear or set a value valid for the new runtime",
 				existing.ServiceTier.String, provider,
 			))
+			return
+		}
+	}
+
+	// Account selection validation (M-153).
+	if req.AccountMode != nil {
+		m := strings.TrimSpace(*req.AccountMode)
+		if m != "" && m != "default" && m != "specific" && m != "any" {
+			writeError(w, http.StatusBadRequest, "invalid account_mode")
+			return
+		}
+		if m == "specific" {
+			aid := ""
+			if req.AccountID != nil {
+				aid = strings.TrimSpace(*req.AccountID)
+			}
+			if aid == "" {
+				writeError(w, http.StatusBadRequest, "account_id is required when account_mode is specific")
+				return
+			}
+		}
+	}
+	if req.AccountID != nil && strings.TrimSpace(*req.AccountID) != "" {
+		accUUID, err := util.ParseUUID(strings.TrimSpace(*req.AccountID))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid account_id")
+			return
+		}
+		acc, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
+			ID: accUUID, WorkspaceID: existing.WorkspaceID,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "account not found in workspace")
+			return
+		}
+		if !acc.Enabled {
+			writeError(w, http.StatusBadRequest, "account is disabled")
 			return
 		}
 	}

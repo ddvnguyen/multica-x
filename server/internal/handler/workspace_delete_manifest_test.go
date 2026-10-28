@@ -105,6 +105,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"member":                             workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
+	"workspace_account":                  workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
 	"pinned_item":                        workspaceDelete,
