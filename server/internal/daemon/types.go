@@ -325,8 +325,13 @@ type TaskResult struct {
 	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
 	// including the completed one: a fresh-session retry that SUCCEEDS is
 	// precisely when the abandoned id would otherwise stay selectable.
-	RetiredSessionID string           `json:"-"`
-	Usage            []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
+	RetiredSessionID string `json:"-"`
+	// InitContext is this run's per-part price of its first request (M-140).
+	// Forwarded on every terminal path and stored in the run row's result
+	// JSONB. Raw JSON because the shape is owned by internal/daemon/initctx
+	// and the server mirrors it rather than importing it.
+	InitContext json.RawMessage  `json:"-"`
+	Usage       []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.

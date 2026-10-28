@@ -146,8 +146,14 @@ func TestMoctScopeParamsSkipsEmptyBuckets(t *testing.T) {
 }
 
 func TestMoctInjectPromptSeamOff(t *testing.T) {
-	if got := moctInjectPrompt(context.Background(), "", moctTestTask(), moctTestLogger()); got != "" {
+	got, part := moctInjectPrompt(context.Background(), "", moctTestTask(), moctTestLogger())
+	if got != "" {
 		t.Errorf("seam off produced a block: %q", got)
+	}
+	// M-140: an empty memory part is a legitimate outcome, but the run row has
+	// to say WHY it is empty or a reader cannot tell it from a builder bug.
+	if part.Note == "" {
+		t.Error("a memory part with no block must still explain itself")
 	}
 }
 
@@ -162,9 +168,17 @@ func TestMoctInjectPromptFetchesAndRenders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	block := moctInjectPrompt(context.Background(), srv.URL, moctTestTask(), moctTestLogger())
+	block, part := moctInjectPrompt(context.Background(), srv.URL, moctTestTask(), moctTestLogger())
 	if !strings.Contains(block, "#### [convention] Test convention") {
 		t.Fatalf("block missing rendered entry:\n%s", block)
+	}
+	// The memory part's budget is sent to moct-be, not left to its own
+	// configured default: this is the number the 20–30 K band is built from.
+	if got := gotQuery.Get("layerTokens"); got != "6000" {
+		t.Errorf("layerTokens = %q, want the memory part's budget", got)
+	}
+	if part.Tokens <= 0 || part.Note == "" {
+		t.Errorf("memory part = %+v, want a measured size and a note", part)
 	}
 	if gotQuery.Get("workspaceId") != "multica:ws:"+moctTestWorkspaceID {
 		t.Errorf("workspaceId = %q", gotQuery.Get("workspaceId"))
@@ -195,9 +209,12 @@ func TestMoctInjectPromptSkippedWhenWorkspaceSwitchedItOff(t *testing.T) {
 	task.MoctMemoryInject = &off
 
 	var logs strings.Builder
-	block := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
+	block, part := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
 	if block != "" {
 		t.Fatalf("switch off produced a block: %q", block)
+	}
+	if !strings.Contains(part.Note, "switched the pre-run memory block off") {
+		t.Errorf("a switch-off must be named as the reason, got %q", part.Note)
 	}
 	if hits != 0 {
 		t.Fatalf("switch off still called moct-be %d time(s)", hits)
@@ -222,7 +239,7 @@ func TestMoctInjectPromptHonorsExplicitTrueAndAbsentFlag(t *testing.T) {
 	} {
 		task := moctTestTask()
 		task.MoctMemoryInject = flag
-		block := moctInjectPrompt(context.Background(), srv.URL, task, moctTestLogger())
+		block, _ := moctInjectPrompt(context.Background(), srv.URL, task, moctTestLogger())
 		if !strings.Contains(block, "#### [convention] On") {
 			t.Errorf("%s: expected a block, got %q", name, block)
 		}
@@ -256,9 +273,12 @@ func TestMoctInjectPromptDegradesWhenMoctBeDown(t *testing.T) {
 
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	block := moctInjectPrompt(context.Background(), srv.URL, moctTestTask(), logger)
+	block, part := moctInjectPrompt(context.Background(), srv.URL, moctTestTask(), logger)
 	if block != "" {
 		t.Fatalf("unreachable moct-be produced a block: %q", block)
+	}
+	if !strings.Contains(part.Note, "inject failed") {
+		t.Errorf("an outage must be named as the reason the part is empty, got %q", part.Note)
 	}
 	if !strings.Contains(logs.String(), "running without memory") {
 		t.Errorf("expected a degrade warning, got %q", logs.String())
@@ -266,9 +286,12 @@ func TestMoctInjectPromptDegradesWhenMoctBeDown(t *testing.T) {
 }
 
 func TestMoctInjectPromptDegradesOnBadBaseURL(t *testing.T) {
-	block := moctInjectPrompt(context.Background(), "not-a-url", moctTestTask(), moctTestLogger())
+	block, part := moctInjectPrompt(context.Background(), "not-a-url", moctTestTask(), moctTestLogger())
 	if block != "" {
 		t.Fatalf("invalid base URL produced a block: %q", block)
+	}
+	if part.Note == "" {
+		t.Error("a misconfigured base URL must be named as the reason the part is empty")
 	}
 }
 

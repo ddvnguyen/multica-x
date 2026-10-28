@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -179,14 +180,67 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Traecli:     writes {workDir}/AGENTS.md  (traecli reads .trae/rules/ not AGENTS.md, so the brief is delivered inline via providerNeedsInlineSystemPrompt; the file is written for parity/visibility only)
 // For Grok:        writes {workDir}/AGENTS.md  (Grok Build CLI reads AGENTS.md natively from the workdir)
 // For Qwen:        writes {workDir}/QWEN.md (Qwen Code's native context file; it also reads AGENTS.md, but QWEN.md avoids cross-runtime ambiguity)
-func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
-	content := buildMetaSkillContent(provider, ctx)
+func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (RuntimeBrief, error) {
+	content, parts := buildMetaSkillContentSlim(provider, ctx)
+	brief := RuntimeBrief{
+		Content: content,
+		SHA256:  initctx.Hash(runtimeConfigBlock(content)),
+		Parts: []initctx.PartReport{
+			{
+				Part:     initctx.PartInstructions,
+				Tokens:   initctx.EstimateBytes(parts.InstructionsBytes),
+				Budget:   initctx.Budget(initctx.PartInstructions),
+				Measured: true,
+				Note:     "identity, workspace context, command catalogue and workflow; never trimmed, overage is flagged",
+			},
+			{
+				Part:     initctx.PartSkills,
+				Tokens:   initctx.EstimateBytes(parts.SkillsBytes),
+				Budget:   initctx.Budget(initctx.PartSkills),
+				Measured: true,
+				Trimmed:  parts.Skills.trimmed,
+				Dropped:  parts.Skills.dropped,
+				Note:     parts.Skills.note,
+			},
+			{
+				Part:     initctx.PartProject,
+				Tokens:   initctx.EstimateBytes(parts.ProjectBytes),
+				Budget:   initctx.Budget(initctx.PartProject),
+				Measured: true,
+				Trimmed:  parts.ProjectTrimmed,
+				Note:     parts.ProjectNote,
+			},
+		},
+	}
 	path := runtimeConfigPath(workDir, provider)
 	if path == "" {
-		// Unknown provider — skip config injection, prompt-only mode.
-		return content, nil
+		// Unknown provider — skip config injection, prompt-only mode. The hash
+		// then fingerprints the text the backend receives inline, which is the
+		// same prefix property on a provider that reads no file.
+		brief.SHA256 = initctx.Hash(content)
+		return brief, nil
 	}
-	return content, writeRuntimeConfigFile(path, content)
+	return brief, writeRuntimeConfigFile(path, content)
+}
+
+// RuntimeBrief is the rendered runtime config plus the accounting the daemon
+// records on the run row (M-140).
+//
+// Content is exactly the text that was written; Parts describes the three parts
+// that live in this file (instructions, skills, project) with their estimated
+// tokens, and SHA256 fingerprints the managed block so two fresh sessions can be
+// proved byte-identical without a provider key.
+type RuntimeBrief struct {
+	Content string
+	Parts   []initctx.PartReport
+	SHA256  string
+}
+
+// runtimeConfigBlock is the exact managed block written into the runtime config
+// file, markers included. Inject and the prefix fingerprint share it so the hash
+// can never describe a block that was not the one written.
+func runtimeConfigBlock(brief string) string {
+	return runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
 }
 
 // runtimeConfigPath returns the absolute path to the runtime config file that
@@ -245,7 +299,7 @@ func runtimeConfigPath(workDir, provider string) string {
 // first time the agent was pointed at the user's own directory via the
 // local_directory project resource flow. See MUL-2753.
 func writeRuntimeConfigFile(path, brief string) error {
-	block := runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
+	block := runtimeConfigBlock(brief)
 
 	existing, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -402,5 +456,6 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 // legacy verbose brief; the flag has been retired (MUL-4297) and the slim brief
 // is now the only path.
 func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
-	return buildMetaSkillContentSlim(provider, ctx)
+	content, _ := buildMetaSkillContentSlim(provider, ctx)
+	return content
 }

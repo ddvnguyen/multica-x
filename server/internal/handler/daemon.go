@@ -4327,15 +4327,22 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// InitContext is the daemon's per-part price of this run's first request
+	// (M-140): the seven parts it is built from, each part's budget, whether it
+	// was trimmed, and why it is thin when it is. An object rather than a
+	// string so the run row is readable without decoding twice. Older daemons
+	// omit it, which reads as "not measured", not as "zero tokens".
+	InitContext json.RawMessage `json:"init_context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
 // caller-supplied string on a terminal task callback. Both request types are
 // flat bags of strings, so this is exhaustive by construction — but that also
 // means a NEW string field must be added here, or it reopens GH #7098 through a
-// fresh door. The task-row columns these feed (error, work_dir,
-// durable_work_dir, branch_name, session_id) are all TEXT, and result is
-// JSONB; neither tolerates a NUL.
+// fresh door. The one field that is not flat, InitContext, carries a JSONB blob
+// and goes through sanitizeEmbeddedJSON for the same reason at depth. The
+// task-row columns these feed (error, work_dir, durable_work_dir, branch_name,
+// session_id) are all TEXT, and result is JSONB; neither tolerates a NUL.
 func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.PRURL = util.SanitizeTextForPostgres(req.PRURL)
 	req.Output = util.SanitizeTextForPostgres(req.Output)
@@ -4344,6 +4351,27 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	req.InitContext = sanitizeEmbeddedJSON(req.InitContext)
+}
+
+// sanitizeEmbeddedJSON makes a caller-supplied JSONB blob safe to persist. It
+// exists because the flat-field sweep above cannot reach inside one: a NUL at
+// any depth of the embedded object aborts the whole completion with SQLSTATE
+// 22P05 exactly like a top-level one (GH #7098). A blob that does not decode is
+// dropped rather than stored — it could not be read on the run row anyway.
+func sanitizeEmbeddedJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	cleaned, err := json.Marshal(util.SanitizeJSONForPostgres(decoded))
+	if err != nil {
+		return nil
+	}
+	return cleaned
 }
 
 func sanitizeTaskFailRequest(req *TaskFailRequest) {
