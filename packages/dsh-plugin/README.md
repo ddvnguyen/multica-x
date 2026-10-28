@@ -119,6 +119,12 @@ reach dsh's document, and dsh's CSS cannot reach in. Overlays (dialogs, menus,
 tooltips, popovers) render into a portal seat inside the same shadow root, which
 is what keeps them styled and focus-trapped inside the island.
 
+Seat and host share one inline box (`SEAT_STYLE` in
+[`src/client/island.ts`](src/client/island.ts)): full width and height of the
+main column. That is what makes the island's `height: 100%` resolve against a
+definite parent, so a page fills the column instead of collapsing to its
+content height (M-143).
+
 There is no iframe and no loopback page: the board, the filters, the issue page
 and the other four views are the fork's own components, mounted under a fork
 `CoreProvider` whose `ApiClient` points at `/multica`.

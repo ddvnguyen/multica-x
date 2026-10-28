@@ -1,4 +1,4 @@
-import { attachIsland, detachIsland } from "./island";
+import { SEAT_STYLE, attachIsland, detachIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 import { attachUnreadBadge } from "./unread-store";
 
@@ -61,15 +61,6 @@ export interface SeatOptions {
   /** The entry this seat opens, and re-opens on every re-attach. */
   route: IslandRoute;
 }
-
-const SEAT_STYLE = {
-  display: "block",
-  position: "relative",
-  flex: "1 1 auto",
-  minWidth: 0,
-  minHeight: 0,
-  height: "100%",
-} as const;
 
 /**
  * The main-column seat: an empty element the island owns.

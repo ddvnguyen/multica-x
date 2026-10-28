@@ -225,6 +225,10 @@ installBackend();
 const ENTRIES: ReadonlyArray<{ id: string; label: string; route: IslandRoute }> = [
   { id: "multica", label: "Issues", route: BOARD_ROUTE },
   { id: "multica-inbox", label: "Inbox", route: FAMILY_ROOTS.inbox },
+  // The settings page is the one that made the host's missing height obvious
+  // (M-143): its tabs scroll inside the page, so a collapsed host cut it off
+  // mid-column instead of showing the first screenful.
+  { id: "multica-settings", label: "Settings", route: FAMILY_ROOTS.settings },
 ];
 
 /**
