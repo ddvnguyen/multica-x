@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>M-148 island parity harness</title>
+    <style>
+      /* The fake shell's own layout: an app column plus the overlay layer dsh
+         parks above it. Deliberately unstyled by Tailwind — everything the
+         fixtures render has to be styled by the fork's own sheet. */
+      body {
+        margin: 0;
+        /* Upstream web inherits the fork's own stack, so the reference page has
+           to as well: overlays portal to body, outside the fixture wrapper. */
+        font-family: var(--font-sans, sans-serif);
+      }
+      #stage {
+        position: absolute;
+        inset: 0;
+        overflow: auto;
+        padding: 16px;
+      }
+      #stage > * {
+        width: 100%;
+        height: 100%;
+      }
+      [data-shell-overlay] {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        pointer-events: none;
+      }
+      [data-shell-overlay] > * {
+        pointer-events: auto;
+      }
+      #shell-input {
+        position: fixed;
+        bottom: 8px;
+        left: 8px;
+        width: 160px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div data-shell-overlay></div>
+    <!-- The shell's own controls, outside the island: typing here is supposed
+         to reach the shell's shortcuts. -->
+    <input id="shell-input" aria-label="shell input" />
+    <script type="module" src="./parity.tsx"></script>
+  </body>
+</html>

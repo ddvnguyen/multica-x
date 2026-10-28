@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { islandPropertyRules } from "../scripts/island-property-rules.mjs";
 
 /**
  * The M-116 harness dev server.
@@ -13,7 +14,7 @@ import tailwindcss from "@tailwindcss/vite";
  */
 export default defineConfig({
   root: fileURLToPath(new URL("./harness", import.meta.url)),
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), islandPropertyRules()],
   server: {
     port: 4173,
     strictPort: true,

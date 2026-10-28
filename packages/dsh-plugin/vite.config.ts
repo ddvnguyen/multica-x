@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { islandPropertyRules } from "./scripts/island-property-rules.mjs";
 
 /**
  * The island bundle.
@@ -15,7 +16,7 @@ import tailwindcss from "@tailwindcss/vite";
  * wrapper uses for *element creation* on the shell side of the seat.
  */
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), islandPropertyRules()],
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
     "import.meta.env.MODE": JSON.stringify("production"),

@@ -621,6 +621,33 @@ describe("popup seat", () => {
   });
 });
 
+describe("property registration (M-148)", () => {
+  it("registers Tailwind's @property rules on the document, once, outside the shadow root", async () => {
+    stubBackend();
+    let host!: HTMLElement;
+    act(() => {
+      host = startIsland(document);
+    });
+
+    // Chromium ignores `@property` inside a shadow tree, so the rules the
+    // island's border/shadow/ring utilities read are registered on the shell's
+    // document instead — from the stylesheet the build compiled, not a copy.
+    const style = document.head.querySelector("style[data-multica-properties]");
+    expect(style?.textContent ?? "").toMatch(/@property\s+--tw-border-style/);
+
+    // The warm-up and the first rail click both start the island; the document
+    // is served once, so nothing stacks.
+    act(() => {
+      startIsland(document);
+    });
+    expect(document.querySelectorAll("style[data-multica-properties]")).toHaveLength(1);
+
+    // Still shadow-local where it belongs: the island's own sheet is unchanged.
+    expect(host.shadowRoot?.querySelector("style[data-multica-properties]")).toBeNull();
+    expect(document.querySelector("style[data-multica-styles]")).toBeNull();
+  });
+});
+
 describe("modal store", () => {
   /**
    * The fork's pages do not own their dialogs: they call

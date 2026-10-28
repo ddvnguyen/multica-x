@@ -3,7 +3,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { useModalStore } from "../fork";
 import { IslandBoot } from "./island-app";
 import { BOARD_ROUTE, islandRouteKey, type IslandRoute } from "./navigation";
-import { ISLAND_CSS, createPopupSeat } from "./popup-seat";
+import { restoreShadowFocusGuards } from "./focus-guards";
+import { ISLAND_CSS, ISLAND_PROPERTY_RULES, createPopupSeat } from "./popup-seat";
+import { installPropertyRules } from "./property-shim";
+import { swallowShellShortcuts } from "./shell-keys";
 
 /**
  * The React 19 island.
@@ -109,13 +112,16 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     attributeFilter: ["class", "data-theme"],
   });
 
-  // dsh owns document-level shortcuts. Keyboard events are composed, so a
-  // keystroke typed here would otherwise reach them and trigger shell actions
-  // mid-edit; stopping them at the island boundary keeps the shell's bindings
-  // to the shell's own surfaces.
-  for (const type of ["keydown", "keyup", "keypress"] as const) {
-    rootElement.addEventListener(type, (event) => event.stopPropagation());
-  }
+  swallowShellShortcuts(rootElement);
+  // A dialog is not a child of the page that opened it: it is portalled into
+  // this container, which sits outside the island's root (in the popup seat it
+  // is in another shadow root entirely). Guarding only the root would let every
+  // keystroke typed in a dialog's input reach the shell's shortcuts (M-148).
+  swallowShellShortcuts(portalHost);
+  // Base UI's focus trap compares `document.activeElement` with its guards; in
+  // a shadow tree that is the host, so the guards have to be reconciled here or
+  // Tab leaves the dialog through the seat (M-148).
+  restoreShadowFocusGuards(portalHost);
 
   const route = options.initialRoute ?? BOARD_ROUTE;
   const root = createRoot(rootElement);
@@ -159,6 +165,11 @@ export function startIsland(
   route: IslandRoute = BOARD_ROUTE,
 ): HTMLElement {
   if (keepAlive !== null && handles.has(keepAlive)) return keepAlive;
+  // Tailwind's `--tw-*` initial values only reach a shadow tree from the
+  // document that contains it, so they are registered here rather than in the
+  // shadow root's sheet; see `property-shim.ts`. Once per document, which makes
+  // this a no-op for every start after the first.
+  installPropertyRules(doc, ISLAND_PROPERTY_RULES);
   const host = doc.createElement("div");
   host.dataset.multicaHost = "";
   Object.assign(host.style, SEAT_STYLE);

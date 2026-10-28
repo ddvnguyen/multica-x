@@ -119,6 +119,15 @@ reach dsh's document, and dsh's CSS cannot reach in. Overlays (dialogs, menus,
 tooltips, popovers) render into a portal seat inside the same shadow root, which
 is what keeps them styled and focus-trapped inside the island.
 
+One thing a shadow root cannot carry is Tailwind v4's `@property` rules:
+Chromium does not register them from a stylesheet inside a shadow tree, so every
+utility reading an unset `--tw-*` — `border`, `shadow-*`, `ring-*`, the gradient
+stops — computes to nothing there. They are therefore extracted from the
+compiled stylesheet at build time (`scripts/island-property-rules.mjs`) and
+registered once on the shell's document by `startIsland`
+(`src/client/property-shim.ts`); registration is document-wide, so it serves the
+panel, the popup seat and any tree between them.
+
 Seat and host share one inline box (`SEAT_STYLE` in
 [`src/client/island.ts`](src/client/island.ts)): full width and height of the
 main column. That is what makes the island's `height: 100%` resolve against a
@@ -143,6 +152,7 @@ the fork and remain reachable from the Multica web app.
 ```sh
 pnpm --filter @multica/dsh-plugin build     # tsc for the host half, then the client bundle
 pnpm --filter @multica/dsh-plugin test      # proxy, gate, seat, island and storage tests
+pnpm --filter @multica/dsh-plugin test:e2e  # the Chromium harness suite (needs a Playwright browser)
 pnpm --filter @multica/dsh-plugin lint      # eslint + the fork-entry gate
 pnpm --filter @multica/dsh-plugin typecheck
 ```
@@ -150,6 +160,46 @@ pnpm --filter @multica/dsh-plugin typecheck
 `build` writes `lib/index.js` (host) and `lib/client.js` (the wrapped client
 bundle). The client bundle is generated, not hand-edited: `scripts/wrap-client.mjs`
 wraps the Vite output in the module-loader preamble dsh expects.
+
+## The parity harness
+
+`e2e/island-parity.spec.ts` is the acceptance gate for the island's UI: it
+renders the same fixtures twice, once with the fork's stylesheet in the document
+(how upstream Multica web serves it, where the browser registers Tailwind's
+`@property` rules itself) and once through the production boundary — shadow
+roots, popup seat, document-level property shim — and compares computed styles.
+Both renderings come from the same commit and the same compiled CSS, so a
+difference is the shadow-DOM defect, not version skew.
+
+`e2e/parity/targets.ts` names the surfaces and the elements judged on each one:
+board, issue page, create-issue dialog, dropdown menu, status popover, toast,
+command palette, plus a set of mechanism boxes covering `translate`/`rotate`/
+`scale`, `blur`, `ring`, gradients and `space-*` — the utilities whose values
+Tailwind v4 derives from `--tw-*` initial values. Every surface is measured in
+light and dark at 1440×1300. The toast is sonner's own recipe built from the
+same primitives: the island mounts no `Toaster`, so there is no live toast to
+compare.
+
+`e2e/island-interactions.spec.ts` covers the behaviours a style comparison
+cannot see: Escape closing only the top layer, an outside click closing a menu,
+a dialog opened from a menu closing it, Tab staying inside an open dialog, and
+keystrokes in a dialog input never reaching dsh's own shortcuts. It drives
+`/parity.html?mode=island` — the harness page with a fake shell that records what
+its document-level key handler receives.
+
+The suite found two behaviours beyond the styling:
+
+- a dialog's keystrokes reached the shell, because a dialog is portalled into the
+  popup seat rather than rendered under the panel's guard (`swallowShellShortcuts`
+  now also runs on the portal container);
+- Tab left an open dialog, because Base UI's focus guards compare
+  `document.activeElement` with themselves and inside a shadow tree that is the
+  host, so the guards never fired (`src/client/focus-guards.ts`).
+
+The harness runs against the dev server; `?mode=reference|island`, `?theme=light|dark`
+and `?shim=off` are the switches, and `?shim=off` is what
+`island-parity.spec.ts` uses to prove the gate could fail: without the shim the
+island's borders and shadows are `none` again.
 
 ## The host half ships as emitted
 

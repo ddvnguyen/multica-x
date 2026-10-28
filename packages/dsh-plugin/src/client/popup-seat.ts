@@ -1,4 +1,4 @@
-import islandCss from "./island.css?inline";
+import islandCss, * as islandStyles from "./island.css?inline";
 
 /**
  * The island's popup seat: the container overlays portal into.
@@ -32,6 +32,38 @@ export function shadowStyles(css: string): string {
 
 /** The island stylesheet, rewritten for a shadow tree. */
 export const ISLAND_CSS = shadowStyles(islandCss);
+
+/**
+ * The `@property` rules the compiled stylesheet carries, in source order.
+ *
+ * Extracted at build time from the text above
+ * (`scripts/island-property-rules.mjs`), because the shadow roots cannot
+ * register them: Chromium ignores `@property` inside a shadow tree, which is
+ * what leaves `border`, `shadow-*`, `ring-*` and the rest computing to nothing
+ * in the island. `installPropertyRules` puts them on the document instead
+ * (M-148).
+ */
+export const ISLAND_PROPERTY_RULES = readPropertyRules();
+
+/**
+ * The second export of the stylesheet module, or a loud failure when the build
+ * plugin was not registered.
+ *
+ * It cannot be a typed named import: TypeScript resolves Vite's `*?inline`
+ * declaration before any narrower pattern, so `import { propertyRules }` is a
+ * type error even though the build emits it. An empty shim is the bug this
+ * exists to fix, so a missing export throws instead of silently rendering
+ * borders and shadows as `none` again.
+ */
+function readPropertyRules(): string {
+  const { propertyRules: rules } = islandStyles as unknown as { propertyRules?: string };
+  if (typeof rules !== "string" || rules === "") {
+    throw new Error(
+      "island.css?inline carries no @property rules: register scripts/island-property-rules.mjs in this Vite config",
+    );
+  }
+  return rules;
+}
 
 /**
  * Create the popup seat in the shell's overlay layer.
