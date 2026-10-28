@@ -129,6 +129,23 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
 }
 
 /**
+ * The box the island occupies in the main column: the seat renders it and the
+ * keep-alive host carries the same one, so `height: 100%` inside the island
+ * resolves against a definite parent instead of collapsing to content height
+ * (M-143). Inline, not a `:host` rule: a normal declaration from the shell's
+ * document would beat a shadow-tree normal one, so CSS alone could be
+ * silently re-broken by a shell rule.
+ */
+export const SEAT_STYLE = {
+  display: "block",
+  position: "relative",
+  flex: "1 1 auto",
+  minWidth: 0,
+  minHeight: 0,
+  height: "100%",
+} as const;
+
+/**
  * Build the document's island, detached, and return its host.
  *
  * Called at plugin start so the first rail click already finds a warm island,
@@ -143,6 +160,7 @@ export function startIsland(
   if (keepAlive !== null && handles.has(keepAlive)) return keepAlive;
   const host = doc.createElement("div");
   host.dataset.multicaHost = "";
+  Object.assign(host.style, SEAT_STYLE);
   mountIsland(host, { initialRoute: route });
   keepAlive = host;
   return host;

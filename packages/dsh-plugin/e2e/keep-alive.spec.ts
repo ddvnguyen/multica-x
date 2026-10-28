@@ -140,3 +140,52 @@ test("keeps one popup seat in the shell's overlay layer across every move", asyn
   await expect(page.getByText(BOARD_ROW)).toBeVisible();
   await expect(page.locator("[data-multica-popup-seat]")).toHaveCount(1);
 });
+
+/**
+ * M-143: the host and the surface take the seat's box.
+ *
+ * Since #26 the host is a child of the seat and carried no style of its own,
+ * so the island's `height: 100%` resolved against an auto-height parent and
+ * collapsed to content height — the pages ended mid-column with the rest of
+ * the seat an empty band. jsdom cannot tell that from a filled column (no
+ * layout), so this measures the boxes in Chromium at two viewport heights.
+ */
+test("fills the seat with the host and the surface at every viewport height", async ({
+  page,
+}) => {
+  const close = (a: number, b: number): boolean => Math.abs(a - b) <= 1;
+
+  for (const height of [700, 1300]) {
+    await page.setViewportSize({ width: 1280, height });
+    await page.goto("/keep-alive.html");
+    await page.waitForFunction(() => (window.__islandHost?.() ?? null) !== null);
+
+    for (const rail of ["multica", "multica-inbox", "multica-settings"] as const) {
+      await clickRail(page, rail);
+      const seat = page.locator("[data-multica-panel]");
+      await expect(seat).toBeVisible();
+      // The surface lives in the host's shadow root; Playwright's CSS engine
+      // pierces open shadow trees.
+      const host = page.locator("[data-multica-host]");
+      const surface = page.locator("[data-multica-host] .multica-island-surface");
+      await expect(surface).toBeVisible();
+      // The settings page mounts its first tab, so a collapsed error
+      // boundary can not masquerade as a laid-out page. (The nav link and a
+      // hidden <option> also read "Profile"; the heading is the page's own.)
+      if (rail === "multica-settings") {
+        await expect(
+          page.getByRole("heading", { name: "Profile", exact: true }),
+        ).toBeVisible();
+      }
+
+      const seatBox = await seat.boundingBox();
+      const hostBox = await host.boundingBox();
+      const surfaceBox = await surface.boundingBox();
+      expect(seatBox?.height, `${rail} seat at ${height}px`).toBe(height);
+      expect(close(hostBox?.height ?? 0, seatBox?.height ?? 0)).toBe(true);
+      expect(close(surfaceBox?.height ?? 0, seatBox?.height ?? 0)).toBe(true);
+      expect(close(hostBox?.width ?? 0, seatBox?.width ?? 0)).toBe(true);
+      expect(close(surfaceBox?.width ?? 0, seatBox?.width ?? 0)).toBe(true);
+    }
+  }
+});
