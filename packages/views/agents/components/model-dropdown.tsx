@@ -40,8 +40,6 @@ export function ModelDropdown({
   onAutomaticChange = onChange,
   disabled,
   account,
-  accounts,
-  onAccountChange,
 }: {
   runtimeId: string | null;
   runtimeOnline: boolean;
@@ -50,12 +48,11 @@ export function ModelDropdown({
   /** Automatic value cleanup, separate from explicit user selections. */
   onAutomaticChange?: (value: string) => void;
   disabled?: boolean;
-  /** Account selector value (default | account id | all). */
+  /**
+   * Account scope of the catalog: an account id, or `all`. Omitted lists the
+   * runtime's default catalog. Chosen by `AgentAccountField`.
+   */
   account?: string;
-  /** Available accounts for the selector. */
-  accounts?: { id: string; label: string }[];
-  /** Called when the account selection changes. */
-  onAccountChange?: (value: string) => void;
 }) {
   const { t } = useT("agents");
   const queryClient = useQueryClient();
@@ -125,7 +122,7 @@ export function ModelDropdown({
 
   const refresh = () => {
     if (!runtimeId || !runtimeOnline) return;
-    void refreshRuntimeModels(queryClient, runtimeId).catch(() => {
+    void refreshRuntimeModels(queryClient, runtimeId, account).catch(() => {
       // React Query owns the error state rendered below. Swallow the returned
       // promise rejection so a failed manual refresh is not also unhandled.
     });
@@ -171,21 +168,6 @@ export function ModelDropdown({
           </span>
         )}
       </div>
-      {accounts && accounts.length > 0 && onAccountChange && (
-        <select
-          className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-body"
-          value={account ?? "default"}
-          onChange={(e) => onAccountChange(e.target.value)}
-        >
-          <option value="default">Runtime default</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.label}
-            </option>
-          ))}
-          <option value="all">All accounts</option>
-        </select>
-      )}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           disabled={disabled}

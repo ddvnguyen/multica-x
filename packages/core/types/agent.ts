@@ -1414,3 +1414,31 @@ export interface RuntimeLocalSkillImportResult {
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
 }
+
+// Per-workspace freebuff-desktop accounts (M-153). An agent on a
+// freebuff-desktop runtime runs against one account (`specific`), any enabled
+// account (`any`), or none (`default`, the runtime's own configuration).
+// `credential_ref` is a daemon-local reference, never a secret, and the server
+// only returns it to workspace owners and admins.
+export type AgentAccountMode = "default" | "specific" | "any";
+
+export interface WorkspaceAccount {
+  id: string;
+  workspace_id: string;
+  provider: string;
+  label: string;
+  endpoint?: string;
+  enabled: boolean;
+  credential_ref?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWorkspaceAccountRequest {
+  label: string;
+  endpoint?: string;
+  credential_ref?: string;
+  enabled?: boolean;
+}
+
+export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;

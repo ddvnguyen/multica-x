@@ -37,6 +37,7 @@ export function ModelPicker({
   canEdit = true,
   variant = "chip",
   showLabel = true,
+  account,
   onChange,
 }: {
   runtimeId: string | null;
@@ -46,6 +47,8 @@ export function ModelPicker({
   canEdit?: boolean;
   variant?: "chip" | "field";
   showLabel?: boolean;
+  /** Account scope of the catalog (an account id or `all`); see `AgentAccountField`. */
+  account?: string;
   onChange: (next: string) => Promise<void> | void;
 }) {
   const { t } = useT("agents");
@@ -54,7 +57,7 @@ export function ModelPicker({
   const [search, setSearch] = useState("");
 
   const modelsQuery = useQuery(
-    runtimeModelsOptions(runtimeOnline ? runtimeId : null),
+    runtimeModelsOptions(runtimeOnline ? runtimeId : null, account),
   );
   const supported = modelsQuery.data?.supported ?? true;
   // Memoise the model list so every downstream useMemo gets a stable
@@ -96,7 +99,7 @@ export function ModelPicker({
 
   const refresh = () => {
     if (!runtimeId || !runtimeOnline) return;
-    void refreshRuntimeModels(queryClient, runtimeId).catch(() => {
+    void refreshRuntimeModels(queryClient, runtimeId, account).catch(() => {
       // React Query retains the last catalog and owns the error state. Avoid
       // turning a failed button action into an unhandled promise rejection.
     });

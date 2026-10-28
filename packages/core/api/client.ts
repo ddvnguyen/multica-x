@@ -48,6 +48,9 @@ import type {
   WorkspaceWorkingAgentType,
   AgentRuntime,
   RuntimeProfile,
+  WorkspaceAccount,
+  CreateWorkspaceAccountRequest,
+  UpdateWorkspaceAccountRequest,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
   InboxItem,
@@ -2490,6 +2493,40 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
       { method: "DELETE" },
     );
+  }
+
+  async listWorkspaceAccounts(workspaceId: string): Promise<WorkspaceAccount[]> {
+    const res = await this.fetch<{ accounts?: WorkspaceAccount[] }>(
+      `/api/workspaces/${workspaceId}/accounts`,
+    );
+    return res.accounts ?? [];
+  }
+
+  async createWorkspaceAccount(
+    workspaceId: string,
+    body: CreateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(`/api/workspaces/${workspaceId}/accounts`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkspaceAccount(
+    workspaceId: string,
+    accountId: string,
+    patch: UpdateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(
+      `/api/workspaces/${workspaceId}/accounts/${accountId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  async deleteWorkspaceAccount(workspaceId: string, accountId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/accounts/${accountId}`, {
+      method: "DELETE",
+    });
   }
 
   async getRuntimeUsage(

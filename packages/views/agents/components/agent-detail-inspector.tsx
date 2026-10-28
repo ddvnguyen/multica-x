@@ -13,8 +13,13 @@ import {
   AGENT_MAX_CONCURRENT_TASKS_MIN,
 } from "@multica/core/agents";
 import {
+  accountModelScope,
+  accountRequestFields,
+  agentAccountSelection,
   isRuntimeUsableForUser,
   runtimeModelsOptions,
+  runtimeSupportsAccounts,
+  type AgentAccountSelection,
 } from "@multica/core/runtimes";
 import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
@@ -30,6 +35,7 @@ import { useAutoSave } from "../../settings/components/use-auto-save";
 import { useT } from "../../i18n";
 import { CharCounter } from "./char-counter";
 import { ModelPicker } from "./inspector/model-picker";
+import { AgentAccountField, useAgentAccountOptions } from "./agent-account-field";
 import {
   buildModelChangeUpdate,
   type ModelCatalog,
@@ -126,8 +132,10 @@ export function AgentDetailInspector({
   // Same query the Thinking / Speed fields already use, so switching model
   // costs no extra request. `null` = not authoritative (offline runtime, still
   // loading, or discovery failed) and must not trigger any clearing.
+  const accountSelection = agentAccountSelection(agent);
+  const accountScope = accountModelScope(accountSelection);
   const modelsQuery = useQuery(
-    runtimeModelsOptions(canDiscoverRuntimeModels ? agent.runtime_id : null),
+    runtimeModelsOptions(canDiscoverRuntimeModels ? agent.runtime_id : null, accountScope),
   );
   const modelCatalog = useMemo<ModelCatalog>(
     () =>
@@ -254,16 +262,29 @@ export function AgentDetailInspector({
               // Model, thinking level, and service tier are runtime/model
               // native. Clear them together so the new runtime resolves its
               // own defaults instead of inheriting incompatible tokens.
+              // Accounts only exist on freebuff-desktop runtimes, and the
+              // server rejects an account on any other one, so moving to a
+              // runtime that cannot run accounts drops the selection.
               onChange={(id) =>
                 update({
                   runtime_id: id,
                   model: "",
                   thinking_level: "",
                   service_tier: "",
+                  ...(accountSelection.mode !== "default" &&
+                  !runtimeSupportsAccounts(runtimes.find((r) => r.id === id)?.provider)
+                    ? accountRequestFields({ mode: "default", accountId: "" })
+                    : {}),
                 })
               }
             />
           </SettingsRow>
+          <AgentAccountRow
+            runtimeProvider={runtime?.provider}
+            value={accountSelection}
+            disabled={!canEdit}
+            onChange={(next) => update(accountRequestFields(next))}
+          />
           <SettingsRow
             label={t(($) => $.inspector.prop_model)}
             size="select-wide"
@@ -275,6 +296,7 @@ export function AgentDetailInspector({
               runtimeOnline={canDiscoverRuntimeModels}
               value={agent.model ?? ""}
               canEdit={canEdit}
+              account={accountScope}
               onChange={handleModelChange}
             />
           </SettingsRow>
@@ -313,6 +335,51 @@ export function AgentDetailInspector({
         </SettingsCard>
       </SettingsSection>
     </div>
+  );
+}
+
+/**
+ * The account row exists only for runtimes that can run accounts. It is its
+ * own component so the workspace account query (and the workspace context it
+ * needs) is touched only then, and so the row hides together with its field.
+ */
+function AgentAccountRow({
+  runtimeProvider,
+  ...rest
+}: {
+  runtimeProvider: string | undefined;
+  value: AgentAccountSelection;
+  disabled: boolean;
+  onChange: (next: AgentAccountSelection) => void;
+}) {
+  if (!runtimeSupportsAccounts(runtimeProvider)) return null;
+  return <AgentAccountRowBody runtimeProvider={runtimeProvider} {...rest} />;
+}
+
+function AgentAccountRowBody({
+  runtimeProvider,
+  value,
+  disabled,
+  onChange,
+}: {
+  runtimeProvider: string | undefined;
+  value: AgentAccountSelection;
+  disabled: boolean;
+  onChange: (next: AgentAccountSelection) => void;
+}) {
+  const { t } = useT("agents");
+  const { selectable } = useAgentAccountOptions(runtimeProvider);
+  if (selectable.length === 0 && value.mode === "default") return null;
+  return (
+    <SettingsRow label={t(($) => $.account_field.label)} size="select-wide">
+      <AgentAccountField
+        runtimeProvider={runtimeProvider}
+        value={value}
+        disabled={disabled}
+        showLabel={false}
+        onChange={onChange}
+      />
+    </SettingsRow>
   );
 }
 

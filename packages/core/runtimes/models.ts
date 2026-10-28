@@ -4,8 +4,12 @@ import type { RuntimeModelsResult } from "../types/agent";
 
 export const runtimeModelsKeys = {
   all: () => ["runtimes", "models"] as const,
+  // The default (account-less) catalog keeps the bare runtime key so existing
+  // lookups and invalidations of it are unchanged; an account scope extends it.
   forRuntime: (runtimeId: string, account?: string) =>
-    [...runtimeModelsKeys.all(), runtimeId, account ?? "default"] as const,
+    account
+      ? ([...runtimeModelsKeys.all(), runtimeId, account] as const)
+      : ([...runtimeModelsKeys.all(), runtimeId] as const),
 };
 
 const POLL_INTERVAL_MS = 500;
@@ -71,8 +75,13 @@ export async function resolveRuntimeModels(
 ): Promise<RuntimeModelsResult> {
   const initial =
     options.force === true
-      ? await api.initiateListModels(runtimeId, { force: true, account: options.account })
-      : await api.initiateListModels(runtimeId, { account: options.account });
+      ? await api.initiateListModels(runtimeId, {
+          force: true,
+          ...(options.account ? { account: options.account } : {}),
+        })
+      : options.account
+        ? await api.initiateListModels(runtimeId, { account: options.account })
+        : await api.initiateListModels(runtimeId);
   const start = Date.now();
   let current = initial;
   while (current.status === "pending" || current.status === "running") {
