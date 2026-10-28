@@ -1688,6 +1688,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "account is disabled")
 			return
 		}
+		if acc.Provider != "freebuff-desktop" {
+			writeError(w, http.StatusBadRequest, "account provider mismatch")
+			return
+		}
 	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{

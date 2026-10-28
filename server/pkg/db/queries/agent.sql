@@ -164,6 +164,11 @@ UPDATE agent SET composio_toolkit_allowlist = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
+-- name: SetAgentTaskQueueAccount :one
+UPDATE agent_task_queue SET account_id = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: ClearAgentAccount :one
 -- Explicit NULL-clear for account_id (and reset mode to 'default'). Used
 -- when account_mode moves away from 'specific'.

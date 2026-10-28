@@ -2627,6 +2627,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if accountMode == "" {
 		accountMode = "default"
 	}
+	// Persist the resolved account on the queue row (M-153).
+	if accountID != "" && accountMode != "default" {
+		if accUUID, err := util.ParseUUID(accountID); err == nil {
+			_, _ = h.Queries.SetAgentTaskQueueAccount(r.Context(), db.SetAgentTaskQueueAccountParams{
+				ID:        task.ID,
+				AccountID: accUUID,
+			})
+		}
+	}
 
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),

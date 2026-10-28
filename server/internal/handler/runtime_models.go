@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,6 +59,7 @@ const (
 type ModelListRequest struct {
 	ID        string          `json:"id"`
 	RuntimeID string          `json:"runtime_id"`
+	Account   string          `json:"account,omitempty"`
 	Status    ModelListStatus `json:"status"`
 	Models    []ModelEntry    `json:"models,omitempty"`
 	// UnavailableModels is advisory display copy, never a source of pickable
@@ -169,7 +171,7 @@ const (
 // implementation can honour the heartbeat-side timeout that gates a
 // slow shared store from stalling the rest of the heartbeat.
 type ModelListStore interface {
-	Create(ctx context.Context, runtimeID string) (*ModelListRequest, error)
+	Create(ctx context.Context, runtimeID, account string) (*ModelListRequest, error)
 	Get(ctx context.Context, id string) (*ModelListRequest, error)
 	// HasPending is a cheap read-only probe used by the heartbeat hot path
 	// to gate the side-effecting PopPending. A spurious "true" is fine —
@@ -219,7 +221,7 @@ func NewInMemoryModelListStore() *InMemoryModelListStore {
 	return &InMemoryModelListStore{requests: make(map[string]*ModelListRequest)}
 }
 
-func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID string) (*ModelListRequest, error) {
+func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID, account string) (*ModelListRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -234,6 +236,7 @@ func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID string) (*M
 	req := &ModelListRequest{
 		ID:        randomID(),
 		RuntimeID: runtimeID,
+		Account:   account,
 		Status:    ModelListPending,
 		// Default to true; the daemon overrides this in the report
 		// for providers that don't support per-agent model selection.
@@ -351,7 +354,7 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolvedRuntimeID := uuidToString(rt.ID)
-
+	account := strings.TrimSpace(r.URL.Query().Get("account"))
 	if r.URL.Query().Get("force") != "true" {
 		if cached := h.cachedModelCatalog(r.Context(), resolvedRuntimeID); cached != nil {
 			age := cached.Age(time.Now())
@@ -378,7 +381,7 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	req, err := h.ModelListStore.Create(r.Context(), resolvedRuntimeID)
+	req, err := h.ModelListStore.Create(r.Context(), resolvedRuntimeID, account)
 	if err != nil {
 		slog.Warn("enqueue model list request failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue model list request")
@@ -429,7 +432,7 @@ func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID string) 
 	if pending {
 		return
 	}
-	if _, err := h.ModelListStore.Create(ctx, runtimeID); err != nil {
+	if _, err := h.ModelListStore.Create(ctx, runtimeID, ""); err != nil {
 		slog.Debug("model catalog revalidate enqueue failed", "error", err, "runtime_id", runtimeID)
 		return
 	}

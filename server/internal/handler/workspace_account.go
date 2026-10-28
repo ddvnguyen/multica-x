@@ -204,10 +204,21 @@ func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	// demote dependant agents, then delete
-	_ = h.Queries.DemoteAgentsOnAccountDelete(r.Context(), accUUID)
-	if err := h.Queries.DeleteWorkspaceAccount(r.Context(), accUUID); err != nil {
+	// demote dependant agents, then delete — in one transaction.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	_ = qtx.DemoteAgentsOnAccountDelete(r.Context(), accUUID)
+	if err := qtx.DeleteWorkspaceAccount(r.Context(), accUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
