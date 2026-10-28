@@ -117,6 +117,7 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
 
 - Discovery runs account by account (sequentially), so `all` takes the sum of
   the per-account times.
-- The lease is claim-time only; two daemons racing the same claim are
-  serialised by the existing task claim, not by the lease.
+- The lease is a check at claim time, not a held lock: two claims for the same
+  idle account in the same instant can both pass it. The bridge's own
+  single-run handling is the backstop.
 - DB-backed handler tests (CRUD authz, validation, lease) run in CI only.
