@@ -1100,13 +1100,13 @@ func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
 				t.Fatalf("seed: %v", err)
 			}
 
-			content, err := InjectRuntimeConfig(dir, tc.provider, TaskContextForEnv{
+			brief, err := InjectRuntimeConfig(dir, tc.provider, TaskContextForEnv{
 				IssueID: "11111111-2222-3333-4444-555555555555",
 			})
 			if err != nil {
 				t.Fatalf("InjectRuntimeConfig: %v", err)
 			}
-			if content == "" {
+			if brief.Content == "" {
 				t.Fatalf("returned brief content must be non-empty")
 			}
 

@@ -3,7 +3,9 @@ package execenv
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 )
@@ -439,19 +441,33 @@ func writeRepositories(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("\n")
 }
 
+// projectDescriptionMaxBytes bounds the project description in the brief. The
+// project part's budget is 3 K tokens (~12 KB); 8 KiB leaves room for the title,
+// the resource list and its trailer, which must never be cut — they carry the
+// checkout targets the task depends on.
+const projectDescriptionMaxBytes = 8 << 10
+
 // writeProjectContext emits the Project Context section when the task carries
 // an active project. Project context is independent of the task surface: an
 // issue inherits it from its project, while a chat receives it from the
 // project selected on the chat session.
-func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
+//
+// The description is owner-authored prose of unbounded length, so it is the one
+// field here that can blow the part's budget on its own. It is cut at a byte
+// cap on a rune boundary and marked trimmed; the resources are never cut.
+func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) (trimmed bool) {
 	if ctx.ProjectID == "" && len(ctx.ProjectResources) == 0 {
-		return
+		return false
 	}
 	b.WriteString("## Project Context\n\n")
 	if ctx.ProjectTitle != "" {
 		fmt.Fprintf(b, "The active project for this task is **%s**.\n\n", ctx.ProjectTitle)
 	}
 	if desc := strings.TrimSpace(ctx.ProjectDescription); desc != "" {
+		if len(desc) > projectDescriptionMaxBytes {
+			desc = truncateOnRuneBoundary(desc, projectDescriptionMaxBytes) + "…"
+			trimmed = true
+		}
 		b.WriteString("Project description — durable context the project owner set for work in this project:\n\n")
 		b.WriteString(desc)
 		b.WriteString("\n\n")
@@ -467,6 +483,21 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 	} else {
 		b.WriteString("This project has no resources attached yet.\n\n")
 	}
+	return trimmed
+}
+
+// truncateOnRuneBoundary cuts s to at most max bytes without splitting a UTF-8
+// sequence. A byte cap is the right unit here because the budget is expressed
+// in bytes; a rune-aware cut is what keeps the result valid UTF-8 in a JSONB
+// value and in the file the runtime reads.
+func truncateOnRuneBoundary(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 // writeInstructionPrecedence emits the "Agent Identity wins over the issue
@@ -666,45 +697,164 @@ func builtinSlug(skills []SkillContextForEnv, name string) (string, bool) {
 	return "", false
 }
 
-// writeSkills emits the Skills section: an index of invocable skill names.
+// skillDescriptionMaxRunes is the first cap tried when a runtime renders skill
+// descriptions into the brief. It is generous on purpose: the cap exists to
+// bound a pathological description, not to abbreviate a normal one.
+const skillDescriptionMaxRunes = 200
+
+// skillDescriptionCaps are tried in order until the skills part fits its
+// budget. The last one is short enough that a description still says what the
+// skill is for while costing a fraction of a line.
+var skillDescriptionCaps = []int{skillDescriptionMaxRunes, 120, 64}
+
+// writeSkills emits the Skills section: an index of invocable skill names, plus
+// descriptions when this runtime's brief is the model's skill index.
 //
-// Names only, deliberately. Every runtime CLI discovers the SKILL.md files the
-// daemon writes and builds its own listing from their frontmatter, so repeating
-// the descriptions here bought a second, more expensive copy of what the model
-// already had — measured at ~3,100 tokens per brief on a real task, 40% of the
-// whole brief — and no extra routing signal (MUL-5529).
+// Names only is the default, deliberately. Every runtime CLI discovers the
+// SKILL.md files the daemon writes and builds its own listing from their
+// frontmatter, so repeating the descriptions here bought a second, more
+// expensive copy of what the model already had — measured at ~3,100 tokens per
+// brief on a real task, 40% of the whole brief — and no extra routing signal
+// (MUL-5529).
 //
 // The index itself stays because it is the one skill listing Multica controls.
 // Each CLI's own listing is theirs: its format, and whether it exists at all,
 // can change with any release.
 //
-// There is no per-provider branch. The old fallback told providers outside a
-// hardcoded list to read `.agent_context/skills/`, which was the wrong path for
+// dsh is the exception (M-140). Its brief is measured as one of the seven init
+// parts, and names alone make that part 238 tokens — the thinnest of the seven
+// and the only one with content available to grow it. The descriptions are
+// therefore rendered for dsh only, capped so the part cannot run away, and
+// dropped from the tail (names always survive) if even the shortest cap does
+// not fit. Every other runtime's bytes are unchanged, which is the property the
+// byte-equality test pins.
+//
+// There is no per-provider path branch. The old fallback told providers outside
+// a hardcoded list to read `.agent_context/skills/`, which was the wrong path for
 // every provider that actually reached it — grok and traecli write to
 // `.grok/skills` and `.traecli/skills` — while both discover natively and never
 // needed the pointer.
-func writeSkills(b *strings.Builder, ctx TaskContextForEnv) {
+func writeSkills(b *strings.Builder, ctx TaskContextForEnv, withDescriptions bool) skillWriteResult {
 	skills := modelVisibleSkills(ctx.AgentSkills)
 	if len(skills) == 0 {
+		return skillWriteResult{note: "no skills installed"}
+	}
+	var head strings.Builder
+	head.WriteString("## Skills\n\n")
+	head.WriteString("You have the following skills installed (discovered automatically):\n\n")
+	for _, skill := range skills {
+		fmt.Fprintf(&head, "- **%s**\n", skill.Name)
+	}
+	head.WriteString("\n")
+	platformSlug, _ := builtinSlug(skills, platformSkillName)
+
+	if !withDescriptions {
+		b.WriteString(head.String())
+		writeSkillRecallHint(b, platformSlug)
+		return skillWriteResult{note: "names only: this runtime's CLI lists its own descriptions"}
+	}
+
+	// Render descriptions under the tightest rule that fits the budget. The
+	// first fit wins, so the result is a pure function of the skill set.
+	for _, cap := range skillDescriptionCaps {
+		body := renderSkillDescriptions(skills, len(skills), cap)
+		if initctx.EstimateBytes(head.Len()+len(body)) <= initctx.BudgetSkills {
+			b.WriteString(head.String())
+			b.WriteString(body)
+			writeSkillRecallHint(b, platformSlug)
+			note := fmt.Sprintf("%d skills, descriptions capped at %d runes", len(skills), cap)
+			return skillWriteResult{trimmed: cap < skillDescriptionMaxRunes, note: note}
+		}
+	}
+	// Even the shortest cap overflows: keep names for everything, and
+	// descriptions for as many leading skills as fit. The tail loses only its
+	// description, never its name, and every loss is named.
+	shortest := skillDescriptionCaps[len(skillDescriptionCaps)-1]
+	for keep := len(skills) - 1; keep >= 0; keep-- {
+		body := renderSkillDescriptions(skills, keep, shortest)
+		if initctx.EstimateBytes(head.Len()+len(body)) > initctx.BudgetSkills {
+			continue
+		}
+		b.WriteString(head.String())
+		b.WriteString(body)
+		writeSkillRecallHint(b, platformSlug)
+		dropped := make([]string, 0, len(skills)-keep)
+		for _, skill := range skills[keep:] {
+			dropped = append(dropped, skill.Name)
+		}
+		return skillWriteResult{
+			trimmed: true,
+			dropped: dropped,
+			note:    fmt.Sprintf("%d skills; descriptions dropped for %d to stay inside the budget", len(skills), len(dropped)),
+		}
+	}
+	// Names alone overflow the budget. That is a workspace with an implausible
+	// number of skills; render the index anyway and say so rather than dropping
+	// skills the model can otherwise invoke.
+	b.WriteString(head.String())
+	writeSkillRecallHint(b, platformSlug)
+	dropped := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		dropped = append(dropped, skill.Name)
+	}
+	return skillWriteResult{
+		trimmed: true,
+		dropped: dropped,
+		note:    fmt.Sprintf("%d skill names alone exceed the budget; all descriptions dropped", len(skills)),
+	}
+}
+
+// skillWriteResult is what writeSkills did, for the init-context report.
+type skillWriteResult struct {
+	trimmed bool
+	dropped []string
+	note    string
+}
+
+// renderSkillDescriptions renders up to keep entries with a description,
+// followed by names only for the rest. Descriptions are collapsed to one line
+// and cut at cap runes so a multi-paragraph SKILL.md description cannot turn the
+// index into a second copy of the skill.
+func renderSkillDescriptions(skills []SkillContextForEnv, keep, cap int) string {
+	var b strings.Builder
+	for i, skill := range skills {
+		if i >= keep {
+			continue
+		}
+		desc := skillDescriptionLine(skill.Description, cap)
+		if desc == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "- **%s** — %s\n", skill.Name, desc)
+	}
+	return b.String()
+}
+
+// skillDescriptionLine flattens a description to a single line and bounds it.
+func skillDescriptionLine(desc string, cap int) string {
+	desc = strings.Join(strings.Fields(desc), " ")
+	if desc == "" {
+		return ""
+	}
+	runes := []rune(desc)
+	if len(runes) <= cap {
+		return desc
+	}
+	return strings.TrimRight(string(runes[:cap]), " ") + "…"
+}
+
+// writeSkillRecallHint emits the one recall line for the platform skill, which
+// is the only listed skill whose trigger is "the platform itself" rather than a
+// task the agent already knows it is doing. Its single description covers eight
+// domains that used to advertise one apiece, so an agent reaching for a Multica
+// contract has one name to guess instead of eight — this line is what keeps that
+// consolidation from costing recall, and it must therefore name the skill that
+// actually holds those contracts.
+func writeSkillRecallHint(b *strings.Builder, platformSlug string) {
+	if platformSlug == "" {
 		return
 	}
-	b.WriteString("## Skills\n\n")
-	b.WriteString("You have the following skills installed (discovered automatically):\n\n")
-	for _, skill := range skills {
-		fmt.Fprintf(b, "- **%s**\n", skill.Name)
-	}
-	b.WriteString("\n")
-	platformSlug, _ := builtinSlug(skills, platformSkillName)
-	// One recall hint for the platform skill, because it is the only listed
-	// skill whose trigger is "the platform itself" rather than a task the
-	// agent already knows it is doing. Its single description now covers eight
-	// domains that used to advertise one apiece, so an agent reaching for a
-	// Multica contract has one name to guess instead of eight — this line is
-	// what keeps that consolidation from costing recall, and it must therefore
-	// name the skill that actually holds those contracts.
-	if platformSlug != "" {
-		b.WriteString("For a Multica platform action this brief does not fully cover — issue and PR contracts, mentions, agents, squads, autopilots, projects, runtimes, skill import — load the `" + platformSlug + "` skill and open the reference(s) its routing table names for the domains your task touches.\n\n")
-	}
+	b.WriteString("For a Multica platform action this brief does not fully cover — issue and PR contracts, mentions, agents, squads, autopilots, projects, runtimes, skill import — load the `" + platformSlug + "` skill and open the reference(s) its routing table names for the domains your task touches.\n\n")
 }
 
 // writeMentions emits the @mention side-effects section (compressed).
@@ -866,7 +1016,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Requesting User, Workspace Context, Connected Apps,
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
-func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
+func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) (string, briefParts) {
 	var b strings.Builder
 	kind := classifyTask(ctx)
 
@@ -897,7 +1047,9 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 		writeRepositories(&b, ctx)
 	}
 
-	writeProjectContext(&b, ctx)
+	projectStart := b.Len()
+	projectTrimmed := writeProjectContext(&b, ctx)
+	projectEnd := b.Len()
 
 	if kind == kindIssue {
 		writeInstructionPrecedence(&b)
@@ -922,7 +1074,9 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	// Every kind, quick-create included. Quick-create used to be skipped here
 	// and carried its own names-only index in the workdir sidecar instead;
 	// that sidecar is gone (MUL-6984) and the brief is the single index.
-	writeSkills(&b, ctx)
+	skillsStart := b.Len()
+	skills := writeSkills(&b, ctx, skillDescriptionsFor(provider))
+	skillsEnd := b.Len()
 
 	if kind == kindIssue {
 		writeMentions(&b)
@@ -932,5 +1086,55 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeAlwaysUseCLI(&b)
 	writeOutput(&b, kind, ctx)
 
-	return b.String()
+	content := b.String()
+	projectBytes := projectEnd - projectStart
+	skillsBytes := skillsEnd - skillsStart
+	return content, briefParts{
+		InstructionsBytes: len(content) - projectBytes - skillsBytes,
+		SkillsBytes:       skillsBytes,
+		ProjectBytes:      projectBytes,
+		Skills:            skills,
+		ProjectTrimmed:    projectTrimmed,
+		ProjectNote:       projectNote(ctx, projectTrimmed),
+	}
+}
+
+// briefParts is the accounting buildMetaSkillContentSlim produces alongside the
+// brief. The three brief-resident parts are recorded by byte range rather than
+// by re-rendering, so the numbers describe exactly the bytes that were written:
+// the brief is assembled in one pass and each part is a contiguous slice of it.
+type briefParts struct {
+	InstructionsBytes int
+	SkillsBytes       int
+	ProjectBytes      int
+	Skills            skillWriteResult
+	ProjectTrimmed    bool
+	ProjectNote       string
+}
+
+// skillDescriptionsFor reports whether this runtime's brief carries skill
+// descriptions. Only dsh: see writeSkills for why it is the exception and why
+// every other runtime must keep its existing bytes.
+func skillDescriptionsFor(provider string) bool {
+	return provider == "dsh"
+}
+
+// projectNote explains a thin project part. The part is thin for one of three
+// reasons and the run row has to say which, or the reader cannot tell an empty
+// project from a dropped block.
+func projectNote(ctx TaskContextForEnv, trimmed bool) string {
+	switch {
+	case trimmed:
+		// The part is short BECAUSE content was cut, which is the opposite
+		// conclusion from "the project has little to say". Say it first.
+		return "the project description was cut to stay inside this part's budget; the title and resources are intact"
+	case ctx.ProjectID == "" && len(ctx.ProjectResources) == 0:
+		return "no project on this task"
+	case strings.TrimSpace(ctx.ProjectDescription) == "" && len(ctx.ProjectResources) == 0:
+		return "project has no description and no resources"
+	case strings.TrimSpace(ctx.ProjectDescription) == "":
+		return "project has no description; resources only"
+	default:
+		return "project context is short because the project description is short"
+	}
 }

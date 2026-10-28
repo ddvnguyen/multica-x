@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -56,12 +57,35 @@ type persistedTerminalTaskReport struct {
 	FailureReason         string    `json:"failure_reason,omitempty"`
 	SessionRolloutMissing bool      `json:"session_rollout_missing,omitempty"`
 	RetiredSessionID      string    `json:"retired_session_id,omitempty"`
+	// InitContext is the run's per-part price of its first request (M-140),
+	// stored as the object it was so a replayed callback reports the same
+	// context facts as the original attempt.
+	InitContext json.RawMessage `json:"init_context,omitempty"`
 
 	PermanentRejectionCount   int        `json:"permanent_rejection_count,omitempty"`
 	FirstPermanentRejectionAt *time.Time `json:"first_permanent_rejection_at,omitempty"`
 	LastPermanentRejectionAt  *time.Time `json:"last_permanent_rejection_at,omitempty"`
 	LastPermanentStatus       int        `json:"last_permanent_status,omitempty"`
 	QuarantinedAt             *time.Time `json:"quarantined_at,omitempty"`
+}
+
+// sameTerminalReport compares two reports field by field. terminalTaskReport
+// stopped being comparable when initContext — a byte slice — joined it, and
+// every caller here means "is this the same payload", not "is this the same
+// allocation", so the embedded JSON is compared by value.
+func sameTerminalReport(a, b terminalTaskReport) bool {
+	return a.kind == b.kind &&
+		a.taskID == b.taskID &&
+		a.output == b.output &&
+		a.branchName == b.branchName &&
+		a.errorMessage == b.errorMessage &&
+		a.sessionID == b.sessionID &&
+		a.workDir == b.workDir &&
+		a.durableWorkDir == b.durableWorkDir &&
+		a.failureReason == b.failureReason &&
+		a.sessionRolloutMissing == b.sessionRolloutMissing &&
+		a.retiredSessionID == b.retiredSessionID &&
+		bytes.Equal(a.initContext, b.initContext)
 }
 
 type pendingTerminalTaskReport struct {
@@ -146,6 +170,7 @@ func persistedTerminalReport(report terminalTaskReport, createdAt time.Time) (pe
 		FailureReason:         report.failureReason,
 		SessionRolloutMissing: report.sessionRolloutMissing,
 		RetiredSessionID:      report.retiredSessionID,
+		InitContext:           report.initContext,
 	}, nil
 }
 
@@ -177,6 +202,7 @@ func (record persistedTerminalTaskReport) terminalReport() (terminalTaskReport, 
 		failureReason:         record.FailureReason,
 		sessionRolloutMissing: record.SessionRolloutMissing,
 		retiredSessionID:      record.RetiredSessionID,
+		initContext:           record.InitContext,
 	}, nil
 }
 
@@ -227,7 +253,7 @@ func (s *terminalReportStore) enqueue(report terminalTaskReport) error {
 		if decodeErr != nil {
 			return fmt.Errorf("existing terminal report %s is invalid: %w", name, decodeErr)
 		}
-		if existingReport != report {
+		if !sameTerminalReport(existingReport, report) {
 			return fmt.Errorf("terminal report for task %s conflicts with the original pending payload", report.taskID)
 		}
 		return nil
@@ -382,7 +408,7 @@ func (s *terminalReportStore) recoverTempFiles(entries []os.DirEntry) error {
 				continue
 			}
 			existingReport, decodeErr := existing.terminalReport()
-			if decodeErr != nil || existingReport != report {
+			if decodeErr != nil || !sameTerminalReport(existingReport, report) {
 				errs = append(errs, fmt.Errorf("interrupted terminal report %s conflicts with existing payload", name))
 				continue
 			}
@@ -472,7 +498,7 @@ func (s *terminalReportStore) recordPermanentRejection(item pendingTerminalTaskR
 	if err != nil {
 		return false, fmt.Errorf("validate rejected terminal report: %w", err)
 	}
-	if item.fileName != terminalReportFileName(report.taskID) || report != item.report {
+	if item.fileName != terminalReportFileName(report.taskID) || !sameTerminalReport(report, item.report) {
 		return false, errors.New("rejected terminal report no longer matches queued payload")
 	}
 
@@ -507,7 +533,7 @@ func (s *terminalReportStore) recordPermanentRejection(item pendingTerminalTaskR
 			return false, fmt.Errorf("existing failed terminal report is unreadable: %w", decodeErr)
 		}
 		existingReport, decodeErr := existing.terminalReport()
-		if decodeErr != nil || existingReport != report {
+		if decodeErr != nil || !sameTerminalReport(existingReport, report) {
 			return false, errors.New("failed terminal report conflicts with queued payload")
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/moct"
 )
 
@@ -35,26 +36,49 @@ import (
 // tools. It is a bare TOML key, which Codex's config writer requires.
 const moctMemoryServerName = "moct"
 
-// moctInjectPrompt fetches and renders the pre-run memory block for task.
+// moctInjectPrompt fetches and renders the pre-run memory block for task, and
+// reports the memory part of the run's init-context row.
 //
 // Returns "" when the seam is off on this daemon, the workspace switched the
 // pre-run block off (S2-C, M-123), or anything went wrong — the caller simply
 // does not add the prompt option, and the task prompt is then byte-identical to
 // what it was before this feature existed.
-func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *slog.Logger) string {
+//
+// The part report is returned on EVERY path, including the empty ones: a run
+// with no memory is a legitimate outcome, but "no memory because the workspace
+// turned it off" and "no memory because moct-be was down" are different facts
+// and the run row has to say which one happened (M-140).
+func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *slog.Logger) (string, initctx.PartReport) {
 	if strings.TrimSpace(baseURL) == "" {
-		return ""
+		return "", initctx.PartReport{
+			Part:     initctx.PartMemory,
+			Measured: true,
+			Note:     "MOCT seam is off on this daemon (no moct base URL); no memory was injected",
+		}
 	}
 	// The switch only ever subtracts. A nil flag is a claim from a server that
 	// predates it (or a workspace read that failed on the server side), and the
 	// run then gets memory exactly as it did before the switch existed.
 	if task.MoctMemoryInject != nil && !*task.MoctMemoryInject {
-		return ""
+		return "", initctx.PartReport{
+			Part:     initctx.PartMemory,
+			Measured: true,
+			Note:     "the workspace switched the pre-run memory block off (S2-C, M-123)",
+		}
 	}
 	params, ok := moctScopeParams(task)
 	if !ok {
-		return ""
+		return "", initctx.PartReport{
+			Part:     initctx.PartMemory,
+			Measured: true,
+			Note:     "task carries no workspace or agent identity, so there is no memory scope to read",
+		}
 	}
+	// Cap the block at the memory part's budget instead of accepting whatever
+	// moct-be's own configured inject budget happens to be: this is the number
+	// the band is built from, and leaving it implicit is what let the first
+	// request drift unpriced (M-140).
+	params.LayerTokens = initctx.BudgetMemory
 	client, err := moct.NewClient(moct.Config{BaseURL: baseURL})
 	if err != nil {
 		// A URL that cannot even be parsed is a configuration bug, not an
@@ -63,7 +87,11 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 			logger.Warn("moct: base URL invalid; running without memory",
 				"base_url", baseURL, "error", err)
 		}
-		return ""
+		return "", initctx.PartReport{
+			Part:     initctx.PartMemory,
+			Measured: true,
+			Note:     "this daemon's moct base URL does not parse; the run went without memory",
+		}
 	}
 	injection, err := client.Inject(ctx, params)
 	if err != nil {
@@ -71,9 +99,32 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 			logger.Warn("moct: pre-run inject failed; running without memory",
 				"task_id", task.ID, "error", err)
 		}
-		return ""
+		return "", initctx.PartReport{
+			Part:     initctx.PartMemory,
+			Measured: true,
+			Note:     "moct pre-run inject failed; the run went without memory",
+		}
 	}
-	return renderMoctInjectBlock(injection)
+	block := renderMoctInjectBlock(injection)
+	return block, moctMemoryPart(block, injection)
+}
+
+// moctMemoryPart is the memory row for a run. An empty block is reported with
+// the reason moct-be gave (or its silence), and a non-empty one names any
+// records that were deferred so the row does not read as "this is all the
+// memory there is".
+func moctMemoryPart(block string, injection *moct.Injection) initctx.PartReport {
+	part := initctx.PartReport{Part: initctx.PartMemory, Measured: true, Tokens: initctx.Estimate(block)}
+	if injection == nil || len(injection.Entries) == 0 {
+		part.Note = "moct returned no entries for this run's scope"
+		return part
+	}
+	note := fmt.Sprintf("%d entries at moct-be's inject budget of %d tokens", len(injection.Entries), initctx.BudgetMemory)
+	if injection.Omitted > 0 || len(injection.Index) > 0 {
+		note += fmt.Sprintf("; %d records were deferred to the moct MCP tools", injection.Omitted)
+	}
+	part.Note = note
+	return part
 }
 
 // moctScopeParams builds the D2 refs of one claimed task. A task with no

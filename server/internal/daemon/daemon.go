@@ -273,6 +273,10 @@ type terminalTaskReport struct {
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
 	retiredSessionID string
+	// initContext is the run's per-part price of its first request (M-140),
+	// already marshalled. Carried through the outbox so a replayed callback
+	// reports the same context facts as the original attempt.
+	initContext json.RawMessage
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -6247,6 +6251,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			durableWorkDir:        result.DurableWorkDir,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			initContext:           result.InitContext,
 		})
 		if err == nil {
 			return
@@ -6291,6 +6296,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			failureReason:         failureReason,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			initContext:           result.InitContext,
 		}); err != nil {
 			taskLog.Error("report failed task failed", "error", err)
 		}
@@ -6390,7 +6396,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.initContext, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -8539,8 +8545,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// own BuildPrompt reuses the same block instead of fetching a second time.
 	// Any failure — moct-be down, slow or 5xx — logs and continues WITHOUT
 	// memory: nothing on this path may fail or stall a task.
-	if moctBlock := moctInjectPrompt(ctx, d.cfg.MoctBaseURL, task, taskLog); moctBlock != "" {
-		promptOptions = append(promptOptions, WithMoctInject(moctBlock))
+	memoryBlock, memoryPart := moctInjectPrompt(ctx, d.cfg.MoctBaseURL, task, taskLog)
+	if memoryBlock != "" {
+		promptOptions = append(promptOptions, WithMoctInject(memoryBlock))
 	}
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
@@ -8823,7 +8830,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepending the full runtime brief into the ACP user prompt duplicates that
 	// context and bloats every turn.
 	if providerNeedsInlineSystemPrompt(provider) {
-		execOpts.SystemPrompt = runtimeBrief
+		execOpts.SystemPrompt = runtimeBrief.Content
 	}
 
 	// A quick-actions refresh task from a server that predates server-side
@@ -8846,6 +8853,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
+	// M-140: price the first request part by part, now that this run is certain
+	// to send one. The report rides the terminal callback into the run row, so a
+	// run outside the 20–30 K band carries its own explanation instead of
+	// needing a second investigation. Registered as a deferred assignment so
+	// every terminal path — completed, blocked, timed out — reports it.
+	initContext := newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task)
+	defer func() { taskResult.InitContext = marshalInitContext(initContext) }()
+
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
 		WorkspaceID: task.WorkspaceID,
 		TaskID:      task.ID,
@@ -8923,10 +8938,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		} else {
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
-				execOpts.SystemPrompt = runtimeBrief
+				execOpts.SystemPrompt = runtimeBrief.Content
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		// The retry sends a different first request (cold brief, continuity
+		// notice), so the report has to describe THAT one, not the poisoned
+		// attempt's. The prefix hash is the check that matters: it must come out
+		// equal across the two, or the brief was not byte-stable.
+		initContext = newInitContext(provider, runtimeBrief, memoryPart, freshPrompt, memoryBlock, task)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
