@@ -79,7 +79,7 @@ surface.append(rootElement);
 shadow.append(style, surface);
 
 const seat = createPopupSeat(document);
-if (seat === null) {
+if (seat.element.parentElement?.hasAttribute("data-shell-overlay") !== true) {
   throw new Error("harness requires a [data-shell-overlay] layer");
 }
 
