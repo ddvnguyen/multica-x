@@ -45,6 +45,7 @@ import { HealthBadge } from "./shared";
 import { ProviderLogo } from "./provider-logo";
 import { UsageSection } from "./usage-section";
 import { FreebuffAccountCard } from "./freebuff-account-card";
+import { WorkspaceAccountsCard } from "./workspace-accounts-card";
 import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import {
   RevokeRuntimeAccessDialog,
@@ -202,6 +203,9 @@ export function RuntimeDetail({
               daemonShort={daemonShort}
             />
             {canReadRuntime && <FreebuffAccountCard runtime={runtime} />}
+            {canReadRuntime && (
+              <WorkspaceAccountsCard runtime={runtime} canManage={isAdmin} />
+            )}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 
