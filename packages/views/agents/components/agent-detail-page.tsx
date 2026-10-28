@@ -62,15 +62,25 @@ import { PAGE_GUTTER, PAGE_RAIL, PageHeader } from "../../layout/page-header";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AgentPresenceIndicator } from "./agent-presence-indicator";
 import { VisibilityBadge } from "./visibility-badge";
-import { AgentOverviewPane, type DetailTab } from "./agent-overview-pane";
-import { ExpandableDescription } from "../../common/expandable-description";
-import { useT, useTimeAgo } from "../../i18n";
+import {
+  AgentOverviewPane,
+  type DetailTab,
+  type ExtraAgentSection,
+} from "./agent-overview-pane";
 
 interface AgentDetailPageProps {
   agentId: string;
+  /** Sections a host appends beside Settings — the same discipline as
+   *  `SettingsPage.extraGroups`: the web app passes nothing, so upstream
+   *  behavior (and upstream merges) stay untouched. */
+  extraSections?: readonly ExtraAgentSection[];
 }
+import { ExpandableDescription } from "../../common/expandable-description";
+import { useT, useTimeAgo } from "../../i18n";
 
-export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
+
+
+export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
@@ -421,6 +431,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
           canEdit={canEdit.allowed}
           navIntent={tabNavIntent}
           onNavIntentHandled={() => setTabNavIntent(null)}
+          extraSections={extraSections}
         />
       </div>
 

@@ -165,11 +165,12 @@ export async function callJson<T>(
  * different answers, and a page that quietly renders zeros for a dead service
  * is worse than one that says it is down.
  */
-export function useSeamRead<T>(path: string, parse: (body: unknown) => T) {
+export function useSeamRead<T>(path: string, parse: (body: unknown) => T, enabled = true) {
   const [attempt, setAttempt] = useState(0);
   const [load, setLoad] = useState<Load<T>>({ state: "loading" });
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     setLoad({ state: "loading" });
     void callJson(path, parse).then((answer) => {
@@ -183,7 +184,7 @@ export function useSeamRead<T>(path: string, parse: (body: unknown) => T) {
     return () => {
       cancelled = true;
     };
-  }, [path, parse, attempt]);
+  }, [path, parse, attempt, enabled]);
 
   return [load, () => setAttempt((current) => current + 1)] as const;
 }
