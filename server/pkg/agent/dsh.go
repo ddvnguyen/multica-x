@@ -484,8 +484,9 @@ type dshRunState struct {
 	// inbox_state correlation (M-134 amendment). A buffered channel carries the
 	// most recent matching frame; pendingInbox names the command currently
 	// awaiting an ack so stale frames are ignored.
-	inboxStateCh chan dshInboxState
-	pendingInbox string
+	inboxStateCh    chan dshInboxState
+	pendingInbox   string
+	inboxStartedAt time.Time
 }
 
 type dshInboxState struct {
@@ -519,9 +520,10 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 	case "inbox_state":
 		state.mu.Lock()
 		pending := state.pendingInbox
+		started := state.inboxStartedAt
 		ch := state.inboxStateCh
 		state.mu.Unlock()
-		if pending != "" && ch != nil && frame.Command == pending {
+		if pending != "" && ch != nil && frame.Command == pending && !time.Now().Before(started) {
 			select {
 			case ch <- dshInboxState{Command: frame.Command, State: frame.State, Reason: frame.Reason}:
 			default:
@@ -701,18 +703,7 @@ func dshSupplement(state *dshRunState, instruction, mode string, ctx context.Con
 	state.mu.Lock()
 	if state.pendingCallID != "" {
 		state.mu.Unlock()
-		err := answerDshQuestion(state, instruction)
-		if err != nil {
-			state.mu.Lock()
-			state.pendingInbox = ""
-			state.mu.Unlock()
-			return err
-		}
-		err = waitForDshInboxState(state, "answer", ctx)
-		state.mu.Lock()
-		state.pendingInbox = ""
-		state.mu.Unlock()
-		return err
+		return answerDshQuestion(state, instruction)
 	}
 	var capable bool
 	if mode == "queue" {
@@ -730,6 +721,11 @@ func dshSupplement(state *dshRunState, instruction, mode string, ctx context.Con
 			return errors.New("dsh runtime bridge predates question answers (no `questions` capability in its ready frame)")
 		}
 		return errors.New("no question is pending on this dsh run")
+	}
+	state.inboxStartedAt = time.Now()
+	// Drain stale frames from any previous command.
+	for len(state.inboxStateCh) > 0 {
+		<-state.inboxStateCh
 	}
 	state.pendingInbox = mode
 	state.mu.Unlock()
@@ -809,7 +805,6 @@ func answerDshQuestion(state *dshRunState, instruction string) error {
 		return errors.New("dsh answer writer is unavailable")
 	}
 	content := dshSupplementContent(instruction)
-	state.pendingInbox = "answer"
 	answers := make([]dshAnswerItem, 0, len(state.pendingQuestions))
 	for _, question := range state.pendingQuestions {
 		item := dshAnswerItem{ID: question.ID, Selected: []string{}, Custom: content}

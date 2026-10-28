@@ -250,6 +250,13 @@ func (h *Handler) CreateTaskSupplement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "mode must be steer or queue")
 		return
 	}
+	if req.Mode == "queue" {
+		runtime, err := h.Queries.GetAgentRuntime(r.Context(), task.RuntimeID)
+		if err != nil || runtime.Provider != "dsh" {
+			writeError(w, http.StatusBadRequest, "queue mode is only supported for dsh runtimes")
+			return
+		}
+	}
 	requestID, ok := parseUUIDOrBadRequest(w, req.ClientRequestID, "client_request_id")
 	if !ok {
 		return
