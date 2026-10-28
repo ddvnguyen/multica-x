@@ -65,3 +65,23 @@
   z-index: 60;
   pointer-events: auto;
 }
+
+/* A popup that has closed must leave the screen.
+ *
+ * Base UI keeps a closed popup mounted until its exit animation reports
+ * `finished`, then unmounts it in one `flushSync`; inside the island's shadow
+ * root that completion never arrives, so the node stays in the portal
+ * container for good, marked `data-closed` (menus also keep
+ * `data-ending-style`). The exit animation does run — `exit 0.15s` is on the
+ * popup — but it carries no retained end state, so the popup snaps back to
+ * opacity 1 and stays painted: the tooltip that will not go away, the filter
+ * menu that covers the list after Esc (M-146).
+ *
+ * Hiding the closed state here is what makes "closed" mean closed regardless
+ * of whether that unmount ever lands. It costs the fade — the popup disappears
+ * on the frame it closes — and that is the right trade: a fade is decoration,
+ * a popup you cannot dismiss is a broken panel. Scoped to the portal container
+ * so `data-closed` on anything else in the island keeps its own meaning. */
+.multica-island-portals [data-closed] {
+  display: none !important;
+}
