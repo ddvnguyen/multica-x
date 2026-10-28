@@ -35,6 +35,8 @@ type Model struct {
 	ID                                  string             `json:"id"`
 	Label                               string             `json:"label"`
 	Provider                            string             `json:"provider,omitempty"`
+	AccountID                           string             `json:"account_id,omitempty"`
+	AccountLabel                        string             `json:"account_label,omitempty"`
 	Default                             bool               `json:"default,omitempty"`
 	ServiceTiers                        []ModelServiceTier `json:"service_tiers,omitempty"`
 	SupportsExplicitStandardServiceTier bool               `json:"supports_explicit_standard_service_tier,omitempty"`

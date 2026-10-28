@@ -99,6 +99,8 @@ type ModelEntry struct {
 	ID                                  string             `json:"id"`
 	Label                               string             `json:"label"`
 	Provider                            string             `json:"provider,omitempty"`
+	AccountID                           string             `json:"account_id,omitempty"`
+	AccountLabel                        string             `json:"account_label,omitempty"`
 	Default                             bool               `json:"default,omitempty"`
 	Thinking                            *ModelThinking     `json:"thinking,omitempty"`
 	ServiceTiers                        []ModelServiceTier `json:"service_tiers,omitempty"`
@@ -355,11 +357,16 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	resolvedRuntimeID := uuidToString(rt.ID)
 	account := strings.TrimSpace(r.URL.Query().Get("account"))
+	accountKey := account
+	if accountKey == "" {
+		accountKey = "default"
+	}
+	cacheKey := resolvedRuntimeID + ":" + accountKey
 	if r.URL.Query().Get("force") != "true" {
-		if cached := h.cachedModelCatalog(r.Context(), resolvedRuntimeID); cached != nil {
+		if cached := h.cachedModelCatalog(r.Context(), cacheKey); cached != nil {
 			age := cached.Age(time.Now())
 			if age >= modelCatalogRevalidateAfter {
-				h.revalidateModelCatalog(r.Context(), resolvedRuntimeID)
+				h.revalidateModelCatalog(r.Context(), resolvedRuntimeID, account)
 			}
 			storedAt := cached.StoredAt
 			writeJSON(w, http.StatusOK, &ModelListRequest{
@@ -420,7 +427,7 @@ func (h *Handler) cachedModelCatalog(ctx context.Context, runtimeID string) *Mod
 // two opens in the same second can enqueue two refreshes — bounded, cheap
 // (the daemon memoizes discovery for 60s), and strictly better than the
 // alternative of never refreshing.
-func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID string) {
+func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID, account string) {
 	if h.ModelListStore == nil {
 		return
 	}
@@ -432,7 +439,7 @@ func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID string) 
 	if pending {
 		return
 	}
-	if _, err := h.ModelListStore.Create(ctx, runtimeID, ""); err != nil {
+	if _, err := h.ModelListStore.Create(ctx, runtimeID, account); err != nil {
 		slog.Debug("model catalog revalidate enqueue failed", "error", err, "runtime_id", runtimeID)
 		return
 	}
@@ -559,14 +566,20 @@ func (h *Handler) ReportModelListResult(w http.ResponseWriter, r *http.Request) 
 		// models are a static stand-in, so they are neither fresh truth to
 		// store nor grounds to discard a real catalog we already hold. Treat it
 		// like a failure and leave the cache untouched (MUL-5549).
+		cacheKey := runtimeID
+		if existing.Account != "" {
+			cacheKey = runtimeID + ":" + existing.Account
+		} else {
+			cacheKey = runtimeID + ":default"
+		}
 		if h.ModelCatalogCache != nil {
 			switch modelCatalogCacheDecision(body.Models, supported, body.Fallback) {
 			case modelCatalogCacheStore:
-				if err := h.ModelCatalogCache.Put(r.Context(), runtimeID, body.Models, body.UnavailableModels, supported); err != nil {
+				if err := h.ModelCatalogCache.Put(r.Context(), cacheKey, body.Models, body.UnavailableModels, supported); err != nil {
 					slog.Warn("model catalog cache write failed", "error", err, "runtime_id", runtimeID)
 				}
 			case modelCatalogCacheDrop:
-				if err := h.ModelCatalogCache.Invalidate(r.Context(), runtimeID); err != nil {
+				if err := h.ModelCatalogCache.Invalidate(r.Context(), cacheKey); err != nil {
 					slog.Warn("model catalog cache invalidate failed", "error", err, "runtime_id", runtimeID)
 				}
 			case modelCatalogCacheKeep:

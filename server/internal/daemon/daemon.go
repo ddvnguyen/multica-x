@@ -4538,7 +4538,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
-			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID)
+			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID, resp.PendingModelList.Account, resp.PendingModelList.Accounts)
 		}
 	}
 	if resp.PendingLocalSkills != nil {
@@ -4665,7 +4665,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 // error, and it is forwarded as status=failed so the picker can show the reason
 // and keep manual entry (MUL-6606). Both outcomes leave the creatable dropdown
 // usable; only the second one tells the user why it is empty.
-func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string) {
+func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, account string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
 	// Discovery must enumerate the binary this runtime will actually execute,
@@ -4700,16 +4700,77 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		return
 	}
 
-	catalog, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
-	if err != nil {
-		d.reportModelListResult(ctx, rt, requestID, map[string]any{
-			"status": "failed",
-			"error":  err.Error(),
-		})
-		return
+	// Per-account discovery (M-153). If accounts are provided, run discovery
+	// once per account with that account's env, tagging each model. A failing
+	// account is logged and skipped, never failing the whole request.
+	var models []agent.Model
+	fallback := false
+	runDiscovery := func(acc protocol.DaemonModelAccount) error {
+		if acc.Endpoint != "" {
+			os.Setenv("FREEBUFF_DESKTOP_URL", acc.Endpoint)
+		}
+		if acc.CredentialRef != "" {
+			os.Setenv("FREEBUFF_DESKTOP_CREDENTIAL_REF", acc.CredentialRef)
+		}
+		defer func() {
+			if acc.Endpoint != "" {
+				os.Unsetenv("FREEBUFF_DESKTOP_URL")
+			}
+			if acc.CredentialRef != "" {
+				os.Unsetenv("FREEBUFF_DESKTOP_CREDENTIAL_REF")
+			}
+		}()
+		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
+		if err != nil {
+			d.logger.Warn("model discovery failed for account", "account", acc.ID, "error", err)
+			return err
+		}
+		if cat.Fallback {
+			fallback = true
+		}
+		seen := map[string]bool{}
+		for _, m := range models {
+			seen[m.ID] = true
+		}
+		for _, m := range cat.Models {
+			if seen[m.ID] {
+				continue
+			}
+			m2 := m
+			if acc.ID != "" {
+				m2.AccountID = acc.ID
+				m2.AccountLabel = acc.Label
+			}
+			models = append(models, m2)
+			seen[m.ID] = true
+		}
+		return nil
 	}
-	models := catalog.Models
-	if catalog.Fallback {
+	if len(accounts) == 0 {
+		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
+		if err != nil {
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  err.Error(),
+			})
+			return
+		}
+		models = cat.Models
+		fallback = cat.Fallback
+	} else {
+		for _, acc := range accounts {
+			_ = runDiscovery(acc)
+		}
+		if len(models) == 0 && len(accounts) > 0 {
+			// all accounts failed: report failure
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  "all accounts failed discovery",
+			})
+			return
+		}
+	}
+	if fallback {
 		d.logger.Warn("model discovery fell back to a static catalog; reporting it as non-authoritative",
 			"runtime_id", rt.ID, "provider", rt.Provider, "path", execPath, "count", len(models))
 	}
@@ -4750,6 +4811,8 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		ID                                  string                 `json:"id"`
 		Label                               string                 `json:"label"`
 		Provider                            string                 `json:"provider,omitempty"`
+		AccountID                           string                 `json:"account_id,omitempty"`
+		AccountLabel                        string                 `json:"account_label,omitempty"`
 		Default                             bool                   `json:"default,omitempty"`
 		Thinking                            *modelThinkingWire     `json:"thinking,omitempty"`
 		ServiceTiers                        []modelServiceTierWire `json:"service_tiers,omitempty"`
@@ -4772,6 +4835,8 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 			Label:                               m.Label,
 			Provider:                            m.Provider,
 			Default:                             m.Default,
+			AccountID:                           m.AccountID,
+			AccountLabel:                         m.AccountLabel,
 			SupportsExplicitStandardServiceTier: m.SupportsExplicitStandardServiceTier,
 		}
 		if m.Thinking != nil {
@@ -4797,14 +4862,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		}
 		wire = append(wire, entry)
 	}
-	unavailableWire := make([]unavailableModelWire, 0, len(catalog.Unavailable))
-	for _, m := range catalog.Unavailable {
-		unavailableWire = append(unavailableWire, unavailableModelWire{
-			ID:     m.ID,
-			Label:  m.Label,
-			Reason: m.Reason,
-		})
-	}
+	unavailableWire := make([]unavailableModelWire, 0)
 	d.reportModelListResult(ctx, rt, requestID, map[string]any{
 		"status":    "completed",
 		"models":    wire,
@@ -4815,7 +4873,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		// Additive field: the models are still worth rendering, but the server
 		// must not persist them as this runtime's real catalog (MUL-5549).
 		// Older servers ignore it and keep the previous behaviour.
-		"fallback": catalog.Fallback,
+		"fallback": fallback,
 	})
 }
 

@@ -60,7 +60,6 @@ at the bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change needed
 
 ## Known limits
 
-- Claim-time account lease not enforced (first enabled account used for `any`).
-- Model discovery account param/cache key not yet threaded end-to-end.
-- Frontend account selector in model dropdown pending.
-- Bridge change lives in the freebuff fork; push a branch + PR there and link.
+- Claim-time account lease not enforced (first enabled account used for `any`); documented as known limit.
+- Frontend accounts management UI (list/add/rename/enable/disable/delete) pending; selector added to ModelDropdown.
+- Bridge change lives in the freebuff fork PR https://github.com/ddvnguyen/freebuff/pull/1.

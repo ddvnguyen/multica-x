@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -8,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 type WorkspaceAccountResponse struct {
@@ -222,4 +225,52 @@ func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func resolveModelAccounts(ctx context.Context, q *db.Queries, runtimeID, account string) []protocol.DaemonModelAccount {
+	rt, err := q.GetAgentRuntime(ctx, parseUUID(runtimeID))
+	if err != nil {
+		return nil
+	}
+	wsID := rt.WorkspaceID
+	provider := "freebuff-desktop"
+	if account == "" || account == "default" {
+		return nil
+	}
+	if account == "all" {
+		accs, err := q.ListWorkspaceAccountsByProvider(ctx, db.ListWorkspaceAccountsByProviderParams{
+			WorkspaceID: wsID,
+			Provider:    provider,
+		})
+		if err != nil {
+			return nil
+		}
+		out := make([]protocol.DaemonModelAccount, 0, len(accs))
+		for _, a := range accs {
+			if !a.Enabled {
+				continue
+			}
+			out = append(out, protocol.DaemonModelAccount{
+				ID:            uuidToString(a.ID),
+				Label:         a.Label,
+				Endpoint:      a.Endpoint.String,
+				CredentialRef:  a.CredentialRef.String,
+			})
+		}
+		return out
+	}
+	accUUID, err := util.ParseUUID(account)
+	if err != nil {
+		return nil
+	}
+	acc, err := q.GetWorkspaceAccount(ctx, accUUID)
+	if err != nil || uuidToString(acc.WorkspaceID) != uuidToString(wsID) || !acc.Enabled {
+		return nil
+	}
+	return []protocol.DaemonModelAccount{{
+		ID:            uuidToString(acc.ID),
+		Label:         acc.Label,
+		Endpoint:      acc.Endpoint.String,
+		CredentialRef:  acc.CredentialRef.String,
+	}}
 }

@@ -4,8 +4,8 @@ import type { RuntimeModelsResult } from "../types/agent";
 
 export const runtimeModelsKeys = {
   all: () => ["runtimes", "models"] as const,
-  forRuntime: (runtimeId: string) =>
-    [...runtimeModelsKeys.all(), runtimeId] as const,
+  forRuntime: (runtimeId: string, account?: string) =>
+    [...runtimeModelsKeys.all(), runtimeId, account ?? "default"] as const,
 };
 
 const POLL_INTERVAL_MS = 500;
@@ -67,12 +67,12 @@ export const MODELS_GC_TIME_MS = 30 * 60_000;
 // window past what the server itself promises.
 export async function resolveRuntimeModels(
   runtimeId: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; account?: string } = {},
 ): Promise<RuntimeModelsResult> {
   const initial =
     options.force === true
-      ? await api.initiateListModels(runtimeId, { force: true })
-      : await api.initiateListModels(runtimeId);
+      ? await api.initiateListModels(runtimeId, { force: true, account: options.account })
+      : await api.initiateListModels(runtimeId, { account: options.account });
   const start = Date.now();
   let current = initial;
   while (current.status === "pending" || current.status === "running") {
@@ -119,12 +119,15 @@ export function staleTimeFor(data: RuntimeModelsResult | undefined): number {
   return data.cached ? 0 : LIVE_MODELS_STALE_TIME_MS;
 }
 
-export function runtimeModelsOptions(runtimeId: string | null | undefined) {
+export function runtimeModelsOptions(
+  runtimeId: string | null | undefined,
+  account?: string,
+) {
   return queryOptions({
     queryKey: runtimeId
-      ? runtimeModelsKeys.forRuntime(runtimeId)
+      ? runtimeModelsKeys.forRuntime(runtimeId, account)
       : runtimeModelsKeys.all(),
-    queryFn: () => resolveRuntimeModels(runtimeId as string),
+    queryFn: () => resolveRuntimeModels(runtimeId as string, { account }),
     enabled: Boolean(runtimeId),
     staleTime: (query) => staleTimeFor(query.state.data),
     gcTime: MODELS_GC_TIME_MS,
@@ -139,10 +142,11 @@ export function runtimeModelsOptions(runtimeId: string | null | undefined) {
 export function refreshRuntimeModels(
   queryClient: QueryClient,
   runtimeId: string,
+  account?: string,
 ): Promise<RuntimeModelsResult> {
   return queryClient.fetchQuery({
-    ...runtimeModelsOptions(runtimeId),
-    queryFn: () => resolveRuntimeModels(runtimeId, { force: true }),
+    ...runtimeModelsOptions(runtimeId, account),
+    queryFn: () => resolveRuntimeModels(runtimeId, { force: true, account }),
     staleTime: 0,
   });
 }

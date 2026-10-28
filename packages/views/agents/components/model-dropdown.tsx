@@ -39,6 +39,7 @@ export function ModelDropdown({
   onChange,
   onAutomaticChange = onChange,
   disabled,
+  account,
 }: {
   runtimeId: string | null;
   runtimeOnline: boolean;
@@ -47,6 +48,12 @@ export function ModelDropdown({
   /** Automatic value cleanup, separate from explicit user selections. */
   onAutomaticChange?: (value: string) => void;
   disabled?: boolean;
+  /** Account selector value (default | account id | all). */
+  account?: string;
+  /** Available accounts for the selector. */
+  accounts?: { id: string; label: string }[];
+  /** Called when the account selection changes. */
+  onAccountChange?: (value: string) => void;
 }) {
   const { t } = useT("agents");
   const queryClient = useQueryClient();
@@ -54,7 +61,7 @@ export function ModelDropdown({
   const [search, setSearch] = useState("");
 
   const modelsQuery = useQuery(
-    runtimeModelsOptions(runtimeOnline ? runtimeId : null),
+    runtimeModelsOptions(runtimeOnline ? runtimeId : null, account),
   );
 
   const supported = modelsQuery.data?.supported ?? true;
@@ -162,6 +169,21 @@ export function ModelDropdown({
           </span>
         )}
       </div>
+      {accounts && accounts.length > 0 && onAccountChange && (
+        <select
+          className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-body"
+          value={account ?? "default"}
+          onChange={(e) => onAccountChange(e.target.value)}
+        >
+          <option value="default">Runtime default</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}
+            </option>
+          ))}
+          <option value="all">All accounts</option>
+        </select>
+      )}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           disabled={disabled}
@@ -224,7 +246,14 @@ export function ModelDropdown({
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{m.label}</div>
+                        <div className="truncate font-medium">
+                          {m.label}
+                          {m.account_label && (
+                            <span className="ml-2 text-caption text-muted-foreground">
+                              {m.account_label}
+                            </span>
+                          )}
+                        </div>
                         {m.label !== m.id && (
                           <div className="truncate text-caption text-muted-foreground">
                             {m.id}

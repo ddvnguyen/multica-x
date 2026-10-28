@@ -1198,6 +1198,8 @@ export interface RuntimeModel {
   id: string;
   label: string;
   provider?: string;
+  account_id?: string;
+  account_label?: string;
   default?: boolean;
   /**
    * Per-model reasoning/effort catalog discovered by the daemon. Currently
