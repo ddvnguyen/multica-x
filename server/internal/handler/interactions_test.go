@@ -357,3 +357,41 @@ func TestAgentTaskResponse_MoctMemoryInjectWireName(t *testing.T) {
 		t.Fatalf("a server without the switch must omit the field, got %s", got)
 	}
 }
+
+// TestEffectiveAskPlanTimeoutSeconds pins the one resolution order (M-123 Q2,
+// M-131 amendment 1): project override, then workspace value, then the
+// compiled-in default — with the source the sweep's escalation comment reads
+// and `projectInteractionsResponse` derives `timeout_seconds_set` from. A key
+// that is absent, malformed, a string, or out of the 60–86400 bounds counts as
+// no opinion at all.
+func TestEffectiveAskPlanTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		name        string
+		project     string
+		workspace   string
+		wantSeconds int
+		wantSource  TimeoutSource
+	}{
+		{"project override beats workspace", `{"ask_plan_timeout_seconds":120}`, `{"ask_plan_timeout_seconds":86400}`, 120, TimeoutSourceProject},
+		{"project override beats default", `{"ask_plan_timeout_seconds":60}`, `{}`, 60, TimeoutSourceProject},
+		{"workspace value when no project key", `{}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
+		{"out-of-bounds project falls through to workspace", `{"ask_plan_timeout_seconds":59}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
+		{"above-bounds workspace falls through to default", `{}`, `{"ask_plan_timeout_seconds":86401}`, 600, TimeoutSourceDefault},
+		{"JSON string is not a number", `{"ask_plan_timeout_seconds":"600"}`, `{}`, 600, TimeoutSourceDefault},
+		{"malformed workspace object reads as absent", `{}`, `not-json`, 600, TimeoutSourceDefault},
+		{"both empty -> built-in default", `{}`, `{}`, 600, TimeoutSourceDefault},
+		{"nil settings -> built-in default", ``, ``, 600, TimeoutSourceDefault},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, source := EffectiveAskPlanTimeoutSeconds([]byte(tc.project), []byte(tc.workspace))
+			if got != tc.wantSeconds || source != tc.wantSource {
+				t.Fatalf("got (%d, %v), want (%d, %v)", got, source, tc.wantSeconds, tc.wantSource)
+			}
+			// The response's set flag is exactly "not the compiled-in default".
+			if set := source != TimeoutSourceDefault; set != (tc.wantSource != TimeoutSourceDefault) {
+				t.Fatalf("set flag mismatch for source %v", source)
+			}
+		})
+	}
+}
