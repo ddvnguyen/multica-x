@@ -5144,6 +5144,12 @@ type TaskMessageRequest struct {
 	OutputTruncated *bool `json:"output_truncated,omitempty"`
 }
 
+const (
+	// MESSAGE_SINK_HDR is the header the dsh runtime bridge sets on task
+	// message batches whose transcript is owned by the dsh session, not the
+	// multica task_message table.
+	MESSAGE_SINK_HDR = "X-Message-Sink"
+)
 type TaskMessageBatchRequest struct {
 	Messages []TaskMessageRequest `json:"messages"`
 }
@@ -5172,6 +5178,15 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+// A dsh-owned session owns its transcript in the dsh session store the
+// dsh plugin reads; it does not persist task_message rows and does not
+// publish EventTaskMessage here. Keep the HTTP ack so the bridge's
+// 500ms pulse keeps running.
+if sink := r.Header.Get(MESSAGE_SINK_HDR); sink != "" && sink == "dsh" {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	return
+}
 
 	// Broadcast reach is deliberately unchanged: only issue- and chat-backed
 	// tasks streamed live messages before, and widening that to autopilot /
