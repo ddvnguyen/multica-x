@@ -70,6 +70,20 @@ type dshCancelCommand struct {
 	RequestID string `json:"request_id"`
 }
 
+type dshSteerCommand struct {
+	Version   int    `json:"v"`
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	Message   string `json:"message"`
+}
+
+type dshQueueCommand struct {
+	Version   int    `json:"v"`
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	Message   string `json:"message"`
+}
+
 type dshWireError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -95,13 +109,13 @@ type dshQuestionIntent struct {
 // shape mirrors dsh's AskUserQuestionItem (deepseek-harness
 // packages/interaction/user-questions).
 type dshQuestion struct {
-	ID          string             `json:"id"`
-	Question    string             `json:"question"`
-	Detail      string             `json:"detail,omitempty"`
-	Header      string             `json:"header,omitempty"`
+	ID          string              `json:"id"`
+	Question    string              `json:"question"`
+	Detail      string              `json:"detail,omitempty"`
+	Header      string              `json:"header,omitempty"`
 	Options     []dshQuestionOption `json:"options,omitempty"`
-	MultiSelect bool               `json:"multiSelect,omitempty"`
-	Intent      *dshQuestionIntent `json:"intent,omitempty"`
+	MultiSelect bool                `json:"multiSelect,omitempty"`
+	Intent      *dshQuestionIntent  `json:"intent,omitempty"`
 }
 
 // dshCapabilitiesFrame is the capability advertisement on the bridge's
@@ -109,6 +123,8 @@ type dshQuestion struct {
 // advertisement (resume, cancel, models, …) is implicit in protocol v1.
 type dshCapabilitiesFrame struct {
 	Questions bool `json:"questions,omitempty"`
+	Steer     bool `json:"steer,omitempty"`
+	Queue     bool `json:"queue,omitempty"`
 }
 
 // dshAnswerItem is one question's answer in an outbound `answer` command.
@@ -132,34 +148,37 @@ type dshAnswerCommand struct {
 }
 
 type dshFrame struct {
-	Version          int             `json:"v"`
-	Type             string          `json:"type"`
-	Runtime          string          `json:"runtime,omitempty"`
-	ProtocolVersion  int             `json:"protocol_version,omitempty"`
-	RequestID        string          `json:"request_id,omitempty"`
-	SessionID        string          `json:"session_id,omitempty"`
-	Resumed          bool            `json:"resumed,omitempty"`
-	Content          string          `json:"content,omitempty"`
-	CallID           string          `json:"call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Arguments        string          `json:"arguments,omitempty"`
-	Output           string          `json:"output,omitempty"`
-	IsError          bool            `json:"is_error,omitempty"`
-	Provider         string          `json:"provider,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	InputTokens      int64           `json:"input_tokens,omitempty"`
-	OutputTokens     int64           `json:"output_tokens,omitempty"`
-	CacheReadTokens  int64           `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int64           `json:"cache_write_tokens,omitempty"`
-	Status           string          `json:"status,omitempty"`
-	StopReason       string          `json:"stop_reason,omitempty"`
-	ResumeRejected   bool            `json:"resume_rejected,omitempty"`
-	Error            *dshWireError   `json:"error,omitempty"`
-	Code             string             `json:"code,omitempty"`
-	Message          string             `json:"message,omitempty"`
-	Models           []dshModelFrame    `json:"models,omitempty"`
-	Questions        []dshQuestion      `json:"questions,omitempty"`
+	Version          int                   `json:"v"`
+	Type             string                `json:"type"`
+	Runtime          string                `json:"runtime,omitempty"`
+	ProtocolVersion  int                   `json:"protocol_version,omitempty"`
+	RequestID        string                `json:"request_id,omitempty"`
+	SessionID        string                `json:"session_id,omitempty"`
+	Resumed          bool                  `json:"resumed,omitempty"`
+	Content          string                `json:"content,omitempty"`
+	CallID           string                `json:"call_id,omitempty"`
+	Name             string                `json:"name,omitempty"`
+	Arguments        string                `json:"arguments,omitempty"`
+	Output           string                `json:"output,omitempty"`
+	IsError          bool                  `json:"is_error,omitempty"`
+	Provider         string                `json:"provider,omitempty"`
+	Model            string                `json:"model,omitempty"`
+	InputTokens      int64                 `json:"input_tokens,omitempty"`
+	OutputTokens     int64                 `json:"output_tokens,omitempty"`
+	CacheReadTokens  int64                 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64                 `json:"cache_write_tokens,omitempty"`
+	Status           string                `json:"status,omitempty"`
+	StopReason       string                `json:"stop_reason,omitempty"`
+	ResumeRejected   bool                  `json:"resume_rejected,omitempty"`
+	Error            *dshWireError         `json:"error,omitempty"`
+	Code             string                `json:"code,omitempty"`
+	Message          string                `json:"message,omitempty"`
+	Models           []dshModelFrame       `json:"models,omitempty"`
+	Questions        []dshQuestion         `json:"questions,omitempty"`
 	Capabilities     *dshCapabilitiesFrame `json:"capabilities,omitempty"`
+	State            string                `json:"state,omitempty"`
+	Command          string                `json:"command,omitempty"`
+	Reason           string                `json:"reason,omitempty"`
 }
 
 type dshThinkingFrame struct {
@@ -290,6 +309,9 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		cmd.Dir = opts.Cwd
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
+	if b.cfg.TaskID != "" {
+		cmd.Env = append(cmd.Env, "DSH_SESSION_OWNER=Multica run "+b.cfg.TaskID)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -312,7 +334,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	if requestID == "" {
 		requestID = "multica-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	}
-	state := dshRunState{usage: make(map[string]TokenUsage), requestID: requestID}
+	state := dshRunState{usage: make(map[string]TokenUsage), requestID: requestID, inboxStateCh: make(chan dshInboxState, 1)}
 	command := dshExecuteCommand{
 		Version: DshProtocolVersion, Type: "execute", RequestID: requestID,
 		Cwd: opts.Cwd, Prompt: prompt, ResumeSessionID: opts.ResumeSessionID,
@@ -326,6 +348,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		return encoder.Encode(value)
 	}
 	state.writeAnswer = func(command dshAnswerCommand) error { return writeFrame(command) }
+	state.writeCommand = writeFrame
 	if err := writeFrame(command); err != nil {
 		signalProcessGroup(cmd, syscall.SIGKILL)
 		_ = cmd.Wait()
@@ -423,14 +446,13 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	return &Session{
 		Messages: msgCh,
 		Result:   resCh,
-		// Ask/plan parity (M-109): the daemon's supplement loop delivers the
-		// human's steered reply here, and answerDshQuestion maps it onto the
-		// parked `answer` command. SupplementReady is true once the bridge
-		// confirmed the agent session — before that, claiming a supplement
-		// would race provider initialization, and after the result the stdin
-		// pipe is gone.
-		Supplement: func(_ context.Context, instruction string) error {
-			return answerDshQuestion(&state, instruction)
+		// Ask/plan parity (M-109) + steer/queue (M-135): the daemon's
+		// supplement loop delivers the human's reply here. A parked question
+		// is answered; otherwise the message is steered (next step) or queued
+		// (next turn) per the supplement's mode. SupplementReady is true once
+		// the bridge confirmed the agent session.
+		Supplement: func(ctx context.Context, instruction string, mode string) error {
+			return dshSupplement(&state, instruction, mode, ctx)
 		},
 		SupplementReady: state.live.Load,
 	}, nil
@@ -449,13 +471,28 @@ type dshRunState struct {
 	// writes it; Session.Supplement reads and clears it from the daemon's
 	// supplement goroutine, hence the mutex. `live` is set once the bridge
 	// reports the agent session and backs SupplementReady.
-	mu                sync.Mutex
-	requestID         string
-	questionsCapable  bool
-	pendingCallID     string
-	pendingQuestions  []dshQuestion
-	writeAnswer       func(dshAnswerCommand) error
-	live              atomic.Bool
+	mu               sync.Mutex
+	requestID        string
+	questionsCapable bool
+	steerCapable     bool
+	queueCapable     bool
+	pendingCallID    string
+	pendingQuestions []dshQuestion
+	writeAnswer      func(dshAnswerCommand) error
+	writeCommand     func(any) error
+	live             atomic.Bool
+	// inbox_state correlation (M-134 amendment). A buffered channel carries the
+	// most recent matching frame; pendingInbox names the command currently
+	// awaiting an ack so stale frames are ignored.
+	inboxStateCh    chan dshInboxState
+	pendingInbox   string
+	inboxStartedAt time.Time
+}
+
+type dshInboxState struct {
+	Command string
+	State   string
+	Reason  string
 }
 
 func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *dshRunState) {
@@ -470,8 +507,28 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 	case "ready":
 		state.ready = frame.Runtime == "dsh"
 		state.mu.Lock()
-		state.questionsCapable = frame.Capabilities != nil && frame.Capabilities.Questions
+		if frame.Capabilities != nil {
+			state.questionsCapable = frame.Capabilities.Questions
+			state.steerCapable = frame.Capabilities.Steer
+			state.queueCapable = frame.Capabilities.Queue
+		} else {
+			state.questionsCapable = false
+			state.steerCapable = false
+			state.queueCapable = false
+		}
 		state.mu.Unlock()
+	case "inbox_state":
+		state.mu.Lock()
+		pending := state.pendingInbox
+		started := state.inboxStartedAt
+		ch := state.inboxStateCh
+		state.mu.Unlock()
+		if pending != "" && ch != nil && frame.Command == pending && !time.Now().Before(started) {
+			select {
+			case ch <- dshInboxState{Command: frame.Command, State: frame.State, Reason: frame.Reason}:
+			default:
+			}
+		}
 	case "session":
 		state.sessionID = frame.SessionID
 		state.live.Store(true)
@@ -635,6 +692,100 @@ func dshSupplementContent(instruction string) string {
 		return strings.TrimSpace(after)
 	}
 	return strings.TrimSpace(instruction)
+}
+
+// dshSupplement delivers a human message to the bridge as an answer (when a
+// question is parked), a steer (next step) or a queue (next turn), per mode.
+func dshSupplement(state *dshRunState, instruction, mode string, ctx context.Context) error {
+	if mode == "" {
+		mode = "steer"
+	}
+	state.mu.Lock()
+	if state.pendingCallID != "" {
+		state.mu.Unlock()
+		return answerDshQuestion(state, instruction)
+	}
+	var capable bool
+	if mode == "queue" {
+		capable = state.queueCapable
+	} else {
+		mode = "steer"
+		capable = state.steerCapable
+	}
+	if !capable {
+		questionsCapable := state.questionsCapable
+		steerCapable := state.steerCapable
+		queueCapable := state.queueCapable
+		state.mu.Unlock()
+		if !questionsCapable && !steerCapable && !queueCapable {
+			return errors.New("dsh runtime bridge predates question answers (no `questions` capability in its ready frame)")
+		}
+		return errors.New("no question is pending on this dsh run")
+	}
+	state.inboxStartedAt = time.Now()
+	// Drain stale frames from any previous command.
+	for len(state.inboxStateCh) > 0 {
+		<-state.inboxStateCh
+	}
+	state.pendingInbox = mode
+	state.mu.Unlock()
+
+	content := dshSupplementContent(instruction)
+	var cmd any
+	if mode == "queue" {
+		cmd = dshQueueCommand{Version: DshProtocolVersion, Type: "queue", RequestID: state.requestID, Message: content}
+	} else {
+		cmd = dshSteerCommand{Version: DshProtocolVersion, Type: "steer", RequestID: state.requestID, Message: content}
+	}
+	if state.writeCommand == nil {
+		state.mu.Lock()
+		state.pendingInbox = ""
+		state.mu.Unlock()
+		return errors.New("dsh command writer is unavailable")
+	}
+	if err := state.writeCommand(cmd); err != nil {
+		state.mu.Lock()
+		state.pendingInbox = ""
+		state.mu.Unlock()
+		return err
+	}
+	err := waitForDshInboxState(state, mode, ctx)
+	state.mu.Lock()
+	state.pendingInbox = ""
+	state.mu.Unlock()
+	return err
+}
+
+func waitForDshInboxState(state *dshRunState, command string, ctx context.Context) error {
+	state.mu.Lock()
+	ch := state.inboxStateCh
+	state.mu.Unlock()
+	if ch == nil {
+		return nil
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case is := <-ch:
+			if is.Command != "" && is.Command != command {
+				continue
+			}
+			switch is.State {
+			case "rejected":
+				if strings.TrimSpace(is.Reason) != "" {
+					return errors.New(strings.TrimSpace(is.Reason))
+				}
+				return errors.New("dsh rejected the supplement")
+			default:
+				return nil
+			}
+		case <-timer.C:
+			return nil
+		}
+	}
 }
 
 // answerDshQuestion turns one steered human comment into the `answer` command

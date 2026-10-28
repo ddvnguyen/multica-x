@@ -52,7 +52,7 @@ func TestSupplementCodexTurnTargetsExactActiveTurn(t *testing.T) {
 	}
 	c.stdin = stdin
 
-	if err := supplementCodexTurn(context.Background(), c, "keep the original goal and add this"); err != nil {
+	if err := supplementCodexTurn(context.Background(), c, "keep the original goal and add this", "steer"); err != nil {
 		t.Fatalf("supplementCodexTurn: %v", err)
 	}
 	lines := stdin.Lines()
@@ -84,7 +84,7 @@ func TestSupplementCodexTurnTargetsExactActiveTurn(t *testing.T) {
 func TestSupplementCodexTurnFailsClosedWithoutActiveTurn(t *testing.T) {
 	c, stdin, _ := newTestCodexClient(t)
 	c.threadID = "thread-current"
-	if err := supplementCodexTurn(context.Background(), c, "extra"); err == nil {
+	if err := supplementCodexTurn(context.Background(), c, "extra", "steer"); err == nil {
 		t.Fatal("supplementCodexTurn succeeded without an active turn")
 	}
 	if len(stdin.Lines()) != 0 {

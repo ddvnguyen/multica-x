@@ -1582,6 +1582,7 @@ type TaskSupplement struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
+	Mode            string             `json:"mode"`
 }
 
 type TaskSupplementCapability struct {
