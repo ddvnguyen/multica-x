@@ -223,7 +223,7 @@ type TaskMessagePayload struct {
 	TaskID  string         `json:"task_id"`
 	IssueID string         `json:"issue_id,omitempty"`
 	Seq     int            `json:"seq"`
-	Type    string         `json:"type"`              // "text", "tool_use", "tool_result", "error"
+	Type    string         `json:"type"`              // "text", "tool_use", "tool_result", "error", "question"
 	Tool    string         `json:"tool,omitempty"`    // tool name for tool_use/tool_result
 	Content string         `json:"content,omitempty"` // text content
 	Input   map[string]any `json:"input,omitempty"`   // tool input (tool_use only)
@@ -446,8 +446,17 @@ type DaemonHeartbeatPendingUpdate struct {
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to
 // enumerate the runtime's supported models.
+type DaemonModelAccount struct {
+	ID            string `json:"id"`
+	Label         string `json:"label,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	CredentialRef  string `json:"credential_ref,omitempty"`
+}
+
 type DaemonHeartbeatPendingModelList struct {
-	ID string `json:"id"`
+	ID       string                `json:"id"`
+	Account  string                `json:"account,omitempty"`
+	Accounts []DaemonModelAccount  `json:"accounts,omitempty"`
 }
 
 // DaemonHeartbeatPendingLocalSkills describes a request for the runtime's

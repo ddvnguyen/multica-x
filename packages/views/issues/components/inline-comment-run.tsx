@@ -10,7 +10,8 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useTaskMessages } from "@multica/core/chat/queries";
 import { useCancelIssueRun, useRetryIssueRun } from "@multica/core/issues/mutations";
 import { issueTimelineOptions } from "@multica/core/issues/queries";
-import { commentSupplementReceipts } from "@multica/core/issues/run-steering";
+import { isAgentQuestionPending, latestAgentQuestion } from "@multica/core/issues/agent-question";
+import { commentSupplementReceipts, isSteerableTask } from "@multica/core/issues/run-steering";
 import { dispatchReasonCode } from "@multica/core/api";
 import type { AgentTask, TimelineEntry } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -30,6 +31,7 @@ import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 import { TaskStatusIcon } from "./task-status-icon";
 import { useStatusLabel } from "./task-run-labels";
 import { commentRunOutput, isActiveCommentRun, showCommentRunInHeader, type CommentRun } from "./comment-runs";
+import { AgentQuestionCard } from "./agent-question-card";
 
 import { useRunAnimationVisibility, useRunDisclosureMotion } from "./use-run-comment-motion";
 
@@ -123,6 +125,17 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
   const end = active ? now : task.completed_at ? Date.parse(task.completed_at) : undefined;
   const elapsed = end !== undefined && Number.isFinite(Date.parse(start)) && Number.isFinite(end)
     ? formatDuration(start, end) : "";
+  // A parked ask or plan review (M-109). The daemon writes both the rendered
+  // line and the structured questions, so the card is read off the same
+  // transcript the steps above are built from — no extra request, and it is
+  // gone the moment the run answers, moves on, or is no longer steerable.
+  const ask = useMemo(() => latestAgentQuestion(data ?? []), [data]);
+  const askPending = isAgentQuestionPending(
+    ask,
+    data ?? [],
+    task.status === "running" && isSteerableTask(task),
+    steers.map((steer) => steer.deliveredAt),
+  );
   const output = !hasReply ? commentRunOutput(task) : null;
   const latest = steps.findLast((step) => step.kind !== "text" || step.item.content?.trim());
   const pendingCall = steps.findLast((step) => isCallStep(step) && !step.result);
@@ -223,6 +236,9 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
       </div>
       <div className={cn(showIdentity && "pl-8")}>
         {replyTo}
+        {askPending && ask !== null && (
+          <AgentQuestionCard issueId={task.issue_id} taskId={task.id} questions={ask.questions} />
+        )}
         {output && <div className="mt-2 text-body"><ReadonlyContent content={redactSecrets(output)} /></div>}
         {needsAction && rawError && <p title={rawError}
           className="mt-1.5 line-clamp-4 whitespace-pre-wrap break-words rounded-md border bg-muted/50 px-2.5 py-1.5 font-mono text-caption text-muted-foreground">

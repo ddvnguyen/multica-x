@@ -1425,7 +1425,8 @@ func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, suppor
 		if popErr != nil {
 			slog.Warn("model list PopPending failed", "error", popErr, "runtime_id", runtimeID)
 		} else if pendingModel != nil {
-			ack.PendingModelList = &protocol.DaemonHeartbeatPendingModelList{ID: pendingModel.ID}
+			accounts := resolveModelAccounts(ctx, h.Queries, pendingModel.RuntimeID, pendingModel.Account)
+			ack.PendingModelList = &protocol.DaemonHeartbeatPendingModelList{ID: pendingModel.ID, Account: pendingModel.Account, Accounts: accounts}
 		}
 	case probeModelErr != nil:
 		if errors.Is(probeModelErr, context.DeadlineExceeded) || errors.Is(probeModelErr, context.Canceled) {
@@ -2600,6 +2601,42 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
+	// Resolve the workspace account for freebuff-desktop runtimes (M-153).
+	// Credentials stay on the daemon machine: only the endpoint and the
+	// credential_ref travel, never a secret. A `specific` account that is gone
+	// or disabled fails the task here instead of letting it run on whatever
+	// account the runtime defaults to; `any` picks the least busy account.
+	accountMode := agent.AccountMode
+	if accountMode == "" {
+		accountMode = accountModeDefault
+	}
+	var claimAcct claimAccount
+	hasAccount := false
+	if accountMode != accountModeDefault {
+		acct, ok, accErr := h.resolveClaimAccount(r.Context(), agent)
+		switch {
+		case errors.Is(accErr, errAccountUnavailable):
+			return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"The account selected for this agent is no longer available (deleted, disabled or not a freebuff-desktop account). Pick another account in the agent settings.",
+				taskfailure.ReasonEnvironmentPrepareFailed, "account_unavailable", http.StatusConflict, "agent account unavailable")
+		case accErr != nil:
+			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, accErr, "account", "")
+		}
+		claimAcct, hasAccount = acct, ok
+	}
+	accountID := ""
+	if hasAccount {
+		accountID = uuidToString(claimAcct.ID)
+		// Record the account on the queue row: it is the lease marker that
+		// makes concurrent claims see this account as busy.
+		if _, err := h.Queries.SetAgentTaskQueueAccount(r.Context(), db.SetAgentTaskQueueAccountParams{
+			ID: task.ID, AccountID: claimAcct.ID,
+		}); err != nil {
+			slog.Warn("daemon claim: record task account failed",
+				"task_id", uuidToString(task.ID), "account_id", accountID, "error", err)
+		}
+	}
+
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
@@ -2612,6 +2649,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		ServiceTier:           agent.ServiceTier.String,
 		RuntimeConfig:         runtimeConfig,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
+		AccountMode:           accountMode,
+		AccountID:             accountID,
+		AccountEndpoint:       claimAcct.Endpoint,
+		AccountCredentialRef:  claimAcct.CredentialRef,
 	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That
@@ -3615,6 +3656,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
 		}
+		// MOCT pre-run memory switch (S2-C, M-123). Read here, on every claim,
+		// so an admin's change lands on the next run with nothing to restart.
+		// An absent key means on (moctInjectEnabled); a failed workspace read
+		// leaves the field nil, which the daemon reads as "keep injecting" —
+		// memory must never disappear because a lookup failed.
+		inject := moctInjectEnabled(ws)
+		resp.MoctMemoryInject = &inject
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",
 			"task_id", uuidToString(task.ID),
@@ -4320,15 +4368,22 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// InitContext is the daemon's per-part price of this run's first request
+	// (M-140): the seven parts it is built from, each part's budget, whether it
+	// was trimmed, and why it is thin when it is. An object rather than a
+	// string so the run row is readable without decoding twice. Older daemons
+	// omit it, which reads as "not measured", not as "zero tokens".
+	InitContext json.RawMessage `json:"init_context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
 // caller-supplied string on a terminal task callback. Both request types are
 // flat bags of strings, so this is exhaustive by construction — but that also
 // means a NEW string field must be added here, or it reopens GH #7098 through a
-// fresh door. The task-row columns these feed (error, work_dir,
-// durable_work_dir, branch_name, session_id) are all TEXT, and result is
-// JSONB; neither tolerates a NUL.
+// fresh door. The one field that is not flat, InitContext, carries a JSONB blob
+// and goes through sanitizeEmbeddedJSON for the same reason at depth. The
+// task-row columns these feed (error, work_dir, durable_work_dir, branch_name,
+// session_id) are all TEXT, and result is JSONB; neither tolerates a NUL.
 func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.PRURL = util.SanitizeTextForPostgres(req.PRURL)
 	req.Output = util.SanitizeTextForPostgres(req.Output)
@@ -4337,6 +4392,27 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	req.InitContext = sanitizeEmbeddedJSON(req.InitContext)
+}
+
+// sanitizeEmbeddedJSON makes a caller-supplied JSONB blob safe to persist. It
+// exists because the flat-field sweep above cannot reach inside one: a NUL at
+// any depth of the embedded object aborts the whole completion with SQLSTATE
+// 22P05 exactly like a top-level one (GH #7098). A blob that does not decode is
+// dropped rather than stored — it could not be read on the run row anyway.
+func sanitizeEmbeddedJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	cleaned, err := json.Marshal(util.SanitizeJSONForPostgres(decoded))
+	if err != nil {
+		return nil
+	}
+	return cleaned
 }
 
 func sanitizeTaskFailRequest(req *TaskFailRequest) {

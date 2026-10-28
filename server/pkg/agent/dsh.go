@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -74,6 +75,62 @@ type dshWireError struct {
 	Message string `json:"message"`
 }
 
+// dshQuestionOption is one selectable answer offered by an ask/plan question.
+type dshQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// dshQuestionIntent is the plan-review presentation intent the bridge passes
+// through from dsh's user-questions seam: a question tagged `plan-review` IS
+// a plan submission, `Approve` names the option that approves it, and the
+// question's detail carries the plan markdown (M-109).
+type dshQuestionIntent struct {
+	Kind    string `json:"kind"`
+	Approve string `json:"approve,omitempty"`
+	CallID  string `json:"callId,omitempty"`
+}
+
+// dshQuestion is one question of an outbound `question` frame — the wire
+// shape mirrors dsh's AskUserQuestionItem (deepseek-harness
+// packages/interaction/user-questions).
+type dshQuestion struct {
+	ID          string             `json:"id"`
+	Question    string             `json:"question"`
+	Detail      string             `json:"detail,omitempty"`
+	Header      string             `json:"header,omitempty"`
+	Options     []dshQuestionOption `json:"options,omitempty"`
+	MultiSelect bool               `json:"multiSelect,omitempty"`
+	Intent      *dshQuestionIntent `json:"intent,omitempty"`
+}
+
+// dshCapabilitiesFrame is the capability advertisement on the bridge's
+// `ready` frame. Only `questions` is read today; the rest of the bridge's
+// advertisement (resume, cancel, models, …) is implicit in protocol v1.
+type dshCapabilitiesFrame struct {
+	Questions bool `json:"questions,omitempty"`
+}
+
+// dshAnswerItem is one question's answer in an outbound `answer` command.
+// `Selected` carries chosen option labels; `Custom` carries free text (the
+// human's own words when they did not pick an offered option).
+type dshAnswerItem struct {
+	ID       string   `json:"id"`
+	Selected []string `json:"selected"`
+	Custom   string   `json:"custom,omitempty"`
+}
+
+// dshAnswerCommand is the daemon→bridge reply that resolves a parked ask.
+// Additive at protocol v1: a bridge that predates it never emits `question`,
+// so this is only ever written after the bridge advertised `questions`.
+type dshAnswerCommand struct {
+	Version   int             `json:"v"`
+	Type      string          `json:"type"`
+	RequestID string          `json:"request_id"`
+	CallID    string          `json:"call_id"`
+	Answers   []dshAnswerItem `json:"answers"`
+}
+
 type dshFrame struct {
 	Version          int             `json:"v"`
 	Type             string          `json:"type"`
@@ -98,9 +155,11 @@ type dshFrame struct {
 	StopReason       string          `json:"stop_reason,omitempty"`
 	ResumeRejected   bool            `json:"resume_rejected,omitempty"`
 	Error            *dshWireError   `json:"error,omitempty"`
-	Code             string          `json:"code,omitempty"`
-	Message          string          `json:"message,omitempty"`
-	Models           []dshModelFrame `json:"models,omitempty"`
+	Code             string             `json:"code,omitempty"`
+	Message          string             `json:"message,omitempty"`
+	Models           []dshModelFrame    `json:"models,omitempty"`
+	Questions        []dshQuestion      `json:"questions,omitempty"`
+	Capabilities     *dshCapabilitiesFrame `json:"capabilities,omitempty"`
 }
 
 type dshThinkingFrame struct {
@@ -253,6 +312,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	if requestID == "" {
 		requestID = "multica-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	}
+	state := dshRunState{usage: make(map[string]TokenUsage), requestID: requestID}
 	command := dshExecuteCommand{
 		Version: DshProtocolVersion, Type: "execute", RequestID: requestID,
 		Cwd: opts.Cwd, Prompt: prompt, ResumeSessionID: opts.ResumeSessionID,
@@ -265,6 +325,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		defer writeMu.Unlock()
 		return encoder.Encode(value)
 	}
+	state.writeAnswer = func(command dshAnswerCommand) error { return writeFrame(command) }
 	if err := writeFrame(command); err != nil {
 		signalProcessGroup(cmd, syscall.SIGKILL)
 		_ = cmd.Wait()
@@ -305,7 +366,6 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		defer close(resCh)
 		defer func() { _ = stdin.Close() }()
 		started := time.Now()
-		state := dshRunState{usage: make(map[string]TokenUsage)}
 		scanner := newAgentStreamScanner(stdout)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -360,7 +420,20 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		resCh <- *result
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &Session{
+		Messages: msgCh,
+		Result:   resCh,
+		// Ask/plan parity (M-109): the daemon's supplement loop delivers the
+		// human's steered reply here, and answerDshQuestion maps it onto the
+		// parked `answer` command. SupplementReady is true once the bridge
+		// confirmed the agent session — before that, claiming a supplement
+		// would race provider initialization, and after the result the stdin
+		// pipe is gone.
+		Supplement: func(_ context.Context, instruction string) error {
+			return answerDshQuestion(&state, instruction)
+		},
+		SupplementReady: state.live.Load,
+	}, nil
 }
 
 type dshRunState struct {
@@ -371,6 +444,18 @@ type dshRunState struct {
 	invalidFrames int
 	usage         map[string]TokenUsage
 	result        *Result
+
+	// Ask/plan parity state (M-109). The frame handler (scanner goroutine)
+	// writes it; Session.Supplement reads and clears it from the daemon's
+	// supplement goroutine, hence the mutex. `live` is set once the bridge
+	// reports the agent session and backs SupplementReady.
+	mu                sync.Mutex
+	requestID         string
+	questionsCapable  bool
+	pendingCallID     string
+	pendingQuestions  []dshQuestion
+	writeAnswer       func(dshAnswerCommand) error
+	live              atomic.Bool
 }
 
 func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *dshRunState) {
@@ -384,8 +469,12 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 	switch frame.Type {
 	case "ready":
 		state.ready = frame.Runtime == "dsh"
+		state.mu.Lock()
+		state.questionsCapable = frame.Capabilities != nil && frame.Capabilities.Questions
+		state.mu.Unlock()
 	case "session":
 		state.sessionID = frame.SessionID
+		state.live.Store(true)
 		trySend(ch, Message{Type: MessageStatus, Status: "running", SessionID: frame.SessionID})
 	case "text":
 		if frame.Content != "" {
@@ -403,6 +492,28 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 		trySend(ch, Message{Type: MessageToolUse, Tool: frame.Name, CallID: frame.CallID, Input: input})
 	case "tool_result":
 		trySend(ch, Message{Type: MessageToolResult, Tool: frame.Name, CallID: frame.CallID, Output: frame.Output})
+	case "question":
+		// Ask/plan parity (M-109): the bridge parked the run on a user
+		// question (ask_user_question, or exit_plan_mode's plan review).
+		// Record it so Supplement can correlate the human's answer, and
+		// surface the rendered questions on the transcript.
+		if len(frame.Questions) == 0 {
+			break
+		}
+		callID := frame.CallID
+		if callID == "" {
+			callID = "question-" + strconv.Itoa(state.frameCount)
+		}
+		state.mu.Lock()
+		state.pendingCallID = callID
+		state.pendingQuestions = append([]dshQuestion(nil), frame.Questions...)
+		state.mu.Unlock()
+		trySend(ch, Message{
+			Type:    MessageQuestion,
+			CallID:  callID,
+			Content: renderDshQuestions(frame.Questions),
+			Input:   dshQuestionInput(frame.Questions),
+		})
 	case "usage":
 		key := frame.Model
 		if frame.Provider != "" {
@@ -431,6 +542,137 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 			state.result.SessionID = state.sessionID
 		}
 	}
+}
+
+// dshQuestionInput is the structured half of a question row: the same list the
+// bridge sent, in a shape a client can build a form from.
+//
+// The row carries both halves and needs them both. `content` stays the human
+// rendering, so a client that does not know this payload — or a mirror that
+// stores nothing but text — still shows the member the question and its
+// options. `input.questions` is what lets the fork's Inbox render the ask as
+// the card the member answers in place instead of retyping a reply. Lives
+// under the same `input` key tool calls use, so the transcript row needs no new
+// column.
+//
+// Keys are snake_case (multi_select) to match the server-side JSON conventions
+// the client parses; the bridge's camelCase is flattened here, at the one
+// boundary that owns the translation.
+func dshQuestionInput(questions []dshQuestion) map[string]any {
+	list := make([]any, 0, len(questions))
+	for _, question := range questions {
+		options := make([]any, 0, len(question.Options))
+		for _, option := range question.Options {
+			entry := map[string]any{"label": option.Label}
+			if option.Description != "" {
+				entry["description"] = option.Description
+			}
+			options = append(options, entry)
+		}
+		item := map[string]any{
+			"id":       question.ID,
+			"question": question.Question,
+			"options":  options,
+		}
+		if question.Header != "" {
+			item["header"] = question.Header
+		}
+		if question.Detail != "" {
+			item["detail"] = question.Detail
+		}
+		if question.MultiSelect {
+			item["multi_select"] = true
+		}
+		if question.Intent != nil {
+			intent := map[string]any{"kind": question.Intent.Kind}
+			if question.Intent.Approve != "" {
+				intent["approve"] = question.Intent.Approve
+			}
+			item["intent"] = intent
+		}
+		list = append(list, item)
+	}
+	return map[string]any{"questions": list}
+}
+
+// renderDshQuestions renders parked questions for the transcript line the
+// daemon posts — the member answers by commenting on the issue addressed to
+// the agent, and the daemon steers that reply back through Supplement.
+func renderDshQuestions(questions []dshQuestion) string {
+	var b strings.Builder
+	b.WriteString("❓ The agent needs your answer — reply to this issue mentioning the agent.\n")
+	for i, question := range questions {
+		fmt.Fprintf(&b, "\n**Q%d**", i+1)
+		if header := strings.TrimSpace(question.Header); header != "" {
+			fmt.Fprintf(&b, " (%s)", header)
+		}
+		fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(question.Question))
+		if detail := strings.TrimSpace(question.Detail); detail != "" {
+			b.WriteString(detail)
+			b.WriteByte('\n')
+		}
+		for _, option := range question.Options {
+			if description := strings.TrimSpace(option.Description); description != "" {
+				fmt.Fprintf(&b, "- %s — %s\n", option.Label, description)
+			} else {
+				fmt.Fprintf(&b, "- %s\n", option.Label)
+			}
+		}
+		if intent := question.Intent; intent != nil && intent.Kind == "plan-review" && intent.Approve != "" {
+			fmt.Fprintf(&b, "📋 Plan review — reply *%s* to approve the plan above, or reply with your feedback to keep planning.\n", intent.Approve)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// dshSupplementMessageMarker precedes the human's own words in the framed
+// instruction formatTaskSupplementInstruction builds. The framing exists for
+// ordinary steering; an answer must carry the member's words, not the frame.
+const dshSupplementMessageMarker = "Human message:\n"
+
+func dshSupplementContent(instruction string) string {
+	if _, after, ok := strings.Cut(instruction, dshSupplementMessageMarker); ok {
+		return strings.TrimSpace(after)
+	}
+	return strings.TrimSpace(instruction)
+}
+
+// answerDshQuestion turns one steered human comment into the `answer` command
+// that resolves the bridge's parked ask. Free text answers every question as
+// custom text — the one deliberate mapping is a plan review answered with
+// exactly its approve label, which dsh treats as the approval selection.
+func answerDshQuestion(state *dshRunState, instruction string) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.questionsCapable {
+		return errors.New("dsh runtime bridge predates question answers (no `questions` capability in its ready frame)")
+	}
+	if state.pendingCallID == "" {
+		return errors.New("no question is pending on this dsh run")
+	}
+	if state.writeAnswer == nil {
+		return errors.New("dsh answer writer is unavailable")
+	}
+	content := dshSupplementContent(instruction)
+	answers := make([]dshAnswerItem, 0, len(state.pendingQuestions))
+	for _, question := range state.pendingQuestions {
+		item := dshAnswerItem{ID: question.ID, Selected: []string{}, Custom: content}
+		if intent := question.Intent; intent != nil && intent.Kind == "plan-review" && intent.Approve != "" &&
+			strings.EqualFold(content, intent.Approve) {
+			item = dshAnswerItem{ID: question.ID, Selected: []string{intent.Approve}}
+		}
+		answers = append(answers, item)
+	}
+	err := state.writeAnswer(dshAnswerCommand{
+		Version: DshProtocolVersion, Type: "answer", RequestID: state.requestID,
+		CallID: state.pendingCallID, Answers: answers,
+	})
+	if err != nil {
+		return fmt.Errorf("send dsh answer command: %w", err)
+	}
+	state.pendingCallID = ""
+	state.pendingQuestions = nil
+	return nil
 }
 
 func discoverDshModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {

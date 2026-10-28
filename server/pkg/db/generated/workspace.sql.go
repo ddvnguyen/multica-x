@@ -433,6 +433,88 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const removeWorkspaceSetting = `-- name: RemoveWorkspaceSetting :one
+UPDATE workspace SET
+    settings = CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END
+               - $1::text,
+    updated_at = now()
+WHERE id = $2
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
+`
+
+type RemoveWorkspaceSettingParams struct {
+	Key string      `json:"key"`
+	ID  pgtype.UUID `json:"id"`
+}
+
+// The inverse of SetWorkspaceSetting: a cleared key falls back to the code's
+// default instead of pinning today's default value into the row.
+func (q *Queries) RemoveWorkspaceSetting(ctx context.Context, arg RemoveWorkspaceSettingParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, removeWorkspaceSetting, arg.Key, arg.ID)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.Settings,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Context,
+		&i.Repos,
+		&i.IssuePrefix,
+		&i.IssueCounter,
+		&i.AvatarUrl,
+		&i.AttributionFailClosed,
+	)
+	return i, err
+}
+
+const setWorkspaceSetting = `-- name: SetWorkspaceSetting :one
+UPDATE workspace SET
+    settings = jsonb_set(
+        CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END,
+        ARRAY[$1::text],
+        $2::jsonb,
+        true
+    ),
+    updated_at = now()
+WHERE id = $3
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
+`
+
+type SetWorkspaceSettingParams struct {
+	Key   string      `json:"key"`
+	Value []byte      `json:"value"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// One key of settings, written in SQL rather than by round-tripping the whole
+// object through the handler: two admins editing different keys at the same
+// time must not overwrite each other. The jsonb_typeof guard matches the
+// migration-551 precedent — an old client could have stored a non-object, and
+// jsonb_set on an array is an error rather than a no-op.
+func (q *Queries) SetWorkspaceSetting(ctx context.Context, arg SetWorkspaceSettingParams) (Workspace, error) {
+	row := q.db.QueryRow(ctx, setWorkspaceSetting, arg.Key, arg.Value, arg.ID)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.Settings,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Context,
+		&i.Repos,
+		&i.IssuePrefix,
+		&i.IssueCounter,
+		&i.AvatarUrl,
+		&i.AttributionFailClosed,
+	)
+	return i, err
+}
+
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspace SET
     name = COALESCE($2, name),

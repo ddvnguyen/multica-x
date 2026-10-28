@@ -48,6 +48,9 @@ import type {
   WorkspaceWorkingAgentType,
   AgentRuntime,
   RuntimeProfile,
+  WorkspaceAccount,
+  CreateWorkspaceAccountRequest,
+  UpdateWorkspaceAccountRequest,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
   InboxItem,
@@ -242,6 +245,14 @@ import type {
   CreateCommentSubIssueRequest,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
+import type { AgentAnswerDraft } from "../issues/agent-question";
+import {
+  EMPTY_ISSUE_ASK_PLAN,
+  type AgentPlan,
+  type AskPlanQuestionCard,
+  type IssueAskPlan,
+  type PlanVerdictBody,
+} from "../issues/ask-plan";
 import type {
   CreateFeedbackResponse,
   FeedbackContext,
@@ -492,6 +503,7 @@ import {
   EMPTY_SHARE_LINK,
   EMPTY_SHARE_LINK_INFO,
   EMPTY_JOIN_SHARE_LINK_RESPONSE,
+  IssueAskPlanSchema,
   type IssueView,
   type IssueViewPreference,
   type CreateIssueViewRequest,
@@ -2483,6 +2495,40 @@ export class ApiClient {
     );
   }
 
+  async listWorkspaceAccounts(workspaceId: string): Promise<WorkspaceAccount[]> {
+    const res = await this.fetch<{ accounts?: WorkspaceAccount[] }>(
+      `/api/workspaces/${workspaceId}/accounts`,
+    );
+    return res.accounts ?? [];
+  }
+
+  async createWorkspaceAccount(
+    workspaceId: string,
+    body: CreateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(`/api/workspaces/${workspaceId}/accounts`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkspaceAccount(
+    workspaceId: string,
+    accountId: string,
+    patch: UpdateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(
+      `/api/workspaces/${workspaceId}/accounts/${accountId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  async deleteWorkspaceAccount(workspaceId: string, accountId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/accounts/${accountId}`, {
+      method: "DELETE",
+    });
+  }
+
   async getRuntimeUsage(
     runtimeId: string,
     params?: { days?: number; tz?: string },
@@ -2708,9 +2754,12 @@ export class ApiClient {
   // fabricated empty catalog or an endless spinner (MUL-5444).
   async initiateListModels(
     runtimeId: string,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; account?: string } = {},
   ): Promise<RuntimeModelListRequest> {
-    const query = options.force === true ? "?force=true" : "";
+    const params = new URLSearchParams();
+    if (options.force === true) params.set("force", "true");
+    if (options.account) params.set("account", options.account);
+    const query = params.toString() ? `?${params.toString()}` : "";
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models${query}`,
       {
@@ -2862,6 +2911,26 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Add one message to one exact running turn.
+   *
+   * Unlike a comment this needs no mention or assignee to route it: the turn
+   * is named, so the server binds the comment to it and the daemon delivers it
+   * as additional input. That is what a parked question is answered with — a
+   * reply that has to reach the turn that asked, not start another one.
+   */
+  async createTaskSupplement(
+    issueId: string,
+    taskId: string,
+    content: string,
+    clientRequestId: string,
+  ): Promise<Comment> {
+    return this.fetch(`/api/issues/${issueId}/tasks/${taskId}/supplements`, {
+      method: "POST",
+      body: JSON.stringify({ content, client_request_id: clientRequestId }),
+    });
+  }
+
   async retryTaskSupplement(issueId: string, taskId: string, commentId: string): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/tasks/${taskId}/supplements/${commentId}/retry`, {
       method: "POST",
@@ -3003,6 +3072,44 @@ export class ApiClient {
 
   async archiveCompletedInbox(): Promise<{ count: number }> {
     return this.fetch("/api/inbox/archive-completed", { method: "POST" });
+  }
+
+  // S1-A1 (M-118) ask/plan — the island's side of a parked exchange (M-120).
+  // All three are workspace-scoped human routes: the server gates the two
+  // writes behind RequireHumanActor, so a task token can never answer its own
+  // card or verdict its own plan.
+  async getIssueAskPlan(workspaceId: string, issueId: string): Promise<IssueAskPlan> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/issues/${issueId}/ask-plan`,
+    );
+    return parseWithFallback(raw, IssueAskPlanSchema, EMPTY_ISSUE_ASK_PLAN, {
+      endpoint: "GET /api/workspaces/{id}/issues/{id}/ask-plan",
+    });
+  }
+
+  // One answer per question, in question order; the server answers 409
+  // `card_closed` / `run_already_queued`, which the panel surfaces as the
+  // ApiError message rather than a toast.
+  async answerQuestionCard(
+    workspaceId: string,
+    cardId: string,
+    answers: readonly AgentAnswerDraft[],
+  ): Promise<{ card: AskPlanQuestionCard; resume_task: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/question-cards/${cardId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    });
+  }
+
+  async reviewPlan(
+    workspaceId: string,
+    planId: string,
+    verdict: PlanVerdictBody,
+  ): Promise<{ plan: AgentPlan; resume_task: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/plans/${planId}/verdict`, {
+      method: "POST",
+      body: JSON.stringify(verdict),
+    });
   }
 
   // Notification preferences

@@ -35,6 +35,35 @@
     "steer_step": "{{name}} が追加",
     "steer_step_read": "既読"
   },
+  "agent_question": {
+    "ask_title": "エージェントが回答を待っています",
+    "plan_title": "プランの承認待ち",
+    "single_choice": "1つ選択",
+    "multiple_choices": "複数選択可",
+    "answer_placeholder": "回答",
+    "answer_label": "次の質問への回答: {{question}}",
+    "other_placeholder": "または自由入力",
+    "approve": "プランを承認",
+    "request_changes": "修正を依頼",
+    "plan_hint": "承認するか、変更点を伝えてください。",
+    "send": "回答する",
+    "sending": "送信中…",
+    "sent": "回答を送信しました",
+    "failed": "回答を送信できませんでした。もう一度お試しください。"
+  },
+  "ask_plan": {
+    "plan_draft": "エージェントがこの計画を準備中です。まだレビューできる段階ではありません。",
+    "plan_changes_requested": "変更を要求しました。エージェントの修正と再提出を待っています。",
+    "section_empty": "このセクションにはまだ内容がありません。",
+    "comments_heading": "あなたのコメント",
+    "comments_empty": "コメントはまだありません。",
+    "comment_placeholder": "何を変更すべきですか？",
+    "add_comment": "コメントを追加",
+    "remove_comment": "コメントを削除",
+    "cancel": "計画をキャンセル",
+    "cancel_confirm": "もう一度クリックでキャンセル",
+    "failed": "レビューを記録できませんでした。もう一度お試しください。"
+  },
   "working_filter_error": {
     "title": "エージェントが作業中のタスクを読み込めませんでした"
   },

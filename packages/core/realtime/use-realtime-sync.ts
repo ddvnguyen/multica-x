@@ -977,6 +977,13 @@ export function useRealtimeSync(
         // every list-of-tasks query stale" so cache stays fresh even
         // when the relevant component isn't currently mounted.
         qc.invalidateQueries({ queryKey: ["issues", "tasks"] });
+        // The ask/plan panel (M-120) hangs off exactly these transitions: a
+        // `task:blocked` is a card or plan appearing, `task:queued` is the
+        // answer or verdict closing it, `task:cancelled` is the server
+        // withdrawing it. Without this a member already looking at the issue
+        // would keep seeing a card the run no longer waits on (or miss the
+        // one it just parked) until a refetch.
+        qc.invalidateQueries({ queryKey: issueKeys.askPlanAll(wsId) });
         // Per-issue token usage card (issue-detail right rail). Same
         // shape as the tasks invalidation above — any task lifecycle
         // event shifts the aggregated usage numbers.

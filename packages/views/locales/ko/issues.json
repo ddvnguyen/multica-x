@@ -35,6 +35,35 @@
     "steer_step": "{{name}}이(가) 추가",
     "steer_step_read": "읽음"
   },
+  "agent_question": {
+    "ask_title": "에이전트가 답변을 기다립니다",
+    "plan_title": "계획 승인 대기",
+    "single_choice": "하나 선택",
+    "multiple_choices": "여러 개 선택 가능",
+    "answer_placeholder": "답변",
+    "answer_label": "다음 질문에 대한 답변: {{question}}",
+    "other_placeholder": "또는 직접 답변을 입력하세요",
+    "approve": "계획 승인",
+    "request_changes": "수정 요청",
+    "plan_hint": "승인하거나 변경할 내용을 알려주세요.",
+    "send": "답변",
+    "sending": "전송 중…",
+    "sent": "답변을 보냈습니다",
+    "failed": "답변을 보내지 못했습니다. 다시 시도하세요."
+  },
+  "ask_plan": {
+    "plan_draft": "에이전트가 이 계획을 준비 중입니다. 아직 검토할 내용이 없습니다.",
+    "plan_changes_requested": "변경을 요청했습니다. 에이전트의 수정과 재제출을 기다리는 중입니다.",
+    "section_empty": "이 섹션에는 아직 내용이 없습니다.",
+    "comments_heading": "내 댓글",
+    "comments_empty": "아직 댓글이 없습니다.",
+    "comment_placeholder": "무엇을 바꿔야 하나요?",
+    "add_comment": "댓글 추가",
+    "remove_comment": "댓글 삭제",
+    "cancel": "계획 취소",
+    "cancel_confirm": "다시 클릭하면 취소됩니다",
+    "failed": "검토를 기록하지 못했습니다. 다시 시도하세요."
+  },
   "working_filter_error": {
     "title": "에이전트가 작업 중인 태스크를 불러오지 못했습니다"
   },

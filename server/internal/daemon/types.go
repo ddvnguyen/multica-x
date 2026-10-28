@@ -98,6 +98,12 @@ type Task struct {
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
 	WorkspaceContext string `json:"workspace_context,omitempty"`
+	// MoctMemoryInject is the workspace's pre-run memory switch (S2-C, M-123).
+	// nil means the claim came from a server that predates the switch, so the
+	// daemon keeps injecting exactly as it did; false is the only value that
+	// suppresses the MOCT inject block. The `moct` MCP server is unaffected —
+	// that is the agent's deliberate pull, not the automatic block.
+	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
 	// IssueStatuses mirrors the claim payload's active CUSTOM status catalog
 	// (MUL-6460): key/name/category/description per status, already in catalog
 	// order. Rendered into the brief's status-command line; empty (including on
@@ -155,9 +161,10 @@ type Task struct {
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
 	WakeupID                      string                 `json:"wakeup_id,omitempty"`
-	WakeupSystemRule              string                 `json:"wakeup_system_rule,omitempty"` // a platform rule (e.g. child_done) started the run
-	WakeupJoined                  string                 `json:"wakeup_joined,omitempty"`      // wakeups that joined this run instead of queuing their own
-	HandoffNote                   string                 `json:"handoff_note,omitempty"`       // legacy assignment handoff instruction; rendered only in the per-turn prompt
+	WakeupSystemRule              string                 `json:"wakeup_system_rule,omitempty"`    // a platform rule (e.g. child_done) started the run
+	WakeupJoined                  string                 `json:"wakeup_joined,omitempty"`         // wakeups that joined this run instead of queuing their own
+	HandoffNote                   string                 `json:"handoff_note,omitempty"`          // legacy assignment handoff instruction; rendered only in the per-turn prompt
+	TriggerEvidenceKind           string                 `json:"trigger_evidence_kind,omitempty"` // S1-A1: question_answer / plan_verdict names a parked ask/plan resume; the prompt renders the handoff as the answer/verdict block
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
@@ -225,6 +232,10 @@ type AgentData struct {
 	Model                 string                     `json:"model,omitempty"`
 	ThinkingLevel         string                     `json:"thinking_level,omitempty"`
 	ServiceTier           string                     `json:"service_tier,omitempty"`
+	AccountMode           string                     `json:"account_mode,omitempty"`
+	AccountID             string                     `json:"account_id,omitempty"`
+	AccountEndpoint       string                     `json:"account_endpoint,omitempty"`
+	AccountCredentialRef  string                     `json:"account_credential_ref,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkillData `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the per-provider runtime_config JSON as stored on
 	// the agent record, forwarded verbatim by the claim endpoint. The
@@ -318,8 +329,13 @@ type TaskResult struct {
 	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
 	// including the completed one: a fresh-session retry that SUCCEEDS is
 	// precisely when the abandoned id would otherwise stay selectable.
-	RetiredSessionID string           `json:"-"`
-	Usage            []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
+	RetiredSessionID string `json:"-"`
+	// InitContext is this run's per-part price of its first request (M-140).
+	// Forwarded on every terminal path and stored in the run row's result
+	// JSONB. Raw JSON because the shape is owned by internal/daemon/initctx
+	// and the server mirrors it rather than importing it.
+	InitContext json.RawMessage  `json:"-"`
+	Usage       []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.

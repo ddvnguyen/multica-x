@@ -1598,6 +1598,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/supplements/claim", h.ClaimTaskSupplement)
 		r.Post("/tasks/{taskId}/supplements/{commentId}/ack", h.AckTaskSupplement)
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
+		// S1-A1 (M-118): the daemon observed the task parked (blocked) on its
+		// cancel poll, interrupted the local agent, and reports the session so
+		// the answer's resume run can continue it. Idempotent CAS, mirroring
+		// the wait-local-directory precedent above.
+		r.Post("/tasks/{taskId}/blocked", h.BlockTask)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
@@ -1720,6 +1725,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// are admin-gated below).
 					r.Get("/runtime-profiles", h.ListRuntimeProfiles)
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
+					// Per-workspace accounts (freebuff-desktop) — member-visible listing.
+					r.Get("/accounts", h.ListWorkspaceAccounts)
 					// Freebuff browser login. The account client on the
 					// daemon's machine owns the login, so it asks here
 					// whether a login was requested and reports the
@@ -1741,12 +1748,34 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// S1-A1 (M-118) ask/plan. Agent side is task-token
+					// authenticated (the mat_ middleware stamps X-Task-ID; the
+					// handlers refuse anything but the caller's own running
+					// issue task). Human side is gated by RequireHumanActor,
+					// same as the supplement route: a task token must never
+					// answer its own card or verdict its own plan.
+					r.Post("/tasks/{taskId}/ask", h.SubmitAsk)
+					r.Post("/tasks/{taskId}/plans", h.CreatePlan)
+					r.Put("/plans/{planId}/sections", h.WritePlanSection)
+					r.Post("/plans/{planId}/submit", h.SubmitPlan)
+					r.With(handler.RequireHumanActor).Post("/question-cards/{cardId}/answer", h.AnswerQuestionCard)
+					r.With(handler.RequireHumanActor).Post("/plans/{planId}/verdict", h.ReviewPlan)
+					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
+					// S2-C (M-123) settings the dsh panel's MOCT group reads: the
+					// ask/plan interaction timeout (with its per-project overrides)
+					// and the pre-run memory switch. Reads are member-visible —
+					// neither value describes a person — and the writes below are
+					// admin-gated.
+					r.Get("/interactions", h.GetInteractions)
+					r.Get("/moct", h.GetMoctSettings)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
+					r.Put("/interactions", h.UpdateInteractions)
+					r.Put("/moct", h.UpdateMoctSettings)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -1767,6 +1796,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Put("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
+					// Per-workspace accounts (freebuff-desktop).
+					r.Post("/accounts", h.CreateWorkspaceAccount)
+					r.Route("/accounts/{accountId}", func(r chi.Router) {
+						r.Patch("/", h.UpdateWorkspaceAccount)
+						r.Put("/", h.UpdateWorkspaceAccount)
+						r.Delete("/", h.DeleteWorkspaceAccount)
+					})
 					// Publishing. The author uploads an artifact bundle and we
 					// store it; a version is immutable once published, so
 					// there is no update route here by design.
@@ -2158,6 +2194,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/", h.UpdateProject)
 					r.Delete("/", h.DeleteProject)
 					r.Post("/workflow", h.SetProjectWorkflow)
+					// The project's own ask/plan wait (S2-C, M-123). The handler
+					// gates on workspace owner/admin; the route stays member-level
+					// like the rest of this group so a non-admin gets a 403 with a
+					// reason instead of the group's member-shaped refusal.
+					r.Put("/interactions", h.SetProjectInteractions)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)

@@ -1893,10 +1893,11 @@ func TestTurnModeMarkersRetired(t *testing.T) {
 func TestBriefCarriesNoModeRouter(t *testing.T) {
 	t.Parallel()
 
-	brief, err := execenv.InjectRuntimeConfig(t.TempDir(), "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
+	rendered, err := execenv.InjectRuntimeConfig(t.TempDir(), "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
 	if err != nil {
 		t.Fatalf("InjectRuntimeConfig: %v", err)
 	}
+	brief := rendered.Content
 	for _, banned := range []string{"Turn mode", "Ownership mode", "Reply mode", "mode block"} {
 		if strings.Contains(brief, banned) {
 			t.Errorf("brief still references the retired turn-mode split via %q (MUL-6417)\n---\n%s", banned, brief)

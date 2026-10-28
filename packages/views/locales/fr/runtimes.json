@@ -494,5 +494,18 @@
     "credit_daily": "{{remaining}} Freebucks restants sur {{limit}} aujourd'hui",
     "credit_total": "{{total}} Freebucks au total",
     "prices_title": "Prix par modèle"
+  },
+  "accounts": {
+    "title": "Comptes",
+    "description": "Les agents de ce runtime peuvent utiliser n’importe lequel de ces comptes. La référence d’identifiants est un nom que le daemon résout sur sa propre machine, jamais un secret.",
+    "empty": "Aucun compte pour l’instant.",
+    "no_endpoint": "Point d’accès par défaut",
+    "enabled_aria": "Activer {{label}}",
+    "delete_aria": "Supprimer {{label}}",
+    "label_placeholder": "Libellé",
+    "endpoint_placeholder": "Point d’accès (http://hôte:4320)",
+    "credential_placeholder": "Référence d’identifiants",
+    "add": "Ajouter un compte",
+    "toast_failed": "Impossible de mettre à jour le compte"
   }
 }

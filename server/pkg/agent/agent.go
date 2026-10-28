@@ -217,6 +217,12 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
+	// MessageQuestion is a user-decision request the backend is parked on:
+	// the run stays alive until Session.Supplement delivers the human's
+	// answer (or the run is cancelled). Content carries the rendered
+	// question(s) for the transcript; CallID keys the answer round-trip.
+	// Currently emitted only by the dsh backend (ask/plan parity, M-109).
+	MessageQuestion MessageType = "question"
 )
 
 // Message is a unified event emitted by an agent during execution.

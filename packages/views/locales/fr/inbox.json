@@ -74,6 +74,8 @@
     "review_requested": "Relecture demandée",
     "task_completed": "Exécution terminée",
     "task_failed": "Exécution en échec",
+    "agent_question": "Votre réponse attendue",
+    "plan_review": "Plan à valider",
     "agent_blocked": "Agent bloqué",
     "agent_completed": "Agent terminé",
     "reaction_added": "Réaction",

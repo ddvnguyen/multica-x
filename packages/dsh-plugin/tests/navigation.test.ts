@@ -1,0 +1,205 @@
+// @vitest-environment node
+import { describe, expect, it, vi } from "vitest";
+import {
+  BOARD_ROUTE,
+  createIslandNavigation,
+  FAMILY_ROOTS,
+  HIDDEN_AREAS,
+  islandParent,
+  islandPath,
+  islandPathname,
+  islandRouteKey,
+  parseIslandRoute,
+} from "../src/client/navigation";
+
+describe("parseIslandRoute", () => {
+  it("reads the board", () => {
+    expect(parseIslandRoute("/demo/issues")).toEqual(BOARD_ROUTE);
+  });
+
+  it("reads one issue, including an identifier segment", () => {
+    expect(parseIslandRoute("/demo/issues/MUL-12")).toEqual({
+      view: "issue",
+      issueId: "MUL-12",
+    });
+    expect(parseIslandRoute("/demo/issues/MUL-12#comment-abc")).toEqual({
+      view: "issue",
+      issueId: "MUL-12",
+    });
+    expect(parseIslandRoute("/demo/issues/MUL%2D12")).toEqual({
+      view: "issue",
+      issueId: "MUL-12",
+    });
+  });
+
+  it("reads the other five entries of the menu", () => {
+    expect(parseIslandRoute("/demo/agents")).toEqual({ view: "agents" });
+    expect(parseIslandRoute("/demo/skills")).toEqual({ view: "skills" });
+    expect(parseIslandRoute("/demo/inbox")).toEqual({ view: "inbox" });
+    expect(parseIslandRoute("/demo/chat")).toEqual({ view: "chat" });
+    expect(parseIslandRoute("/demo/settings")).toEqual({ view: "settings" });
+    // Settings addresses its page through the query, never a segment.
+    expect(parseIslandRoute("/demo/settings?tab=moct-memory")).toEqual({
+      view: "settings",
+      query: "tab=moct-memory",
+    });
+    expect(parseIslandRoute("/demo/settings/billing")).toBeNull();
+  });
+
+  it("reads the detail depth of the families that have one", () => {
+    expect(parseIslandRoute("/demo/agents/agent-7")).toEqual({
+      view: "agent",
+      agentId: "agent-7",
+    });
+    expect(parseIslandRoute("/demo/skills/skill-3")).toEqual({
+      view: "skill",
+      skillId: "skill-3",
+    });
+  });
+
+  it("keeps the query the pages address their state with", () => {
+    expect(parseIslandRoute("/demo/chat?session=abc")).toEqual({
+      view: "chat",
+      query: "session=abc",
+    });
+    expect(parseIslandRoute("/demo/inbox?view=archived&issue=MUL-1")).toEqual({
+      view: "inbox",
+      query: "view=archived&issue=MUL-1",
+    });
+  });
+
+  it("refuses every other destination", () => {
+    expect(parseIslandRoute("/demo/billing")).toBeNull();
+    expect(parseIslandRoute("/demo/issues/MUL-1/extra")).toBeNull();
+    // The agent creation flow is not a page this panel renders.
+    expect(parseIslandRoute("/demo/agents/new")).toBeNull();
+    expect(parseIslandRoute("/demo/inbox/MUL-1")).toBeNull();
+  });
+});
+
+describe("islandPath", () => {
+  it("round-trips every route through the parser", () => {
+    const routes = [
+      BOARD_ROUTE,
+      { view: "issue" as const, issueId: "MUL-9" },
+      { view: "agents" as const },
+      { view: "agent" as const, agentId: "agent-7" },
+      { view: "skills" as const },
+      { view: "skill" as const, skillId: "skill-3" },
+      { view: "inbox" as const },
+      { view: "chat" as const, query: "session=abc" },
+      { view: "inbox" as const, query: "view=archived" },
+      { view: "settings" as const },
+      { view: "settings" as const, query: "tab=moct-connection" },
+    ];
+    for (const route of routes) {
+      expect(parseIslandRoute(islandPath("demo", route))).toEqual(route);
+      // The pathname is the same path without the query, which is what the
+      // fork's pages compare against.
+      expect(islandPathname("demo", route)).toBe(islandPath("demo", route).split("?")[0]);
+    }
+  });
+
+  it("names each family after the web app's own route", () => {
+    expect(islandPathname("demo", FAMILY_ROOTS.issues)).toBe("/demo/issues");
+    expect(islandPathname("demo", FAMILY_ROOTS.agents)).toBe("/demo/agents");
+    expect(islandPathname("demo", FAMILY_ROOTS.skills)).toBe("/demo/skills");
+    expect(islandPathname("demo", FAMILY_ROOTS.inbox)).toBe("/demo/inbox");
+    expect(islandPathname("demo", FAMILY_ROOTS.chat)).toBe("/demo/chat");
+    expect(islandPathname("demo", FAMILY_ROOTS.settings)).toBe("/demo/settings");
+  });
+});
+
+describe("islandParent", () => {
+  it("gives each detail view its family root and each root nothing", () => {
+    expect(islandParent({ view: "issue", issueId: "MUL-1" })).toEqual(BOARD_ROUTE);
+    expect(islandParent({ view: "agent", agentId: "a" })).toEqual(FAMILY_ROOTS.agents);
+    expect(islandParent({ view: "skill", skillId: "s" })).toEqual(FAMILY_ROOTS.skills);
+    for (const root of Object.values(FAMILY_ROOTS)) {
+      expect(islandParent(root)).toBeNull();
+    }
+  });
+});
+
+describe("islandRouteKey", () => {
+  it("separates the rendered places", () => {
+    expect(
+      new Set([
+        islandRouteKey(BOARD_ROUTE),
+        islandRouteKey({ view: "issue", issueId: "MUL-1" }),
+        islandRouteKey(FAMILY_ROOTS.agents),
+        islandRouteKey({ view: "agent", agentId: "a" }),
+        islandRouteKey(FAMILY_ROOTS.skills),
+        islandRouteKey({ view: "skill", skillId: "s" }),
+        islandRouteKey(FAMILY_ROOTS.inbox),
+        islandRouteKey(FAMILY_ROOTS.chat),
+        islandRouteKey(FAMILY_ROOTS.settings),
+      ]).size,
+    ).toBe(9);
+  });
+});
+
+describe("createIslandNavigation", () => {
+  it("swaps the rendered page on push instead of leaving the panel", () => {
+    const onChange = vi.fn();
+    const navigation = createIslandNavigation({
+      slug: "demo",
+      route: BOARD_ROUTE,
+      onChange,
+    });
+    navigation.push("/demo/issues/MUL-3");
+    expect(onChange).toHaveBeenCalledWith({ view: "issue", issueId: "MUL-3" });
+    navigation.push("/demo/chat?session=abc");
+    expect(onChange).toHaveBeenCalledWith({ view: "chat", query: "session=abc" });
+  });
+
+  it("refuses the surfaces this panel hides (Q8)", () => {
+    const onChange = vi.fn();
+    const onRefused = vi.fn();
+    const navigation = createIslandNavigation({
+      slug: "demo",
+      route: BOARD_ROUTE,
+      onChange,
+      onRefused,
+    });
+    for (const area of HIDDEN_AREAS) {
+      navigation.push(`/demo/${area}`);
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledTimes(HIDDEN_AREAS.length);
+  });
+
+  it("reports where it is and what is behind it", () => {
+    const board = createIslandNavigation({
+      slug: "demo",
+      route: BOARD_ROUTE,
+      onChange: vi.fn(),
+    });
+    expect(board.pathname).toBe("/demo/issues");
+    expect(board.canGoBack?.()).toBe(false);
+
+    const issue = createIslandNavigation({
+      slug: "demo",
+      route: { view: "issue", issueId: "MUL-1" },
+      onChange: vi.fn(),
+    });
+    expect(issue.pathname).toBe("/demo/issues/MUL-1");
+    expect(issue.canGoBack?.()).toBe(true);
+    expect(issue.getShareableUrl("/demo/issues/MUL-1")).toBe("");
+  });
+
+  it("hands the pages the query they address their state with", () => {
+    const onChange = vi.fn();
+    const chat = createIslandNavigation({
+      slug: "demo",
+      route: { view: "chat", query: "session=abc" },
+      onChange,
+    });
+    // ChatPage compares its own path against the workspace's chat route, so the
+    // pathname must not carry the query.
+    expect(chat.pathname).toBe("/demo/chat");
+    expect(chat.searchParams.get("session")).toBe("abc");
+    chat.back();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});

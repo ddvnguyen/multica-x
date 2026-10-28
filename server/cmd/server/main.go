@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -307,6 +308,20 @@ func jwtSecretBootError(jwtSecret, appEnv string) error {
 	return auth.ValidateJWTSecret(jwtSecret)
 }
 
+// listenAddr combines an optional bind host with the port into the address the
+// public HTTP server listens on. An empty or whitespace-only host preserves the
+// historical ":port" behavior (all interfaces), which the Docker Compose
+// self-host stack relies on; a set host binds the listener to it. Bare IPv6
+// hosts (and defensively, pre-bracketed ones) are normalized via
+// net.JoinHostPort so "::1:4390" never reaches net.Listen.
+func listenAddr(host, port string) string {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return ":" + port
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // newMainHTTPServer builds the public HTTP server with the production timeout
 // defaults. These values are load-bearing safety settings, not cosmetic tuning,
 // so they live in one helper that main() and the config regression test share.
@@ -357,6 +372,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	bindHost := os.Getenv("MULTICA_BIND_HOST")
 	shutdownHoldDuration := envNonNegativeDuration("MULTICA_SHUTDOWN_HOLD_DURATION", 0)
 
 	// Feature flags: loaded once at startup from MULTICA_FEATURE_FLAGS_FILE
@@ -708,7 +724,7 @@ func main() {
 	// the scheduler's Run goroutine starts so the field write is race-free.
 	heartbeatScheduler.RecoveryNotifier = h
 
-	srv := newMainHTTPServer(":"+port, r)
+	srv := newMainHTTPServer(listenAddr(bindHost, port), r)
 	profilingServer := profiling.NewServer()
 	maintenanceServer, maintenanceErr := maintenance.NewServer(os.Getenv("MAINTENANCE_PORT"), maintenance.NewService(pool, maintenance.StatusCategory{}))
 	if maintenanceErr != nil {
@@ -876,7 +892,7 @@ func main() {
 	}()
 
 	go func() {
-		slog.Info("server starting", "port", port)
+		slog.Info("server starting", "addr", listenAddr(bindHost, port), "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)

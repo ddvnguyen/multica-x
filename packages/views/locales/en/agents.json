@@ -986,5 +986,11 @@
     "selected_one": "{{count}} selected",
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
+  },
+  "account_field": {
+    "label": "Account",
+    "runtime_default": "Runtime default",
+    "any": "Any account",
+    "hint": "Which Freebuff account runs this agent. “Any account” picks the least busy one for each run."
   }
 }

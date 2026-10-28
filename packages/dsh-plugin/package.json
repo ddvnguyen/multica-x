@@ -1,0 +1,77 @@
+{
+  "name": "@multica/dsh-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness client plugin that renders the Multica board and issue page in the shell's main column.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "FORK.md",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.client-types.json && vite build --logLevel warn && node scripts/wrap-client.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && node scripts/check-fork-entry.mjs",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@multica/core": "workspace:*",
+    "@multica/eslint-config": "workspace:*",
+    "@multica/tsconfig": "workspace:*",
+    "@multica/ui": "workspace:*",
+    "@multica/views": "workspace:*",
+    "@playwright/test": "^1.58.2",
+    "@tailwindcss/vite": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@testing-library/jest-dom": "catalog:",
+    "@testing-library/react": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "catalog:",
+    "eslint": "^9.0.0",
+    "jsdom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "shadcn": "^4.1.0",
+    "tailwindcss": "catalog:",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "catalog:",
+    "vite": "^8.0.1",
+    "vitest": "catalog:"
+  }
+}

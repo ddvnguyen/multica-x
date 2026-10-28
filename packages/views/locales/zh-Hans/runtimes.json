@@ -478,5 +478,18 @@
     "credit_daily": "今日剩余 {{remaining}} / {{limit}} Freebucks",
     "credit_total": "共 {{total}} Freebucks",
     "prices_title": "各模型价格"
+  },
+  "accounts": {
+    "title": "账户",
+    "description": "此运行时上的智能体可以使用其中任意账户。凭据引用是守护进程在其所在机器上解析的名称，而不是密钥。",
+    "empty": "还没有账户。",
+    "no_endpoint": "默认端点",
+    "enabled_aria": "启用 {{label}}",
+    "delete_aria": "删除 {{label}}",
+    "label_placeholder": "标签",
+    "endpoint_placeholder": "端点 (http://host:4320)",
+    "credential_placeholder": "凭据引用",
+    "add": "添加账户",
+    "toast_failed": "无法更新账户"
   }
 }

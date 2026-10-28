@@ -32,6 +32,13 @@
  * file outside the guarded directories and follows imports inward, so a pair
  * of dead components importing only each other stays dead.
  *
+ * Test files are outside both roles. `*.test.tsx`/`*.spec.tsx` are vitest entry
+ * points found by the runner's own glob, so "nothing imports it" is what a
+ * colocated test looks like on a healthy tree — guarding them made every test
+ * added beside a components/ui primitive fail CI. They are not roots either: a
+ * component imported only by its own test is dead, for the same reason a
+ * `vi.mock("...")` is not an edge.
+ *
  * Edges come from real syntax nodes via the TypeScript parser, not from a
  * regex over source text. Text matching counts a commented-out import as a
  * live edge, which is precisely the state a file passes through when its last
@@ -95,6 +102,11 @@ function importedSpecifiers(sourceText, filePath) {
   return specifiers;
 }
 
+/** Runner entry points, not library modules: vitest discovers them by glob. */
+function isTestFile(file) {
+  return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file);
+}
+
 function walk(dir, out = []) {
   for (const dirent of readdirSync(dir, { withFileTypes: true })) {
     if (dirent.name.startsWith(".")) continue;
@@ -154,11 +166,13 @@ for (const { dir, extension } of wildcards) {
   for (const entry of entries) {
     if (!entry.endsWith(extension)) continue;
     const file = join(uiRoot, dir, entry);
-    if (statSync(file).isFile() && !exactExportTargets.has(file)) guarded.add(file);
+    if (statSync(file).isFile() && !exactExportTargets.has(file) && !isTestFile(file)) {
+      guarded.add(file);
+    }
   }
 }
 
-const sourceFiles = walk(repoRoot);
+const sourceFiles = walk(repoRoot).filter((file) => !isTestFile(file));
 const known = new Set(sourceFiles);
 
 /** Resolve one specifier from one importer to a guarded file, or null. */

@@ -104,6 +104,7 @@ func buildJoinedWakeupsBlock(notes string) string {
 type promptOpts struct {
 	sharedLocalDirectory    bool
 	worktreeReplayConflicts []string
+	moctInject              string
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
@@ -117,6 +118,16 @@ type PromptOption func(*promptOpts)
 // has to be told (issue #7344).
 func WithSharedLocalDirectory() PromptOption {
 	return func(o *promptOpts) { o.sharedLocalDirectory = true }
+}
+
+// WithMoctInject hands BuildPrompt the MOCT memory block fetched for this
+// claim (docs/moct-seam.md out-path 1). Unlike every other run-scoped block
+// it is PREPENDED rather than appended: it is context the run has not seen
+// before and the seam contract puts it ahead of the task's own instruction.
+// The block is fetched once per claim, so a resumed session's retry sees the
+// same memory instead of a second, possibly different, fetch.
+func WithMoctInject(block string) PromptOption {
+	return func(o *promptOpts) { o.moctInject = block }
 }
 
 // WithWorktreeReplayConflicts names the files whose merge this turn has to
@@ -212,6 +223,13 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	// The MOCT memory block is the one run-scoped block that goes in FRONT of
+	// the task instruction, per the seam contract (docs/moct-seam.md). The
+	// rule below still holds for everything else — and for the block itself
+	// once it is in place: it does not change again within a session.
+	if opts.moctInject != "" {
+		body = opts.moctInject + body
+	}
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -253,6 +271,13 @@ func buildPromptBody(task Task, provider string) string {
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
+	// S1-A1 (M-118): a run resumed from a parked ask/plan carries the human's
+	// answer or verdict in the handoff note. Render it as the answer/verdict
+	// block (mirroring the [WAKEUP] pattern) so the agent reads it as the
+	// human's reply to its own parked question/plan, not as a scoping note.
+	if task.TriggerEvidenceKind == "question_answer" || task.TriggerEvidenceKind == "plan_verdict" {
+		return buildAskPlanResumePrompt(task)
+	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
@@ -271,6 +296,27 @@ func buildPromptBody(task Task, provider string) string {
 	// treat the read as mandatory)", which read as if comment-triggered turns
 	// did not (MUL-6984).
 	fmt.Fprintf(&b, "For comment history, workflow step 2 applies. Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
+	return b.String()
+}
+
+// buildAskPlanResumePrompt renders the resumed run's prompt for an answer or
+// plan verdict (S1-A1). The handoff note carries the human's reply; it is
+// presented as the answer to the agent's own parked question/plan, and the
+// run continues the same issue and session.
+func buildAskPlanResumePrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
+	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	if task.TriggerEvidenceKind == "plan_verdict" {
+		b.WriteString("[PLAN VERDICT]\n")
+	} else {
+		b.WriteString("[ANSWER]\n")
+	}
+	if task.HandoffNote != "" {
+		b.WriteString(strings.TrimSpace(task.HandoffNote))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("This run resumes the session that asked the question or proposed the plan; continue the task with the human's reply above. Start by running `multica issue get " + task.IssueID + " --output json` to confirm the current state, then proceed.\n")
 	return b.String()
 }
 

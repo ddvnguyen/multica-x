@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
   Agent,
@@ -46,19 +53,53 @@ import { useNavigation } from "../../navigation";
 
 type DetailSection = "overview" | "work" | "capabilities" | "settings";
 
-export type DetailTab =
-  | "overview"
-  | "work"
-  | "instructions"
-  | "skills"
-  | "mcp_config"
-  | "composio_mcp"
-  | "integrations"
-  | "general"
-  | "access"
-  | "env"
-  | "custom_args"
-  | "runtime_config";
+/**
+ * Every view this pane knows on its own. Extras widen `DetailTab` the way
+ * `ExtraSettingsGroup` widens the settings page: the host names its own
+ * id, and the pane routes and lays it out without learning what it is.
+ */
+const BUILTIN_DETAIL_TABS = [
+  "overview",
+  "work",
+  "instructions",
+  "skills",
+  "mcp_config",
+  "composio_mcp",
+  "integrations",
+  "general",
+  "access",
+  "env",
+  "custom_args",
+  "runtime_config",
+] as const;
+
+export type DetailTab = (typeof BUILTIN_DETAIL_TABS)[number] | (string & {});
+
+/**
+ * A whole top-level section a host appends beside Settings.
+ *
+ * The host owns the label and the content because it is describing its own
+ * plane (a memory service, a transport) that the agent page knows nothing
+ * about; the pane owns only where the section sits, how it is opened, and the
+ * page rail it aligns to — the same division `ExtraSettingsGroup` sets up for
+ * the settings page.
+ */
+export interface ExtraAgentSection {
+  /** The `?view=` value that opens the section, unique among the sections. */
+  id: string;
+  /** The tab's label, host-owned like the group it mirrors. */
+  label: string;
+  render: (agent: Agent) => ReactNode;
+}
+
+const TOP_TAB_CLASS =
+  "relative shrink-0 py-3 text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+
+interface TopTab {
+  id: DetailTab;
+  labelKey?: DetailSection;
+  label?: string;
+}
 
 type SecondaryTab = {
   id: DetailTab;
@@ -91,7 +132,7 @@ const SETTINGS_TABS: SecondaryTab[] = [
   { id: "runtime_config", labelKey: "runtime_config" },
 ];
 
-const TOP_TABS: { id: DetailSection; labelKey: DetailSection }[] = [
+const TOP_TABS: TopTab[] = [
   { id: "overview", labelKey: "overview" },
   { id: "work", labelKey: "work" },
   { id: "capabilities", labelKey: "capabilities" },
@@ -131,6 +172,8 @@ interface AgentOverviewPaneProps {
   canEdit: boolean;
   navIntent?: DetailTab | null;
   onNavIntentHandled?: () => void;
+  /** Sections a host appends beside Settings, in the order it wants them. */
+  extraSections?: readonly ExtraAgentSection[];
 }
 
 /**
@@ -151,6 +194,7 @@ export function AgentOverviewPane({
   canEdit,
   navIntent,
   onNavIntentHandled,
+  extraSections = [],
 }: AgentOverviewPaneProps) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
@@ -160,8 +204,19 @@ export function AgentOverviewPane({
     COMPOSIO_MCP_APPS_FLAG,
     false,
   );
+  // The extras map is built before the view state so the first render can
+  // already open `?view=<extra>`; hooks order keeps that honest.
+  const extraById = useMemo(
+    () => new Map<string, ExtraAgentSection>(extraSections.map((section) => [section.id, section])),
+    [extraSections],
+  );
+  const extraViews = useMemo(() => new Set(extraById.keys()), [extraById]);
+
   const [activeView, setActiveView] = useState<DetailTab>(() =>
-    isDetailTab(urlView) ? urlView : "overview",
+    urlView !== null &&
+    (isDetailTab(urlView) || extraSections.some((section) => section.id === urlView))
+      ? urlView
+      : "overview",
   );
   const [activeDirty, setActiveDirty] = useState(false);
   const [pendingView, setPendingView] = useState<DetailTab | null>(null);
@@ -240,12 +295,16 @@ export function AgentOverviewPane({
         "work",
         ...visibleCapabilityTabs.map((tab) => tab.id),
         ...visibleSettingsTabs.map((tab) => tab.id),
+        ...extraViews,
       ]),
-    [visibleCapabilityTabs, visibleSettingsTabs],
+    [visibleCapabilityTabs, visibleSettingsTabs, extraViews],
   );
 
   const effectiveView = visibleViews.has(activeView) ? activeView : "overview";
-  const activeSection = sectionForView(effectiveView);
+  // An extra section IS its own top section; the built-ins keep their mapping.
+  const activeSection: DetailSection | DetailTab = extraViews.has(effectiveView)
+    ? effectiveView
+    : sectionForView(effectiveView);
 
   const commitView = useCallback(
     (next: DetailTab) => {
@@ -271,8 +330,12 @@ export function AgentOverviewPane({
     [activeDirty, commitView, effectiveView],
   );
 
-  const requestSection = (section: DetailSection) => {
+  const requestSection = (section: DetailSection | DetailTab) => {
     if (section === "overview" || section === "work") {
+      requestView(section);
+      return;
+    }
+    if (extraViews.has(section)) {
       requestView(section);
       return;
     }
@@ -303,7 +366,7 @@ export function AgentOverviewPane({
       setActiveView("overview");
       return;
     }
-    if (isDetailTab(urlView) && visibleViews.has(urlView)) {
+    if (visibleViews.has(urlView)) {
       setActiveView(urlView);
     }
   }, [urlView, visibleViews]);
@@ -333,21 +396,41 @@ export function AgentOverviewPane({
         aria-label={t(($) => $.tabs.page_navigation_aria)}
       >
         <div className={cn(PAGE_RAIL, PAGE_GUTTER, "flex items-center gap-6")}>
-          {TOP_TABS.map((tab) => (
+          {TOP_TABS.map((tab) => {
+            const labelKey = tab.labelKey;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeSection === tab.id}
+                onClick={() => requestSection(tab.id)}
+                className={cn(
+                  TOP_TAB_CLASS,
+                  activeSection === tab.id
+                    ? "text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {labelKey !== undefined ? t(($) => $.tabs[labelKey]) : tab.label}
+              </button>
+            );
+          })}
+          {extraSections.map((section) => (
             <button
-              key={tab.id}
+              key={section.id}
               type="button"
               role="tab"
-              aria-selected={activeSection === tab.id}
-              onClick={() => requestSection(tab.id)}
+              aria-selected={activeSection === section.id}
+              onClick={() => requestSection(section.id)}
               className={cn(
-                "relative shrink-0 py-3 text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                activeSection === tab.id
+                TOP_TAB_CLASS,
+                activeSection === section.id
                   ? "text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {t(($) => $.tabs[tab.labelKey])}
+              {section.label}
             </button>
           ))}
         </div>
@@ -399,6 +482,25 @@ export function AgentOverviewPane({
             <ActorIssuesPanel actorType="agent" actorId={agent.id} />
           </div>
         )}
+
+        {(() => {
+          const extra = extraById.get(effectiveView);
+          if (extra === undefined) return null;
+          // A section that is not a second nav is a single column, on the rail
+          // and behind the same content width a settings tab gets.
+          return (
+            <div className={cn(PAGE_RAIL, "flex min-h-full flex-col")}>
+              <div className="w-full max-w-3xl p-4 sm:p-6 md:p-8">
+                <header>
+                  <h2 className="text-title-sm font-medium text-balance">{extra.label}</h2>
+                </header>
+                <div className="mt-6" data-extra-section={extra.id}>
+                  {extra.render(agent)}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {secondaryTabs.length > 0 && activeSecondaryTab && (
           <div className={cn(PAGE_RAIL, "flex min-h-full flex-col md:h-full md:flex-row")}>

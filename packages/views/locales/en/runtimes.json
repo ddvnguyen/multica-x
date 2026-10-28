@@ -494,5 +494,18 @@
     "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
     "credit_total": "{{total}} Freebucks in total",
     "prices_title": "Price per model"
+  },
+  "accounts": {
+    "title": "Accounts",
+    "description": "Agents on this runtime can use any of these accounts. The credential reference is a name the daemon resolves on its own machine, never a secret.",
+    "empty": "No accounts yet.",
+    "no_endpoint": "Default endpoint",
+    "enabled_aria": "Enable {{label}}",
+    "delete_aria": "Delete {{label}}",
+    "label_placeholder": "Label",
+    "endpoint_placeholder": "Endpoint (http://host:4320)",
+    "credential_placeholder": "Credential reference",
+    "add": "Add account",
+    "toast_failed": "Could not update the account"
   }
 }

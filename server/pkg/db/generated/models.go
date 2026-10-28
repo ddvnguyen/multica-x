@@ -54,6 +54,8 @@ type Agent struct {
 	DisabledRuntimeSkills []byte      `json:"disabled_runtime_skills"`
 	ServiceTier           pgtype.Text `json:"service_tier"`
 	ConversationStarters  []byte      `json:"conversation_starters"`
+	AccountMode           string      `json:"account_mode"`
+	AccountID             pgtype.UUID `json:"account_id"`
 }
 
 type AgentBuilderDraft struct {
@@ -78,6 +80,52 @@ type AgentMcpServer struct {
 	ServerID  pgtype.UUID        `json:"server_id"`
 	Enabled   bool               `json:"enabled"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type AgentPlan struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	Title             string             `json:"title"`
+	Status            string             `json:"status"`
+	Revision          int32              `json:"revision"`
+	SubmittedRevision pgtype.Int4        `json:"submitted_revision"`
+	Sections          []byte             `json:"sections"`
+	ApprovedBy        pgtype.UUID        `json:"approved_by"`
+	ApprovedAt        pgtype.Timestamptz `json:"approved_at"`
+	CancelledAt       pgtype.Timestamptz `json:"cancelled_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AgentPlanReview struct {
+	ID           pgtype.UUID        `json:"id"`
+	PlanID       pgtype.UUID        `json:"plan_id"`
+	PlanRevision int32              `json:"plan_revision"`
+	Verdict      string             `json:"verdict"`
+	Comments     []byte             `json:"comments"`
+	Note         pgtype.Text        `json:"note"`
+	ReviewedBy   pgtype.UUID        `json:"reviewed_by"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type AgentQuestionCard struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	Status      string             `json:"status"`
+	Context     pgtype.Text        `json:"context"`
+	Questions   []byte             `json:"questions"`
+	Answers     []byte             `json:"answers"`
+	AnsweredBy  pgtype.UUID        `json:"answered_by"`
+	AnsweredAt  pgtype.Timestamptz `json:"answered_at"`
+	WithdrawnAt pgtype.Timestamptz `json:"withdrawn_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type AgentRuntime struct {
@@ -179,6 +227,7 @@ type AgentTaskQueue struct {
 	CancelledByName           pgtype.Text `json:"cancelled_by_name"`
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
+	AccountID                 pgtype.UUID `json:"account_id"`
 }
 
 type AgentToLabel struct {
@@ -1347,6 +1396,7 @@ type Project struct {
 	StartDate   pgtype.Date        `json:"start_date"`
 	DueDate     pgtype.Date        `json:"due_date"`
 	WorkflowID  pgtype.UUID        `json:"workflow_id"`
+	Settings    []byte             `json:"settings"`
 }
 
 type ProjectResource struct {
@@ -1749,6 +1799,19 @@ type Workspace struct {
 	AvatarUrl    pgtype.Text        `json:"avatar_url"`
 	// When TRUE, an agent run that resolves to no precise accountable human (would be owner_fallback) is refused at enqueue instead of degrading to the agent owner (MUL-4302 §3.5). Default FALSE = owner_fallback. Never affects authorization (originator_user_id).
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
+}
+
+type WorkspaceAccount struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	Label         string             `json:"label"`
+	Endpoint      pgtype.Text        `json:"endpoint"`
+	CredentialRef pgtype.Text        `json:"credential_ref"`
+	Enabled       bool               `json:"enabled"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkspaceInvitation struct {

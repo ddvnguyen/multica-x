@@ -1,0 +1,2 @@
+# Build output: the host half's ESM and the wrapped client bundle.
+lib/

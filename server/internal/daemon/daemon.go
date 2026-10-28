@@ -273,6 +273,10 @@ type terminalTaskReport struct {
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
 	retiredSessionID string
+	// initContext is the run's per-part price of its first request (M-140),
+	// already marshalled. Carried through the outbox so a replayed callback
+	// reports the same context facts as the original attempt.
+	initContext json.RawMessage
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -4534,7 +4538,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
-			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID)
+			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID, resp.PendingModelList.Accounts)
 		}
 	}
 	if resp.PendingLocalSkills != nil {
@@ -4661,7 +4665,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 // error, and it is forwarded as status=failed so the picker can show the reason
 // and keep manual entry (MUL-6606). Both outcomes leave the creatable dropdown
 // usable; only the second one tells the user why it is empty.
-func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string) {
+func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
 	// Discovery must enumerate the binary this runtime will actually execute,
@@ -4696,16 +4700,40 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		return
 	}
 
-	catalog, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
-	if err != nil {
-		d.reportModelListResult(ctx, rt, requestID, map[string]any{
-			"status": "failed",
-			"error":  err.Error(),
-		})
-		return
+	// Per-account discovery (M-153). With accounts, discovery runs once per
+	// account on that account's environment and the results are merged; a
+	// failing account is skipped unless every account fails.
+	var (
+		models      []agent.Model
+		unavailable []agent.UnavailableModel
+		fallback    bool
+	)
+	baseCmd := agent.NewCommand(execPath, fixedArgs)
+	if len(accounts) == 0 {
+		cat, err := listModels(ctx, rt.Provider, baseCmd)
+		if err != nil {
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  err.Error(),
+			})
+			return
+		}
+		models, unavailable, fallback = cat.Models, cat.Unavailable, cat.Fallback
+	} else {
+		merged, err := discoverAccountCatalogs(ctx, rt.Provider, baseCmd, accounts)
+		if err != nil {
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  err.Error(),
+			})
+			return
+		}
+		for id, ferr := range merged.Failed {
+			d.logger.Warn("model discovery failed for account", "runtime_id", rt.ID, "account", id, "error", ferr)
+		}
+		models, unavailable, fallback = merged.Models, merged.Unavailable, merged.Fallback
 	}
-	models := catalog.Models
-	if catalog.Fallback {
+	if fallback {
 		d.logger.Warn("model discovery fell back to a static catalog; reporting it as non-authoritative",
 			"runtime_id", rt.ID, "provider", rt.Provider, "path", execPath, "count", len(models))
 	}
@@ -4746,6 +4774,10 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		ID                                  string                 `json:"id"`
 		Label                               string                 `json:"label"`
 		Provider                            string                 `json:"provider,omitempty"`
+		AccountID                           string                 `json:"account_id,omitempty"`
+		AccountLabel                        string                 `json:"account_label,omitempty"`
+		AccountIDs                          []string               `json:"account_ids,omitempty"`
+		AccountLabels                       []string               `json:"account_labels,omitempty"`
 		Default                             bool                   `json:"default,omitempty"`
 		Thinking                            *modelThinkingWire     `json:"thinking,omitempty"`
 		ServiceTiers                        []modelServiceTierWire `json:"service_tiers,omitempty"`
@@ -4768,6 +4800,10 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 			Label:                               m.Label,
 			Provider:                            m.Provider,
 			Default:                             m.Default,
+			AccountID:                           m.AccountID,
+			AccountLabel:                        m.AccountLabel,
+			AccountIDs:                          m.AccountIDs,
+			AccountLabels:                       m.AccountLabels,
 			SupportsExplicitStandardServiceTier: m.SupportsExplicitStandardServiceTier,
 		}
 		if m.Thinking != nil {
@@ -4793,8 +4829,8 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		}
 		wire = append(wire, entry)
 	}
-	unavailableWire := make([]unavailableModelWire, 0, len(catalog.Unavailable))
-	for _, m := range catalog.Unavailable {
+	unavailableWire := make([]unavailableModelWire, 0, len(unavailable))
+	for _, m := range unavailable {
 		unavailableWire = append(unavailableWire, unavailableModelWire{
 			ID:     m.ID,
 			Label:  m.Label,
@@ -4811,7 +4847,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		// Additive field: the models are still worth rendering, but the server
 		// must not persist them as this runtime's real catalog (MUL-5549).
 		// Older servers ignore it and keep the previous behaviour.
-		"fallback": catalog.Fallback,
+		"fallback": fallback,
 	})
 }
 
@@ -5592,7 +5628,7 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 // trivially testable; the polling goroutine in watchTaskCancellation is just
 // I/O around it.
 //
-// Two conditions trigger cancellation:
+// Three conditions trigger cancellation:
 //
 //  1. status is a terminal state — "completed", "failed", or "cancelled"
 //     (isAgentTaskTerminal). The server has already finalized the task: user
@@ -5603,7 +5639,12 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 //     CompleteTask/FailTask callback is guaranteed to fail and just adds log
 //     noise. Reusing isAgentTaskTerminal keeps this set in lockstep with the
 //     GC's notion of a terminal task.
-//  2. err is a 404 with "task not found" — the task row was deleted while
+//  2. status is "blocked" (isAgentTaskParked, S1-A1) — the agent's ask/plan
+//     parked the task awaiting a human answer. The run is over (the daemon
+//     interrupted it); only the row stays behind as the resume anchor. The
+//     interrupt path reports the session via the park report, NOT a cancel
+//     ack, so the answer's resume run can continue it.
+//  3. err is a 404 with "task not found" — the task row was deleted while
 //     the agent was running. Without this we'd let the local agent keep
 //     emitting tool calls against a dead task for its full timeout window.
 //
@@ -5614,7 +5655,32 @@ func shouldInterruptAgent(status string, err error) bool {
 	if err != nil {
 		return isTaskNotFoundError(err)
 	}
-	return isAgentTaskTerminal(status)
+	return isAgentTaskTerminal(status) || isAgentTaskParked(status)
+}
+
+// reportInterruptedTask sends the right post-interrupt report. The interrupt
+// fires for BOTH terminal states and the S1-A1 parked state, and the two need
+// different fates: a terminal task gets the ordinary cancel ack, while a
+// parked (blocked) task gets the park report carrying the session so the
+// answer's resume run can continue it. One extra GetTaskStatus on this rare
+// path picks the branch; a status that moved again (park → cancelled in the
+// window) falls back to the cancel ack, which the server applies by CAS.
+func (d *Daemon) reportInterruptedTask(ctx context.Context, taskID string, ack TaskCancelAck, result TaskResult, taskLog *slog.Logger) {
+	if status, statusErr := d.client.GetTaskStatus(ctx, taskID); statusErr == nil && isAgentTaskParked(status) {
+		taskLog.Info("task parked on human answer, reporting session",
+			"session_recorded", result.SessionID != "")
+		if parkErr := d.client.ReportTaskBlocked(ctx, taskID, result.SessionID, result.WorkDir); parkErr != nil {
+			// Best-effort: an old server without the route answers 404, and a
+			// transient failure leaves the parked row without a session. Both
+			// degrade to the documented behaviour — the answer run starts
+			// fresh — so this must never be fatal.
+			taskLog.Warn("park report failed; answer run will start fresh", "error", parkErr)
+		}
+		return
+	}
+	if ackErr := d.client.AckTaskCancelled(ctx, taskID, ack); ackErr != nil {
+		taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
+	}
 }
 
 // watchTaskCancellation polls the server for the task's status on the given
@@ -5835,9 +5901,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			ack.ErrorMessage = preserved.Error()
 			ack.FailureReason = "local_directory_error"
 		}
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, ack); ackErr != nil {
-			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
-		}
+		d.reportInterruptedTask(ctx, task.ID, ack, result, taskLog)
 		return
 	default:
 	}
@@ -5883,10 +5947,9 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// payload only to a cancelled row (status CAS), because for
 		// completed/failed rows the complete/fail callback is the
 		// authoritative channel and a stale run's late ack must not touch
-		// them.
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}); ackErr != nil {
-			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
-		}
+		// them. A parked (blocked) row instead takes the park report, which
+		// records the session for the answer's resume run.
+		d.reportInterruptedTask(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}, result, taskLog)
 		return
 	}
 
@@ -6220,6 +6283,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			durableWorkDir:        result.DurableWorkDir,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			initContext:           result.InitContext,
 		})
 		if err == nil {
 			return
@@ -6264,6 +6328,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			failureReason:         failureReason,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			initContext:           result.InitContext,
 		}); err != nil {
 			taskLog.Error("report failed task failed", "error", err)
 		}
@@ -6363,7 +6428,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.initContext, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -7962,6 +8027,51 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 			effectiveMcpConfig = merged
 		}
+		// MOCT memory tools (M-101, docs/moct-seam.md out-path 2). The entry
+		// names the `multica moct-mcp` stdio server and carries the run's D2
+		// refs as env, so a tool call can only read or write inside this run's
+		// scope. Merged last and by server name, exactly like the per-task
+		// overlay the server sends: a saved `moct` entry of the agent's own
+		// would be a stale placeholder, the live scoped one wins.
+		//
+		// Never fatal. The seam is off (no MOCT_BASE_URL), the binary cannot
+		// be located or the base URL does not parse — all skip the entry with
+		// a warning; the task runs with whatever MCP servers it already had.
+		if moctConfig, ok := moctMCPConfig(d.cfg.MoctBaseURL, task); !ok {
+			if strings.TrimSpace(d.cfg.MoctBaseURL) != "" {
+				taskLog.Warn("moct: MCP server not added; running without memory tools")
+			}
+		} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, moctConfig); mergeErr != nil {
+			taskLog.Warn("moct: could not merge MCP server; running without memory tools", "error", mergeErr)
+		} else {
+			effectiveMcpConfig = merged
+		}
+		// ask/plan tools (S1-A2, M-119). The entry names the `multica
+		// askplan-mcp` stdio server and carries this run's server URL, mat_
+		// token and workspace/task ids as env, so a tool call can only park
+		// the run that owns the token. Merged by server name after moct,
+		// same contract as every other overlay entry; multica-be only —
+		// nothing here reaches MOCT.
+		//
+		// Never fatal. No issue on the task (ask/plan is issue-only, so the
+		// absence is by design and stays silent), a missing token, an
+		// unusable URL, an unlocatable binary, or a runtime that cannot
+		// carry MCP servers (builtin pi below its MCP-extension floor —
+		// pkg/agent SupportsTaskMCP mirrors pi.go's launch gate) all skip
+		// the entry with a warning; the task runs with whatever MCP servers
+		// it already had.
+		if askPlanConfig, ok := askPlanMCPConfig(d.cfg.ServerBaseURL, task); !ok {
+			if task.IssueID != "" {
+				taskLog.Warn("ask/plan: MCP server not added; running without ask/plan tools")
+			}
+		} else if !agent.SupportsTaskMCP(provider, resolvedVersion, !usesCustomProfileCommand) {
+			taskLog.Warn("ask/plan: MCP server not added; runtime cannot carry MCP servers",
+				"provider", provider, "cli_version", resolvedVersion)
+		} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, askPlanConfig); mergeErr != nil {
+			taskLog.Warn("ask/plan: could not merge MCP server; running without ask/plan tools", "error", mergeErr)
+		} else {
+			effectiveMcpConfig = merged
+		}
 		if provider == "cursor" {
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
 		}
@@ -8462,6 +8572,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
 	var promptOptions []PromptOption
+	// MOCT pre-run memory inject (M-101, docs/moct-seam.md out-path 1). Fetched
+	// once per claim and carried on promptOptions, so the fresh-session retry's
+	// own BuildPrompt reuses the same block instead of fetching a second time.
+	// Any failure — moct-be down, slow or 5xx — logs and continues WITHOUT
+	// memory: nothing on this path may fail or stall a task.
+	memoryBlock, memoryPart := moctInjectPrompt(ctx, d.cfg.MoctBaseURL, task, taskLog)
+	if memoryBlock != "" {
+		promptOptions = append(promptOptions, WithMoctInject(memoryBlock))
+	}
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
@@ -8563,6 +8682,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentCustomEnv map[string]string
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
+	}
+	// freebuff-desktop account injection (M-153): resolved account is layered
+	// UNDER the agent's custom_env so custom_env wins.
+	if task.Agent != nil && task.Agent.AccountMode != "default" && task.Agent.AccountMode != "" {
+		if agentCustomEnv == nil {
+			agentCustomEnv = map[string]string{}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountEndpoint); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_URL"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_URL"] = v
+			}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountCredentialRef); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = v
+			}
+		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
 	if provider == "reasonix" {
@@ -8743,7 +8879,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepending the full runtime brief into the ACP user prompt duplicates that
 	// context and bloats every turn.
 	if providerNeedsInlineSystemPrompt(provider) {
-		execOpts.SystemPrompt = runtimeBrief
+		execOpts.SystemPrompt = runtimeBrief.Content
 	}
 
 	// A quick-actions refresh task from a server that predates server-side
@@ -8766,6 +8902,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
+	// M-140: price the first request part by part, now that this run is certain
+	// to send one. The report rides the terminal callback into the run row, so a
+	// run outside the 20–30 K band carries its own explanation instead of
+	// needing a second investigation. Registered as a deferred assignment so
+	// every terminal path — completed, blocked, timed out — reports it.
+	initContext := newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task)
+	defer func() { taskResult.InitContext = marshalInitContext(initContext) }()
+
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
 		WorkspaceID: task.WorkspaceID,
 		TaskID:      task.ID,
@@ -8843,10 +8987,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		} else {
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
-				execOpts.SystemPrompt = runtimeBrief
+				execOpts.SystemPrompt = runtimeBrief.Content
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		// The retry sends a different first request (cold brief, continuity
+		// notice), so the report has to describe THAT one, not the poisoned
+		// attempt's. The prefix hash is the check that matters: it must come out
+		// equal across the two, or the brief was not byte-stable.
+		initContext = newInitContext(provider, runtimeBrief, memoryPart, freshPrompt, memoryBlock, task)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
@@ -9691,6 +9840,34 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						Seq:       int(s),
 						Type:      "error",
 						Content:   msg.Content,
+						CreatedAt: observedAt,
+					})
+					mu.Unlock()
+					flushFirstVisible()
+				case agent.MessageQuestion:
+					// Ask/plan parity (M-109): the backend is parked on this
+					// question. Surface it as a durable transcript row —
+					// the member answers by commenting on the issue, and
+					// the steered reply reaches the backend via the
+					// supplement loop. The row carries both halves: the
+					// rendering in Content for every reader, and the
+					// structured questions in Input for the client's card
+					// and for the server's ask notification.
+					//
+					// `question` is an additive type at the task-message
+					// boundary: a client that predates it parses the row as
+					// `text` (its schema's fallback) and renders the same
+					// line it renders today, so installed clients keep
+					// reading the question rather than dropping the row.
+					taskLog.Info("agent question parked", "call_id", msg.CallID)
+					mu.Lock()
+					sealPendingLocked()
+					s := msgSeq.Add(1)
+					batch = append(batch, TaskMessageData{
+						Seq:       int(s),
+						Type:      "question",
+						Content:   msg.Content,
+						Input:     redact.InputMap(msg.Input),
 						CreatedAt: observedAt,
 					})
 					mu.Unlock()
@@ -10677,4 +10854,16 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+func appendUniqueStr(slice []string, v string) []string {
+	if v == "" {
+		return slice
+	}
+	for _, s := range slice {
+		if s == v {
+			return slice
+		}
+	}
+	return append(slice, v)
 }

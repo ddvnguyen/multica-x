@@ -34,6 +34,7 @@ import type { ExtraProps } from "react-markdown";
 import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { useT } from "../i18n";
 import { RichTableDialog } from "./rich-table-dialog";
 import {
@@ -177,6 +178,7 @@ export interface RichTableFrameProps {
 }
 
 export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children }: RichTableFrameProps) {
+  const portalContainer = usePortalContainer();
   const { t } = useT("editor");
   const columnCount = model.headerText.length;
   const storageKey = useMemo(() => columnWidthKey(model), [model]);
@@ -489,7 +491,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         typeof document !== "undefined" &&
         createPortal(
           <div aria-hidden className="fixed inset-0 z-50 cursor-col-resize touch-none select-none" />,
-          document.body,
+          portalContainer ?? document.body,
         )}
     </div>
   );

@@ -72,6 +72,8 @@
     "review_requested": "리뷰 요청됨",
     "task_completed": "실행 완료됨",
     "task_failed": "실행 실패함",
+    "agent_question": "답변 대기",
+    "plan_review": "계획 승인 대기",
     "agent_blocked": "에이전트 막힘",
     "agent_completed": "에이전트 완료됨",
     "reaction_added": "반응 추가됨",

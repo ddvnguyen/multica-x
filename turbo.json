@@ -42,7 +42,9 @@
       // `public/**` assets, nor `package.json` / `tsconfig.json`, so the task
       // hash was unchanged by edits to any of them -- harmless while nothing
       // was ever cached, a stale-build bug the moment it is.
-      "outputs": [".next/**", "!.next/cache/**", "dist/**", "out/**"]
+      // `lib/**` is the dsh plugin: it compiles to ESM for the host half and a
+      // wrapped client bundle, under `lib` rather than `dist`.
+      "outputs": [".next/**", "!.next/cache/**", "dist/**", "lib/**", "out/**"]
     },
     "dev": {
       "cache": false,
