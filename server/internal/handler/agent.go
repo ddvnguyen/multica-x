@@ -120,6 +120,8 @@ type AgentResponse struct {
 	// ServiceTier is the runtime-native Codex execution tier persisted for
 	// this agent (empty = inherit local Codex configuration).
 	ServiceTier string `json:"service_tier"`
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id,omitempty"`
 	// ComposioToolkitAllowlist is the subset of Composio toolkit slugs this
 	// agent is allowed to mount as MCP at task dispatch — for ANY run that
 	// passes the agent's invocation permission, using the agent OWNER's
@@ -233,6 +235,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		Model:                    a.Model.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
+		AccountMode:              a.AccountMode,
+		AccountID:                uuidToString(a.AccountID),
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
 		Skills:                   []AgentSkillSummary{},
@@ -790,6 +794,10 @@ type TaskAgentData struct {
 	Model                 string                      `json:"model,omitempty"`
 	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
 	ServiceTier           string                      `json:"service_tier,omitempty"`
+	AccountMode           string                      `json:"account_mode,omitempty"`
+	AccountID             string                      `json:"account_id,omitempty"`
+	AccountEndpoint       string                      `json:"account_endpoint,omitempty"`
+	AccountCredentialRef  string                      `json:"account_credential_ref,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
@@ -1345,6 +1353,11 @@ type CreateAgentRequest struct {
 	Model              string                     `json:"model"`
 	ThinkingLevel      string                     `json:"thinking_level"`
 	ServiceTier        string                     `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153).
+	// AccountMode: "default" | "specific" | "any". AccountID is required
+	// when mode is "specific".
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1617,6 +1630,17 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Account selection (M-153).
+	accountSel, err := normalizeAccountSelection(true, req.AccountMode, true, req.AccountID, accountModeDefault, pgtype.UUID{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if status, msg := h.validateAgentAccount(r.Context(), wsUUID, runtime, accountSel); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:              wsUUID,
 		Name:                     req.Name,
@@ -1638,6 +1662,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		AccountMode:              accountSel.Mode,
+		AccountID:                accountSel.ID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1744,6 +1770,10 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
+	// omitted preserves; present sets account_mode (+ account_id when specific).
+	AccountMode *string `json:"account_mode"`
+	AccountID   *string `json:"account_id"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -2251,6 +2281,46 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Account selection (M-153). Mode and id are applied together after the
+	// main update (SetAgentAccount), so the consistency CHECK never sees half.
+	accountChanged := req.AccountMode != nil || req.AccountID != nil
+	var accountSel agentAccountSelection
+	if accountChanged {
+		modeVal, idVal := "", ""
+		if req.AccountMode != nil {
+			modeVal = *req.AccountMode
+		}
+		if req.AccountID != nil {
+			idVal = *req.AccountID
+		}
+		var selErr error
+		accountSel, selErr = normalizeAccountSelection(
+			req.AccountMode != nil, modeVal, req.AccountID != nil, idVal,
+			existing.AccountMode, existing.AccountID,
+		)
+		if selErr != nil {
+			writeError(w, http.StatusBadRequest, selErr.Error())
+			return
+		}
+	} else {
+		accountSel = agentAccountSelection{Mode: existing.AccountMode, ID: existing.AccountID}
+	}
+	// A runtime change must not leave a non-default account on a runtime that
+	// cannot honour it, so validate whenever either side moved.
+	if accountChanged || req.RuntimeID != nil {
+		targetRuntime, rtErr := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+			ID: targetRuntimeID, WorkspaceID: existing.WorkspaceID,
+		})
+		if rtErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid runtime_id")
+			return
+		}
+		if status, msg := h.validateAgentAccount(r.Context(), existing.WorkspaceID, targetRuntime, accountSel); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+	}
+
 	// composio_toolkit_allowlist handling (MUL-3869). Tri-state semantics
 	// mirror thinking_level (see above): omitted → no change, null →
 	// ClearAgentComposioToolkitAllowlist, slice → wholesale replace.
@@ -2385,6 +2455,18 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent composio_toolkit_allowlist failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist")
+			return
+		}
+	}
+	if accountChanged {
+		updated, err = h.Queries.SetAgentAccount(r.Context(), db.SetAgentAccountParams{
+			ID:          updated.ID,
+			AccountMode: accountSel.Mode,
+			AccountID:   accountSel.ID,
+		})
+		if err != nil {
+			slog.Warn("set agent account failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update agent account")
 			return
 		}
 	}

@@ -48,6 +48,9 @@ import type {
   WorkspaceWorkingAgentType,
   AgentRuntime,
   RuntimeProfile,
+  WorkspaceAccount,
+  CreateWorkspaceAccountRequest,
+  UpdateWorkspaceAccountRequest,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
   InboxItem,
@@ -2492,6 +2495,40 @@ export class ApiClient {
     );
   }
 
+  async listWorkspaceAccounts(workspaceId: string): Promise<WorkspaceAccount[]> {
+    const res = await this.fetch<{ accounts?: WorkspaceAccount[] }>(
+      `/api/workspaces/${workspaceId}/accounts`,
+    );
+    return res.accounts ?? [];
+  }
+
+  async createWorkspaceAccount(
+    workspaceId: string,
+    body: CreateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(`/api/workspaces/${workspaceId}/accounts`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkspaceAccount(
+    workspaceId: string,
+    accountId: string,
+    patch: UpdateWorkspaceAccountRequest,
+  ): Promise<WorkspaceAccount> {
+    return this.fetch<WorkspaceAccount>(
+      `/api/workspaces/${workspaceId}/accounts/${accountId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  async deleteWorkspaceAccount(workspaceId: string, accountId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/accounts/${accountId}`, {
+      method: "DELETE",
+    });
+  }
+
   async getRuntimeUsage(
     runtimeId: string,
     params?: { days?: number; tz?: string },
@@ -2717,9 +2754,12 @@ export class ApiClient {
   // fabricated empty catalog or an endless spinner (MUL-5444).
   async initiateListModels(
     runtimeId: string,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; account?: string } = {},
   ): Promise<RuntimeModelListRequest> {
-    const query = options.force === true ? "?force=true" : "";
+    const params = new URLSearchParams();
+    if (options.force === true) params.set("force", "true");
+    if (options.account) params.set("account", options.account);
+    const query = params.toString() ? `?${params.toString()}` : "";
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models${query}`,
       {

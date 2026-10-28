@@ -478,5 +478,18 @@
     "credit_daily": "本日は {{limit}} 中 {{remaining}} Freebucks 残存",
     "credit_total": "合計 {{total}} Freebucks",
     "prices_title": "モデルごとの価格"
+  },
+  "accounts": {
+    "title": "アカウント",
+    "description": "このランタイムのエージェントは、これらのアカウントのいずれかを使用できます。資格情報の参照は、デーモンが自身のマシン上で解決する名前であり、シークレットではありません。",
+    "empty": "アカウントはまだありません。",
+    "no_endpoint": "既定のエンドポイント",
+    "enabled_aria": "{{label}} を有効にする",
+    "delete_aria": "{{label}} を削除",
+    "label_placeholder": "ラベル",
+    "endpoint_placeholder": "エンドポイント (http://host:4320)",
+    "credential_placeholder": "資格情報の参照",
+    "add": "アカウントを追加",
+    "toast_failed": "アカウントを更新できませんでした"
   }
 }

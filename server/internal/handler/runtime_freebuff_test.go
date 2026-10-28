@@ -71,11 +71,11 @@ func TestFreebuffBlockFromRuntime(t *testing.T) {
 // waiting for the browser, or one that finished, must not start a second.
 func TestFreebuffConnectRequested(t *testing.T) {
 	cases := map[string]bool{
-		`{"freebuff":{"connect":{"state":"requested"}}}`:   true,
+		`{"freebuff":{"connect":{"state":"requested"}}}`:      true,
 		`{"freebuff":{"connect":{"state":"awaiting_login"}}}`: false,
-		`{"freebuff":{"connect":{"state":"connected"}}}`:   false,
-		`{"freebuff":{"connect":{"state":"failed"}}}`:      false,
-		`{"freebuff":{"status":{"status":"active"}}}`:      false,
+		`{"freebuff":{"connect":{"state":"connected"}}}`:      false,
+		`{"freebuff":{"connect":{"state":"failed"}}}`:         false,
+		`{"freebuff":{"status":{"status":"active"}}}`:         false,
 		`{}`: false,
 	}
 	for metadata, want := range cases {

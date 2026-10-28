@@ -446,8 +446,17 @@ type DaemonHeartbeatPendingUpdate struct {
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to
 // enumerate the runtime's supported models.
+type DaemonModelAccount struct {
+	ID            string `json:"id"`
+	Label         string `json:"label,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	CredentialRef  string `json:"credential_ref,omitempty"`
+}
+
 type DaemonHeartbeatPendingModelList struct {
-	ID string `json:"id"`
+	ID       string                `json:"id"`
+	Account  string                `json:"account,omitempty"`
+	Accounts []DaemonModelAccount  `json:"accounts,omitempty"`
 }
 
 // DaemonHeartbeatPendingLocalSkills describes a request for the runtime's

@@ -4538,7 +4538,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
-			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID)
+			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID, resp.PendingModelList.Accounts)
 		}
 	}
 	if resp.PendingLocalSkills != nil {
@@ -4665,7 +4665,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 // error, and it is forwarded as status=failed so the picker can show the reason
 // and keep manual entry (MUL-6606). Both outcomes leave the creatable dropdown
 // usable; only the second one tells the user why it is empty.
-func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string) {
+func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
 	// Discovery must enumerate the binary this runtime will actually execute,
@@ -4700,16 +4700,40 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		return
 	}
 
-	catalog, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
-	if err != nil {
-		d.reportModelListResult(ctx, rt, requestID, map[string]any{
-			"status": "failed",
-			"error":  err.Error(),
-		})
-		return
+	// Per-account discovery (M-153). With accounts, discovery runs once per
+	// account on that account's environment and the results are merged; a
+	// failing account is skipped unless every account fails.
+	var (
+		models      []agent.Model
+		unavailable []agent.UnavailableModel
+		fallback    bool
+	)
+	baseCmd := agent.NewCommand(execPath, fixedArgs)
+	if len(accounts) == 0 {
+		cat, err := listModels(ctx, rt.Provider, baseCmd)
+		if err != nil {
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  err.Error(),
+			})
+			return
+		}
+		models, unavailable, fallback = cat.Models, cat.Unavailable, cat.Fallback
+	} else {
+		merged, err := discoverAccountCatalogs(ctx, rt.Provider, baseCmd, accounts)
+		if err != nil {
+			d.reportModelListResult(ctx, rt, requestID, map[string]any{
+				"status": "failed",
+				"error":  err.Error(),
+			})
+			return
+		}
+		for id, ferr := range merged.Failed {
+			d.logger.Warn("model discovery failed for account", "runtime_id", rt.ID, "account", id, "error", ferr)
+		}
+		models, unavailable, fallback = merged.Models, merged.Unavailable, merged.Fallback
 	}
-	models := catalog.Models
-	if catalog.Fallback {
+	if fallback {
 		d.logger.Warn("model discovery fell back to a static catalog; reporting it as non-authoritative",
 			"runtime_id", rt.ID, "provider", rt.Provider, "path", execPath, "count", len(models))
 	}
@@ -4750,6 +4774,10 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		ID                                  string                 `json:"id"`
 		Label                               string                 `json:"label"`
 		Provider                            string                 `json:"provider,omitempty"`
+		AccountID                           string                 `json:"account_id,omitempty"`
+		AccountLabel                        string                 `json:"account_label,omitempty"`
+		AccountIDs                          []string               `json:"account_ids,omitempty"`
+		AccountLabels                       []string               `json:"account_labels,omitempty"`
 		Default                             bool                   `json:"default,omitempty"`
 		Thinking                            *modelThinkingWire     `json:"thinking,omitempty"`
 		ServiceTiers                        []modelServiceTierWire `json:"service_tiers,omitempty"`
@@ -4772,6 +4800,10 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 			Label:                               m.Label,
 			Provider:                            m.Provider,
 			Default:                             m.Default,
+			AccountID:                           m.AccountID,
+			AccountLabel:                        m.AccountLabel,
+			AccountIDs:                          m.AccountIDs,
+			AccountLabels:                       m.AccountLabels,
 			SupportsExplicitStandardServiceTier: m.SupportsExplicitStandardServiceTier,
 		}
 		if m.Thinking != nil {
@@ -4797,8 +4829,8 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		}
 		wire = append(wire, entry)
 	}
-	unavailableWire := make([]unavailableModelWire, 0, len(catalog.Unavailable))
-	for _, m := range catalog.Unavailable {
+	unavailableWire := make([]unavailableModelWire, 0, len(unavailable))
+	for _, m := range unavailable {
 		unavailableWire = append(unavailableWire, unavailableModelWire{
 			ID:     m.ID,
 			Label:  m.Label,
@@ -4815,7 +4847,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		// Additive field: the models are still worth rendering, but the server
 		// must not persist them as this runtime's real catalog (MUL-5549).
 		// Older servers ignore it and keep the previous behaviour.
-		"fallback": catalog.Fallback,
+		"fallback": fallback,
 	})
 }
 
@@ -8651,6 +8683,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
 	}
+	// freebuff-desktop account injection (M-153): resolved account is layered
+	// UNDER the agent's custom_env so custom_env wins.
+	if task.Agent != nil && task.Agent.AccountMode != "default" && task.Agent.AccountMode != "" {
+		if agentCustomEnv == nil {
+			agentCustomEnv = map[string]string{}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountEndpoint); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_URL"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_URL"] = v
+			}
+		}
+		if v := strings.TrimSpace(task.Agent.AccountCredentialRef); v != "" {
+			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"]; !ok {
+				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = v
+			}
+		}
+	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
@@ -10805,4 +10854,16 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+func appendUniqueStr(slice []string, v string) []string {
+	if v == "" {
+		return slice
+	}
+	for _, s := range slice {
+		if s == v {
+			return slice
+		}
+	}
+	return append(slice, v)
 }

@@ -611,6 +611,8 @@ export interface Agent {
    * account defaults remain authoritative.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   /** Runtime-local skills this agent must not inherit. Older servers omit it. */
@@ -723,6 +725,8 @@ export interface StoredAgentDraft {
   model: string;
   thinking_level: string;
   service_tier: string;
+  account_mode?: string;
+  account_id?: string;
   skill_ids: string[];
   permission_scope: AgentPermissionScope;
   member_ids: string[];
@@ -827,6 +831,8 @@ export interface UpdateAgentRequest {
    * clears it, and a non-empty value stores a runtime-catalog ID.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
 }
 
 /**
@@ -1192,6 +1198,10 @@ export interface RuntimeModel {
   id: string;
   label: string;
   provider?: string;
+  account_id?: string;
+  account_label?: string;
+  account_ids?: string[];
+  account_labels?: string[];
   default?: boolean;
   /**
    * Per-model reasoning/effort catalog discovered by the daemon. Currently
@@ -1404,3 +1414,31 @@ export interface RuntimeLocalSkillImportResult {
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
 }
+
+// Per-workspace freebuff-desktop accounts (M-153). An agent on a
+// freebuff-desktop runtime runs against one account (`specific`), any enabled
+// account (`any`), or none (`default`, the runtime's own configuration).
+// `credential_ref` is a daemon-local reference, never a secret, and the server
+// only returns it to workspace owners and admins.
+export type AgentAccountMode = "default" | "specific" | "any";
+
+export interface WorkspaceAccount {
+  id: string;
+  workspace_id: string;
+  provider: string;
+  label: string;
+  endpoint?: string;
+  enabled: boolean;
+  credential_ref?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWorkspaceAccountRequest {
+  label: string;
+  endpoint?: string;
+  credential_ref?: string;
+  enabled?: boolean;
+}
+
+export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;

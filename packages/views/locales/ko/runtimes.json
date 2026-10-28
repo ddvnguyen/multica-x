@@ -478,5 +478,18 @@
     "credit_daily": "오늘 {{limit}} 중 {{remaining}} Freebucks 남음",
     "credit_total": "총 {{total}} Freebucks",
     "prices_title": "모델별 가격"
+  },
+  "accounts": {
+    "title": "계정",
+    "description": "이 런타임의 에이전트는 이 계정 중 어느 것이든 사용할 수 있습니다. 자격 증명 참조는 데몬이 자체 머신에서 해석하는 이름이며 비밀 값이 아닙니다.",
+    "empty": "아직 계정이 없습니다.",
+    "no_endpoint": "기본 엔드포인트",
+    "enabled_aria": "{{label}} 사용",
+    "delete_aria": "{{label}} 삭제",
+    "label_placeholder": "레이블",
+    "endpoint_placeholder": "엔드포인트 (http://host:4320)",
+    "credential_placeholder": "자격 증명 참조",
+    "add": "계정 추가",
+    "toast_failed": "계정을 업데이트할 수 없습니다"
   }
 }

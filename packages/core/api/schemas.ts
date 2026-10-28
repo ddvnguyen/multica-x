@@ -2374,6 +2374,8 @@ export const StoredAgentDraftSchema = z.object({
   model: z.string().catch(""),
   thinking_level: z.string().catch(""),
   service_tier: z.string().catch(""),
+  account_mode: z.string().catch(""),
+  account_id: z.string().catch(""),
   skill_ids: z.array(z.string()).catch([]),
   permission_scope: z
     .enum(["private", "workspace", "members"])
