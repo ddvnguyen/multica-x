@@ -14,7 +14,7 @@ import {
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { TranscriptButton } from "../../common/task-transcript";
+import { DshSessionButton, TranscriptButton } from "../../common/task-transcript";
 import { cancellationActorLabel, cancelReasonLabel, failureReasonLabel } from "../../agents/components/tabs/task-failure";
 import { Segmented } from "../../dashboard/components/dashboard-shared";
 import { formatDuration } from "../../dashboard/utils";
@@ -927,6 +927,7 @@ function RunListRow({ run, issueId }: { run: TimelineRun; issueId: string }) {
             isLive={task.status === "running"}
             title={t(($) => $.execution_log.transcript_tooltip)}
           />
+          <DshSessionButton task={task} title={t(($) => $.execution_log.open_session_tooltip)} />
           {canRetryRun(task) && <RetryRunButton task={task} issueId={issueId} />}
         </span>
         <span className={cn(COL.toggle, "flex justify-end")}>

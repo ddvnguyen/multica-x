@@ -83,7 +83,7 @@ func TestThinkingLevelWarningSequenceAcrossResumeRetry(t *testing.T) {
 		results <- agent.Result{Status: "completed"}
 		close(results)
 		backend := sessionBackend{session: &agent.Session{Messages: messages, Result: results}}
-		result, _, err := d.executeAndDrain(context.Background(), backend, "p", agent.ExecOptions{}, quietTaskLog(), "task-effort", "", &seq)
+		result, _, err := d.executeAndDrain(context.Background(), backend, "p", agent.ExecOptions{}, quietTaskLog(), "task-effort", "", &seq, false)
 		if err != nil || result.Status != "completed" {
 			t.Fatalf("warning must not change the task outcome: result=%+v, err=%v", result, err)
 		}

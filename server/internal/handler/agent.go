@@ -443,7 +443,12 @@ type AgentTaskResponse struct {
 	ProjectResources   []ProjectResourceData    `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt          string                   `json:"created_at"`
 	PriorSessionID     string                   `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir       string                   `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// DshSessionURL is set only on dsh-runtime tasks whose transcript is owned
+	// by the dsh session store (M-102): it links to the dsh web app whose
+	// sidebar lists the run's session. Empty everywhere else — the run row's
+	// "Open session" action renders on this field alone.
+	DshSessionURL string `json:"dsh_session_url,omitempty"`
+	PriorWorkDir  string `json:"prior_work_dir,omitempty"` // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback, and the daemon surfaces the continuity gap
@@ -2852,6 +2857,8 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, agent.WorkspaceID, tasks, resp)
+	// Run rows carry the "Open session" action for dsh-owned runs (M-102).
+	h.hydrateDshSessionURLs(r.Context(), tasks, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 	if includeUsage {
 		if err := h.hydrateAgentTaskUsage(r.Context(), agent.ID, taskIDs, resp); err != nil {
