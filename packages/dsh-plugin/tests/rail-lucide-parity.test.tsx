@@ -15,12 +15,12 @@ const GLYPHS = [
 
 function svgInner(markup: string): string {
   const match = markup.match(/<svg[^>]*>(.*)<\/svg>/s);
-  return match ? match[1] : "";
+  return match?.[1] ?? "";
 }
 
 describe("rail glyph lucide parity", () => {
   for (const { glyph, Icon } of GLYPHS) {
-    it(`${glyph} matches lucide ${Icon.displayName ?? glyph}`, () => {
+    it(`${glyph} matches lucide`, () => {
       const RailIcon = createRailIcon(createElement as never, glyph as never);
       const railMarkup = renderToStaticMarkup(
         createElement(RailIcon as never, { size: 16 }),
