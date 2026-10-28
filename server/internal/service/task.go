@@ -3775,6 +3775,18 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		triedAgents[agentKey] = struct{}{}
 		tried++
 
+		// Account lease (M-153): an agent bound to a freebuff-desktop account
+		// waits in the queue while that account (or, for `any`, every account)
+		// is running a task. Each account allows one run at a time. A lookup
+		// failure does not strand the task; the bridge also serializes per
+		// account, so the worst case is a short wait there.
+		if blocked, berr := s.Queries.AgentAccountBlocked(ctx, candidate.AgentID); berr != nil {
+			slog.Warn("claim_for_runtime: account lease check failed; claiming anyway",
+				"agent_id", agentKey, "runtime_id", runtimeKey, "error", berr)
+		} else if blocked {
+			continue
+		}
+
 		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID)
 		if err != nil {
 			loopMs = time.Since(loopStart).Milliseconds()

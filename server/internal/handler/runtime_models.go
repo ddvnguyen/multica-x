@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -358,12 +357,16 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolvedRuntimeID := uuidToString(rt.ID)
-	account := strings.TrimSpace(r.URL.Query().Get("account"))
-	accountKey := account
-	if accountKey == "" {
-		accountKey = "default"
+	account, err := normalizeModelAccountParam(r.URL.Query().Get("account"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	cacheKey := resolvedRuntimeID + ":" + accountKey
+	if account != modelAccountDefault && len(resolveModelAccounts(r.Context(), h.Queries, resolvedRuntimeID, account)) == 0 {
+		writeError(w, http.StatusBadRequest, "no enabled account matches this selection")
+		return
+	}
+	cacheKey := modelCatalogCacheKey(resolvedRuntimeID, account)
 	if r.URL.Query().Get("force") != "true" {
 		if cached := h.cachedModelCatalog(r.Context(), cacheKey); cached != nil {
 			age := cached.Age(time.Now())
@@ -398,6 +401,18 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	h.requestDaemonPendingWork(resolvedRuntimeID, protocol.PendingWorkKindModelList)
 	writeJSON(w, http.StatusOK, req)
+}
+
+// modelCatalogCacheKey is the catalog cache key for one runtime and account
+// scope. The default scope keeps the bare runtime id (other readers, such as
+// the agent model check, look a runtime up by that key), and every account
+// scope gets its own entry: an un-keyed cache would serve one account's catalog
+// for another.
+func modelCatalogCacheKey(runtimeID, account string) string {
+	if account == "" || account == modelAccountDefault {
+		return runtimeID
+	}
+	return runtimeID + ":" + account
 }
 
 // cachedModelCatalog returns a usable cached catalog, or nil when the cache is
@@ -568,12 +583,7 @@ func (h *Handler) ReportModelListResult(w http.ResponseWriter, r *http.Request) 
 		// models are a static stand-in, so they are neither fresh truth to
 		// store nor grounds to discard a real catalog we already hold. Treat it
 		// like a failure and leave the cache untouched (MUL-5549).
-		cacheKey := runtimeID
-		if existing.Account != "" {
-			cacheKey = runtimeID + ":" + existing.Account
-		} else {
-			cacheKey = runtimeID + ":default"
-		}
+		cacheKey := modelCatalogCacheKey(runtimeID, existing.Account)
 		if h.ModelCatalogCache != nil {
 			switch modelCatalogCacheDecision(body.Models, supported, body.Fallback) {
 			case modelCatalogCacheStore:

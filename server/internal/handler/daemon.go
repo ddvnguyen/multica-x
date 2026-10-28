@@ -2602,39 +2602,38 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
 	// Resolve the workspace account for freebuff-desktop runtimes (M-153).
-	// Credentials stay on the daemon machine: we only forward endpoint +
-	// credential_ref, never a secret. 'any' picks the first enabled account
-	// for the provider (lease is a known gap; documented in the PR).
+	// Credentials stay on the daemon machine: only the endpoint and the
+	// credential_ref travel, never a secret. A `specific` account that is gone
+	// or disabled fails the task here instead of letting it run on whatever
+	// account the runtime defaults to; `any` picks the least busy account.
 	accountMode := agent.AccountMode
-	accountEndpoint := ""
-	accountCredentialRef := ""
-	accountID := uuidToString(agent.AccountID)
-	if accountMode == "specific" && agent.AccountID.Valid {
-		if acc, err := h.Queries.GetWorkspaceAccount(r.Context(), agent.AccountID); err == nil {
-			accountEndpoint = acc.Endpoint.String
-			accountCredentialRef = acc.CredentialRef.String
-		}
-	} else if accountMode == "any" {
-		accounts, err := h.Queries.ListWorkspaceAccountsByProvider(r.Context(), db.ListWorkspaceAccountsByProviderParams{
-			WorkspaceID: agent.WorkspaceID,
-			Provider:    "freebuff-desktop",
-		})
-		if err == nil && len(accounts) > 0 {
-			accountID = uuidToString(accounts[0].ID)
-			accountEndpoint = accounts[0].Endpoint.String
-			accountCredentialRef = accounts[0].CredentialRef.String
-		}
-	}
 	if accountMode == "" {
-		accountMode = "default"
+		accountMode = accountModeDefault
 	}
-	// Persist the resolved account on the queue row (M-153).
-	if accountID != "" && accountMode != "default" {
-		if accUUID, err := util.ParseUUID(accountID); err == nil {
-			_, _ = h.Queries.SetAgentTaskQueueAccount(r.Context(), db.SetAgentTaskQueueAccountParams{
-				ID:        task.ID,
-				AccountID: accUUID,
-			})
+	var claimAcct claimAccount
+	hasAccount := false
+	if accountMode != accountModeDefault {
+		acct, ok, accErr := h.resolveClaimAccount(r.Context(), agent)
+		switch {
+		case errors.Is(accErr, errAccountUnavailable):
+			return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"The account selected for this agent is no longer available (deleted, disabled or not a freebuff-desktop account). Pick another account in the agent settings.",
+				taskfailure.ReasonEnvironmentPrepareFailed, "account_unavailable", http.StatusConflict, "agent account unavailable")
+		case accErr != nil:
+			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, accErr, "account", "")
+		}
+		claimAcct, hasAccount = acct, ok
+	}
+	accountID := ""
+	if hasAccount {
+		accountID = uuidToString(claimAcct.ID)
+		// Record the account on the queue row: it is the lease marker that
+		// makes concurrent claims see this account as busy.
+		if _, err := h.Queries.SetAgentTaskQueueAccount(r.Context(), db.SetAgentTaskQueueAccountParams{
+			ID: task.ID, AccountID: claimAcct.ID,
+		}); err != nil {
+			slog.Warn("daemon claim: record task account failed",
+				"task_id", uuidToString(task.ID), "account_id", accountID, "error", err)
 		}
 	}
 
@@ -2652,8 +2651,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 		AccountMode:           accountMode,
 		AccountID:             accountID,
-		AccountEndpoint:       accountEndpoint,
-		AccountCredentialRef:  accountCredentialRef,
+		AccountEndpoint:       claimAcct.Endpoint,
+		AccountCredentialRef:  claimAcct.CredentialRef,
 	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That

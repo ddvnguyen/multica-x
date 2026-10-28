@@ -1941,59 +1941,6 @@ func (q *Queries) ClaimChatFinalizeDeferred(ctx context.Context, id pgtype.UUID)
 	return i, err
 }
 
-const clearAgentAccount = `-- name: ClearAgentAccount :one
-UPDATE agent SET account_mode = COALESCE($2, 'default'),
-    account_id = NULL, updated_at = now()
-WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, account_mode, account_id
-`
-
-type ClearAgentAccountParams struct {
-	ID          pgtype.UUID `json:"id"`
-	AccountMode pgtype.Text `json:"account_mode"`
-}
-
-// Explicit NULL-clear for account_id (and reset mode to 'default'). Used
-// when account_mode moves away from 'specific'.
-func (q *Queries) ClearAgentAccount(ctx context.Context, arg ClearAgentAccountParams) (Agent, error) {
-	row := q.db.QueryRow(ctx, clearAgentAccount, arg.ID, arg.AccountMode)
-	var i Agent
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Name,
-		&i.AvatarUrl,
-		&i.RuntimeMode,
-		&i.RuntimeConfig,
-		&i.Visibility,
-		&i.Status,
-		&i.MaxConcurrentTasks,
-		&i.OwnerID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Description,
-		&i.RuntimeID,
-		&i.Instructions,
-		&i.ArchivedAt,
-		&i.ArchivedBy,
-		&i.CustomEnv,
-		&i.CustomArgs,
-		&i.McpConfig,
-		&i.Model,
-		&i.ThinkingLevel,
-		&i.ComposioToolkitAllowlist,
-		&i.PermissionMode,
-		&i.Kind,
-		&i.SystemKey,
-		&i.DisabledRuntimeSkills,
-		&i.ServiceTier,
-		&i.ConversationStarters,
-		&i.AccountMode,
-		&i.AccountID,
-	)
-	return i, err
-}
-
 const clearAgentComposioToolkitAllowlist = `-- name: ClearAgentComposioToolkitAllowlist :one
 UPDATE agent SET composio_toolkit_allowlist = NULL, updated_at = now()
 WHERE id = $1
@@ -8689,6 +8636,59 @@ func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, erro
 	return i, err
 }
 
+const setAgentAccount = `-- name: SetAgentAccount :one
+UPDATE agent SET account_mode = $2, account_id = $3, updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, account_mode, account_id
+`
+
+type SetAgentAccountParams struct {
+	ID          pgtype.UUID `json:"id"`
+	AccountMode string      `json:"account_mode"`
+	AccountID   pgtype.UUID `json:"account_id"`
+}
+
+// Sets the agent's account selection. Mode and id are written together so the
+// agent_account_mode_consistent CHECK can never see a half-applied change.
+func (q *Queries) SetAgentAccount(ctx context.Context, arg SetAgentAccountParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, setAgentAccount, arg.ID, arg.AccountMode, arg.AccountID)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.AccountMode,
+		&i.AccountID,
+	)
+	return i, err
+}
+
 const setAgentTaskBranchName = `-- name: SetAgentTaskBranchName :exec
 UPDATE agent_task_queue
 SET branch_name = COALESCE(branch_name, $1)
@@ -9232,10 +9232,8 @@ UPDATE agent SET
     model = COALESCE($16, model),
     thinking_level = COALESCE($17, thinking_level),
     service_tier = COALESCE($18, service_tier),
-    account_mode = COALESCE($19, account_mode),
-    account_id = COALESCE($20, account_id),
-    conversation_starters = COALESCE($21, conversation_starters),
-    composio_toolkit_allowlist = COALESCE($22::text[], composio_toolkit_allowlist),
+    conversation_starters = COALESCE($19, conversation_starters),
+    composio_toolkit_allowlist = COALESCE($20::text[], composio_toolkit_allowlist),
     updated_at = now()
 WHERE id = $1
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, account_mode, account_id
@@ -9260,8 +9258,6 @@ type UpdateAgentParams struct {
 	Model                    pgtype.Text `json:"model"`
 	ThinkingLevel            pgtype.Text `json:"thinking_level"`
 	ServiceTier              pgtype.Text `json:"service_tier"`
-	AccountMode              pgtype.Text `json:"account_mode"`
-	AccountID                pgtype.UUID `json:"account_id"`
 	ConversationStarters     []byte      `json:"conversation_starters"`
 	ComposioToolkitAllowlist []string    `json:"composio_toolkit_allowlist"`
 }
@@ -9292,8 +9288,6 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		arg.Model,
 		arg.ThinkingLevel,
 		arg.ServiceTier,
-		arg.AccountMode,
-		arg.AccountID,
 		arg.ConversationStarters,
 		arg.ComposioToolkitAllowlist,
 	)

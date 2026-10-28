@@ -1330,37 +1330,6 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// accountModeValue returns the value to pass to sqlc for account_mode, or nil
-// when unset so the column default ('default') applies.
-func modeOr(mode, def string) string {
-	if strings.TrimSpace(mode) == "" {
-		return def
-	}
-	return strings.TrimSpace(mode)
-}
-
-func accountModeValue(mode string) interface{} {
-	mode = strings.TrimSpace(mode)
-	if mode == "" {
-		return nil
-	}
-	return mode
-}
-
-// parseUUIDOrNil returns a valid pgtype.UUID only when s parses; otherwise an
-// invalid (NULL) value. Never panics on bad input.
-func parseUUIDOrNil(s string) pgtype.UUID {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return pgtype.UUID{}
-	}
-	u, err := util.ParseUUID(s)
-	if err != nil {
-		return pgtype.UUID{}
-	}
-	return u
-}
-
 type CreateAgentRequest struct {
 	Name                 string                     `json:"name"`
 	Description          string                     `json:"description"`
@@ -1661,37 +1630,15 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Account selection validation (M-153).
-	mode := strings.TrimSpace(req.AccountMode)
-	if mode != "" && mode != "default" && mode != "specific" && mode != "any" {
-		writeError(w, http.StatusBadRequest, "invalid account_mode")
+	// Account selection (M-153).
+	accountSel, err := normalizeAccountSelection(true, req.AccountMode, true, req.AccountID, accountModeDefault, pgtype.UUID{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if mode == "specific" && strings.TrimSpace(req.AccountID) == "" {
-		writeError(w, http.StatusBadRequest, "account_id is required when account_mode is specific")
+	if status, msg := h.validateAgentAccount(r.Context(), wsUUID, runtime, accountSel); status != 0 {
+		writeError(w, status, msg)
 		return
-	}
-	if strings.TrimSpace(req.AccountID) != "" {
-		accUUID, err := util.ParseUUID(strings.TrimSpace(req.AccountID))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid account_id")
-			return
-		}
-		acc, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
-			ID: accUUID, WorkspaceID: wsUUID,
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "account not found in workspace")
-			return
-		}
-		if !acc.Enabled {
-			writeError(w, http.StatusBadRequest, "account is disabled")
-			return
-		}
-		if acc.Provider != "freebuff-desktop" {
-			writeError(w, http.StatusBadRequest, "account provider mismatch")
-			return
-		}
 	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
@@ -1715,8 +1662,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
-		AccountMode:              accountModeValue(req.AccountMode),
-		AccountID:                parseUUIDOrNil(req.AccountID),
+		AccountMode:              accountSel.Mode,
+		AccountID:                accountSel.ID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -2334,61 +2281,44 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Account selection validation (M-153).
-	if req.AccountMode != nil {
-		m := strings.TrimSpace(*req.AccountMode)
-		if m != "" && m != "default" && m != "specific" && m != "any" {
-			writeError(w, http.StatusBadRequest, "invalid account_mode")
+	// Account selection (M-153). Mode and id are applied together after the
+	// main update (SetAgentAccount), so the consistency CHECK never sees half.
+	accountChanged := req.AccountMode != nil || req.AccountID != nil
+	var accountSel agentAccountSelection
+	if accountChanged {
+		modeVal, idVal := "", ""
+		if req.AccountMode != nil {
+			modeVal = *req.AccountMode
+		}
+		if req.AccountID != nil {
+			idVal = *req.AccountID
+		}
+		var selErr error
+		accountSel, selErr = normalizeAccountSelection(
+			req.AccountMode != nil, modeVal, req.AccountID != nil, idVal,
+			existing.AccountMode, existing.AccountID,
+		)
+		if selErr != nil {
+			writeError(w, http.StatusBadRequest, selErr.Error())
 			return
 		}
-		if m == "specific" {
-			aid := ""
-			if req.AccountID != nil {
-				aid = strings.TrimSpace(*req.AccountID)
-			}
-			if aid == "" {
-				writeError(w, http.StatusBadRequest, "account_id is required when account_mode is specific")
-				return
-			}
-		}
+	} else {
+		accountSel = agentAccountSelection{Mode: existing.AccountMode, ID: existing.AccountID}
 	}
-	if req.AccountID != nil && strings.TrimSpace(*req.AccountID) != "" {
-		accUUID, err := util.ParseUUID(strings.TrimSpace(*req.AccountID))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid account_id")
-			return
-		}
-		acc, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
-			ID: accUUID, WorkspaceID: existing.WorkspaceID,
+	// A runtime change must not leave a non-default account on a runtime that
+	// cannot honour it, so validate whenever either side moved.
+	if accountChanged || req.RuntimeID != nil {
+		targetRuntime, rtErr := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+			ID: targetRuntimeID, WorkspaceID: existing.WorkspaceID,
 		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "account not found in workspace")
+		if rtErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid runtime_id")
 			return
 		}
-		if !acc.Enabled {
-			writeError(w, http.StatusBadRequest, "account is disabled")
+		if status, msg := h.validateAgentAccount(r.Context(), existing.WorkspaceID, targetRuntime, accountSel); status != 0 {
+			writeError(w, status, msg)
 			return
 		}
-	}
-
-	// account selection handling (M-153). account_mode is tri-state: omitted
-	// preserves, present sets. When mode != 'specific', account_id is cleared.
-	shouldClearAccount := false
-	if req.AccountMode != nil {
-		mode := strings.TrimSpace(*req.AccountMode)
-		if mode == "" || mode == "default" || mode == "any" {
-			params.AccountMode = pgtype.Text{String: modeOr(mode, "default"), Valid: true}
-			shouldClearAccount = true
-		} else {
-			params.AccountMode = pgtype.Text{String: mode, Valid: true}
-			if req.AccountID != nil && strings.TrimSpace(*req.AccountID) != "" {
-				params.AccountID = parseUUID(*req.AccountID)
-			}
-		}
-	}
-	if req.AccountID != nil && req.AccountMode == nil {
-		// account_id update without mode: only apply when mode is specific.
-		params.AccountID = parseUUID(*req.AccountID)
 	}
 
 	// composio_toolkit_allowlist handling (MUL-3869). Tri-state semantics
@@ -2528,20 +2458,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if shouldClearAccount {
-		mode := "default"
-		if req.AccountMode != nil {
-			if m := strings.TrimSpace(*req.AccountMode); m != "" {
-				mode = m
-			}
-		}
-		updated, err = h.Queries.ClearAgentAccount(r.Context(), db.ClearAgentAccountParams{
+	if accountChanged {
+		updated, err = h.Queries.SetAgentAccount(r.Context(), db.SetAgentAccountParams{
 			ID:          updated.ID,
-			AccountMode: pgtype.Text{String: mode, Valid: true},
+			AccountMode: accountSel.Mode,
+			AccountID:   accountSel.ID,
 		})
 		if err != nil {
-			slog.Warn("clear agent account failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-			writeError(w, http.StatusInternalServerError, "failed to clear agent account")
+			slog.Warn("set agent account failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update agent account")
 			return
 		}
 	}

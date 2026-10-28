@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -289,6 +290,18 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 			return discovered(discoverOpenclawAgents(ctx, runtimeCmd))
 		})
 	case "codebuddy":
+		// The freebuff-desktop bridge speaks codebuddy's stream-json for runs
+		// but does not implement ACP, so it enumerates models with its own
+		// `--list-models --json` and takes the account from its environment.
+		if isFreebuffDesktopCommand(runtimeCmd) {
+			return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+				models, err := discoverFreebuffDesktopModels(ctx, runtimeCmd)
+				if err != nil {
+					return Catalog{}, err
+				}
+				return Catalog{Models: models}, nil
+			})
+		}
 		// discoverCodebuddyModels owns the thinking annotation too, so the one
 		// `--help` capture feeds both catalogs. Annotating out here would run
 		// the command a second time (MUL-5549).
@@ -3064,4 +3077,76 @@ func discoverDimModels(ctx context.Context, runtimeCmd Command) (Catalog, error)
 		return Catalog{Models: []Model{}, Fallback: true}, nil
 	}
 	return Catalog{Models: models}, nil
+}
+
+// freebuffDesktopEnvURL is the environment variable that selects which
+// Freebuff Desktop account endpoint the bridge talks to.
+const freebuffDesktopEnvURL = "FREEBUFF_DESKTOP_URL"
+
+// isFreebuffDesktopCommand reports whether the runtime command is the
+// freebuff-desktop bridge: either its binary is named freebuff-desktop*, or a
+// per-account bridge environment was applied to it.
+func isFreebuffDesktopCommand(c Command) bool {
+	if _, ok := c.envValue(freebuffDesktopEnvURL); ok {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(filepath.Base(c.Path)), "freebuff-desktop")
+}
+
+// discoverFreebuffDesktopModels runs `<bridge> --list-models --json` with the
+// command's environment, so one call enumerates one account's models. Failure
+// is returned, not masked by a static catalog: a per-account fallback would
+// make every account look identical.
+func discoverFreebuffDesktopModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if _, err := exec.LookPath(runtimeCmd.Path); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model discovery: %w", err)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := runtimeCmd.exec(runCtx, "--list-models", "--json")
+	hideAgentWindow(cmd)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := outputOwned(cmd, runtimeCmd.logger)
+	if err != nil {
+		return nil, fmt.Errorf("freebuff-desktop --list-models: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return parseFreebuffDesktopModels(stdout)
+}
+
+// parseFreebuffDesktopModels parses the bridge's `--list-models --json`
+// output: {"models":[{"id":"...","name":"...","provider":"..."}]}. `label` is
+// accepted as an alias of `name`. Entries without an id are dropped and
+// duplicate ids keep their first entry.
+func parseFreebuffDesktopModels(data []byte) ([]Model, error) {
+	var wrapper struct {
+		Models []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Label    string `json:"label"`
+			Provider string `json:"provider"`
+			Default  bool   `json:"default"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &wrapper); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model list: invalid JSON: %w", err)
+	}
+	seen := map[string]bool{}
+	models := make([]Model, 0, len(wrapper.Models))
+	for _, m := range wrapper.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		label := strings.TrimSpace(m.Name)
+		if label == "" {
+			label = strings.TrimSpace(m.Label)
+		}
+		if label == "" {
+			label = id
+		}
+		models = append(models, Model{ID: id, Label: label, Provider: strings.TrimSpace(m.Provider), Default: m.Default})
+	}
+	return models, nil
 }

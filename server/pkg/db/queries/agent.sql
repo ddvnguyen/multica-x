@@ -145,8 +145,6 @@ UPDATE agent SET
     model = COALESCE(sqlc.narg('model'), model),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
     service_tier = COALESCE(sqlc.narg('service_tier'), service_tier),
-    account_mode = COALESCE(sqlc.narg('account_mode'), account_mode),
-    account_id = COALESCE(sqlc.narg('account_id'), account_id),
     conversation_starters = COALESCE(sqlc.narg('conversation_starters'), conversation_starters),
     composio_toolkit_allowlist = COALESCE(sqlc.narg('composio_toolkit_allowlist')::text[], composio_toolkit_allowlist),
     updated_at = now()
@@ -169,11 +167,10 @@ UPDATE agent_task_queue SET account_id = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
--- name: ClearAgentAccount :one
--- Explicit NULL-clear for account_id (and reset mode to 'default'). Used
--- when account_mode moves away from 'specific'.
-UPDATE agent SET account_mode = COALESCE(sqlc.narg('account_mode'), 'default'),
-    account_id = NULL, updated_at = now()
+-- name: SetAgentAccount :one
+-- Sets the agent's account selection. Mode and id are written together so the
+-- agent_account_mode_consistent CHECK can never see a half-applied change.
+UPDATE agent SET account_mode = $2, account_id = sqlc.narg('account_id'), updated_at = now()
 WHERE id = $1
 RETURNING *;
 

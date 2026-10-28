@@ -4538,7 +4538,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	}
 	if resp.PendingModelList != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
-			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID, resp.PendingModelList.Account, resp.PendingModelList.Accounts)
+			go d.handleModelList(ctx, *rt, resp.PendingModelList.ID, resp.PendingModelList.Accounts)
 		}
 	}
 	if resp.PendingLocalSkills != nil {
@@ -4665,7 +4665,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 // error, and it is forwarded as status=failed so the picker can show the reason
 // and keep manual entry (MUL-6606). Both outcomes leave the creatable dropdown
 // usable; only the second one tells the user why it is empty.
-func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, account string, accounts []protocol.DaemonModelAccount) {
+func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
 	// Discovery must enumerate the binary this runtime will actually execute,
@@ -4700,51 +4700,17 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 		return
 	}
 
-	// Per-account discovery (M-153). If accounts are provided, run discovery
-	// once per account with that account's env, tagging each model. A failing
-	// account is logged and skipped, never failing the whole request.
-	var models []agent.Model
-	var unavailable []agent.UnavailableModel
-	fallback := false
-	runDiscovery := func(acc protocol.DaemonModelAccount) {
-		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
-		if err != nil {
-			d.logger.Warn("model discovery failed for account", "account", acc.ID, "error", err)
-			return
-		}
-		if cat.Fallback {
-			fallback = true
-		}
-		idx := map[string]int{}
-		for i, m := range models {
-			idx[m.ID] = i
-		}
-		for _, m := range cat.Models {
-			m2 := m
-			if acc.ID != "" {
-				m2.AccountID = acc.ID
-				m2.AccountLabel = acc.Label
-				m2.AccountIDs = []string{acc.ID}
-				m2.AccountLabels = []string{acc.Label}
-			}
-			if i, ok := idx[m.ID]; ok {
-				models[i].AccountIDs = appendUniqueStr(models[i].AccountIDs, acc.ID)
-				models[i].AccountLabels = appendUniqueStr(models[i].AccountLabels, acc.Label)
-				if models[i].AccountID == "" {
-					models[i].AccountID = acc.ID
-					models[i].AccountLabel = acc.Label
-				}
-			} else {
-				models = append(models, m2)
-				idx[m.ID] = len(models) - 1
-			}
-		}
-		for _, u := range cat.Unavailable {
-			unavailable = append(unavailable, u)
-		}
-	}
+	// Per-account discovery (M-153). With accounts, discovery runs once per
+	// account on that account's environment and the results are merged; a
+	// failing account is skipped unless every account fails.
+	var (
+		models      []agent.Model
+		unavailable []agent.UnavailableModel
+		fallback    bool
+	)
+	baseCmd := agent.NewCommand(execPath, fixedArgs)
 	if len(accounts) == 0 {
-		cat, err := listModels(ctx, rt.Provider, agent.NewCommand(execPath, fixedArgs))
+		cat, err := listModels(ctx, rt.Provider, baseCmd)
 		if err != nil {
 			d.reportModelListResult(ctx, rt, requestID, map[string]any{
 				"status": "failed",
@@ -4752,21 +4718,20 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 			})
 			return
 		}
-		models = cat.Models
-		unavailable = cat.Unavailable
-		fallback = cat.Fallback
+		models, unavailable, fallback = cat.Models, cat.Unavailable, cat.Fallback
 	} else {
-		for _, acc := range accounts {
-			runDiscovery(acc)
-		}
-		if len(models) == 0 && len(accounts) > 0 {
-			// all accounts failed: report failure
+		merged, err := discoverAccountCatalogs(ctx, rt.Provider, baseCmd, accounts)
+		if err != nil {
 			d.reportModelListResult(ctx, rt, requestID, map[string]any{
 				"status": "failed",
-				"error":  "all accounts failed discovery",
+				"error":  err.Error(),
 			})
 			return
 		}
+		for id, ferr := range merged.Failed {
+			d.logger.Warn("model discovery failed for account", "runtime_id", rt.ID, "account", id, "error", ferr)
+		}
+		models, unavailable, fallback = merged.Models, merged.Unavailable, merged.Fallback
 	}
 	if fallback {
 		d.logger.Warn("model discovery fell back to a static catalog; reporting it as non-authoritative",
@@ -4811,6 +4776,8 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 		Provider                            string                 `json:"provider,omitempty"`
 		AccountID                           string                 `json:"account_id,omitempty"`
 		AccountLabel                        string                 `json:"account_label,omitempty"`
+		AccountIDs                          []string               `json:"account_ids,omitempty"`
+		AccountLabels                       []string               `json:"account_labels,omitempty"`
 		Default                             bool                   `json:"default,omitempty"`
 		Thinking                            *modelThinkingWire     `json:"thinking,omitempty"`
 		ServiceTiers                        []modelServiceTierWire `json:"service_tiers,omitempty"`
@@ -4834,7 +4801,9 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID, acc
 			Provider:                            m.Provider,
 			Default:                             m.Default,
 			AccountID:                           m.AccountID,
-			AccountLabel:                         m.AccountLabel,
+			AccountLabel:                        m.AccountLabel,
+			AccountIDs:                          m.AccountIDs,
+			AccountLabels:                       m.AccountLabels,
 			SupportsExplicitStandardServiceTier: m.SupportsExplicitStandardServiceTier,
 		}
 		if m.Thinking != nil {

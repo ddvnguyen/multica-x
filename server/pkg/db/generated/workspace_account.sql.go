@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const agentAccountBlocked = `-- name: AgentAccountBlocked :one
+SELECT CASE
+    WHEN ag.account_mode = 'specific' THEN EXISTS (
+        SELECT 1 FROM agent_task_queue t
+        WHERE t.account_id = ag.account_id AND t.status IN ('dispatched', 'running'))
+    WHEN ag.account_mode = 'any' THEN
+        EXISTS (SELECT 1 FROM workspace_account a
+                WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled)
+        AND NOT EXISTS (SELECT 1 FROM workspace_account a
+                WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled
+                  AND NOT EXISTS (SELECT 1 FROM agent_task_queue t
+                                  WHERE t.account_id = a.id AND t.status IN ('dispatched', 'running')))
+    ELSE FALSE
+END::boolean AS blocked
+FROM agent ag
+WHERE ag.id = $1
+`
+
+// Whether the agent must wait for an account to free up before a task is
+// claimed. `specific` is blocked while its account holds a dispatched/running
+// task; `any` only when every enabled account does. An agent with no usable
+// account (`default`, or `any` with none configured) is never blocked.
+func (q *Queries) AgentAccountBlocked(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, agentAccountBlocked, id)
+	var blocked bool
+	err := row.Scan(&blocked)
+	return blocked, err
+}
+
 const createWorkspaceAccount = `-- name: CreateWorkspaceAccount :one
 INSERT INTO workspace_account (
     workspace_id, provider, label, endpoint, credential_ref, enabled, created_by
@@ -124,6 +153,64 @@ func (q *Queries) GetWorkspaceAccountInWorkspace(ctx context.Context, arg GetWor
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listAccountsForDispatch = `-- name: ListAccountsForDispatch :many
+SELECT a.id, a.label, a.endpoint, a.credential_ref,
+       COALESCE(l.active, 0)::int AS active_tasks
+FROM workspace_account a
+LEFT JOIN (
+    SELECT account_id,
+           COUNT(*) FILTER (WHERE status IN ('dispatched', 'running')) AS active,
+           MAX(COALESCE(started_at, dispatched_at)) AS last_used
+    FROM agent_task_queue
+    WHERE account_id IS NOT NULL
+    GROUP BY account_id
+) l ON l.account_id = a.id
+WHERE a.workspace_id = $1 AND a.provider = $2 AND a.enabled = TRUE
+ORDER BY COALESCE(l.active, 0) ASC, l.last_used ASC NULLS FIRST, a.created_at ASC
+`
+
+type ListAccountsForDispatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Provider    string      `json:"provider"`
+}
+
+type ListAccountsForDispatchRow struct {
+	ID            pgtype.UUID `json:"id"`
+	Label         string      `json:"label"`
+	Endpoint      pgtype.Text `json:"endpoint"`
+	CredentialRef pgtype.Text `json:"credential_ref"`
+	ActiveTasks   int32       `json:"active_tasks"`
+}
+
+// The enabled accounts of one provider, least busy first. "Busy" is the number
+// of dispatched/running tasks holding the account; ties break on the account
+// that has been idle longest, so `any` spreads runs instead of piling on one.
+func (q *Queries) ListAccountsForDispatch(ctx context.Context, arg ListAccountsForDispatchParams) ([]ListAccountsForDispatchRow, error) {
+	rows, err := q.db.Query(ctx, listAccountsForDispatch, arg.WorkspaceID, arg.Provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccountsForDispatchRow{}
+	for rows.Next() {
+		var i ListAccountsForDispatchRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Label,
+			&i.Endpoint,
+			&i.CredentialRef,
+			&i.ActiveTasks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listWorkspaceAccounts = `-- name: ListWorkspaceAccounts :many
