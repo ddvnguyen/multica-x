@@ -5,7 +5,7 @@ import { join, matchesGlob } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { checkGate, decideScopes, filters } from "./ci-scope.mjs";
+import { checkGate, decideRunner, decideScopes, filters } from "./ci-scope.mjs";
 
 // The filters use only literal paths, * and **; Node's matcher exercises those
 // against realistic changes, including files removed or renamed by a PR.
@@ -210,4 +210,133 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   });
   assert.equal(gate.status, 1);
   assert.match(gate.stderr, /backend-tests/);
+});
+
+// --- Self-hosted runner gate (M-150) ---
+
+const runnerBase = {
+  event: "pull_request",
+  headRepo: "ddvnguyen/multica-x",
+  repository: "ddvnguyen/multica-x",
+  actor: "ddvnguyen",
+  allowlist: '["ddvnguyen","claude"]',
+  ciRunner: '["self-hosted","linux","mmx"]',
+  depsChanged: "false",
+  reviewDecision: "",
+};
+
+test("runner gate: fork PRs are hosted even with a valid CI_RUNNER and allow-listed actor", () => {
+  const result = decideRunner({ ...runnerBase, headRepo: "someone-else/multica-x" });
+  assert.equal(result.runner, '["ubuntu-latest"]');
+  assert.equal(result.self_hosted, "false");
+  // Fork guard runs before vars are consulted: no scratch caches either.
+  assert.equal(result.unreviewed_deps, "false");
+});
+
+test("runner gate: same-repo PR by allow-listed actor runs on mmx labels", () => {
+  const result = decideRunner(runnerBase);
+  assert.equal(result.runner, '["self-hosted","linux","mmx"]');
+  assert.equal(result.self_hosted, "true");
+});
+
+test("runner gate: non-allow-listed actor, empty allowlist or empty CI_RUNNER stay hosted", () => {
+  for (const over of [
+    { actor: "random-octocat" },
+    { allowlist: "" },
+    { allowlist: "[]" },
+    { ciRunner: "" },
+    { ciRunner: "not json [" },
+    { ciRunner: "[]" },
+  ]) {
+    const result = decideRunner({ ...runnerBase, ...over });
+    assert.equal(result.runner, '["ubuntu-latest"]', JSON.stringify(over));
+    assert.equal(result.self_hosted, "false", JSON.stringify(over));
+  }
+});
+
+test("runner gate: schedule and dispatch events never leave hosted", () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    const result = decideRunner({ ...runnerBase, event });
+    assert.equal(result.runner, '["ubuntu-latest"]');
+    assert.equal(result.self_hosted, "false");
+  }
+});
+
+test("runner gate: push events are gated on allow-listed actors only", () => {
+  const push = { ...runnerBase, event: "push", headRepo: "" };
+  assert.equal(decideRunner(push).self_hosted, "true");
+  assert.equal(decideRunner({ ...push, actor: "random-octocat" }).self_hosted, "false");
+});
+
+test("runner gate: unreviewed dependency changes isolate caches until approval", () => {
+  const deps = { ...runnerBase, depsChanged: "true" };
+  assert.equal(decideRunner(deps).unreviewed_deps, "true");
+  assert.equal(decideRunner({ ...deps, reviewDecision: "APPROVED" }).unreviewed_deps, "false");
+  assert.equal(decideRunner({ ...deps, reviewDecision: "CHANGES_REQUESTED" }).unreviewed_deps, "true");
+  assert.equal(decideRunner({ ...runnerBase, depsChanged: "false" }).unreviewed_deps, "false");
+  // After merge (push event) the shared caches re-warm; isolation never applies.
+  assert.equal(decideRunner({ ...deps, event: "push", headRepo: "" }).unreviewed_deps, "false");
+  // Hosted runs have no shared caches to poison.
+  assert.equal(decideRunner({ ...deps, actor: "random-octocat" }).unreviewed_deps, "false");
+});
+
+test("the CLI writes runner outputs for runs-on: fromJSON(...)", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-runner-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const output = join(dir, "output");
+  const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [script, "runner"], {
+    env: {
+      ...process.env,
+      EVENT_NAME: "pull_request",
+      HEAD_REPO: "ddvnguyen/multica-x",
+      REPOSITORY: "ddvnguyen/multica-x",
+      ACTOR: "ddvnguyen",
+      ALLOWLIST: '["ddvnguyen"]',
+      CI_RUNNER: '["self-hosted","linux","mmx"]',
+      DEPS_CHANGED: "true",
+      REVIEW_DECISION: "",
+      GITHUB_OUTPUT: output,
+    },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const written = readFileSync(output, "utf8");
+  assert.match(written, /^runner=\["self-hosted","linux","mmx"\]$/m);
+  assert.match(written, /^self_hosted=true$/m);
+  assert.match(written, /^unreviewed_deps=true$/m);
+});
+
+test("production runner wiring: changes decides, heavy frontend jobs consume, every job has a timeout", () => {
+  // The changes job is the single source of truth for the runner decision.
+  assert.match(jobs.changes, /^        id: runner$/m);
+  assert.match(jobs.changes, /^      runner: \$\{\{ steps\.runner\.outputs\.runner \}\}$/m);
+  assert.match(jobs.changes, /^      self_hosted: \$\{\{ steps\.runner\.outputs\.self_hosted \}\}$/m);
+  assert.match(jobs.changes, /^      unreviewed_deps: \$\{\{ steps\.runner\.outputs\.unreviewed_deps \}\}$/m);
+  assert.match(jobs.changes, /^    runs-on: ubuntu-latest$/m);
+  // The gate itself never runs on self-hosted: forks reach it.
+  assert.match(jobs.changes, /Reject pull_request_target.*workflow_run|pull_request_target.*workflow_run.*must not/m);
+
+  // Only the four long-pole frontend jobs move to self-hosted. The frontend
+  // and backend aggregates must stay hosted so the required check name always
+  // reports even if the self-hosted pool drains.
+  const switched = ["frontend-build", "frontend-test", "frontend-views-test", "frontend-quality"];
+  for (const job of switched) {
+    assert.match(jobs[job], /^    runs-on: \$\{\{ fromJSON\(needs\.changes\.outputs\.runner\) \}\}$/m, job);
+    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+  }
+  // Gate aggregates and the light jobs stay hosted and must not consume the runner output.
+  for (const job of ["frontend", "backend", "script-checks", "image-budget"]) {
+    assert.doesNotMatch(jobs[job], /fromJSON\(needs\.changes\.outputs\.runner\)/, job);
+    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m, job);
+    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+  }
+  // Backend and platform jobs stay hosted.
+  for (const job of ["backend-tests", "backend-agent-tests", "go-vulnerability-scan", "sqlc-check", "windows-execenv", "macos-runtime"]) {
+    assert.doesNotMatch(jobs[job], /fromJSON\(needs\.changes\.outputs\.runner\)/, job);
+    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+  }
+  // The firewall proof runs on the self-hosted path only.
+  assert.match(jobs["mmx-firewall"], /^    if: \$\{\{ needs\.changes\.outputs\.self_hosted == 'true' \}\}$/m);
+  assert.match(jobs["mmx-firewall"], /curl --max-time 3 http:\/\/127\.0\.0\.1:3180\//);
 });
