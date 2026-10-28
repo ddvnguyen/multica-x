@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { useModalStore } from "../fork";
 import { IslandBoot } from "./island-app";
 import { BOARD_ROUTE, islandRouteKey, type IslandRoute } from "./navigation";
 import { ISLAND_CSS, createPopupSeat } from "./popup-seat";
@@ -182,6 +183,12 @@ export function attachIsland(seat: HTMLElement, route: IslandRoute): void {
   if (handle === undefined) return;
   if (islandRouteKey(handle.route) === islandRouteKey(route)) return;
 
+  // The panel is being asked for a different entry, so whatever dialog the
+  // previous one opened goes with it. This is the rail-to-rail case: the host
+  // moves to the new cell in the same commit, so `detachIsland` never runs and
+  // the dialog would otherwise sit over the entry the reader moved to (M-146).
+  closeDialogs();
+
   handle.route = route;
   handle.root.render(
     createElement(IslandBoot, { portalHost: handle.portalHost, route }),
@@ -213,18 +220,40 @@ export function isIslandAttached(): boolean {
 }
 
 /**
+ * Close an open modal-store dialog, if there is one.
+ *
+ * The dialog is a child of the portal container rather than of the panel, and
+ * it is a modal, so Base UI's outside press does not dismiss it. Every path
+ * that takes the panel away from the page that opened it — detaching, and
+ * moving the keep-alive host to another rail entry — closes it through the
+ * store the page opened it with.
+ */
+function closeDialogs(): void {
+  const modal = useModalStore.getState();
+  if (modal.modal !== null) modal.close();
+}
+
+/**
  * Close whatever the island has open in a portal.
  *
- * Base UI dismisses a floating element on a `pointerdown` outside it, listened
- * for on the document; the island's popups are portalled outside the panel, so
- * detaching the panel is not enough to close them. One synthetic press on the
- * body is that outside press. It is only dispatched when the portal container
- * actually holds something, so a detach with nothing open cannot reach the
- * shell's own dismiss layers.
+ * Two kinds of overlay live out here, and they close differently.
+ *
+ * A modal-store dialog is opened by the fork's pages through `useModalStore`
+ * and rendered by `ModalRegistry` into the portal container, so it is not a
+ * child of the panel and detaching the panel leaves it on screen — the next
+ * attach would then show a page with a dialog from the previous one over it.
+ * It closes through the store it was opened with.
+ *
+ * A Base UI popover dismisses itself on a `pointerdown` outside it, listened
+ * for on the document. One synthetic press on the body is that outside press.
+ * It is only dispatched when the portal container actually holds something, so
+ * a detach with nothing open cannot reach the shell's own dismiss layers.
  */
 function dismissOverlays(host: HTMLElement): void {
   const handle = handles.get(host);
-  if (handle === undefined || handle.portalHost.childElementCount === 0) return;
+  if (handle === undefined) return;
+  closeDialogs();
+  if (handle.portalHost.childElementCount === 0) return;
   const doc = host.ownerDocument;
   const win = doc.defaultView;
   const Press = win?.PointerEvent ?? win?.MouseEvent;

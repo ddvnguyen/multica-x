@@ -208,6 +208,12 @@ function installBackend(): void {
         facets: [{ kind: "status", values: [{ key: "todo", count: 3 }] }],
       });
     }
+    // The issue detail page addresses one issue by identifier (M-146's second
+    // dialog opens from its actions menu), and reads its comments beside it.
+    if (/^\/multica\/api\/issues\/[^/?]+$/.test(url.split("?")[0] ?? "")) {
+      return json(issue(1));
+    }
+    if (url.includes("/comments")) return json([]);
     if (url.startsWith("/multica/api/issues")) {
       const issues = [issue(1), issue(2), issue(3)];
       return json({ issues, total: issues.length, comments: [] });
@@ -224,6 +230,9 @@ installBackend();
 
 const ENTRIES: ReadonlyArray<{ id: string; label: string; route: IslandRoute }> = [
   { id: "multica", label: "Issues", route: BOARD_ROUTE },
+  // The issue detail page is where the second modal-store dialog (the delete
+  // confirm) is opened from (M-146).
+  { id: "multica-issue", label: "Issue", route: { view: "issue", issueId: "MUL-1" } },
   { id: "multica-inbox", label: "Inbox", route: FAMILY_ROOTS.inbox },
   // The settings page is the one that made the host's missing height obvious
   // (M-143): its tabs scroll inside the page, so a collapsed host cut it off

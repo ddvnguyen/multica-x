@@ -46,6 +46,14 @@ export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
 export { InboxPage } from "@multica/views/inbox";
 export { ChatPage } from "@multica/views/chat";
 
+// Dialogs. The fork's pages ask for a dialog through a module-level store and
+// one component renders whatever the store names; the island has no layout that
+// mounts it, so it mounts `ModalRegistry` itself (M-146). `useModalStore` is
+// here for the other half of that contract: detaching the island has to close
+// an open dialog, or the next attach brings it back with the panel.
+export { ModalRegistry } from "@multica/views/modals/registry";
+export { useModalStore } from "@multica/core/modals";
+
 // The settings page itself, plus the layout it hands a host-supplied group, so
 // the MOCT tabs look like every other settings page instead of a second design.
 export {
