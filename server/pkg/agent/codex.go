@@ -959,14 +959,14 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	resCh := make(chan Result, 1)
 	var sessionMu sync.RWMutex
 	currentSession := firstSession
-	supplement := func(supplementCtx context.Context, instruction string) error {
+	supplement := func(supplementCtx context.Context, instruction string, mode string) error {
 		sessionMu.RLock()
 		session := currentSession
 		sessionMu.RUnlock()
 		if session == nil || session.Supplement == nil {
 			return errors.New("codex turn does not accept additional messages")
 		}
-		return session.Supplement(supplementCtx, instruction)
+		return session.Supplement(supplementCtx, instruction, mode)
 	}
 	supplementReady := func() bool {
 		sessionMu.RLock()
@@ -1926,8 +1926,8 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 	}()
 
-	supplement := func(supplementCtx context.Context, instruction string) error {
-		return supplementCodexTurn(supplementCtx, c, instruction)
+	supplement := func(supplementCtx context.Context, instruction string, mode string) error {
+		return supplementCodexTurn(supplementCtx, c, instruction, mode)
 	}
 	supplementReady := func() bool {
 		return c.getThreadID() != "" && c.activeTurnID() != ""
@@ -1935,7 +1935,8 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	return &Session{Supplement: supplement, SupplementReady: supplementReady, Messages: msgCh, Result: resCh}, nil
 }
 
-func supplementCodexTurn(ctx context.Context, c *codexClient, instruction string) error {
+func supplementCodexTurn(ctx context.Context, c *codexClient, instruction string, mode string) error {
+	_ = mode
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	threadID := c.getThreadID()

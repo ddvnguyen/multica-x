@@ -441,6 +441,7 @@ type TaskSupplement struct {
 	CommentID  string `json:"comment_id"`
 	AuthorName string `json:"author_name"`
 	Content    string `json:"content"`
+	Mode       string `json:"mode"`
 }
 
 func (c *Client) ClaimTaskSupplement(ctx context.Context, taskID string) (*TaskSupplement, error) {

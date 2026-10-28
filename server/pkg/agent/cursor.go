@@ -498,7 +498,7 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// The daemon already offered steering for this run and there is no way
 		// to withdraw it, so settle each message as failed right away instead of
 		// leaving it pending until the turn ends.
-		session.Supplement = func(context.Context, string) error {
+		session.Supplement = func(context.Context, string, string) error {
 			return fmt.Errorf("cursor hooks unavailable: %w", supplementErr)
 		}
 		session.SupplementReady = func() bool { return runCtx.Err() == nil }
