@@ -245,6 +245,38 @@ func TestFormatErrorValidationPrefersProseOverMachineCode(t *testing.T) {
 	}
 }
 
+// TestFormatErrorCompletionRefusalNamesTheMove pins the completion refusal:
+// an agent that tries to close an issue must learn that a human owns the
+// decision and which status it MAY write instead. The generic forbidden line
+// ("you do not have permission") sends an agent hunting for an access problem
+// it does not have.
+func TestFormatErrorCompletionRefusalNamesTheMove(t *testing.T) {
+	withLang(t, "en_US.UTF-8")
+	httpErr := &HTTPError{
+		Method:     "PUT",
+		Path:       "/api/issues/abc",
+		StatusCode: 403,
+		Body:       `{"error":"only a human can mark an issue as done; move it to in_review and let a human close it","code":"agent_cannot_complete_issue"}`,
+	}
+	got := FormatError(httpErr, false)
+	if !strings.Contains(got, "move it to in_review") {
+		t.Errorf("expected the refusal to name the allowed move, got %q", got)
+	}
+	if strings.Contains(got, "You do not have permission") {
+		t.Errorf("generic permission copy misdirects here, got %q", got)
+	}
+}
+
+// A 403 without that code keeps the generic copy: only the refusal that names
+// its own fix may replace it.
+func TestFormatErrorForbiddenWithoutKnownCodeKeepsGenericCopy(t *testing.T) {
+	withLang(t, "en_US.UTF-8")
+	got := FormatError(&HTTPError{StatusCode: 403, Body: `{"error":"nope","code":"some_other_code"}`}, false)
+	if !strings.Contains(got, "You do not have permission") {
+		t.Errorf("expected the generic forbidden copy, got %q", got)
+	}
+}
+
 func TestFormatErrorDebugIncludesRawChain(t *testing.T) {
 	withLang(t, "en_US.UTF-8")
 	httpErr := &HTTPError{Method: "GET", Path: "/api/issues/abc", StatusCode: 404, Body: `{"error":"not found"}`}
