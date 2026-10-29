@@ -126,6 +126,75 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-cancel","status":"cance
 	}
 }
 
+// TestDshBackendRecordsFirstAndLastPromptTokens (S3-B1): the bridge emits
+// one usage frame per model request, so frame order gives the run's first
+// and last request prompt sizes — the facts the daemon's summary clock
+// triggers on. A one-shot run (fresh session, two requests: 20K init
+// prefix, 60K conversation) must be able to reach the trigger on its own.
+func TestDshBackendRecordsFirstAndLastPromptTokens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+if [ "$1" != "--profile" ] || [ "$2" != "multica" ] || [ "$3" != "--stdio" ]; then exit 9; fi
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+IFS= read -r command
+case "$command" in *'"type":"execute"'*) ;; *) exit 8 ;; esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-p","session_id":"session-p","resumed":false}'
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-p","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":12000,"output_tokens":900,"cache_read_tokens":7000,"cache_write_tokens":1000}'
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-p","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":35000,"output_tokens":800,"cache_read_tokens":24000,"cache_write_tokens":1000}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-p","status":"completed","session_id":"session-p","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-p", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "say done", ExecOptions{Cwd: t.TempDir(), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	// First request: 12000 + 7000 + 1000 = 20K init prefix; last request:
+	// 35000 + 24000 + 1000 = 60K — growth of 40K above the prefix.
+	if result.FirstPromptTokens != 20000 || result.LastPromptTokens != 60000 {
+		t.Fatalf("first/last prompt tokens = %d/%d, want 20000/60000",
+			result.FirstPromptTokens, result.LastPromptTokens)
+	}
+}
+
+// TestDshBackendSingleRequestPromptTokens: a one-request run has no
+// conversation above its own prompt — first and last are the same size, so
+// the summary clock's growth measure is zero and it stays under the trigger.
+func TestDshBackendSingleRequestPromptTokens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+if [ "$1" != "--profile" ] || [ "$2" != "multica" ] || [ "$3" != "--stdio" ]; then exit 9; fi
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+IFS= read -r command
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-q","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":18000,"output_tokens":500,"cache_read_tokens":2000}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed","session_id":"session-q","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-q", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "say done", ExecOptions{Cwd: t.TempDir(), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.FirstPromptTokens != 20000 || result.LastPromptTokens != 20000 {
+		t.Fatalf("first/last prompt tokens = %d/%d, want 20000/20000 (one request)",
+			result.FirstPromptTokens, result.LastPromptTokens)
+	}
+}
+
 func TestDiscoverDshModels(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")

@@ -431,7 +431,8 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 
 		result := state.result
 		if result == nil {
-			result = &Result{Status: "failed", SessionID: state.sessionID, Usage: state.usage}
+			result = &Result{Status: "failed", SessionID: state.sessionID, Usage: state.usage,
+				FirstPromptTokens: state.firstPromptTokens, LastPromptTokens: state.lastPromptTokens}
 			switch {
 			case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 				result.Status = "timeout"
@@ -483,7 +484,14 @@ type dshRunState struct {
 	frameCount    int
 	invalidFrames int
 	usage         map[string]TokenUsage
-	result        *Result
+	// S3-B1 (M-137): first/last model-request prompt sizes in frame order
+	// (input + cache read + cache write). Set by the usage case in
+	// handleDshFrame from the bridge's per-request frames; exposed on the
+	// Result for the daemon's summary clock.
+	usageSeen         bool
+	firstPromptTokens int64
+	lastPromptTokens  int64
+	result            *Result
 
 	// Ask/plan parity state (M-109). The frame handler (scanner goroutine)
 	// writes it; Session.Supplement reads and clears it from the daemon's
@@ -602,6 +610,17 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 			usage.CacheWriteTokens += frame.CacheWriteTokens
 			state.usage[key] = usage
 		}
+		// S3-B1 (M-137): the bridge emits one usage frame per model request
+		// (per assistant message), so frame order gives the run's first and
+		// last request prompt sizes. The usage map above accumulates billed
+		// volume per model — the wrong measure for the summary clock's
+		// trigger, which is conversation growth, not billed tokens.
+		promptTokens := frame.InputTokens + frame.CacheReadTokens + frame.CacheWriteTokens
+		if !state.usageSeen {
+			state.usageSeen = true
+			state.firstPromptTokens = promptTokens
+		}
+		state.lastPromptTokens = promptTokens
 	case "protocol_error":
 		state.protocolError = strings.TrimSpace(frame.Code + ": " + frame.Message)
 	case "result":
@@ -612,6 +631,7 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 		state.result = &Result{
 			Status: frame.Status, Output: frame.Output, Error: errorText,
 			SessionID: frame.SessionID, Usage: state.usage, ResumeRejected: frame.ResumeRejected,
+			FirstPromptTokens: state.firstPromptTokens, LastPromptTokens: state.lastPromptTokens,
 		}
 		if state.result.SessionID == "" {
 			state.result.SessionID = state.sessionID

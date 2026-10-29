@@ -44,9 +44,6 @@ const (
 	// DefaultDshSummaryTriggerTokens: conversation tokens above the init
 	// prefix at which summarizing is worth it (~20K, M-133).
 	DefaultDshSummaryTriggerTokens = 20000
-	// DefaultDshSummaryTriggerIdle: idle time at which summarizing is worth
-	// it regardless of size (30 min, M-133).
-	DefaultDshSummaryTriggerIdle = 30 * time.Minute
 	// DefaultDshSummaryTTL is the assumed provider cache TTL (1 h, the
 	// conservative published value; DeepSeek reports ≥12 h warm in practice).
 	DefaultDshSummaryTTL = time.Hour
@@ -76,7 +73,6 @@ type DshSummaryConfig struct {
 	SummaryTokens   int64
 	SummaryTokenCap int64
 	TriggerTokens   int64
-	TriggerIdle     time.Duration
 	TTL             time.Duration
 	Margin          time.Duration
 	ColdWarmRatio   float64
@@ -120,11 +116,11 @@ type dshSummaryVerdict struct {
 // decideDshSummary is the pure trigger+cost decision (S3-B1).
 //
 // Trigger: conversation tokens above the init prefix reached the configured
-// threshold, OR the session has been idle past the configured idle trigger.
-// With the default 1 h TTL the clock fires at 45 min idle, which already
-// satisfies the idle trigger; the token clause is what decides when operators
-// shrink the TTL below it (the 120 s test configuration, or a model whose
-// promptCache says the cache lives minutes, not hours).
+// threshold. The decision is token-only: the clock fires at TTL−margin — with
+// the default 1 h TTL and 15 min margin, 45 min after the run ended — so an
+// idle clause would be either always true (idle trigger shorter than the
+// fire delay) or dead config; the earlier "20K or 30 min idle" shape was
+// dropped for exactly that reason (Architect review of 232e8ec).
 //
 // Cost rule: at TTL−margin the provider cache is still warm, so building the
 // summary re-reads the conversation at warm prices plus one short completion;
@@ -137,8 +133,8 @@ type dshSummaryVerdict struct {
 // 1 (operator disables the cache's price advantage) therefore never
 // summarizes, and every session above the trigger summarizes once the
 // conversation clears SummaryTokens/(ColdWarmRatio−1) tokens.
-func decideDshSummary(tokensAboveInit int64, idle time.Duration, cfg DshSummaryConfig) dshSummaryVerdict {
-	if tokensAboveInit < cfg.TriggerTokens && idle < cfg.TriggerIdle {
+func decideDshSummary(tokensAboveInit int64, cfg DshSummaryConfig) dshSummaryVerdict {
+	if tokensAboveInit < cfg.TriggerTokens {
 		return dshSummaryVerdict{Reason: dshSummaryReasonBelow}
 	}
 	gap := float64(tokensAboveInit) * (cfg.ColdWarmRatio - 1)
@@ -221,14 +217,20 @@ type dshSessionSummarizer interface {
 	SummarizeSession(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
 }
 
-// dshSummaryRequest is what a completed dsh run hands the clock.
+// dshSummaryRequest is what a completed dsh run hands the clock. The two
+// token facts are the run's first and last model-request prompt sizes
+// (input + cache_read + cache_write, M-110 usage facts in frame order) from
+// result.FirstPromptTokens/LastPromptTokens; their difference is the
+// conversation growth the summary decision runs on, so a one-shot run can
+// reach the trigger on its own.
 type dshSummaryRequest struct {
 	TaskID            string
 	SessionID         string
 	WorkDir           string
 	StoreRoot         string
 	Model             string
-	TotalPromptTokens int64 // M-110 usage facts: input + cache_read + cache_write
+	FirstPromptTokens int64 // prompt tokens of the run's first model request
+	LastPromptTokens  int64 // prompt tokens of the run's last model request
 	Summarize         func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
 	RecordDecision    func(ctx context.Context, record dshSummaryRunRowRecord)
 }
@@ -250,14 +252,15 @@ func (timeAfterFuncScheduler) Schedule(delay time.Duration, fire func()) func() 
 // dshSummaryClock is the daemon-resident per-session cache clock (S3-B1).
 // Arm replaces any pending fire for the session (a newer run has newer usage
 // facts); Cancel disarms it — a session that is being resumed again must not
-// be compacted mid-conversation.
+// be compacted mid-conversation. The clock keeps no per-session state beyond
+// the pending timers themselves: every fact the fire decision needs rides the
+// request, so nothing accumulates per session.
 type dshSummaryClock struct {
 	mu        sync.Mutex
 	cfg       DshSummaryConfig
 	now       func() time.Time
 	scheduler dshSummaryScheduler
 	cancels   map[string]func()
-	baselines map[string]int64
 	log       *slog.Logger
 	// ctxFn resolves the daemon-lifetime context the summarize call runs
 	// under. The task context is already cancelled when the clock fires, so
@@ -271,7 +274,6 @@ func newDshSummaryClock(cfg DshSummaryConfig, log *slog.Logger) *dshSummaryClock
 		now:       time.Now,
 		scheduler: timeAfterFuncScheduler{},
 		cancels:   make(map[string]func()),
-		baselines: make(map[string]int64),
 		log:       log,
 		ctxFn:     func() context.Context { return context.Background() },
 	}
@@ -301,26 +303,18 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 		return
 	}
 	c.mu.Lock()
-	baseline, seen := c.baselines[req.SessionID]
-	if !seen {
-		// First observed run end for this session: its prompt total stands in
-		// for the init prefix (brief + first prompt), so growth above it is
-		// the conversation the summary would replace. Usage-facts estimate,
-		// good enough for a 20K-token trigger; re-measured after M-126.
-		baseline = req.TotalPromptTokens
-		c.baselines[req.SessionID] = baseline
-	}
 	if cancel, ok := c.cancels[req.SessionID]; ok {
 		cancel()
 	}
 	armedAt := c.now()
 	c.cancels[req.SessionID] = c.scheduler.Schedule(delay, func() {
-		c.fire(req, baseline, armedAt)
+		c.fire(req, armedAt)
 	})
 	c.mu.Unlock()
 	c.log.Debug("dsh summary clock armed",
 		"task_id", req.TaskID, "session_id", req.SessionID, "model", req.Model,
-		"fire_in", delay.String(), "total_prompt_tokens", req.TotalPromptTokens)
+		"fire_in", delay.String(), "first_prompt_tokens", req.FirstPromptTokens,
+		"last_prompt_tokens", req.LastPromptTokens)
 }
 
 // Cancel disarms the clock for one session — the session is being resumed, so
@@ -342,7 +336,7 @@ func (c *dshSummaryClock) Cancel(sessionID string) {
 // fire is the clock callback: decide, and on a proceed verdict invoke the
 // bridge once and store the summary beside the session. Every outcome lands
 // in the run's decision record.
-func (c *dshSummaryClock) fire(req dshSummaryRequest, baseline int64, armedAt time.Time) {
+func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 	c.mu.Lock()
 	delete(c.cancels, req.SessionID)
 	c.mu.Unlock()
@@ -352,11 +346,14 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, baseline int64, armedAt ti
 	if idle < 0 {
 		idle = 0
 	}
-	tokensAboveInit := req.TotalPromptTokens - baseline
+	// Conversation growth above the init prefix, measured as the last model
+	// request's prompt size minus the first request's — context size, not
+	// billed volume, so a one-shot run can reach the trigger by itself.
+	tokensAboveInit := req.LastPromptTokens - req.FirstPromptTokens
 	if tokensAboveInit < 0 {
 		tokensAboveInit = 0
 	}
-	verdict := decideDshSummary(tokensAboveInit, idle, c.cfg)
+	verdict := decideDshSummary(tokensAboveInit, c.cfg)
 	record := dshSummaryRunRowRecord{
 		Decision:        verdict.Reason,
 		SessionID:       req.SessionID,
@@ -495,7 +492,6 @@ func dshSummaryConfigFromEnv() (DshSummaryConfig, error) {
 		SummaryTokens:   DefaultDshSummaryTokens,
 		SummaryTokenCap: DefaultDshSummaryTokenCap,
 		TriggerTokens:   DefaultDshSummaryTriggerTokens,
-		TriggerIdle:     DefaultDshSummaryTriggerIdle,
 		TTL:             DefaultDshSummaryTTL,
 		Margin:          DefaultDshSummaryMargin,
 		ColdWarmRatio:   DefaultDshSummaryColdWarmRatio,
@@ -508,9 +504,6 @@ func dshSummaryConfigFromEnv() (DshSummaryConfig, error) {
 		return DshSummaryConfig{}, err
 	}
 	if cfg.TriggerTokens, err = int64FromEnv("MULTICA_DSH_SUMMARY_TRIGGER_TOKENS", cfg.TriggerTokens); err != nil {
-		return DshSummaryConfig{}, err
-	}
-	if cfg.TriggerIdle, err = durationFromEnv("MULTICA_DSH_SUMMARY_TRIGGER_IDLE", cfg.TriggerIdle); err != nil {
 		return DshSummaryConfig{}, err
 	}
 	if cfg.TTL, err = durationFromEnv("MULTICA_DSH_SUMMARY_TTL", cfg.TTL); err != nil {
@@ -546,11 +539,11 @@ func int64FromEnv(name string, def int64) (int64, error) {
 }
 
 // armDshSummaryClock arms the per-session clock when a dsh run ends (S3-B1).
-// The trigger facts come from M-110 usage already on the result: the run's
-// total prompt tokens (input + cache read + cache write) stand in for the
-// conversation size, and the clock derives growth above the session's
-// init-prefix baseline. No-op for every other provider and for a backend
-// that cannot summarize.
+// The trigger facts are the run's first and last model-request prompt sizes
+// from M-110 usage on the result (the dsh backend records them in frame
+// order from its per-request usage frames); their difference is the
+// conversation growth the fire decision runs on. No-op for every other
+// provider and for a backend that cannot summarize.
 func (d *Daemon) armDshSummaryClock(task Task, provider, model string, result agent.Result, workDir, storeRoot string, backend agent.Backend) {
 	if provider != "dsh" || strings.TrimSpace(result.SessionID) == "" {
 		return
@@ -561,17 +554,14 @@ func (d *Daemon) armDshSummaryClock(task Task, provider, model string, result ag
 			"task_id", task.ID, "session_id", result.SessionID)
 		return
 	}
-	var total int64
-	for _, u := range result.Usage {
-		total += u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
-	}
 	d.dshSummary.Arm(dshSummaryRequest{
 		TaskID:            task.ID,
 		SessionID:         result.SessionID,
 		WorkDir:           workDir,
 		StoreRoot:         storeRoot,
 		Model:             model,
-		TotalPromptTokens: total,
+		FirstPromptTokens: result.FirstPromptTokens,
+		LastPromptTokens:  result.LastPromptTokens,
 		Summarize: func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
 			return summarizer.SummarizeSession(ctx, sessionID, model)
 		},

@@ -346,7 +346,6 @@ Daemon behavior is configured via flags or environment variables:
 | dsh summary size target | — | `MULTICA_DSH_SUMMARY_TOKENS` | `2048` tokens |
 | dsh summary size cap (flagged, not enforced) | — | `MULTICA_DSH_SUMMARY_TOKEN_CAP` | `4096` tokens |
 | dsh summary trigger (conversation tokens above the init prefix) | — | `MULTICA_DSH_SUMMARY_TRIGGER_TOKENS` | `20000` |
-| dsh summary idle trigger | — | `MULTICA_DSH_SUMMARY_TRIGGER_IDLE` | `30m` |
 | dsh assumed cache TTL | — | `MULTICA_DSH_SUMMARY_TTL` | `1h` (provisional until re-measured with a real DeepSeek key) |
 | dsh summary margin (summarize at TTL − margin) | — | `MULTICA_DSH_SUMMARY_MARGIN` | `15m` |
 | dsh cold/warm cache price ratio (cost rule) | — | `MULTICA_DSH_SUMMARY_COLD_WARM_RATIO` | `30` |
@@ -361,10 +360,14 @@ beside the session (`summary.json` in the session store, carrying `summary`,
 `tokens`, `made_at`, and `parent_session`). A resumed session disarms its
 clock. Whether the summary is built is decided from the run's usage facts
 (`cache_read_tokens`/`cache_write_tokens`): the conversation above the init
-prefix must reach the token or idle trigger, and the expected cold re-read
+prefix — the run's last model request's prompt size minus its first request's,
+so a one-shot session can reach the trigger — must reach the token trigger,
+and the expected cold re-read
 must cost more than the summary. Every decision is logged on the run row
 (`result.dsh_summary`). The clock lives in the daemon — an idle session never
-keeps a dsh process alive. All defaults are provisional (M-133) pending
+keeps a dsh process alive. Summary timers are in daemon memory, so a daemon
+restart drops pending fires (re-arming on start is deferred to M-139). All
+defaults are provisional (M-133) pending
 re-measurement with a real DeepSeek credential; nothing here is hard-coded.
 
 #### Workspace garbage collection

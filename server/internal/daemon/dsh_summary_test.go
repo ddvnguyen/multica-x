@@ -67,15 +67,12 @@ func testSummarySettings() DshSummaryConfig {
 		SummaryTokens:   2000,
 		SummaryTokenCap: 4096,
 		TriggerTokens:   1000,
-		TriggerIdle:     30 * time.Minute,
 		TTL:             120 * time.Second,
 		Margin:          30 * time.Second,
 		ColdWarmRatio:   30,
 	}
 }
 
-// newTestSummaryClock wires a clock onto the fake scheduler and a frozen
-// clock; now starts at epoch and the test advances it explicitly.
 func newTestSummaryClock(t *testing.T, cfg DshSummaryConfig) (*dshSummaryClock, *fakeSummaryScheduler, *time.Time) {
 	t.Helper()
 	scheduler := &fakeSummaryScheduler{}
@@ -86,11 +83,30 @@ func newTestSummaryClock(t *testing.T, cfg DshSummaryConfig) (*dshSummaryClock, 
 	return clock, scheduler, &now
 }
 
-// TestDshSummaryClockBuildsAtTTLMargin is the acceptance check: with a 120 s
-// TTL and a conversation above the trigger, the summary is built at
-// TTL−margin, is at most the 2K target, and lands beside the session with
-// parent_session set.
-func TestDshSummaryClockBuildsAtTTLMargin(t *testing.T) {
+// armOneShot is the one-shot acceptance shape: a single run that started its
+// session, whose first model request was the init prefix and whose last
+// request grew the conversation above it. No resume, no second arm — the
+// run itself must be able to reach the summarize decision.
+func armOneShot(clock *dshSummaryClock, storeRoot, workDir string, first, last int64, summarize func(context.Context, string, string) (*agent.DshSessionSummary, error), record func(context.Context, dshSummaryRunRowRecord)) {
+	clock.Arm(dshSummaryRequest{
+		TaskID:            "task-1",
+		SessionID:         "session-1",
+		WorkDir:           workDir,
+		StoreRoot:         storeRoot,
+		Model:             "deepseek/deepseek-v4-pro",
+		FirstPromptTokens: first,
+		LastPromptTokens:  last,
+		Summarize:         summarize,
+		RecordDecision:    record,
+	})
+}
+
+// TestDshSummaryClockBuildsOneShotAtTTLMargin is the acceptance check
+// (Architect review, must-fix 1 + 4): with a 120 s TTL, a one-shot session —
+// first request 20K (init prefix), last request 60K, no earlier arm — builds
+// its summary at TTL−margin = 90 s, the summary is at most the 2K target,
+// and it lands beside the session with parent_session set.
+func TestDshSummaryClockBuildsOneShotAtTTLMargin(t *testing.T) {
 	storeRoot := t.TempDir()
 	workDir := t.TempDir()
 	cfg := testSummarySettings()
@@ -101,44 +117,31 @@ func TestDshSummaryClockBuildsAtTTLMargin(t *testing.T) {
 	// ~1.5K tokens by the bytes/4 estimate — under the 2K target.
 	summaryText := strings.Repeat("summary token ", 1500)
 
-	// Two run ends: the first establishes the init-prefix baseline, the
-	// second grows the conversation well above the trigger.
-	arm := func(total int64) {
-		clock.Arm(dshSummaryRequest{
-			TaskID:            "task-1",
-			SessionID:         "session-1",
-			WorkDir:           workDir,
-			StoreRoot:         storeRoot,
-			Model:             "deepseek/deepseek-v4-pro",
-			TotalPromptTokens: total,
-			Summarize: func(_ context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
-				gotSummary = &agent.DshSessionSummary{SessionID: sessionID, Summary: summaryText, Tokens: 1500, Model: model}
-				return gotSummary, nil
-			},
-			RecordDecision: func(_ context.Context, record dshSummaryRunRowRecord) {
-				records = append(records, record)
-			},
+	armOneShot(clock, storeRoot, workDir, 20000, 60000,
+		func(_ context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
+			gotSummary = &agent.DshSessionSummary{SessionID: sessionID, Summary: summaryText, Tokens: 1500, Model: model}
+			return gotSummary, nil
+		},
+		func(_ context.Context, record dshSummaryRunRowRecord) {
+			records = append(records, record)
 		})
-	}
-	arm(8000)
-	*now = now.Add(90 * time.Second)
-	arm(58000)
 
-	if got := scheduler.delay(t, 1); got != 90*time.Second {
+	if got := scheduler.delay(t, 0); got != 90*time.Second {
 		t.Fatalf("clock armed for %s, want TTL−margin = 90s", got)
 	}
 
 	*now = now.Add(90 * time.Second)
-	scheduler.fire(t, 1)
+	scheduler.fire(t, 0)
 
 	if gotSummary == nil {
-		t.Fatal("summarize was not invoked at TTL−margin")
+		t.Fatal("summarize was not invoked at TTL−margin for a one-shot session")
 	}
 	if len(records) != 1 || records[0].Decision != dshSummaryReasonProceed {
 		t.Fatalf("unexpected decisions: %#v", records)
 	}
-	if records[0].TokensAboveInit != 50000 {
-		t.Fatalf("tokens above init = %d, want 50000", records[0].TokensAboveInit)
+	if records[0].TokensAboveInit != 40000 {
+		t.Fatalf("tokens above init = %d, want 40000 (60K last − 20K first)",
+			records[0].TokensAboveInit)
 	}
 
 	record := readSummarySidecar(t, storeRoot, workDir, "session-1")
@@ -156,31 +159,25 @@ func TestDshSummaryClockBuildsAtTTLMargin(t *testing.T) {
 	}
 }
 
-// TestDshSummaryClockSkipsBelowTrigger: nothing is built when the
-// conversation stayed under the trigger and the idle time under the idle
-// trigger — the decision is still recorded, with its token counts.
+// TestDshSummaryClockSkipsBelowTrigger: a tiny session — the conversation
+// never reached the trigger above its init prefix — is skipped with the
+// below-trigger reason when the clock fires; nothing is built.
 func TestDshSummaryClockSkipsBelowTrigger(t *testing.T) {
 	storeRoot := t.TempDir()
 	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
 
 	summarized := false
 	var records []dshSummaryRunRowRecord
-	clock.Arm(dshSummaryRequest{
-		TaskID:            "task-2",
-		SessionID:         "session-2",
-		WorkDir:           t.TempDir(),
-		StoreRoot:         storeRoot,
-		Model:             "deepseek/deepseek-v4-pro",
-		TotalPromptTokens: 4000,
-		Summarize: func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+	// First request 4K (init prefix), last request 4.5K: growth of 500
+	// tokens stays under the 1K trigger.
+	armOneShot(clock, storeRoot, t.TempDir(), 4000, 4500,
+		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
 			summarized = true
 			return nil, errors.New("must not be called")
 		},
-		RecordDecision: func(_ context.Context, record dshSummaryRunRowRecord) {
+		func(_ context.Context, record dshSummaryRunRowRecord) {
 			records = append(records, record)
-		},
-	})
-	// First arm: baseline = 4000, so growth is 0 at the 90 s fire.
+		})
 	*now = now.Add(90 * time.Second)
 	scheduler.fire(t, 0)
 
@@ -190,8 +187,8 @@ func TestDshSummaryClockSkipsBelowTrigger(t *testing.T) {
 	if len(records) != 1 || records[0].Decision != dshSummaryReasonBelow {
 		t.Fatalf("unexpected decisions: %#v", records)
 	}
-	if records[0].TokensAboveInit != 0 {
-		t.Fatalf("tokens above init = %d, want 0", records[0].TokensAboveInit)
+	if records[0].TokensAboveInit != 500 {
+		t.Fatalf("tokens above init = %d, want 500", records[0].TokensAboveInit)
 	}
 	found := false
 	_ = filepath.Walk(storeRoot, func(path string, _ os.FileInfo, _ error) error {
@@ -205,9 +202,9 @@ func TestDshSummaryClockSkipsBelowTrigger(t *testing.T) {
 	}
 }
 
-// TestDshSummaryClockCostRule: a conversation above the trigger but too small
-// to justify a summary — the expected cold re-read costs less than building
-// the summary — is skipped with the cost reason.
+// TestDshSummaryClockCostRule: a conversation above the trigger but too
+// small to justify a summary — the expected cold re-read costs less than
+// building the summary — is skipped with the cost reason.
 func TestDshSummaryClockCostRule(t *testing.T) {
 	cfg := testSummarySettings()
 	cfg.TriggerTokens = 10 // trigger reached...
@@ -215,32 +212,55 @@ func TestDshSummaryClockCostRule(t *testing.T) {
 
 	summarized := false
 	var records []dshSummaryRunRowRecord
-	record := func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) }
-	summarize := func(context.Context, string, string) (*agent.DshSessionSummary, error) {
-		summarized = true
-		return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
-	}
-	// ...but 50 tokens × 29 price gap = 1450 < 2000 summary production cost.
-	arm := func(session string, total int64) {
-		clock.Arm(dshSummaryRequest{SessionID: session, TotalPromptTokens: total, Summarize: summarize, RecordDecision: record, StoreRoot: t.TempDir()})
-	}
-	arm("s-small-a", 100)
-	arm("s-small-b", 100)
-	*now = now.Add(90 * time.Second)
-	arm("s-small-a", 150)
-	arm("s-small-b", 150)
+	// ...but growth of 50 tokens × 29 price gap = 1450 < 2000 summary
+	// production cost, so the cost rule says no.
+	armOneShot(clock, t.TempDir(), t.TempDir(), 100, 150,
+		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+			summarized = true
+			return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
+		},
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
 
 	*now = now.Add(90 * time.Second)
-	scheduler.fire(t, 2)
-	scheduler.fire(t, 3)
+	scheduler.fire(t, 0)
 
 	if summarized {
 		t.Fatal("summarize ran even though the cost rule said no")
 	}
-	for _, r := range records {
-		if r.Decision != dshSummaryReasonCost {
-			t.Fatalf("decision = %q, want %q", r.Decision, dshSummaryReasonCost)
-		}
+	if len(records) != 1 || records[0].Decision != dshSummaryReasonCost {
+		t.Fatalf("unexpected decisions: %#v", records)
+	}
+}
+
+// TestDshSummaryClockReArmsWithNewFacts: a second run for the same session
+// replaces the pending fire and its facts with the newer run's — the newer
+// last-request size is what the fire decision uses.
+func TestDshSummaryClockReArmsWithNewFacts(t *testing.T) {
+	storeRoot := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+
+	var records []dshSummaryRunRowRecord
+	summarize := func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+		return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
+	}
+	record := func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) }
+
+	armOneShot(clock, storeRoot, t.TempDir(), 20000, 25000, summarize, record)
+	*now = now.Add(90 * time.Second)
+	// The same session is run again before the first fire: its last request
+	// grew the conversation to 60K, and that newer fact replaces the first.
+	armOneShot(clock, storeRoot, t.TempDir(), 20000, 60000, summarize, record)
+
+	if !scheduler.fires[0].Cancelled {
+		t.Fatal("the first pending fire was not replaced by the re-arm")
+	}
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, 1)
+	if len(records) != 1 || records[0].Decision != dshSummaryReasonProceed {
+		t.Fatalf("unexpected decisions: %#v", records)
+	}
+	if records[0].TokensAboveInit != 40000 {
+		t.Fatalf("tokens above init = %d, want the newer run's 40000", records[0].TokensAboveInit)
 	}
 }
 
@@ -250,16 +270,12 @@ func TestDshSummaryClockCancelOnResume(t *testing.T) {
 	clock, scheduler, _ := newTestSummaryClock(t, testSummarySettings())
 
 	summarized := false
-	clock.Arm(dshSummaryRequest{
-		SessionID:         "session-3",
-		TotalPromptTokens: 90000,
-		Summarize: func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+	armOneShot(clock, t.TempDir(), t.TempDir(), 20000, 60000,
+		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
 			summarized = true
 			return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
-		},
-		StoreRoot: t.TempDir(),
-	})
-	clock.Cancel("session-3")
+		}, nil)
+	clock.Cancel("session-1")
 	if !scheduler.fires[0].Cancelled {
 		t.Fatal("pending fire was not cancelled on resume")
 	}
@@ -273,58 +289,52 @@ func TestDshSummaryClockCancelOnResume(t *testing.T) {
 func TestDshSummaryClockUnsupportedBridge(t *testing.T) {
 	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
 	var records []dshSummaryRunRowRecord
-	arm := func(total int64) {
-		clock.Arm(dshSummaryRequest{
-			SessionID:         "session-4",
-			TotalPromptTokens: total,
-			Summarize: func(context.Context, string, string) (*agent.DshSessionSummary, error) {
-				return nil, agent.ErrDshSummarizeUnsupported
-			},
-			RecordDecision: func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) },
-			StoreRoot:      t.TempDir(),
-		})
-	}
-	arm(8000)
+	armOneShot(clock, t.TempDir(), t.TempDir(), 20000, 60000,
+		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+			return nil, agent.ErrDshSummarizeUnsupported
+		},
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
 	*now = now.Add(90 * time.Second)
-	arm(90000)
-	*now = now.Add(90 * time.Second)
-	scheduler.fire(t, 1)
+	scheduler.fire(t, 0)
 	if len(records) != 1 || records[0].Decision != dshSummaryReasonNoBridge {
 		t.Fatalf("unexpected decisions: %#v", records)
 	}
 }
 
-// TestDecideDshSummary pins the trigger and cost clauses, including the
-// default-config behavior where idle at the 45 min fire satisfies the idle
-// trigger on its own.
+// TestDecideDshSummary pins the token trigger and cost clauses. The decision
+// is token-only (Architect review, must-fix 2): the clock fires at TTL−margin
+// by construction, so idle time is not a trigger input.
 func TestDecideDshSummary(t *testing.T) {
 	cfg := DshSummaryConfig{
-		SummaryTokens: 2000, TriggerTokens: 20000, TriggerIdle: 30 * time.Minute,
+		SummaryTokens: 2000, TriggerTokens: 20000,
 		TTL: time.Hour, Margin: 15 * time.Minute, ColdWarmRatio: 30,
 	}
 	cases := []struct {
 		name    string
 		tokens  int64
-		idle    time.Duration
 		proceed bool
 		reason  string
 	}{
-		{"idle trigger fires a real conversation", 100, 45 * time.Minute, true, dshSummaryReasonProceed},
-		{"big conversation at fire", 50000, 45 * time.Minute, true, dshSummaryReasonProceed},
-		{"idle but nothing above the init prefix", 0, 45 * time.Minute, false, dshSummaryReasonCost},
-		{"tiny idle conversation", 100, time.Minute, false, dshSummaryReasonBelow},
-		{"below idle, mid-size tokens", 15000, time.Minute, false, dshSummaryReasonBelow},
-		{"idle trigger met, cost not justified", 50, 40 * time.Minute, false, dshSummaryReasonCost},
-		{"trigger met by tokens with short idle", 50000, time.Second, true, dshSummaryReasonProceed},
+		{"big conversation at fire", 50000, true, dshSummaryReasonProceed},
+		{"nothing above the init prefix", 0, false, dshSummaryReasonBelow},
+		{"just under the trigger", 19999, false, dshSummaryReasonBelow},
+		{"at the trigger, cost justified", 20000, true, dshSummaryReasonProceed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideDshSummary(tc.tokens, tc.idle, cfg)
+			got := decideDshSummary(tc.tokens, cfg)
 			if got.Proceed != tc.proceed || got.Reason != tc.reason {
-				t.Fatalf("decide(%d tokens, %s) = %#v, want proceed=%v reason=%q",
-					tc.tokens, tc.idle, got, tc.proceed, tc.reason)
+				t.Fatalf("decide(%d tokens) = %#v, want proceed=%v reason=%q",
+					tc.tokens, got, tc.proceed, tc.reason)
 			}
 		})
+	}
+	// Above the trigger but the cache has almost no price advantage: the cost
+	// rule skips what the trigger alone would build.
+	cheap := cfg
+	cheap.ColdWarmRatio = 1.05 // gap = 20100 × 0.05 = 1005 < 2000 summary cost
+	if got := decideDshSummary(20100, cheap); got.Proceed || got.Reason != dshSummaryReasonCost {
+		t.Fatalf("decide(20100, cheap cache) = %#v, want skipped-cost", got)
 	}
 }
 
@@ -366,7 +376,6 @@ func TestDshSummaryConfigFromEnv(t *testing.T) {
 	if !cfg.Enabled || cfg.SummaryTokens != DefaultDshSummaryTokens ||
 		cfg.SummaryTokenCap != DefaultDshSummaryTokenCap ||
 		cfg.TriggerTokens != DefaultDshSummaryTriggerTokens ||
-		cfg.TriggerIdle != DefaultDshSummaryTriggerIdle ||
 		cfg.TTL != DefaultDshSummaryTTL || cfg.Margin != DefaultDshSummaryMargin ||
 		cfg.ColdWarmRatio != DefaultDshSummaryColdWarmRatio {
 		t.Fatalf("unexpected defaults: %#v", cfg)
@@ -389,7 +398,7 @@ func TestDshSummaryConfigFromEnv(t *testing.T) {
 	}
 
 	t.Setenv("MULTICA_DSH_PROMPT_CACHE", `{"broken": {"short": "soon"}}`)
-	if _, err := dshSummaryConfigFromEnv(); err == nil {
+	if _, err = dshSummaryConfigFromEnv(); err == nil {
 		t.Fatal("a malformed prompt cache must be an error, not a fallback")
 	}
 }
