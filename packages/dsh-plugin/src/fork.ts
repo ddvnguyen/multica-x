@@ -79,6 +79,13 @@ export {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 
+// Locale resolution. The island has no cookie and must not write one on dsh's
+// origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and
+// resolves it with the fork's own rule instead of a second implementation
+// (`client/locale.ts`). Both are DOM-free and server-safe.
+export { pickLocale } from "@multica/core/i18n";
+export type { LocaleAdapter } from "@multica/core/i18n";
+
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";
