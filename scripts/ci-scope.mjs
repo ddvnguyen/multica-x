@@ -8,7 +8,10 @@ export const filters = JSON.parse(
 );
 
 export function decideScopes(event, filtered) {
-  const full = event === "schedule" || event === "workflow_dispatch";
+  // The schedule trigger lives in nightly.yml now (M-161), which has no path
+  // filter and never calls decide — a schedule event here is a wiring bug and
+  // must fail closed rather than silently run a full PR-path suite.
+  const full = event === "workflow_dispatch";
   if (!full && event !== "push" && event !== "pull_request") {
     throw new Error(`Unsupported CI event: ${event}`);
   }
@@ -18,6 +21,14 @@ export function decideScopes(event, filtered) {
       throw new Error(`Missing or invalid path-filter result: ${scope}`);
     }
     outputs[scope] = full ? "true" : filtered[scope];
+  }
+  // A push to main/multica-moct is a merged SHA that M-151 deploys from, and
+  // deploy downloads the CI artifacts instead of rebuilding (M-161). Every
+  // merge must therefore produce BOTH product artifacts, whatever the paths
+  // were — a backend-only merge still publishes web-dist.
+  if (event === "push") {
+    outputs.frontend = "true";
+    outputs.backend = "true";
   }
   // Product builds already install dependencies and run the shared checks.
   // Only allocate a separate runner when quality is the sole frontend work.
