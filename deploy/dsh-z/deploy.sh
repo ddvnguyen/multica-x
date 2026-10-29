@@ -126,6 +126,12 @@ MC_SHA="$(git -C "$MC_SRC" rev-parse "origin/$MULTICA_X_REF")"
 git -C "$MC_SRC" checkout -q --detach "$MC_SHA"
 log "multica-be sha: $MC_SHA"
 
+# One version string for this build (M-155): x.x.x-yyMMMdd.HH.mm on the UTC+7
+# clock, taken from the checked-out commit's committer time so this SHA always
+# packages the same string — the same script CI asserts against.
+MMX_VERSION="$(node "$MC_SRC/scripts/mmx-version.mjs" --from-git)"
+log "mmx version: $MMX_VERSION"
+
 MC_REL="$LANE_ROOT/multica-be/releases/$MC_SHA"
 if [ ! -f "$MC_REL/.complete" ]; then
   rm -rf "$MC_REL"; mkdir -p "$MC_REL/bin"
@@ -141,7 +147,7 @@ if [ ! -f "$MC_REL/.complete" ]; then
     GOFLAGS=-mod=mod \
     GOMODCACHE="${MULTICA_GOMODCACHE:-/mnt/workspace/tmp/go/mod}" \
     GOPATH="${MULTICA_GOPATH:-/mnt/workspace/tmp/go}" \
-    "$GO_BIN" build -ldflags "-X main.version=v0.6.5-lanez -X main.commit=$MC_SHA" -o "$MC_REL/bin/server"  ./cmd/server
+    "$GO_BIN" build -ldflags "-X main.version=$MMX_VERSION -X main.commit=$MC_SHA" -o "$MC_REL/bin/server"  ./cmd/server
     GOFLAGS=-mod=mod \
     GOMODCACHE="${MULTICA_GOMODCACHE:-/mnt/workspace/tmp/go/mod}" \
     GOPATH="${MULTICA_GOPATH:-/mnt/workspace/tmp/go}" \
@@ -149,12 +155,14 @@ if [ ! -f "$MC_REL/.complete" ]; then
     GOFLAGS=-mod=mod \
     GOMODCACHE="${MULTICA_GOMODCACHE:-/mnt/workspace/tmp/go/mod}" \
     GOPATH="${MULTICA_GOPATH:-/mnt/workspace/tmp/go}" \
-    "$GO_BIN" build -ldflags "-X main.version=v0.6.5-lanez -X main.commit=$MC_SHA" -o "$MC_REL/bin/multica" ./cmd/multica
+    "$GO_BIN" build -ldflags "-X main.version=$MMX_VERSION -X main.commit=$MC_SHA" -o "$MC_REL/bin/multica" ./cmd/multica
   )
   # Self-contained release: migrate resolves ./migrations from its CWD, so the
   # release carries its own copy and never needs the source checkout at runtime.
   cp -a "$MC_SRC/server/migrations" "$MC_REL/migrations"
-  printf '{"sha":"%s","ref":"%s","builtAt":"%s"}\n' "$MC_SHA" "$MULTICA_X_REF" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MC_REL/release.json"
+  # The script owns the release.json shape (sha/ref/version/builtAt), so the
+  # lane and CI assert the very same file (M-155).
+  node "$MC_SRC/scripts/mmx-version.mjs" --release-json --ref "$MULTICA_X_REF" --sha "$MC_SHA" > "$MC_REL/release.json"
   : > "$MC_REL/.complete"
   log "packaged $MC_REL"
 else

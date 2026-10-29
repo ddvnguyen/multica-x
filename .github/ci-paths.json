@@ -14,7 +14,9 @@
     ".github/workflows/ci.yml",
     ".github/ci-paths.json",
     "scripts/ci-scope.mjs",
-    "scripts/ci-scope.test.mjs"
+    "scripts/ci-scope.test.mjs",
+    "scripts/mmx-version.mjs",
+    "scripts/mmx-version.test.mjs"
   ],
   "backend": [
     "server/**",
@@ -40,22 +42,6 @@
     "scripts/ci-scope.mjs",
     "scripts/ci-scope.test.mjs"
   ],
-  "runtime": [
-    "packages/core/runtimes/cli-version.ts",
-    "scripts/agent-cli-command-names.txt",
-    "scripts/go-test-with-agent-cli-guard.sh",
-    "scripts/test-go.sh",
-    "scripts/test-go.test.sh",
-    ".github/workflows/ci.yml",
-    "server/internal/**",
-    "server/pkg/**",
-    "server/cmd/**",
-    "server/go.mod",
-    "server/go.sum",
-    ".github/ci-paths.json",
-    "scripts/ci-scope.mjs",
-    "scripts/ci-scope.test.mjs"
-  ],
   "quality": [
     ".github/actions/frontend-quality/**",
     "apps/**",
@@ -69,11 +55,11 @@
     "knip.jsonc",
     "scripts/*.mjs",
     "scripts/check-ui-wildcard-exports.test.sh",
-    ".github/workflows/mobile-verify.yml",
     ".github/workflows/ci.yml",
     ".github/ci-paths.json"
   ],
   "scripts": [
+    "scripts/generate-attachment-text-preview.mjs",
     "scripts/generate-reserved-slugs.mjs",
     "scripts/selfhost-config.test.sh",
     "scripts/drop-database.sh",
@@ -101,38 +87,11 @@
     "docker-compose.selfhost.yml",
     "docker-compose.selfhost.build.yml",
     "Makefile",
+    "server/internal/handler/attachment_text_preview.json",
     "server/internal/handler/reserved_slugs.json",
+    "packages/views/editor/utils/text-preview-whitelist.generated.ts",
     "packages/core/paths/reserved-slugs.ts",
     "server/cmd/server/router.go",
-    ".github/workflows/ci.yml",
-    ".github/ci-paths.json",
-    "scripts/ci-scope.mjs",
-    "scripts/ci-scope.test.mjs"
-  ],
-  "installer": [
-    "scripts/install.sh",
-    "scripts/install.test.sh",
-    "scripts/install.ps1",
-    "scripts/install.ps1.test.ps1",
-    ".env.example",
-    "docker-compose.selfhost.yml",
-    "docker-compose.selfhost.build.yml",
-    ".github/workflows/ci.yml",
-    ".github/ci-paths.json",
-    "scripts/ci-scope.mjs",
-    "scripts/ci-scope.test.mjs"
-  ],
-  "images": [
-    "**/*.png",
-    "**/*.jpg",
-    "**/*.jpeg",
-    "**/*.gif",
-    "**/*.bmp",
-    "**/*.tif",
-    "**/*.tiff",
-    "**/*.webp",
-    "**/*.avif",
-    "scripts/check-image-budget.mjs",
     ".github/workflows/ci.yml",
     ".github/ci-paths.json",
     "scripts/ci-scope.mjs",

@@ -74,7 +74,7 @@ Treat this as additional guidance for the same active task, not as a replacement
 
 Human message:
 Also include the codeword ORCHID-19 in your final reply.`
-	if err := session.Supplement(ctx, guidance); err != nil {
+	if err := session.Supplement(ctx, guidance, "steer"); err != nil {
 		t.Fatalf("supplement was not delivered: %v", err)
 	}
 

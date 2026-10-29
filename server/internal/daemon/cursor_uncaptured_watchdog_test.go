@@ -36,7 +36,7 @@ exec sleep 30
 	d.cfg.AgentToolWatchdog = 0
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	result, _, err := d.executeAndDrain(ctx, backend, "test", agent.ExecOptions{}, slog.Default(), "uncaptured-background", "", new(atomic.Int32))
+	result, _, err := d.executeAndDrain(ctx, backend, "test", agent.ExecOptions{}, slog.Default(), "uncaptured-background", "", new(atomic.Int32), false)
 	if err != nil || result.Status != "idle_watchdog" || ctx.Err() != nil {
 		t.Fatalf("uncaptured background escaped idle budget: result=%+v err=%v context=%v", result, err, ctx.Err())
 	}

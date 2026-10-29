@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,13 @@ type Config struct {
 	// invitation only. The public /api/config endpoint mirrors this flag so
 	// the UI can hide every "Create workspace" affordance — see #3433.
 	DisableWorkspaceCreation bool
+	// WorkspaceCreationAllowedEmails, when non-empty, restricts
+	// POST /api/workspaces to callers whose account email matches one of
+	// the entries (case-insensitive). Empty means every signed-in user may
+	// create workspaces. DisableWorkspaceCreation takes precedence. This only
+	// decides who may create a workspace; it grants no cross-workspace
+	// visibility or admin rights (#9400).
+	WorkspaceCreationAllowedEmails []string
 	// VCSIntegrationEnabled gates the self-hosted Git provider integration
 	// (Forgejo / Gitea / GitLab) at the deployment level, independent of whether
 	// MULTICA_VCS_SECRET_KEY is set. It is the product boundary: the feature is
@@ -223,6 +231,14 @@ type Handler struct {
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
+	// dshSessionStore is the root of the dsh session store this server reads
+	// dsh-owned transcripts from (MULTICA_DSH_SESSION_STORE; on a lane that is
+	// the lane DSH_HOME's `sessions` directory). Empty disables the dsh
+	// transcript read and leaves such transcripts empty (M-102).
+	dshSessionStore string
+	// dshWebURL is the base URL of the dsh web app (MULTICA_DSH_WEB_URL) that
+	// "Open session" links point at. Empty means no link is offered.
+	dshWebURL string
 	// SeatCapacity executes Cloud's pre-purchased human-seat protocol. Nil or
 	// disabled preserves self-hosted behavior.
 	SeatCapacity          seatcapacity.Executor
@@ -264,6 +280,7 @@ type Handler struct {
 	PATCache                     *auth.PATCache
 	DaemonTokenCache             *auth.DaemonTokenCache
 	MembershipCache              *auth.MembershipCache
+	QoderRateLimiter             WebhookRateLimiter
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
@@ -513,6 +530,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		Storage:                      store,
 		CFSigner:                     cfSigner,
 		Analytics:                    analyticsClient,
+		QoderRateLimiter:             NewMemoryWebhookRateLimiter(WebhookRateLimit{Limit: 6, Window: time.Minute}),
 		WebhookRateLimiter:           NewMemoryWebhookRateLimiter(DefaultWebhookRateLimit()),
 		WebhookIPRateLimiter:         NewMemoryWebhookIPRateLimiter(DefaultWebhookIPRateLimit()),
 		WebhookAbsoluteIPRateLimiter: NewMemoryWebhookAbsoluteIPRateLimiter(DefaultWebhookAbsoluteIPRateLimit()),
@@ -524,6 +542,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		LLM: llmClient,
 		cfg: cfg,
 	}
+	// M-102: the dsh-owned transcript path. The store root and the web base
+	// are lane deployment configuration; unset keeps every dsh task on the
+	// legacy behavior (rows rendered, no "Open session" link).
+	h.dshSessionStore = strings.TrimSpace(os.Getenv("MULTICA_DSH_SESSION_STORE"))
+	h.dshWebURL = strings.TrimSpace(os.Getenv("MULTICA_DSH_WEB_URL"))
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
 	// The default passthrough scheduler reports sweeper-race recoveries so the
 	// daemon:register refresh fires even without the production batched wiring.

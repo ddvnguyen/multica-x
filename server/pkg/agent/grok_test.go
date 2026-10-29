@@ -198,7 +198,7 @@ func TestGrokSupplementTargetsActivePrompt(t *testing.T) {
 			messages = append(messages, msg)
 		}
 	}()
-	if err := session.Supplement(ctx, "Reply with 111 instead of continuing the task."); err != nil {
+	if err := session.Supplement(ctx, "Reply with 111 instead of continuing the task.", "steer"); err != nil {
 		t.Fatalf("send interjection: %v", err)
 	}
 	result := <-session.Result
@@ -262,7 +262,7 @@ func TestGrokSupplementTimesOutIndependentlyAndAllowsNextMessage(t *testing.T) {
 	started := time.Now()
 	firstSupplement := make(chan error, 1)
 	go func() {
-		firstSupplement <- session.Supplement(ctx, "The first interjection will not be acknowledged.")
+		firstSupplement <- session.Supplement(ctx, "The first interjection will not be acknowledged.", "steer")
 	}()
 	select {
 	case err = <-firstSupplement:
@@ -288,7 +288,7 @@ func TestGrokSupplementTimesOutIndependentlyAndAllowsNextMessage(t *testing.T) {
 		t.Fatal("an interject timeout ended the active Grok prompt")
 	}
 
-	if err := session.Supplement(ctx, "The next interjection should still be delivered."); err != nil {
+	if err := session.Supplement(ctx, "The next interjection should still be delivered.", "steer"); err != nil {
 		cancel()
 		t.Fatalf("second supplement after timeout: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestGrokSupplementReportsACPRejection(t *testing.T) {
 	if !session.SupplementReady() {
 		t.Fatal("supplement never became ready during active prompt")
 	}
-	err = session.Supplement(ctx, "A test message")
+	err = session.Supplement(ctx, "A test message", "steer")
 	if err == nil || !strings.Contains(err.Error(), "method not found") {
 		t.Fatalf("supplement error=%v, want ACP method-not-found error", err)
 	}
@@ -389,7 +389,7 @@ func TestGrokSupplementHandlesObservedNestedResultStatus(t *testing.T) {
 			if !session.SupplementReady() {
 				t.Fatal("supplement never became ready during active prompt")
 			}
-			err = session.Supplement(ctx, "A test message")
+			err = session.Supplement(ctx, "A test message", "steer")
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("supplement error=%v, want %q", err, tc.wantErr)

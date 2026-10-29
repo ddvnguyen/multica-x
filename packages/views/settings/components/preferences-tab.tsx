@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ChevronsUpDown } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -66,7 +66,16 @@ import {
  * so each section carries a scope badge instead of splitting them into tabs.
  * Changes apply immediately; only failures are announced.
  */
-export function PreferencesTab() {
+export function PreferencesTab({
+  extraRows,
+}: {
+  /**
+   * Rows a host appends after Theme. A display preference the host owns — the
+   * dsh panel's zoom — belongs on this page but not in this app's vocabulary,
+   * so the host supplies the row and the page only decides where it sits.
+   */
+  extraRows?: ReactNode;
+} = {}) {
   const { t } = useT("settings");
   return (
     <SettingsTab title={t(($) => $.page.tabs.preferences)}>
@@ -88,6 +97,7 @@ export function PreferencesTab() {
       >
         <SettingsCard>
           <ThemeRow />
+          {extraRows}
         </SettingsCard>
       </SettingsSection>
 
@@ -164,6 +174,7 @@ function LanguageRow() {
   const languageOptions: { value: SupportedLocale; label: string }[] = [
     { value: "en", label: t(($) => $.preferences.language.english) },
     { value: "zh-Hans", label: t(($) => $.preferences.language.chinese) },
+    { value: "zh-Hant", label: t(($) => $.preferences.language.chinese_traditional) },
     { value: "ko", label: t(($) => $.preferences.language.korean) },
     { value: "ja", label: t(($) => $.preferences.language.japanese) },
     { value: "fr", label: t(($) => $.preferences.language.french) },
@@ -340,7 +351,6 @@ function FloatingChatRow() {
     <SettingsRow
       anchor="chat"
       label={t(($) => $.chat.floating_label)}
-      description={t(($) => $.chat.floating_hint)}
     >
       <Switch
         checked={enabled}

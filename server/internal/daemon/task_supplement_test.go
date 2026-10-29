@@ -38,7 +38,7 @@ func TestTaskSupplementLoopWaitsForTurnReadyBeforeClaim(t *testing.T) {
 	var ready atomic.Bool
 	session := &agent.Session{
 		SupplementReady: ready.Load,
-		Supplement:      func(context.Context, string) error { return nil },
+		Supplement:      func(context.Context, string, string) error { return nil },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -106,7 +106,7 @@ func TestTaskSupplementLoopAcknowledgesBeforeTurnEnds(t *testing.T) {
 			injections := 0
 			session := &agent.Session{
 				SupplementReady: func() bool { return true },
-				Supplement: func(_ context.Context, instruction string) error {
+				Supplement: func(_ context.Context, instruction string, mode string) error {
 					injections++
 					if !strings.Contains(instruction, "Preserve and complete the original objective") || !strings.Contains(instruction, "Create evidence.txt") {
 						t.Errorf("injected instruction lost framing or content: %q", instruction)
@@ -144,7 +144,7 @@ func (b *supplementGateBackend) Execute(_ context.Context, _ string, opts agent.
 		Messages:        messages,
 		Result:          results,
 		SupplementReady: func() bool { return true },
-		Supplement: func(context.Context, string) error {
+		Supplement: func(context.Context, string, string) error {
 			b.supplementCalls.Add(1)
 			return nil
 		},
@@ -161,7 +161,7 @@ func TestExecuteAndDrainSupplementNegotiation(t *testing.T) {
 			})
 			backend := &supplementGateBackend{}
 			opts := agent.ExecOptions{EnableTaskSupplement: negotiated}
-			if _, _, err := d.executeAndDrain(t.Context(), backend, "original", opts, d.logger, "task", "", new(atomic.Int32)); err != nil {
+			if _, _, err := d.executeAndDrain(t.Context(), backend, "original", opts, d.logger, "task", "", new(atomic.Int32), false); err != nil {
 				t.Fatal(err)
 			}
 			if backend.enabled != negotiated {

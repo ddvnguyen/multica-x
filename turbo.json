@@ -18,7 +18,11 @@
     "POSTGRES_DB",
     "POSTGRES_PORT",
     "DESKTOP_RENDERER_PORT",
-    "DESKTOP_APP_SUFFIX"
+    "DESKTOP_APP_SUFFIX",
+    // Apps/web emits the standalone bundle only when set; without it in the
+    // hash a cache entry from a non-standalone build could satisfy the CI
+    // build that packages web-dist (M-161).
+    "STANDALONE"
   ],
   "tasks": {
     // `fumadocs-mdx` regenerates `.source/` by removing the directory and

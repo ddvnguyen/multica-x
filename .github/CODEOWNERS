@@ -1,0 +1,11 @@
+# M-150: the self-hosted runner pool, its workflow wiring, and the CI path
+# filter are a privileged surface. Route changes to the Owner so a workflow
+# edit that could hand the pool to untrusted code gets a human look.
+# Enforcement: Owner sets `require_code_owner_reviews` once this lands (the
+# merge gate keeps `frontend`/`backend` green and does not require a GitHub
+# review).
+.github/workflows/ @ddvnguyen
+.github/actions/ @ddvnguyen
+.github/ci-paths.json @ddvnguyen
+scripts/ci-scope.mjs @ddvnguyen
+scripts/ci-scope.test.mjs @ddvnguyen

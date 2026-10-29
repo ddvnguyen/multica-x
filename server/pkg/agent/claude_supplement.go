@@ -96,7 +96,8 @@ func (s *claudeSupplementSession) ready() bool {
 	return s.active && !s.ended && s.ctx.Err() == nil
 }
 
-func (s *claudeSupplementSession) supplement(ctx context.Context, text string) error {
+func (s *claudeSupplementSession) supplement(ctx context.Context, text string, mode string) error {
+	_ = mode
 	input := &claudeSupplementInput{ctx: ctx, text: text, done: make(chan error, 1)}
 	s.mu.Lock()
 	if err := ctx.Err(); err != nil {

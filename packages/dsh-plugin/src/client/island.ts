@@ -3,7 +3,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { useModalStore } from "../fork";
 import { IslandBoot } from "./island-app";
 import { BOARD_ROUTE, islandRouteKey, type IslandRoute } from "./navigation";
-import { ISLAND_CSS, createPopupSeat } from "./popup-seat";
+import { restoreShadowFocusGuards } from "./focus-guards";
+import {
+  ISLAND_CSS,
+  ISLAND_PROPERTY_RULES,
+  createPopupSeat,
+  type PopupSeat,
+} from "./popup-seat";
+import { installPropertyRules } from "./property-shim";
+import { swallowShellShortcuts } from "./shell-keys";
 
 /**
  * The React 19 island.
@@ -31,8 +39,8 @@ import { ISLAND_CSS, createPopupSeat } from "./popup-seat";
 interface IslandHandle {
   root: Root;
   theme: MutationObserver | null;
-  /** The popup seat in the shell's overlay layer, when the shell has one. */
-  popupSeat: HTMLElement | null;
+  /** The seat overlays render into: the shell's layer, or the island's own. */
+  seat: PopupSeat;
   /** Where portals render, so a later render can address the same container. */
   portalHost: HTMLElement;
   /**
@@ -81,9 +89,12 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   rootElement.className = "multica-island-root";
   rootElement.dataset.multicaRoot = "";
 
-  const popupSeat = createPopupSeat(doc);
-  const portalHost =
-    popupSeat?.portalHost ?? createInSurfacePortalHost(surface);
+  // Popups render outside this shadow root, always: Base UI decides "outside"
+  // by reading the press target's root ancestor, and inside a shadow tree that
+  // walk ends at the panel, which makes every shell-side inert marker look like
+  // post-render content and swallows the dismissal (see `popup-seat.ts`).
+  const seat = createPopupSeat(doc);
+  const portalHost = seat.portalHost;
 
   surface.append(rootElement);
   shadow.append(style, surface);
@@ -109,13 +120,16 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     attributeFilter: ["class", "data-theme"],
   });
 
-  // dsh owns document-level shortcuts. Keyboard events are composed, so a
-  // keystroke typed here would otherwise reach them and trigger shell actions
-  // mid-edit; stopping them at the island boundary keeps the shell's bindings
-  // to the shell's own surfaces.
-  for (const type of ["keydown", "keyup", "keypress"] as const) {
-    rootElement.addEventListener(type, (event) => event.stopPropagation());
-  }
+  swallowShellShortcuts(rootElement);
+  // A dialog is not a child of the page that opened it: it is portalled into
+  // this container, which sits outside the island's root (in the popup seat it
+  // is in another shadow root entirely). Guarding only the root would let every
+  // keystroke typed in a dialog's input reach the shell's shortcuts (M-148).
+  swallowShellShortcuts(portalHost);
+  // Base UI's focus trap compares `document.activeElement` with its guards; in
+  // a shadow tree that is the host, so the guards have to be reconciled here or
+  // Tab leaves the dialog through the seat (M-148).
+  restoreShadowFocusGuards(portalHost);
 
   const route = options.initialRoute ?? BOARD_ROUTE;
   const root = createRoot(rootElement);
@@ -123,7 +137,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   handles.set(host, {
     root,
     theme,
-    popupSeat: popupSeat?.seat ?? null,
+    seat,
     portalHost,
     route,
   });
@@ -159,6 +173,11 @@ export function startIsland(
   route: IslandRoute = BOARD_ROUTE,
 ): HTMLElement {
   if (keepAlive !== null && handles.has(keepAlive)) return keepAlive;
+  // Tailwind's `--tw-*` initial values only reach a shadow tree from the
+  // document that contains it, so they are registered here rather than in the
+  // shadow root's sheet; see `property-shim.ts`. Once per document, which makes
+  // this a no-op for every start after the first.
+  installPropertyRules(doc, ISLAND_PROPERTY_RULES);
   const host = doc.createElement("div");
   host.dataset.multicaHost = "";
   Object.assign(host.style, SEAT_STYLE);
@@ -275,9 +294,9 @@ export function unmountIsland(host: HTMLElement): void {
   if (keepAlive === host) keepAlive = null;
   handle.theme?.disconnect();
   handle.root.unmount();
-  // The seat sits in the shell's own overlay layer, outside this host's
-  // shadow root — nothing else would ever remove it.
-  handle.popupSeat?.remove();
+  // The seat sits outside this host's shadow root — in the shell's overlay
+  // layer or on the document — so nothing else would ever remove it.
+  handle.seat.dispose();
   host.shadowRoot?.replaceChildren();
 }
 
@@ -288,15 +307,6 @@ export function unmountIsland(host: HTMLElement): void {
 export function resetIsland(): void {
   if (keepAlive !== null) unmountIsland(keepAlive);
   keepAlive = null;
-}
-
-/** The fallback portal container: inside the surface, as it was. */
-function createInSurfacePortalHost(surface: HTMLElement): HTMLElement {
-  const portalHost = surface.ownerDocument.createElement("div");
-  portalHost.className = "multica-island-portals";
-  portalHost.dataset.multicaPortals = "";
-  surface.append(portalHost);
-  return portalHost;
 }
 
 /** True while an island is mounted on this element. For tests and diagnostics. */

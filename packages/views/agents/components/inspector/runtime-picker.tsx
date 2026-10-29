@@ -115,7 +115,7 @@ export function RuntimePicker({
 
   if (!canEdit) {
     const icon = selected ? (
-      <ProviderLogo provider={selected.provider} className="h-4 w-4 shrink-0" />
+      <ProviderLogo provider={selected.provider} runtime={selected} className="h-4 w-4 shrink-0" />
     ) : (
       <Monitor
         className="h-4 w-4 shrink-0 text-muted-foreground"
@@ -149,7 +149,7 @@ export function RuntimePicker({
       <span className="inline-flex min-w-0 items-center gap-1.5 px-1.5 py-0.5 text-caption text-muted-foreground">
         {selected ? (
           <ProviderLogo
-            provider={selected.provider}
+            provider={selected.provider} runtime={selected}
             className="h-3 w-3 shrink-0"
           />
         ) : (
@@ -261,7 +261,7 @@ export function RuntimePicker({
         <>
           {selected ? (
             <ProviderLogo
-              provider={selected.provider}
+              provider={selected.provider} runtime={selected}
               className={
                 variant === "field" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0"
               }
@@ -376,7 +376,7 @@ export function RuntimePicker({
               tooltip={tooltip}
             >
               <ProviderLogo
-                provider={rt.provider}
+                provider={rt.provider} runtime={rt}
                 className="h-4 w-4 shrink-0"
               />
               <span className="min-w-0 flex-1 truncate text-body font-medium">

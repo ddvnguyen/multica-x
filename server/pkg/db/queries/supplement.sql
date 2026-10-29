@@ -14,7 +14,7 @@ WITH candidate AS MATERIALIZED (
     SELECT id, workspace_id, issue_id, 'task-supplement-v1'
     FROM candidate
     WHERE @enable_task_supplement::boolean
-      AND provider IN ('codex', 'claude', 'grok', 'cursor')
+      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
       AND issue_id IS NOT NULL
     ON CONFLICT DO NOTHING
     RETURNING task_id
@@ -23,7 +23,10 @@ UPDATE agent_task_queue t
 SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
-    prepare_lease_expires_at = NULL
+    prepare_lease_expires_at = NULL,
+    result = CASE WHEN @enable_process_cleanup::boolean AND candidate.provider IN ('pi', 'omp')
+                  THEN COALESCE(t.result, '{}'::jsonb) || '{"process_cleanup_capability":"pi-process-cleanup-v1"}'::jsonb
+                  ELSE t.result END
 FROM candidate
 WHERE t.id = candidate.id
   -- Reference the data-modifying CTE explicitly: capability persistence and
@@ -45,7 +48,7 @@ WITH locked_task AS MATERIALIZED (
       AND r.workspace_id = @workspace_id
       AND t.status = 'running'
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'grok', 'cursor')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
     FOR UPDATE OF t
 ), touched_issue AS (
     UPDATE issue i SET
@@ -66,11 +69,12 @@ WITH locked_task AS MATERIALIZED (
 ), inserted_supplement AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
-        client_request_id, status
+        client_request_id, status, mode
     )
     SELECT t.id, i.workspace_id, i.id, c.id, @author_id,
            @client_request_id,
-           'pending'
+           'pending',
+           @mode
     FROM locked_task t
     JOIN touched_issue i ON i.id = t.issue_id
     JOIN inserted_comment c ON c.issue_id = i.id
@@ -109,7 +113,7 @@ WITH locked_task AS MATERIALIZED (
       AND r.workspace_id = @workspace_id
       AND t.status = 'running'
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'cursor')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
     FOR UPDATE OF t
 ), inserted AS (
     INSERT INTO task_supplement (
@@ -203,7 +207,7 @@ WITH next AS MATERIALIZED (
       AND s.task_id = next.task_id
     RETURNING s.*
 )
-SELECT claimed.comment_id, claimed.attempt_count, c.content,
+SELECT claimed.comment_id, claimed.attempt_count, claimed.mode, c.content,
        COALESCE(NULLIF(btrim(u.name), ''), 'a user')::text AS author_name
 FROM claimed
 JOIN comment c ON c.id = claimed.comment_id

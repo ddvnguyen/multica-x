@@ -79,8 +79,20 @@ export {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 
+// Locale resolution. The island has no cookie and must not write one on dsh's
+// origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and
+// resolves it with the fork's own rule instead of a second implementation
+// (`client/locale.ts`). Both are DOM-free and server-safe.
+export { pickLocale } from "@multica/core/i18n";
+export type { LocaleAdapter } from "@multica/core/i18n";
+
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";
 export { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 export { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
+
+// The stamped build identity (M-155): one string for one build, injected by
+// this package's vite config, so the island's badge, the Settings row and the
+// client identity sent to multica-be all read the same value.
+export { mmxBuild } from "@multica/views/build-info";
