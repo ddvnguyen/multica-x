@@ -283,6 +283,19 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// FirstPromptTokens is the prompt size (input + cache_read +
+	// cache_write) of the run's FIRST model request, in frame order — for a
+	// run that started its session, the session's init prefix. LastPromptTokens
+	// is the same measure for the run's LAST model request, i.e. the size of
+	// the conversation a resume (or a summary) would re-read. S3-B1 (M-137):
+	// the dsh backend records both from its per-request usage frames (the
+	// bridge emits one usage frame per assistant message, verified against
+	// dsh-multica-runtime's observeSessionEvent); other backends leave both
+	// zero. The summary clock's trigger is Last − First, so a one-shot run
+	// can reach it — unlike a sum over Usage, which is billed volume across
+	// steps, not conversation size.
+	FirstPromptTokens int64
+	LastPromptTokens  int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history

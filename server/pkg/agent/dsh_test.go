@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -122,6 +123,75 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-cancel","status":"cance
 	result := <-session.Result
 	if result.Status != "cancelled" || result.SessionID != "session-cancel" {
 		t.Fatalf("bad cancellation result: %#v", result)
+	}
+}
+
+// TestDshBackendRecordsFirstAndLastPromptTokens (S3-B1): the bridge emits
+// one usage frame per model request, so frame order gives the run's first
+// and last request prompt sizes — the facts the daemon's summary clock
+// triggers on. A one-shot run (fresh session, two requests: 20K init
+// prefix, 60K conversation) must be able to reach the trigger on its own.
+func TestDshBackendRecordsFirstAndLastPromptTokens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+if [ "$1" != "--profile" ] || [ "$2" != "multica" ] || [ "$3" != "--stdio" ]; then exit 9; fi
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+IFS= read -r command
+case "$command" in *'"type":"execute"'*) ;; *) exit 8 ;; esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-p","session_id":"session-p","resumed":false}'
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-p","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":12000,"output_tokens":900,"cache_read_tokens":7000,"cache_write_tokens":1000}'
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-p","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":35000,"output_tokens":800,"cache_read_tokens":24000,"cache_write_tokens":1000}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-p","status":"completed","session_id":"session-p","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-p", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "say done", ExecOptions{Cwd: t.TempDir(), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	// First request: 12000 + 7000 + 1000 = 20K init prefix; last request:
+	// 35000 + 24000 + 1000 = 60K — growth of 40K above the prefix.
+	if result.FirstPromptTokens != 20000 || result.LastPromptTokens != 60000 {
+		t.Fatalf("first/last prompt tokens = %d/%d, want 20000/60000",
+			result.FirstPromptTokens, result.LastPromptTokens)
+	}
+}
+
+// TestDshBackendSingleRequestPromptTokens: a one-request run has no
+// conversation above its own prompt — first and last are the same size, so
+// the summary clock's growth measure is zero and it stays under the trigger.
+func TestDshBackendSingleRequestPromptTokens(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+if [ "$1" != "--profile" ] || [ "$2" != "multica" ] || [ "$3" != "--stdio" ]; then exit 9; fi
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+IFS= read -r command
+printf '%s\n' '{"v":1,"type":"usage","request_id":"task-q","provider":"deepseek-official","model":"deepseek-v4-pro","input_tokens":18000,"output_tokens":500,"cache_read_tokens":2000}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed","session_id":"session-q","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-q", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "say done", ExecOptions{Cwd: t.TempDir(), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.FirstPromptTokens != 20000 || result.LastPromptTokens != 20000 {
+		t.Fatalf("first/last prompt tokens = %d/%d, want 20000/20000 (one request)",
+			result.FirstPromptTokens, result.LastPromptTokens)
 	}
 }
 
@@ -364,5 +434,89 @@ func TestDshSupplementContentStripsFraming(t *testing.T) {
 	}
 	if got := dshSupplementContent("raw reply"); got != "raw reply" {
 		t.Fatalf("unframed content = %q", got)
+	}
+}
+
+func TestDshSummarizeSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// The bridge must see the summarize command AFTER advertising the
+	// capability, and the daemon must surface the summary frame.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+case "$summarize" in
+  *'"type":"summarize"'*'"session_id":"session-1"'*) ;;
+  *) exit 8 ;;
+esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-s","session_id":"session-1","resumed":true}'
+printf '%s\n' '{"v":1,"type":"summary","request_id":"task-s","session_id":"session-1","summary":"The session did X then Y.","summary_tokens":6}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-s","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-s", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, ok := b.(*dshBackend)
+	if !ok {
+		t.Fatalf("dsh New returned %T, want *dshBackend", b)
+	}
+	summary, err := backend.SummarizeSession(context.Background(), "session-1", "deepseek-official/deepseek-v4-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SessionID != "session-1" || summary.Summary != "The session did X then Y." || summary.Tokens != 6 {
+		t.Fatalf("bad summary: %#v", summary)
+	}
+}
+
+func TestDshSummarizeSessionUnsupportedBridge(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// A bridge that predates summarize never gets the command: the daemon
+	// stops on the ready frame's missing capability.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"questions":true}}'
+exit 0
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-u", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); !errors.Is(err, ErrDshSummarizeUnsupported) {
+		t.Fatalf("got %v, want ErrDshSummarizeUnsupported", err)
+	}
+}
+
+func TestDshSummarizeSessionFailureResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-f","status":"failed","session_id":"session-1","output":"","resume_rejected":false,"error":{"code":"DSH_SUMMARY_BUSY","message":"agent is not idle"}}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-f", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); err == nil || !strings.Contains(err.Error(), "agent is not idle") {
+		t.Fatalf("got %v, want the bridge's error", err)
+	}
+}
+
+func TestDshSummarizeSessionEmptySessionID(t *testing.T) {
+	b, err := New("dsh", Config{ExecutablePath: "dsh", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "  ", ""); err == nil {
+		t.Fatal("empty session id must be rejected before spawning")
 	}
 }

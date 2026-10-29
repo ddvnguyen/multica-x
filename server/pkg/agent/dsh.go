@@ -84,6 +84,21 @@ type dshQueueCommand struct {
 	Message   string `json:"message"`
 }
 
+// dshSummarizeCommand asks the bridge to compact one idle session with dsh's
+// own compaction seam and return the summary (S3-B1). It is a FIRST command —
+// an alternative to `execute` on a fresh stdio process — because the session's
+// run has already ended and its process with it; the daemon's per-session
+// cache clock invokes this only when it fires. Additive at protocol v1: a
+// bridge that predates it never advertises the `summarize` capability, and the
+// daemon never sends the command without it.
+type dshSummarizeCommand struct {
+	Version   int                `json:"v"`
+	Type      string             `json:"type"`
+	RequestID string             `json:"request_id"`
+	SessionID string             `json:"session_id"`
+	Model     *dshModelSelection `json:"model,omitempty"`
+}
+
 type dshWireError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -125,6 +140,7 @@ type dshCapabilitiesFrame struct {
 	Questions bool `json:"questions,omitempty"`
 	Steer     bool `json:"steer,omitempty"`
 	Queue     bool `json:"queue,omitempty"`
+	Summarize bool `json:"summarize,omitempty"`
 }
 
 // dshAnswerItem is one question's answer in an outbound `answer` command.
@@ -156,6 +172,8 @@ type dshFrame struct {
 	SessionID        string                `json:"session_id,omitempty"`
 	Resumed          bool                  `json:"resumed,omitempty"`
 	Content          string                `json:"content,omitempty"`
+	Summary          string                `json:"summary,omitempty"`
+	SummaryTokens    int64                 `json:"summary_tokens,omitempty"`
 	CallID           string                `json:"call_id,omitempty"`
 	Name             string                `json:"name,omitempty"`
 	Arguments        string                `json:"arguments,omitempty"`
@@ -413,7 +431,8 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 
 		result := state.result
 		if result == nil {
-			result = &Result{Status: "failed", SessionID: state.sessionID, Usage: state.usage}
+			result = &Result{Status: "failed", SessionID: state.sessionID, Usage: state.usage,
+				FirstPromptTokens: state.firstPromptTokens, LastPromptTokens: state.lastPromptTokens}
 			switch {
 			case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 				result.Status = "timeout"
@@ -465,7 +484,14 @@ type dshRunState struct {
 	frameCount    int
 	invalidFrames int
 	usage         map[string]TokenUsage
-	result        *Result
+	// S3-B1 (M-137): first/last model-request prompt sizes in frame order
+	// (input + cache read + cache write). Set by the usage case in
+	// handleDshFrame from the bridge's per-request frames; exposed on the
+	// Result for the daemon's summary clock.
+	usageSeen         bool
+	firstPromptTokens int64
+	lastPromptTokens  int64
+	result            *Result
 
 	// Ask/plan parity state (M-109). The frame handler (scanner goroutine)
 	// writes it; Session.Supplement reads and clears it from the daemon's
@@ -484,7 +510,7 @@ type dshRunState struct {
 	// inbox_state correlation (M-134 amendment). A buffered channel carries the
 	// most recent matching frame; pendingInbox names the command currently
 	// awaiting an ack so stale frames are ignored.
-	inboxStateCh    chan dshInboxState
+	inboxStateCh   chan dshInboxState
 	pendingInbox   string
 	inboxStartedAt time.Time
 }
@@ -584,6 +610,17 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 			usage.CacheWriteTokens += frame.CacheWriteTokens
 			state.usage[key] = usage
 		}
+		// S3-B1 (M-137): the bridge emits one usage frame per model request
+		// (per assistant message), so frame order gives the run's first and
+		// last request prompt sizes. The usage map above accumulates billed
+		// volume per model — the wrong measure for the summary clock's
+		// trigger, which is conversation growth, not billed tokens.
+		promptTokens := frame.InputTokens + frame.CacheReadTokens + frame.CacheWriteTokens
+		if !state.usageSeen {
+			state.usageSeen = true
+			state.firstPromptTokens = promptTokens
+		}
+		state.lastPromptTokens = promptTokens
 	case "protocol_error":
 		state.protocolError = strings.TrimSpace(frame.Code + ": " + frame.Message)
 	case "result":
@@ -594,6 +631,7 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 		state.result = &Result{
 			Status: frame.Status, Output: frame.Output, Error: errorText,
 			SessionID: frame.SessionID, Usage: state.usage, ResumeRejected: frame.ResumeRejected,
+			FirstPromptTokens: state.firstPromptTokens, LastPromptTokens: state.lastPromptTokens,
 		}
 		if state.result.SessionID == "" {
 			state.result.SessionID = state.sessionID
@@ -824,6 +862,206 @@ func answerDshQuestion(state *dshRunState, instruction string) error {
 	state.pendingCallID = ""
 	state.pendingQuestions = nil
 	return nil
+}
+
+// DshSessionSummary is one bridge-produced session summary (S3-B1): dsh's own
+// compaction seam reduced the session's useful idle history to Summary,
+// estimated at Tokens tokens by the bridge.
+type DshSessionSummary struct {
+	SessionID string
+	Summary   string
+	Tokens    int64
+	Model     string
+}
+
+// ErrDshSummarizeUnsupported reports that the bridge predates the summarize
+// command — its ready frame carried no `summarize` capability. The cache clock
+// treats this as a skip decision, never as a failure of the session's own run.
+var ErrDshSummarizeUnsupported = errors.New("dsh runtime bridge predates the summarize command (no `summarize` capability in its ready frame)")
+
+// dshSummarizeTimeout bounds the whole summarize process: a fresh dsh boots,
+// resumes the idle session, and makes one model-backed compaction call. It is
+// a ceiling, not an expectation — a summary of a ~20K-token conversation is a
+// single short completion.
+const dshSummarizeTimeout = 15 * time.Minute
+
+// SummarizeSession resumes sessionID in a fresh bridge process and asks dsh's
+// own compaction seam for a summary of its idle history (S3-B1). The process
+// exists only while this call runs: the daemon's cache clock never keeps an
+// idle dsh alive, and this is the one bridge invocation it makes when it
+// fires. The bridge must have advertised the `summarize` capability on its
+// ready frame; anything older fails with ErrDshSummarizeUnsupported before any
+// command is written.
+func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model string) (*DshSessionSummary, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, errors.New("dsh summarize: session id is empty")
+	}
+	execPath := b.cfg.ExecutablePath
+	if execPath == "" {
+		execPath = "dsh"
+	}
+	if _, err := exec.LookPath(execPath); err != nil {
+		return nil, fmt.Errorf("dsh executable not found at %q: %w", execPath, err)
+	}
+	selection, err := parseDshModelID(model)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := runContext(ctx, dshSummarizeTimeout)
+	defer cancel()
+	cmd := b.cfg.commandAt(execPath).exec(runCtx, dshLaunchArgs()...)
+	hideAgentWindow(cmd)
+	cmd.Cancel = func() error { return nil }
+	cmd.WaitDelay = 10 * time.Second
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("dsh stdout pipe: %w", err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("dsh stdin pipe: %w", err)
+	}
+	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[dsh:stderr] "), agentStderrTailBytes)
+	cmd.Stderr = stderrBuf
+	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+		return nil, fmt.Errorf("start dsh: %w", err)
+	}
+
+	requestID := b.cfg.TaskID
+	if requestID == "" {
+		requestID = "multica-summarize-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	var writeMu sync.Mutex
+	encoder := json.NewEncoder(stdin)
+	writeFrame := func(value any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return encoder.Encode(value)
+	}
+
+	procDone := make(chan struct{})
+	go func() {
+		select {
+		case <-procDone:
+			return
+		case <-runCtx.Done():
+		}
+		_ = writeFrame(dshCancelCommand{Version: DshProtocolVersion, Type: "cancel", RequestID: requestID})
+		timer := time.NewTimer(dshCancelGrace)
+		defer timer.Stop()
+		select {
+		case <-procDone:
+			return
+		case <-timer.C:
+		}
+		signalProcessGroup(cmd, syscall.SIGTERM)
+		if !waitProcessGroupGone(cmd, dshTerminateGrace) {
+			signalProcessGroup(cmd, syscall.SIGKILL)
+		}
+		_ = stdout.Close()
+	}()
+
+	var (
+		summary      *DshSessionSummary
+		reportedID   string
+		protocolErr  error
+		terminalSeen bool
+	)
+	command := dshSummarizeCommand{
+		Version: DshProtocolVersion, Type: "summarize", RequestID: requestID,
+		SessionID: sessionID, Model: selection,
+	}
+	scanner := newAgentStreamScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var frame dshFrame
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			continue
+		}
+		if frame.Version != DshProtocolVersion {
+			protocolErr = fmt.Errorf("dsh returned unsupported protocol version %d", frame.Version)
+			break
+		}
+		if frame.RequestID != "" && frame.RequestID != requestID {
+			continue
+		}
+		switch frame.Type {
+		case "ready":
+			if frame.Capabilities == nil || !frame.Capabilities.Summarize {
+				protocolErr = ErrDshSummarizeUnsupported
+				signalProcessGroup(cmd, syscall.SIGKILL)
+				break
+			}
+			// The command goes out only after the capability check: a bridge
+			// that predates summarize never even sees the request.
+			if err := writeFrame(command); err != nil {
+				protocolErr = fmt.Errorf("send dsh summarize command: %w", err)
+			}
+		case "session":
+			if frame.SessionID != "" {
+				reportedID = frame.SessionID
+			}
+		case "summary":
+			summary = &DshSessionSummary{Summary: frame.Summary, Tokens: frame.SummaryTokens, Model: frame.Model}
+		case "protocol_error":
+			protocolErr = fmt.Errorf("dsh summarize protocol error: %s", strings.TrimSpace(frame.Code+": "+frame.Message))
+		case "result":
+			terminalSeen = true
+			if frame.Status != "completed" {
+				message := strings.TrimSpace(frame.Code + ": " + frame.Message)
+				if frame.Error != nil {
+					message = strings.TrimSpace(frame.Error.Code + ": " + frame.Error.Message)
+				}
+				if message == "" {
+					message = "dsh ended the summarize request without a usable result"
+				}
+				protocolErr = fmt.Errorf("dsh summarize failed: %s", message)
+			}
+			if frame.SessionID != "" {
+				reportedID = frame.SessionID
+			}
+		}
+		if terminalSeen || protocolErr != nil {
+			break
+		}
+	}
+	scanErr := scanner.Err()
+	exitErr := cmd.Wait()
+	releaseProcessGroup(cmd)
+
+	if protocolErr != nil {
+		if errors.Is(protocolErr, ErrDshSummarizeUnsupported) {
+			b.cfg.Logger.Info("dsh summarize skipped: bridge lacks the summarize capability", "session_id", sessionID)
+			return nil, ErrDshSummarizeUnsupported
+		}
+		return nil, protocolErr
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("read dsh summarize stream: %w", scanErr)
+	}
+	if !terminalSeen {
+		message := fmt.Sprintf("dsh exited without a summarize result (exit: %v)", exitErr)
+		return nil, errors.New(withAgentStderr(message, "dsh", stderrBuf.Tail()))
+	}
+	if summary == nil {
+		return nil, errors.New("dsh summarize completed without a summary frame")
+	}
+	if reportedID == "" {
+		reportedID = sessionID
+	}
+	if reportedID != sessionID {
+		return nil, fmt.Errorf("dsh summarized session %q, expected %q", reportedID, sessionID)
+	}
+	summary.SessionID = reportedID
+	if summary.Model == "" {
+		summary.Model = model
+	}
+	return summary, nil
 }
 
 func discoverDshModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
