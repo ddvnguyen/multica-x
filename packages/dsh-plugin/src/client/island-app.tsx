@@ -19,6 +19,7 @@ import { useZoom } from "./zoom-store";
 import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
 import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
+import { IslandVersionBadge } from "./version-badge";
 import {
   AgentDetailPage,
   AgentsPage,
@@ -29,6 +30,7 @@ import {
   InboxPage,
   IssueDetailRoute,
   IssuesPage,
+  mmxBuild,
   ModalRegistry,
   NavigationProvider,
   PortalContainerProvider,
@@ -42,8 +44,14 @@ import {
   WorkspaceSlugProvider,
 } from "../fork";
 
-/** Bumping this changes the client identity multica-be records for the panel. */
-export const ISLAND_VERSION = "0.1.0";
+/**
+ * The stamped build identity multica-be records for the panel (M-155):
+ * `x.x.x-yyMMMdd.HH.mm`, the same string the Settings row and the bottom-right
+ * badge show, so a server log line or API identity points at the exact build
+ * that produced an error. "dev" only survives where a host built the island
+ * without injecting a build — no real deployment does.
+ */
+export const ISLAND_VERSION = mmxBuild()?.stamp ?? "dev";
 
 export interface IslandAppProps {
   /** Where Base UI portals render, inside the island's shadow root. */
@@ -394,6 +402,10 @@ export function IslandPages({
             portal container comes from `IslandApp`, so it renders into the
             island's shadow root and not the shell's document. */}
         <ModalRegistry />
+        {/* The build stamp (M-155): a sibling of the route switch, so it
+            survives page changes and renders even when the boundary shows
+            its fallback — the one moment an error report needs it most. */}
+        <IslandVersionBadge />
       </NavigationProvider>
     </ViewStoreProvider>
   );

@@ -636,6 +636,11 @@
       "failed": "Impossible de supprimer l'étiquette"
     }
   },
+  "mmx": {
+    "version_label": "Version MMX",
+    "copy": "Copier la version",
+    "copied": "Copié"
+  },
   "account": {
     "section_profile": "Informations personnelles",
     "avatar_label": "Avatar",

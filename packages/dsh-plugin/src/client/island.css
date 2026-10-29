@@ -49,6 +49,10 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
+  /* Anchors the bottom-right build stamp (M-155). The popup seat's z-index
+     (60) still paints every portal above it, so the stamp never covers a
+     popup or the toast zone in the same corner. */
+  position: relative;
 }
 
 /* The container the island's popups render into.

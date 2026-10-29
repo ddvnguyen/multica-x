@@ -62,6 +62,7 @@
     "./attachments": "./attachments/index.ts",
     "./locales": "./locales/index.ts",
     "./locales/*": "./locales/*",
+    "./build-info": "./build-info.ts",
     "./issues/visuals": "./issues/components/visuals.ts"
   },
   "dependencies": {
