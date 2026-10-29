@@ -62,6 +62,84 @@ var commentContentBigramIndex = usableIndexRequirement{
 	Extension:     "pg_bigm",
 }
 
+// objectRequirement describes the exact objects a renumbered fork migration
+// ships, so the runner can skip-and-record a lane database that executed the
+// same SQL under the migration's pre-renumbering version (M-167). Every entry
+// is resolved against the search_path exactly the way the migration's own
+// unqualified DDL resolves it, so the gate matches the objects the run would
+// collide with: a missing table, column, index or constraint keeps apply=true
+// and lets the migration run (and fail loudly on a drifted lane) instead of
+// silently recording a version whose objects are only half there.
+type objectRequirement struct {
+	// Table regclass names created by the migration (to_regclass lookup).
+	Tables []string
+	// "table.column" pairs added by the migration, resolved against
+	// current_schema() the same way unqualified ALTER TABLE resolves.
+	Columns []string
+	// Index names created by the migration (to_regclass lookup).
+	Indexes []string
+	// Named or deterministically auto-named constraints the migration
+	// adds, as "table.name" plus the expected pg_constraint.contype
+	// ('c' check, 'f' foreign key, 'u' unique).
+	Constraints []constraintRequirement
+}
+
+type constraintRequirement struct {
+	Table string
+	Name  string
+	Kind  string
+}
+
+// The six renumbered fork migrations (M-167). Object lists mirror the
+// corresponding migration files verbatim; when a migration changes here, the
+// requirement moves with it.
+var (
+	migr596AgentQuestionCard = objectRequirement{
+		Tables: []string{"agent_question_card"},
+		Indexes: []string{
+			"idx_aqc_issue", "idx_aqc_open", "idx_aqc_task",
+		},
+	}
+	migr597AgentPlan = objectRequirement{
+		Tables: []string{"agent_plan"},
+		Indexes: []string{
+			"idx_ap_one_open", "idx_ap_issue", "idx_ap_task",
+		},
+	}
+	migr598AgentPlanReview = objectRequirement{
+		Tables:  []string{"agent_plan_review"},
+		Indexes: []string{"idx_apr_plan"},
+	}
+	migr600ProjectSettings = objectRequirement{
+		Columns: []string{"project.settings"},
+	}
+	migr601WorkspaceAccount = objectRequirement{
+		Tables: []string{"workspace_account"},
+		Indexes: []string{
+			"idx_workspace_account_workspace",
+			"workspace_account_workspace_id_provider_label_key",
+		},
+		Columns: []string{
+			"agent.account_mode", "agent.account_id", "agent_task_queue.account_id",
+		},
+		Constraints: []constraintRequirement{
+			{Table: "workspace_account", Name: "workspace_account_workspace_id_fkey", Kind: "f"},
+			{Table: "workspace_account", Name: "workspace_account_created_by_fkey", Kind: "f"},
+			{Table: "workspace_account", Name: "workspace_account_workspace_id_provider_label_key", Kind: "u"},
+			{Table: "agent", Name: "agent_account_mode_check", Kind: "c"},
+			{Table: "agent", Name: "agent_account_mode_consistent", Kind: "c"},
+			{Table: "agent", Name: "agent_account_id_fkey", Kind: "f"},
+			{Table: "agent_task_queue", Name: "agent_task_queue_account_id_fkey", Kind: "f"},
+		},
+	}
+	migr602TaskSupplementMode = objectRequirement{
+		Columns: []string{"task_supplement.mode"},
+		Constraints: []constraintRequirement{
+			{Table: "task_supplement", Name: "task_supplement_mode_check", Kind: "c"},
+		},
+	}
+)
+
 // extensionOperatorClass names an operator class a migration writes literally
 // into a CREATE INDEX, together with the extension that must own it. A
 // migration cannot both build concurrently and swallow a missing extension in a
@@ -482,6 +560,20 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
+	// The fork's own migrations were recorded on lane databases under the
+	// pre-v0.7.1 numbers (585-590_agent_* / *_settings / *_mode, and a
+	// re-stamped 594-599 batch); the v0.7.1 sync renumbered the identical SQL
+	// (596-602). A lane database therefore has every object but not the new
+	// version rows. Skip-and-record only when every object the migration
+	// ships is present, so a fresh database still runs the SQL (M-167).
+	// 599_agent_task_queue_blocked is DROP + ADD CONSTRAINT and stays ungated:
+	// re-running it rebuilds the same CHECK exactly.
+	"596_agent_question_card":  whenObjectsExist(migr596AgentQuestionCard),
+	"597_agent_plan":           whenObjectsExist(migr597AgentPlan),
+	"598_agent_plan_review":    whenObjectsExist(migr598AgentPlanReview),
+	"600_project_settings":     whenObjectsExist(migr600ProjectSettings),
+	"601_workspace_account":    whenObjectsExist(migr601WorkspaceAccount),
+	"602_task_supplement_mode": whenObjectsExist(migr602TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index
@@ -535,6 +627,116 @@ func conditionsForDirection(direction string) map[string]migrationCondition {
 func skipMigration(reason string) migrationCondition {
 	return func(context.Context, *pgxpool.Conn) (bool, string, error) {
 		return false, reason, nil
+	}
+}
+
+// missingRegclass returns the entries of names that to_regclass cannot resolve
+// through the search_path — the same resolution the migration's unqualified
+// DDL would use, so a gate on this list answers "would the SQL collide".
+func missingRegclass(ctx context.Context, conn *pgxpool.Conn, names []string) ([]string, error) {
+	var missing []string
+	err := conn.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(t.name), '{}'::text[])
+		FROM unnest($1::text[]) AS t(name)
+		WHERE to_regclass(t.name) IS NULL
+	`, names).Scan(&missing)
+	if err != nil {
+		return nil, err
+	}
+	return missing, nil
+}
+
+// missingColumn handles the information_schema lookups that regclass names
+// cannot express: a column is identified by (table_schema, table_name,
+// column_name), and the migration's unqualified ALTER TABLE would land in
+// current_schema().
+func missingColumn(ctx context.Context, conn *pgxpool.Conn, columns []string) ([]string, error) {
+	tables := make([]string, 0, len(columns))
+	names := make([]string, 0, len(columns))
+	for _, column := range columns {
+		table, col, found := strings.Cut(column, ".")
+		if !found || table == "" || col == "" {
+			return nil, fmt.Errorf("invalid column requirement %q (want table.col)", column)
+		}
+		tables = append(tables, table)
+		names = append(names, col)
+	}
+	var missing []string
+	err := conn.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(t.tbl || '.' || t.col), '{}'::text[])
+		FROM unnest($1::text[], $2::text[]) AS t(tbl, col)
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM information_schema.columns c
+			WHERE c.table_schema = current_schema()
+			  AND c.table_name = t.tbl
+			  AND c.column_name = t.col
+		)
+	`, tables, names).Scan(&missing)
+	if err != nil {
+		return nil, err
+	}
+	return missing, nil
+}
+
+// whenObjectsExist records a migration as a no-op only when every object it
+// ships is already present — exact names and constraint kinds, not just a
+// same-named table. Semantics are asymmetric on purpose: on the drifted lane
+// database the condition keeps apply=true and the migration's own CREATE fails
+// loudly (a half-present object must stop the run for review, M-167), while a
+// fresh database has nothing and runs the SQL from scratch.
+func whenObjectsExist(requirement objectRequirement) migrationCondition {
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		if len(requirement.Tables)+len(requirement.Columns)+len(requirement.Indexes)+len(requirement.Constraints) == 0 {
+			return false, "", fmt.Errorf("object requirement is empty; it would record the migration as applied without checking anything")
+		}
+		missingTables, err := missingRegclass(ctx, conn, requirement.Tables)
+		if err != nil {
+			return false, "", fmt.Errorf("inspect tables %v: %w", requirement.Tables, err)
+		}
+		missingIndexes, err := missingRegclass(ctx, conn, requirement.Indexes)
+		if err != nil {
+			return false, "", fmt.Errorf("inspect indexes %v: %w", requirement.Indexes, err)
+		}
+		missingColumns, err := missingColumn(ctx, conn, requirement.Columns)
+		if err != nil {
+			return false, "", fmt.Errorf("inspect columns %v: %w", requirement.Columns, err)
+		}
+		var missingConstraints []string
+		if len(requirement.Constraints) > 0 {
+			tables := make([]string, 0, len(requirement.Constraints))
+			names := make([]string, 0, len(requirement.Constraints))
+			kinds := make([]string, 0, len(requirement.Constraints))
+			for _, constraint := range requirement.Constraints {
+				tables = append(tables, constraint.Table)
+				names = append(names, constraint.Name)
+				kinds = append(kinds, constraint.Kind)
+			}
+			err := conn.QueryRow(ctx, `
+				SELECT COALESCE(array_agg(t.tbl || '.' || t.cname), '{}'::text[])
+				FROM unnest($1::text[], $2::text[], $3::"char"[]) AS t(tbl, cname, kind)
+				WHERE NOT EXISTS (
+					SELECT 1
+					FROM pg_constraint c
+					WHERE c.conrelid = to_regclass(t.tbl)
+					  AND c.conname = t.cname
+					  AND c.contype = t.kind
+				)
+			`, tables, names, kinds).Scan(&missingConstraints)
+			if err != nil {
+				return false, "", fmt.Errorf("inspect constraints %v: %w", requirement.Constraints, err)
+			}
+		}
+
+		missing := make([]string, 0, len(missingTables)+len(missingColumns)+len(missingIndexes)+len(missingConstraints))
+		missing = append(missing, missingTables...)
+		missing = append(missing, missingColumns...)
+		missing = append(missing, missingIndexes...)
+		missing = append(missing, missingConstraints...)
+		if len(missing) == 0 {
+			return false, "all required objects already exist", nil
+		}
+		return true, "", nil
 	}
 }
 
