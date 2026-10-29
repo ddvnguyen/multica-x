@@ -88,7 +88,7 @@ pnpm --filter @multica/mobile lint
 pnpm --filter @multica/mobile test
 ```
 
-- Root frontend checks exclude mobile. `.github/workflows/mobile-verify.yml` defines the current mobile CI scope; these checks do not build an IPA or verify native rendering.
+- Root frontend checks exclude mobile, and since M-161 there is no mobile CI workflow: a mobile-only change runs only the lightweight `quality` job in the main CI (mobile is not part of the shipped web product). These checks do not build an IPA or verify native rendering.
 - For UI changes, verify the affected flow in the simulator/device, including themes, keyboard/scrolling, and navigation. For shared semantics or realtime changes, change the same data from web and confirm mobile catches up without manual refresh, including after reconnect.
 - Test parsing/transforms in the existing Vitest setup. Preserve `scripts/ios-run.test.sh` coverage when changing the native build wrapper.
 - Report which checks ran and which native/cross-client checks were unavailable. Do not claim visual or release verification from typecheck/unit tests alone.
