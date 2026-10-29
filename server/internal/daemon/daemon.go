@@ -729,6 +729,11 @@ type Daemon struct {
 	taskSupplementSignals       taskSupplementSignals
 	taskSupplementPollInterval  time.Duration
 	taskSupplementReadyInterval time.Duration
+	// dshSummary is the per-session prompt-cache summary clock (S3-B1). It
+	// lives in the daemon, never as an idle process: when a dsh run ends it
+	// arms a timer for TTL−margin, and only when the timer fires does the
+	// clock invoke the bridge once to build and store the summary.
+	dshSummary *dshSummaryClock
 	// envRootBusyWait is how long a task that is entitled to a prior env root
 	// waits for the previous run to let go of it before giving up and preparing
 	// a fresh one. New() sets it; the zero value means "do not wait", which is
@@ -812,6 +817,15 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
+	// S3-B1: the summary clock fires after the task context is gone, so it
+	// runs summarize calls under the daemon's own lifetime context.
+	d.dshSummary = newDshSummaryClock(cfg.DshSummary, logger)
+	d.dshSummary.ctxFn = func() context.Context {
+		if d.rootCtx != nil {
+			return d.rootCtx
+		}
+		return context.Background()
+	}
 	// Seed the copy-on-write availability set from the startup probe. Callers
 	// must go through d.agents() from here on; cfg.Agents is the initial value
 	// only and does not track later refreshes.
@@ -8785,6 +8799,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	// S3-B1: the store root the summary clock writes beside, resolved in the
+	// dsh branch below (shared store or the private per-runtime root).
+	var dshStoreRoot string
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8805,12 +8822,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if d.cfg.MessageSink == "dsh" {
 			taskLog.Info("dsh message sink enabled; session goes to the shared dsh store",
 				"dsh_home", os.Getenv("DSH_HOME"))
+			// S3-B1: the summary clock stores the summary beside the session,
+			// so it needs the same root the bridge will have written into.
+			dshStoreRoot = dshSharedSessionStoreRoot()
 		} else {
 			dshSessionRoot, err := prepareDshTaskSessionRoot(d.cfg.Profile, task.RuntimeID, task.AgentID)
 			if err != nil {
 				return TaskResult{}, fmt.Errorf("prepare dsh session root: %w", err)
 			}
 			agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
+			dshStoreRoot = dshSessionRoot
 		}
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
@@ -8903,6 +8924,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	)
 	if task.PriorSessionID != "" {
 		taskLog.Info("resuming session", "session_id", task.PriorSessionID)
+		// S3-B1: a resumed session is being worked again, so disarm its
+		// pending summary clock — compacting mid-conversation is wrong.
+		d.dshSummary.Cancel(task.PriorSessionID)
 	}
 
 	taskStart := time.Now()
@@ -9165,6 +9189,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			retiredSessionID = task.PriorSessionID
 		}
 	}
+
+	// S3-B1: the run ended — arm the per-session prompt-cache summary clock.
+	// It lives in the daemon (no idle process) and invokes the bridge only
+	// when it fires at TTL−margin, if the trigger is reached. Needs the final
+	// result (post-reconcile) so it summarizes the session that actually ran.
+	d.armDshSummaryClock(task, provider, model, result, env.WorkDir, dshStoreRoot, backend)
 
 	elapsed := time.Since(taskStart).Round(time.Second)
 	taskLog.Info("agent finished",

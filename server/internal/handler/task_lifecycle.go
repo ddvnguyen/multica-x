@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -135,6 +136,57 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("pin-session commit failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "pin session failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// TaskSummaryDecisionRequest is the dsh summary clock's per-run decision
+// report (S3-B1 / M-137). The clock fires at TTL−margin — long after the
+// terminal callback wrote the run row — so the decision (summarized / skipped
+// with the token counts, or a build/store failure) arrives here and merges
+// into the row's result JSONB under the dsh_summary key.
+type TaskSummaryDecisionRequest struct {
+	Decision        string `json:"decision"`
+	SessionID       string `json:"session_id"`
+	Model           string `json:"model,omitempty"`
+	TokensAboveInit int64  `json:"tokens_above_init"`
+	IdleSeconds     int64  `json:"idle_seconds"`
+	SummaryTokens   int64  `json:"summary_tokens,omitempty"`
+	MadeAt          string `json:"made_at,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// RecordTaskSummaryDecision merges one summary-clock decision into the run
+// row. Idempotent by merge semantics: a replayed decision for the same task
+// overwrites the previous one rather than duplicating. A missing row (the run
+// was GC'd before the clock fired) is a no-op, not an error — the decision is
+// observability, never task state.
+func (h *Handler) RecordTaskSummaryDecision(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+		return
+	}
+
+	var req TaskSummaryDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Decision) == "" || strings.TrimSpace(req.SessionID) == "" {
+		writeError(w, http.StatusBadRequest, "decision and session_id required")
+		return
+	}
+	patch, err := json.Marshal(map[string]any{"dsh_summary": req})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "record summary decision failed")
+		return
+	}
+	if _, err := h.DB.Exec(r.Context(),
+		`UPDATE agent_task_queue SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+		parseUUID(taskID), patch); err != nil {
+		slog.Warn("record summary decision failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "record summary decision failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

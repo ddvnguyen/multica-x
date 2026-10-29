@@ -736,6 +736,16 @@ func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir 
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session", taskID), body, nil)
 }
 
+// RecordTaskSummaryDecision merges the dsh summary clock's decision for one
+// run into that run row's result JSONB (S3-B1). The clock fires at TTL−margin,
+// long after the terminal callback, so the decision cannot ride the completion
+// report and needs this late, idempotent merge. The server merges the payload
+// under its own key; a server that predates the endpoint answers 404, which
+// taskSupplementEndpointUnsupported-class callers treat as "not supported".
+func (c *Client) RecordTaskSummaryDecision(ctx context.Context, taskID string, record dshSummaryRunRowRecord) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/summary-decision", taskID), record, nil)
+}
+
 // RecoverOrphans tells the server to fail any dispatched/running tasks the
 // previous daemon process for this runtime left behind. The server will
 // auto-retry eligible tasks.

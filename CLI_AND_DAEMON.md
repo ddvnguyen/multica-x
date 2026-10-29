@@ -342,6 +342,30 @@ Daemon behavior is configured via flags or environment variables:
 | GC Hermes memory TTL (per-agent `memories/`) | — | `MULTICA_GC_HERMES_MEMORY_TTL` | `2160h` (90d; set `0` to disable) |
 | GC Hermes session TTL (per-conversation `state.db`) | — | `MULTICA_GC_HERMES_SESSION_TTL` | `336h` (14d; set `0` to disable) |
 | GC task temp legacy TTL (pre-lock `multica-task-*`) | — | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` (disabled; set a duration to opt in) |
+| dsh summary clock | — | `MULTICA_DSH_SUMMARY_ENABLED` | `true` (set `false`/`0` to disable) |
+| dsh summary size target | — | `MULTICA_DSH_SUMMARY_TOKENS` | `2048` tokens |
+| dsh summary size cap (flagged, not enforced) | — | `MULTICA_DSH_SUMMARY_TOKEN_CAP` | `4096` tokens |
+| dsh summary trigger (conversation tokens above the init prefix) | — | `MULTICA_DSH_SUMMARY_TRIGGER_TOKENS` | `20000` |
+| dsh summary idle trigger | — | `MULTICA_DSH_SUMMARY_TRIGGER_IDLE` | `30m` |
+| dsh assumed cache TTL | — | `MULTICA_DSH_SUMMARY_TTL` | `1h` (provisional until re-measured with a real DeepSeek key) |
+| dsh summary margin (summarize at TTL − margin) | — | `MULTICA_DSH_SUMMARY_MARGIN` | `15m` |
+| dsh cold/warm cache price ratio (cost rule) | — | `MULTICA_DSH_SUMMARY_COLD_WARM_RATIO` | `30` |
+| dsh per-model prompt-cache TTLs | — | `MULTICA_DSH_PROMPT_CACHE` | unset; JSON map, e.g. `{"deepseek/v4-pro": {"short": "5m", "long": "1h"}}` |
+
+#### dsh prompt-cache summary clock
+
+For a `dsh`-backed run, the daemon starts a per-session clock when the run
+ends and, at TTL − margin — while the provider's prompt cache is still warm —
+builds a summary of the conversation with dsh's own compaction and stores it
+beside the session (`summary.json` in the session store, carrying `summary`,
+`tokens`, `made_at`, and `parent_session`). A resumed session disarms its
+clock. Whether the summary is built is decided from the run's usage facts
+(`cache_read_tokens`/`cache_write_tokens`): the conversation above the init
+prefix must reach the token or idle trigger, and the expected cold re-read
+must cost more than the summary. Every decision is logged on the run row
+(`result.dsh_summary`). The clock lives in the daemon — an idle session never
+keeps a dsh process alive. All defaults are provisional (M-133) pending
+re-measurement with a real DeepSeek credential; nothing here is hard-coded.
 
 #### Workspace garbage collection
 

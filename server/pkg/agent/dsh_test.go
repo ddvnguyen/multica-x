@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -364,5 +365,89 @@ func TestDshSupplementContentStripsFraming(t *testing.T) {
 	}
 	if got := dshSupplementContent("raw reply"); got != "raw reply" {
 		t.Fatalf("unframed content = %q", got)
+	}
+}
+
+func TestDshSummarizeSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// The bridge must see the summarize command AFTER advertising the
+	// capability, and the daemon must surface the summary frame.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+case "$summarize" in
+  *'"type":"summarize"'*'"session_id":"session-1"'*) ;;
+  *) exit 8 ;;
+esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-s","session_id":"session-1","resumed":true}'
+printf '%s\n' '{"v":1,"type":"summary","request_id":"task-s","session_id":"session-1","summary":"The session did X then Y.","summary_tokens":6}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-s","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-s", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, ok := b.(*dshBackend)
+	if !ok {
+		t.Fatalf("dsh New returned %T, want *dshBackend", b)
+	}
+	summary, err := backend.SummarizeSession(context.Background(), "session-1", "deepseek-official/deepseek-v4-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SessionID != "session-1" || summary.Summary != "The session did X then Y." || summary.Tokens != 6 {
+		t.Fatalf("bad summary: %#v", summary)
+	}
+}
+
+func TestDshSummarizeSessionUnsupportedBridge(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// A bridge that predates summarize never gets the command: the daemon
+	// stops on the ready frame's missing capability.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"questions":true}}'
+exit 0
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-u", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); !errors.Is(err, ErrDshSummarizeUnsupported) {
+		t.Fatalf("got %v, want ErrDshSummarizeUnsupported", err)
+	}
+}
+
+func TestDshSummarizeSessionFailureResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-f","status":"failed","session_id":"session-1","output":"","resume_rejected":false,"error":{"code":"DSH_SUMMARY_BUSY","message":"agent is not idle"}}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-f", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); err == nil || !strings.Contains(err.Error(), "agent is not idle") {
+		t.Fatalf("got %v, want the bridge's error", err)
+	}
+}
+
+func TestDshSummarizeSessionEmptySessionID(t *testing.T) {
+	b, err := New("dsh", Config{ExecutablePath: "dsh", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := b.(*dshBackend)
+	if _, err := backend.SummarizeSession(context.Background(), "  ", ""); err == nil {
+		t.Fatal("empty session id must be rejected before spawning")
 	}
 }
