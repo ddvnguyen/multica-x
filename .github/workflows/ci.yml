@@ -63,6 +63,9 @@ jobs:
       - name: Test CI selection and gates
         run: node --test scripts/ci-scope.test.mjs
 
+      - name: Test the MMX version stamp script
+        run: node --test scripts/mmx-version.test.mjs
+
       - name: Filter paths
         id: filter
         if: github.event_name == 'pull_request' || github.event_name == 'push'
@@ -146,7 +149,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -322,6 +325,33 @@ jobs:
       - name: Lint
         run: pnpm exec turbo lint --filter='!@multica/docs' --filter='!@multica/mobile'
 
+      # M-155: one string per build. The stamp comes from the head commit's
+      # committer time (--from-git), so the same SHA always yields the same
+      # string; CI prints it and fails unless the shipped bundle and the
+      # release.json line both contain it. Turbo's cache key cannot see
+      # committer time — a restored bundle may carry an older stamp — so the
+      # plugin is rebuilt directly here with the stamp exported, and the
+      # asserted bundle is the one this step just produced. The shipped
+      # artifact is lib/client.js: scripts/wrap-client.mjs wraps and then
+      # deletes vite's intermediate client.bundle.cjs.
+      - name: Assert the MMX version stamp
+        run: |
+          MMX_BUILD_JSON="$(node scripts/mmx-version.mjs --from-git --json)"
+          echo "mmx: $MMX_BUILD_JSON"
+          export MMX_BUILD_JSON
+          STAMP="$(node -p 'JSON.parse(process.env.MMX_BUILD_JSON).stamp')"
+          pnpm --filter @multica/dsh-plugin build
+          if ! grep -qF "$STAMP" packages/dsh-plugin/lib/client.js; then
+            echo "client bundle does not contain $STAMP"
+            exit 1
+          fi
+          node scripts/mmx-version.mjs --release-json --ref ci > release.json
+          if ! grep -qF "$STAMP" release.json; then
+            echo "release.json does not contain $STAMP"
+            exit 1
+          fi
+          echo "stamp verified in bundle and release.json: $STAMP"
+
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
   frontend-build:
@@ -414,10 +444,9 @@ jobs:
       # the same way (identical turbo hash) but skip the upload.
       - name: Stage release.json
         if: github.event_name != 'pull_request'
-        run: |
-          # Same shape as deploy/dsh-z/deploy.sh:157 (bare ref, not refs/heads/...).
-          printf '{"sha":"%s","ref":"%s","builtAt":"%s"}\n' \
-            "$GITHUB_SHA" "$GITHUB_REF_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > release.json
+        # M-155's single source for the release.json body; carries the
+        # x.x.x-yyMMMdd.HH.mm stamp so M-151's evidence matches CI.
+        run: node scripts/mmx-version.mjs --release-json --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" > release.json
 
       - name: Upload web-dist artifact
         if: github.event_name != 'pull_request'
@@ -641,8 +670,8 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -697,10 +726,12 @@ jobs:
         run: bash scripts/test-go.test.sh
 
       # Build-once, deploy-that (M-161): make build emits the three release
-      # binaries the lane ships. Runs on PRs too so a broken Makefile recipe
-      # fails before merge; only the packaging/upload is push-only.
+      # binaries the lane ships, stamped with the same M-155 version string
+      # deploy/dsh-z/deploy.sh uses, so the artifact and a lane rebuild report
+      # identically. Runs on PRs too so a broken Makefile recipe fails before
+      # merge; only the packaging/upload is push-only.
       - name: Build release binaries
-        run: make build
+        run: make build VERSION="$(node scripts/mmx-version.mjs --from-git)"
 
       - name: Stage multica-be artifact
         if: github.event_name != 'pull_request'
@@ -708,14 +739,13 @@ jobs:
           mkdir -p dist/multica-be/bin
           cp -a server/bin/server server/bin/migrate server/bin/multica dist/multica-be/bin/
           cp -a server/migrations dist/multica-be/migrations
-          # Same shape as deploy/dsh-z/deploy.sh:157 (bare ref, not refs/heads/...).
-          printf '{"sha":"%s","ref":"%s","builtAt":"%s"}\n' \
-            "$GITHUB_SHA" "$GITHUB_REF_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > dist/multica-be/release.json
+          # M-155's single source for the release.json body (same script the
+          # lane deploy uses), so CI and deploy emit the identical file.
+          node scripts/mmx-version.mjs --release-json --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" > dist/multica-be/release.json
 
       # Byte-compatible with deploy/dsh-z/deploy.sh releases/<sha>/ so M-151
-      # unpacks in place. `version` joins release.json when M-155's
-      # scripts/mmx-version.mjs lands (approved-plan fallback: sha/ref/builtAt
-      # first); until then the binary VERSION is git-describe's short SHA.
+      # unpacks in place; release.json comes from M-155's scripts/mmx-version.mjs,
+      # the same generator the lane deploy calls.
       - name: Upload multica-be artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -790,7 +820,9 @@ jobs:
         id: go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          # Keep the security floor even when the setup-go manifest lags;
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -857,7 +889,7 @@ jobs:
         id: go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -926,7 +958,7 @@ jobs:
         id: go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -1001,6 +1033,13 @@ jobs:
         run: |
           node scripts/generate-reserved-slugs.mjs
           git diff --exit-code -- packages/core/paths/reserved-slugs.ts
+
+      - name: Verify attachment text-preview whitelist is up to date
+        # The Go handler embeds the JSON source directly while the shared
+        # web/desktop view consumes the checked-in generated TypeScript file.
+        run: |
+          node scripts/generate-attachment-text-preview.mjs
+          git diff --exit-code -- packages/views/editor/utils/text-preview-whitelist.generated.ts
 
       - name: Setup Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4

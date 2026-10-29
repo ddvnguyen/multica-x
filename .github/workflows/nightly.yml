@@ -107,8 +107,8 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -201,8 +201,8 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -229,10 +229,16 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
+
+      - name: Test Windows WeCom media streaming and plaintext cleanup
+        working-directory: server
+        # These tests need no database. Windows must prove private file access,
+        # streaming without buffered fallback, and cleanup after process exit.
+        run: go test ./internal/integrations/wecom -v -run '^(TestStreamingDecrypt|TestMediaTempFile|TestPeekFile|TestIngest|TestTheStreamingPath)' -count=1 -timeout=5m
 
       - name: Test Windows execution-environment isolation
         working-directory: server
@@ -504,7 +510,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           cache-dependency-path: server/go.sum
       - name: Verify Cursor background lifecycle and watchdog races
         shell: bash

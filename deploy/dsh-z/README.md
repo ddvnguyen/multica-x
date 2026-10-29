@@ -154,6 +154,15 @@ Redeploy a newer `multica-moct`: bump nothing — `deploy.sh` re-resolves the
 ref, builds a new sha-keyed release, re-runs migrations, and restarts its own
 units. Same for `MOCT_REF`.
 
+Each multica-be release carries the MMX build stamp (M-155): `release.json`
+holds `sha`, `ref`, `version`, `builtAt`, where `version` is
+`x.x.x-yyMMMdd.HH.mm` on the UTC+7 clock, taken from the checked-out commit's
+committer time by `scripts/mmx-version.mjs` — the same script the GitHub CI
+asserts the plugin bundle against, so one SHA always names one build.
+`GET /multica/health` returns that string beside `commit`, the panel's client
+`identity.version` sends it to multica-be, and the binaries report it as
+`main.version`.
+
 ## Layout on disk
 
 ```

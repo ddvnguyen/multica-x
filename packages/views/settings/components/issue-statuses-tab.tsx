@@ -57,6 +57,8 @@ import type {
   IssueStatusEntry,
 } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Dialog,
@@ -462,16 +464,18 @@ function StatusRow({
       className={`group/row relative flex min-h-12 items-center gap-2 bg-card py-2 pl-2 pr-4 motion-reduce:transition-none! ${isDragging ? "z-10 shadow-[var(--surface-shadow)]" : ""} ${archived ? "opacity-60" : ""}`}
     >
       {canReorder ? (
-        <button
-          type="button"
-          disabled={isReordering}
-          aria-label={t(($) => $.issue_statuses.actions.reorder, { name: label })}
-          className="flex size-6 shrink-0 touch-none items-center justify-center rounded-md cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing [@media(pointer:coarse)]:size-11"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="size-4" />
-        </button>
+        <TooltipHint label={t(($) => $.issue_statuses.actions.reorder, { name: label })}>
+          <button
+            type="button"
+            disabled={isReordering}
+            aria-label={t(($) => $.issue_statuses.actions.reorder, { name: label })}
+            className="flex size-6 shrink-0 touch-none items-center justify-center rounded-md cursor-grab text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing [@media(pointer:coarse)]:size-11"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="size-4" />
+          </button>
+        </TooltipHint>
       ) : <span className="size-6 shrink-0 [@media(pointer:coarse)]:size-11" />}
       <StatusIcon
         status={entry.key}
@@ -532,14 +536,14 @@ function StatusRow({
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button
+              <IconButton
                 variant="ghost"
                 size="icon-sm"
-                aria-label={t(($) => $.issue_statuses.actions.open, { name: label })}
+                label={t(($) => $.issue_statuses.actions.open, { name: label })}
                 className="shrink-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 data-popup-open:opacity-100 [@media(hover:hover)]:opacity-0 [@media(pointer:coarse)]:size-11 [@media(pointer:coarse)]:opacity-100"
               >
                 <MoreHorizontal className="size-4" />
-              </Button>
+              </IconButton>
             }
           />
           <DropdownMenuContent align="end">

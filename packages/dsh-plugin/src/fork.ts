@@ -91,3 +91,8 @@ export type { LocaleAdapter } from "@multica/core/i18n";
 export { RESOURCES } from "@multica/views/locales";
 export { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 export { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
+
+// The stamped build identity (M-155): one string for one build, injected by
+// this package's vite config, so the island's badge, the Settings row and the
+// client identity sent to multica-be all read the same value.
+export { mmxBuild } from "@multica/views/build-info";

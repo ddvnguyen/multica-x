@@ -4,73 +4,51 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AgentRuntime, RuntimeProfile } from "@multica/core/types";
+import type { AgentRuntime } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { FreebuffAccountCard } from "./freebuff-account-card";
 
-const mockGetFreebuffAccount = vi.hoisted(() => vi.fn());
-const mockRequestFreebuffConnect = vi.hoisted(() => vi.fn());
-
-vi.mock("@multica/core/hooks", () => ({
-  useWorkspaceId: () => "ws-1",
-}));
+const mockGetFreebuffAccounts = vi.hoisted(() => vi.fn());
+const mockAddFreebuffAccount = vi.hoisted(() => vi.fn());
+const mockRemoveFreebuffAccount = vi.hoisted(() => vi.fn());
+const mockRetryFreebuffAccountLogin = vi.hoisted(() => vi.fn());
+const mockSetFreebuffDefaultAccount = vi.hoisted(() => vi.fn());
+const mockCopyText = vi.hoisted(() => vi.fn());
+const mockOpenExternal = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/api", () => ({
   api: {
-    getFreebuffAccount: (...args: unknown[]) =>
-      mockGetFreebuffAccount(...args),
-    requestFreebuffConnect: (...args: unknown[]) =>
-      mockRequestFreebuffConnect(...args),
-    listRuntimeProfiles: vi.fn(),
+    getFreebuffAccounts: (...args: unknown[]) => mockGetFreebuffAccounts(...args),
+    addFreebuffAccount: (...args: unknown[]) => mockAddFreebuffAccount(...args),
+    removeFreebuffAccount: (...args: unknown[]) => mockRemoveFreebuffAccount(...args),
+    retryFreebuffAccountLogin: (...args: unknown[]) =>
+      mockRetryFreebuffAccountLogin(...args),
+    setFreebuffDefaultAccount: (...args: unknown[]) =>
+      mockSetFreebuffDefaultAccount(...args),
   },
   ApiError: class ApiError extends Error {},
+}));
+
+vi.mock("@multica/ui/lib/clipboard", () => ({
+  copyText: (...args: unknown[]) => mockCopyText(...args),
+}));
+
+vi.mock("../../platform", () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
 }));
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-// The profile list decides whether this runtime is a Freebuff runtime at
-// all; the account endpoint is what the card renders.
-const profiles: RuntimeProfile[] = [
-  {
-    id: "profile-1",
-    workspace_id: "ws-1",
-    display_name: "Freebuff (CodeBuddy)",
-    protocol_family: "codebuddy",
-    runtime_type: "codebuddy",
-    command_name: "codebuddy-freebuff",
-    description: null,
-    fixed_args: [],
-    visibility: "workspace",
-    created_by: null,
-    enabled: true,
-    created_at: "",
-    updated_at: "",
-  },
-];
-
-vi.mock("@multica/core/runtimes", async () => {
-  const actual =
-    await vi.importActual<typeof import("@multica/core/runtimes")>(
-      "@multica/core/runtimes",
-    );
-  return {
-    ...actual,
-    runtimeProfileListOptions: () => ({
-      queryKey: ["runtime-profiles", "ws-1", "list"],
-      queryFn: async () => profiles,
-    }),
-  };
-});
+const LINK = "https://freebuff.com/login?auth_code=abc";
 
 function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
   return {
     id: "rt-freebuff",
-    name: "Freebuff (CodeBuddy) (ddv-server)",
-    provider: "codebuddy",
+    name: "Freebuff (ddv-server)",
+    provider: "freebuff",
     status: "online",
-    profile_id: "profile-1",
     metadata: {},
     ...overrides,
   } as AgentRuntime;
@@ -87,42 +65,41 @@ function renderCard(runtime: AgentRuntime) {
   );
 }
 
+const connected = {
+  id: "a1",
+  label: "owner@example.com",
+  state: "connected",
+  status: {
+    status: "active",
+    model: "z-ai/glm-5.3-flash",
+    remainingMs: 42 * 60_000,
+    credit: { balance: 21, dailyLimit: 5, dailyRemaining: 4, walletBalance: 17 },
+    prices: { "z-ai/glm-5.3-flash": 2 },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetFreebuffAccount.mockResolvedValue({
-    status: {
-      status: "active",
-      model: "z-ai/glm-5.3-flash",
-      admittedAt: "2026-10-21T10:00:00.000Z",
-      expiresAt: "2026-10-21T11:00:00.000Z",
-      remainingMs: 42 * 60_000,
-      credit: {
-        balance: 21,
-        dailyLimit: 5,
-        dailySpent: 1,
-        dailyRemaining: 4,
-        dailyResetAt: "2026-10-22T00:00:00.000Z",
-        walletBalance: 17,
-      },
-      prices: { "z-ai/glm-5.3-flash": 2 },
-    },
-    connect: { state: "connected", account: "owner@example.com" },
+  mockGetFreebuffAccounts.mockResolvedValue({
+    accounts: [connected],
+    default_account_id: "a1",
   });
-  mockRequestFreebuffConnect.mockResolvedValue({ state: "requested" });
+  mockAddFreebuffAccount.mockResolvedValue({ id: "a2", state: "requested" });
+  mockRemoveFreebuffAccount.mockResolvedValue(undefined);
+  mockRetryFreebuffAccountLogin.mockResolvedValue(undefined);
+  mockSetFreebuffDefaultAccount.mockResolvedValue({ accounts: [] });
+  mockCopyText.mockResolvedValue(true);
 });
 
 describe("FreebuffAccountCard", () => {
-  it("shows the session time, the credit and the price per model", async () => {
+  it("shows a connected account with its session, credit and prices", async () => {
     const { container } = renderCard(makeRuntime());
 
-    await waitFor(() => {
-      expect(screen.getByText("Freebuff account")).toBeInTheDocument();
-    });
-    // The card composes each line from several translated fragments, so the
+    expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Default")).toBeInTheDocument();
+    // Each line is composed from several translated fragments, so the
     // assertions look at the rendered text rather than at one text node.
-    await waitFor(() => {
-      expect(container.textContent).toContain("active");
-    });
+    expect(container.textContent).toContain("active");
     expect(container.textContent).toContain("42m left");
     expect(container.textContent).toContain("4 of 5 Freebucks left today");
     expect(container.textContent).toContain("21 Freebucks in total");
@@ -130,34 +107,95 @@ describe("FreebuffAccountCard", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  it("shows the connected account", async () => {
-    renderCard(makeRuntime());
-    await waitFor(() => {
-      expect(screen.getByText(/Connected as owner@example.com/)).toBeInTheDocument();
-    });
-  });
-
   it("renders nothing for a runtime that is not a Freebuff runtime", async () => {
     const { container } = renderCard(
-      makeRuntime({ id: "rt-other", profile_id: null }),
+      makeRuntime({ id: "rt-other", provider: "codebuddy" }),
     );
     await waitFor(() => {
-      expect(mockGetFreebuffAccount).not.toHaveBeenCalled();
+      expect(mockGetFreebuffAccounts).not.toHaveBeenCalled();
     });
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("starts a browser login when the connect button is pressed", async () => {
-    mockGetFreebuffAccount.mockResolvedValue({ connect: { state: "" } });
+  it("invites the user to add the first account", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({ accounts: [] });
+    renderCard(makeRuntime());
+    expect(await screen.findByText(/No Freebuff account yet/)).toBeInTheDocument();
+  });
+
+  it("adds an account when the button is pressed", async () => {
+    renderCard(makeRuntime());
+    await userEvent.click(await screen.findByRole("button", { name: "Add account" }));
+    await waitFor(() => {
+      expect(mockAddFreebuffAccount).toHaveBeenCalledWith("rt-freebuff");
+    });
+  });
+
+  it("shows the sign-in link to copy or open while the sign-in is pending", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({
+      accounts: [
+        {
+          id: "a2",
+          state: "awaiting_login",
+          login_url: LINK,
+          expires_at: "2026-10-24T12:00:00Z",
+        },
+      ],
+    });
     renderCard(makeRuntime());
 
-    const button = await screen.findByRole("button", {
-      name: "Connect to Freebuff",
-    });
-    await userEvent.click(button);
+    const field = await screen.findByLabelText("Sign-in link");
+    expect(field).toHaveValue(LINK);
 
+    await userEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(mockCopyText).toHaveBeenCalledWith(LINK);
+
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(mockOpenExternal).toHaveBeenCalledWith(LINK, { webTarget: "new-tab" });
+  });
+
+  it("removes an account only after a second press", async () => {
+    renderCard(makeRuntime());
+    await userEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(mockRemoveFreebuffAccount).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Confirm remove" }));
     await waitFor(() => {
-      expect(mockRequestFreebuffConnect).toHaveBeenCalledWith("rt-freebuff");
+      expect(mockRemoveFreebuffAccount).toHaveBeenCalledWith("rt-freebuff", "a1");
     });
+  });
+
+  it("makes another connected account the default", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({
+      accounts: [connected, { id: "a2", label: "two@example.com", state: "connected" }],
+      default_account_id: "a1",
+    });
+    renderCard(makeRuntime());
+
+    await screen.findByText("two@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Make default" }));
+    await waitFor(() => {
+      expect(mockSetFreebuffDefaultAccount).toHaveBeenCalledWith("rt-freebuff", "a2");
+    });
+  });
+
+  it("offers a new link for a signed-out account", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({
+      accounts: [{ id: "a1", label: "owner@example.com", state: "signed_out" }],
+    });
+    renderCard(makeRuntime());
+
+    await userEvent.click(await screen.findByRole("button", { name: "Sign in again" }));
+    await waitFor(() => {
+      expect(mockRetryFreebuffAccountLogin).toHaveBeenCalledWith("rt-freebuff", "a1");
+    });
+  });
+
+  it("explains a failed sign-in", async () => {
+    mockGetFreebuffAccounts.mockResolvedValue({
+      accounts: [{ id: "a1", state: "failed", error: "bun not found" }],
+    });
+    renderCard(makeRuntime());
+    expect(await screen.findByText("bun not found")).toBeInTheDocument();
   });
 });
