@@ -2,9 +2,10 @@
 import { describe, it, expect } from "vitest";
 import { FreebuffAccountsSchema } from "./schemas";
 import { parseWithFallback } from "./schema";
+import type { FreebuffAccounts } from "../types";
 
 const parse = (raw: unknown) =>
-  parseWithFallback(raw, FreebuffAccountsSchema, { accounts: [] }, {
+  parseWithFallback<FreebuffAccounts>(raw, FreebuffAccountsSchema, { accounts: [] }, {
     endpoint: "GET /api/runtimes/:id/freebuff",
   });
 
