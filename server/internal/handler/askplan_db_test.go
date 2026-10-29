@@ -29,7 +29,7 @@ func newAskPlanFixture(t *testing.T) askPlanFixture {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	runtimeID := dbfx.Runtime(t, "askplan-runtime", testutil.Cols{"provider": "claude", "status": "online"})
+	runtimeID := dbfx.Runtime(t, "askplan-runtime", testutil.Cols{"provider": "claude", "status": "online", "daemon_id": "park-daemon"})
 	agentID := dbfx.Agent(t, "AskPlan Agent", runtimeID)
 	issueID := dbfx.Issue(t, "askplan issue", testutil.Cols{"status": "planing_2", "assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
