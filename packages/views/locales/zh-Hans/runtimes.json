@@ -522,7 +522,7 @@
     "no_data": "还没有使用数据"
   },
   "freebuff": {
-    "title": "Freebuff 账户",
+    "title": "Freebuff-CLI 账户",
     "add_account": "添加账户",
     "empty": "还没有 Freebuff 账户。添加一个并登录。",
     "new_account": "新账户",

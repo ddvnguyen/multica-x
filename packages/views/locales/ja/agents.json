@@ -1041,5 +1041,10 @@
     "runtime_default": "ランタイムの既定",
     "any": "任意のアカウント",
     "hint": "このエージェントを実行する Freebuff アカウント。「任意のアカウント」は実行ごとに最も空いているアカウントを選びます。"
+  },
+  "freebuff_account_field": {
+    "label": "アカウント",
+    "runtime_default": "ランタイムの既定",
+    "hint": "このエージェントを実行する Freebuff-CLI アカウント。"
   }
 }

@@ -539,7 +539,7 @@
     "no_data": "Aucune donnée de consommation pour l'instant"
   },
   "freebuff": {
-    "title": "Comptes Freebuff",
+    "title": "Comptes Freebuff-CLI",
     "add_account": "Ajouter un compte",
     "empty": "Aucun compte Freebuff pour l'instant. Ajoutez-en un pour vous connecter.",
     "new_account": "Nouveau compte",

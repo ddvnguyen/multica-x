@@ -17,6 +17,7 @@ import {
   accountModelScope,
   accountRequestFields,
   agentAccountSelection,
+  freebuffAccountsOptions,
   isRuntimeUsableForUser,
   runtimeModelsOptions,
   runtimeSupportsAccounts,
@@ -43,6 +44,11 @@ import { NewChatPreview } from "./new-chat-preview";
 import { useConversationStartersFocus } from "./use-conversation-starters-focus";
 import { ModelPicker } from "./inspector/model-picker";
 import { AgentAccountField, useAgentAccountOptions } from "./agent-account-field";
+import {
+  AgentFreebuffAccountField,
+  agentFreebuffAccountId,
+  setAgentFreebuffAccountId,
+} from "./agent-freebuff-account-field";
 import {
   buildModelChangeUpdate,
   type ModelCatalog,
@@ -382,6 +388,20 @@ export function AgentDetailInspector({
                     disabled={!canEdit}
                     onChange={(next) => update(accountRequestFields(next))}
                   />
+                  <AgentFreebuffAccountRow
+                    runtimeProvider={runtime?.provider}
+                    runtimeId={agent.runtime_id}
+                    value={agentFreebuffAccountId(agent.runtime_config)}
+                    disabled={!canEdit}
+                    onChange={(next) =>
+                      update({
+                        runtime_config: setAgentFreebuffAccountId(
+                          agent.runtime_config,
+                          next,
+                        ),
+                      })
+                    }
+                  />
                   <SettingsRow
                     label={t(($) => $.inspector.prop_model)}
                     size="select-wide"
@@ -491,6 +511,51 @@ function AgentAccountRowBody({
     <SettingsRow label={t(($) => $.account_field.label)} size="select-wide">
       <AgentAccountField
         runtimeProvider={runtimeProvider}
+        value={value}
+        disabled={disabled}
+        showLabel={false}
+        onChange={onChange}
+      />
+    </SettingsRow>
+  );
+}
+
+/**
+ * The Freebuff-CLI account row exists only for `freebuff` runtimes. It is its
+ * own component so the runtime's accounts query is touched only then, and so
+ * the row hides together with its field — same reasoning as the
+ * freebuff-desktop account row above, which it mirrors.
+ */
+function AgentFreebuffAccountRow({
+  runtimeProvider,
+  runtimeId,
+  value,
+  disabled,
+  onChange,
+}: {
+  runtimeProvider: string | undefined;
+  runtimeId: string | undefined;
+  value: string;
+  disabled: boolean;
+  onChange: (next: string) => void;
+}) {
+  const { t } = useT("agents");
+  const query = useQuery({
+    ...freebuffAccountsOptions(runtimeId ?? ""),
+    enabled: runtimeProvider === "freebuff" && !!runtimeId,
+  });
+  const connected = (query.data?.accounts ?? []).filter(
+    (a) => a.state === "connected",
+  );
+  if (connected.length === 0 && !value) return null;
+  return (
+    <SettingsRow
+      label={t(($) => $.freebuff_account_field.label)}
+      size="select-wide"
+    >
+      <AgentFreebuffAccountField
+        runtimeProvider={runtimeProvider}
+        runtimeId={runtimeId}
         value={value}
         disabled={disabled}
         showLabel={false}
