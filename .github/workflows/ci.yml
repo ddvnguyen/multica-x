@@ -153,7 +153,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -530,8 +530,8 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -632,7 +632,7 @@ jobs:
         id: go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache: false
 
@@ -672,8 +672,8 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -713,10 +713,16 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           # Keep the security floor even when the setup-go manifest lags;
-          # continue accepting newer patches within Go 1.26.
-          go-version: "~1.26.9"
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
+
+      - name: Test Windows WeCom media streaming and plaintext cleanup
+        working-directory: server
+        # These tests need no database. Windows must prove private file access,
+        # streaming without buffered fallback, and cleanup after process exit.
+        run: go test ./internal/integrations/wecom -v -run '^(TestStreamingDecrypt|TestMediaTempFile|TestPeekFile|TestIngest|TestTheStreamingPath)' -count=1 -timeout=5m
 
       - name: Test Windows execution-environment isolation
         working-directory: server
@@ -981,7 +987,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
+          check-latest: true
           cache-dependency-path: server/go.sum
       - name: Verify Cursor background lifecycle and watchdog races
         shell: bash
@@ -1098,6 +1105,13 @@ jobs:
         run: |
           node scripts/generate-reserved-slugs.mjs
           git diff --exit-code -- packages/core/paths/reserved-slugs.ts
+
+      - name: Verify attachment text-preview whitelist is up to date
+        # The Go handler embeds the JSON source directly while the shared
+        # web/desktop view consumes the checked-in generated TypeScript file.
+        run: |
+          node scripts/generate-attachment-text-preview.mjs
+          git diff --exit-code -- packages/views/editor/utils/text-preview-whitelist.generated.ts
 
       - name: Setup Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4

@@ -1,49 +1,72 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import type { FreebuffAccount } from "../types/agent";
-import { runtimeKeys } from "./queries";
+import type { FreebuffAccount, FreebuffAccounts } from "../types/agent";
 
-// Freebuff account state for a runtime.
+// Freebuff accounts of a runtime.
 //
-// The account lives on the daemon's machine, so what the UI shows is always a
-// snapshot the daemon pushed. While a browser login is in flight the
-// snapshot changes on its own — the daemon reports the login URL, then the
-// outcome — so the query polls quickly until the login settles and slowly
-// afterwards.
+// The accounts live on the daemon's machine, so what the UI shows is always a
+// snapshot the daemon pushed. While a sign-in is in flight the snapshot
+// changes on its own — the daemon reports the link, then the outcome — so the
+// query polls quickly until nothing is moving and slowly afterwards.
 
 export const freebuffKeys = {
-  account: (runtimeId: string) => ["runtimes", "freebuff", runtimeId] as const,
+  accounts: (runtimeId: string) => ["runtimes", "freebuff", runtimeId] as const,
 };
 
-// The connect states that mean "something is still moving".
-const PENDING_CONNECT_STATES = new Set(["requested", "awaiting_login"]);
+// The account states that mean "something is still moving".
+const MOVING_STATES = new Set(["requested", "awaiting_login", "removing"]);
 
-export function freebuffAccountOptions(runtimeId: string) {
+export function freebuffAccountsOptions(runtimeId: string) {
   return queryOptions({
-    queryKey: freebuffKeys.account(runtimeId),
-    queryFn: () => api.getFreebuffAccount(runtimeId),
-    // Fast while a login is in flight (the URL and the outcome arrive as
-    // separate pushes), slow otherwise — the session slot counts down on its
-    // own and the daemon refreshes it every minute anyway.
-    refetchInterval: (query) => {
-      const state = query.state.data?.connect?.state;
-      return state && PENDING_CONNECT_STATES.has(state) ? 3000 : 30000;
-    },
+    queryKey: freebuffKeys.accounts(runtimeId),
+    queryFn: () => api.getFreebuffAccounts(runtimeId),
+    // Fast while a sign-in or a removal is in flight (the link and the
+    // outcome arrive as separate pushes), slow otherwise.
+    refetchInterval: (query) =>
+      query.state.data?.accounts.some((a) => MOVING_STATES.has(a.state)) ? 3000 : 30000,
     staleTime: 0,
   });
 }
 
-export function useRequestFreebuffConnect(wsId: string) {
+function useInvalidateAccounts() {
   const qc = useQueryClient();
+  return (runtimeId: string) =>
+    qc.invalidateQueries({ queryKey: freebuffKeys.accounts(runtimeId) });
+}
+
+export function useAddFreebuffAccount() {
+  const invalidate = useInvalidateAccounts();
   return useMutation({
-    mutationFn: (runtimeId: string) => api.requestFreebuffConnect(runtimeId),
-    onSettled: (_data, _error, runtimeId) => {
-      qc.invalidateQueries({ queryKey: freebuffKeys.account(runtimeId) });
-      // The runtime row itself does not change, but the request is recorded
-      // on it, so refresh the list too.
-      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
-    },
+    mutationFn: (runtimeId: string) => api.addFreebuffAccount(runtimeId),
+    onSettled: (_data, _error, runtimeId) => invalidate(runtimeId),
   });
 }
 
-export type { FreebuffAccount };
+export function useRemoveFreebuffAccount() {
+  const invalidate = useInvalidateAccounts();
+  return useMutation({
+    mutationFn: (v: { runtimeId: string; accountId: string }) =>
+      api.removeFreebuffAccount(v.runtimeId, v.accountId),
+    onSettled: (_data, _error, v) => invalidate(v.runtimeId),
+  });
+}
+
+export function useRetryFreebuffAccountLogin() {
+  const invalidate = useInvalidateAccounts();
+  return useMutation({
+    mutationFn: (v: { runtimeId: string; accountId: string }) =>
+      api.retryFreebuffAccountLogin(v.runtimeId, v.accountId),
+    onSettled: (_data, _error, v) => invalidate(v.runtimeId),
+  });
+}
+
+export function useSetFreebuffDefaultAccount() {
+  const invalidate = useInvalidateAccounts();
+  return useMutation({
+    mutationFn: (v: { runtimeId: string; accountId: string }) =>
+      api.setFreebuffDefaultAccount(v.runtimeId, v.accountId),
+    onSettled: (_data, _error, v) => invalidate(v.runtimeId),
+  });
+}
+
+export type { FreebuffAccount, FreebuffAccounts };

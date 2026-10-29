@@ -32,19 +32,6 @@ func TestMigrationNumericPrefixesAreUnique(t *testing.T) {
 			continue
 		}
 		if previous, exists := stemByNumber[number]; exists {
-			// Allowlisted fork duplicate: M-135 (590_task_supplement_mode) and
-			// M-153 (590_workspace_account) both shipped on multica-moct with
-			// prefix 590. Versions are recorded in schema_migrations as the full
-			// filename stem, so the duplicate does not collide at runtime. Do not
-			// renumber (an applied migration would re-run its ALTER TABLE).
-			// New fork migrations must take the next free number (591+).
-			knownFork590 := map[string]bool{
-				"590_task_supplement_mode": true,
-				"590_workspace_account":    true,
-			}
-			if number == 590 && knownFork590[previous] && knownFork590[stem] {
-				continue
-			}
 			t.Errorf("migrations %s and %s share numeric prefix %s", previous, stem, prefix)
 			continue
 		}

@@ -6,8 +6,10 @@ codex
 copilot
 cursor-agent
 deveco
+devin
 dim
 dsh
+freebuff
 grok
 hermes
 kimi
