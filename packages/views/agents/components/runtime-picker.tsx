@@ -168,7 +168,7 @@ export function RuntimePicker({
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           ) : selectedRuntime ? (
             <ProviderLogo
-              provider={selectedRuntime.provider}
+              provider={selectedRuntime.provider} runtime={selectedRuntime}
               className="h-4 w-4 shrink-0"
             />
           ) : (
@@ -270,7 +270,7 @@ export function RuntimePicker({
                           }`}
                         >
                           <ProviderLogo
-                            provider={device.provider}
+                            provider={device.provider} runtime={device}
                             className="h-4 w-4 shrink-0"
                           />
                           <div className="min-w-0 flex-1">

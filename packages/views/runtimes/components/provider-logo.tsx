@@ -4,6 +4,7 @@ import codeartsLogo from "./codearts-logo.svg";
 import qwenLogo from "./qwen-logo.svg";
 import reasonixLogo from "./reasonix-logo.svg";
 import dimLogo from "./dim-logo.png";
+import { FreebuffLogo } from "./freebuff-logo";
 
 // Next.js exposes static imports as objects while Vite exposes URL strings.
 // Normalize both shapes here so shared provider logos work in web and desktop.
@@ -386,14 +387,41 @@ function ZeroClawLogo({ className }: { className: string }) {
   );
 }
 
+/**
+ * The runtime fields the logo needs. A custom runtime profile registers under
+ * the provider of the family it wraps, so a Freebuff Desktop profile arrives
+ * as "codebuddy"; the profile's own name is the only signal left to tell it
+ * apart from a CodeBuddy one.
+ */
+export interface RuntimeLogoSource {
+  provider: string;
+  profile_id?: string | null;
+  name: string;
+  custom_name?: string | null;
+}
+
+/** The logo key for a runtime: its provider, except for Freebuff-named profiles. */
+export function runtimeLogoProvider(runtime: RuntimeLogoSource): string {
+  if (
+    runtime.profile_id &&
+    /freebuff/i.test(`${runtime.custom_name ?? ""} ${runtime.name}`)
+  ) {
+    return "freebuff";
+  }
+  return runtime.provider;
+}
+
 export function ProviderLogo({
   provider,
+  runtime,
   className = "h-4 w-4",
 }: {
   provider: string;
+  /** When given, takes precedence over `provider` (see runtimeLogoProvider). */
+  runtime?: RuntimeLogoSource;
   className?: string;
 }) {
-  switch (provider) {
+  switch (runtime ? runtimeLogoProvider(runtime) : provider) {
     case "claude":
       return <ClaudeLogo className={className} />;
     case "codebuddy":
@@ -446,6 +474,8 @@ export function ProviderLogo({
       return <MuseLogo className={className} />;
     case "dsh":
       return <DshLogo className={className} />;
+    case "freebuff":
+      return <FreebuffLogo className={className} />;
     case "dim":
       return <DimLogo className={className} />;
     case "zeroclaw":
