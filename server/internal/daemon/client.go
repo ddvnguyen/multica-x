@@ -214,6 +214,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityPlatformSkillV1,
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
+		protocol.DaemonCapabilityWorkflowStatusRulesV1,
 	}
 }
 
@@ -554,6 +555,8 @@ func (c *Client) ReportTaskBlocked(ctx context.Context, taskID, sessionID, workD
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
+	// Nil is an older daemon with no explicit cleanup acknowledgement.
+	ProcessCleanupConfirmed *bool
 	// BranchName: a cancelled worktree task has already finalized — its
 	// partial work is committed to a branch in the user's repo. The cancel
 	// path discards the rest of the result, so this ack is the only channel
@@ -569,6 +572,10 @@ type TaskCancelAck struct {
 	// swallow it entirely.
 	ErrorMessage  string
 	FailureReason string
+	// RetiredSessionID: a resumed session this run produced no output on
+	// before the cancel landed, or one a fresh-session retry abandoned. The
+	// server retires it so later triggers start fresh (MUL-8188).
+	RetiredSessionID string
 }
 
 // AckTaskCancelled tells the server this daemon observed the task's
@@ -583,6 +590,9 @@ type TaskCancelAck struct {
 // The server never overwrites already-recorded values, so replays are safe.
 func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCancelAck) error {
 	body := map[string]any{}
+	if ack.ProcessCleanupConfirmed != nil {
+		body["process_cleanup_confirmed"] = *ack.ProcessCleanupConfirmed
+	}
 	if ack.BranchName != "" {
 		body["branch_name"] = ack.BranchName
 	}
@@ -594,6 +604,9 @@ func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCa
 	}
 	if ack.FailureReason != "" {
 		body["failure_reason"] = ack.FailureReason
+	}
+	if ack.RetiredSessionID != "" {
+		body["retired_session_id"] = ack.RetiredSessionID
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/cancel-ack", taskID), body, nil, defaultTerminalRetrySchedule)
 }
