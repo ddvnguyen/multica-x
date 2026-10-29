@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RecoverOrphanedTasks is called by the daemon at startup for each runtime
@@ -27,6 +28,22 @@ import (
 func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 	if _, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID); !ok {
+		return
+	}
+
+	// S3-C (M-139): runtimes that declare the detached capability launch their
+	// tasks in their own transient systemd user scope, so those tasks survive
+	// a daemon restart. The server must NOT fail them on re-register; the daemon
+	// recovers their outcome from the session/result record instead. Non-detached
+	// runtimes keep the legacy behaviour exactly.
+	if rt, err := h.Queries.GetAgentRuntime(r.Context(), parseUUID(runtimeID)); err == nil && runtimeHasDetachedCapability(rt) {
+		slog.Info("recover-orphans skipped for detached-capable runtime",
+			"runtime_id", runtimeID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"orphaned": 0,
+			"retried":  0,
+			"detached": true,
+		})
 		return
 	}
 
@@ -56,6 +73,26 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		"orphaned": len(rows),
 		"retried":  retried,
 	})
+}
+
+// runtimeHasDetachedCapability reports whether the runtime advertised the
+// detached-runtime capability in its registration metadata (S3-C, M-139).
+func runtimeHasDetachedCapability(rt db.AgentRuntime) bool {
+	var meta struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if len(rt.Metadata) == 0 {
+		return false
+	}
+	if err := json.Unmarshal(rt.Metadata, &meta); err != nil {
+		return false
+	}
+	for _, c := range meta.Capabilities {
+		if c == protocol.DaemonCapabilityDetachedRuntimeV1 {
+			return true
+		}
+	}
+	return false
 }
 
 // PinTaskSession lets the daemon persist the agent's session_id and

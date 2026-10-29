@@ -120,6 +120,10 @@ type Config struct {
 	// drops them regardless of daemon version. Empty (the default) keeps the
 	// private per-runtime session root and the legacy task_message transcript.
 	MessageSink                    string        // MESSAGE_SINK, only "dsh" recognized
+	// DetachedRuntime enables launching dsh tasks in their own transient
+	// systemd user scope so they survive a daemon restart (S3-C, M-139).
+	// Linux only, off by default.
+	DetachedRuntime bool
 	HealthPort                     int           // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int           // max tasks running in parallel (default: 20)
 	GCEnabled                      bool          // enable periodic workspace garbage collection (default: true)
@@ -652,6 +656,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		messageSink = ""
 	}
 
+	// S3-C (M-139): detached runtime scope is Linux-only and off by default.
+	detachedRuntime := boolFromEnv("MULTICA_DETACHED_RUNTIME", false) && runtime.GOOS == "linux"
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -663,6 +670,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WorkspacesRoot:                  workspacesRoot,
 		KeepEnvAfterTask:                keepEnv,
 		MessageSink:                     messageSink,
+		DetachedRuntime:                 detachedRuntime,
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,

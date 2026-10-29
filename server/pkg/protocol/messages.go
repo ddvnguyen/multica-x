@@ -66,6 +66,12 @@ const (
 	// along the inputs of wakeup rules that waited for this run; for any other
 	// daemon those rules keep their inputs and start a run of their own.
 	DaemonCapabilityJoinedWakeupsV1 = "joined-wakeups-v1"
+	// DaemonCapabilityDetachedRuntimeV1 advertises that this daemon can run a
+	// task in its own transient systemd user scope so it survives a daemon
+	// restart, and recover the outcome from the session/result record instead
+	// of being failed on re-register (S3-C, M-139). Linux only, off by default.
+	DaemonCapabilityDetachedRuntimeV1 = "detached-runtime-v1"
+
 	// DaemonCapabilityTaskSupplementV1 advertises that this provider run can accept
 	// an additional text instruction without cancelling or starting a task.
 	// It is persisted when this exact task enters running; absence always means

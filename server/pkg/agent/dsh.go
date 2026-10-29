@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -301,6 +303,16 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 
 	runCtx, cancel := runContext(ctx, opts.Timeout)
 	args := dshLaunchArgs()
+	// S3-C (M-139): optionally launch in a transient systemd user scope so the
+	// run survives a daemon restart. Off by default; only on Linux and only when
+	// systemd-run is available, falling back to direct launch on any failure.
+	if os.Getenv("MULTICA_DETACHED_RUNTIME") == "1" && runtime.GOOS == "linux" {
+		if _, err := exec.LookPath("systemd-run"); err == nil {
+			b.cfg.Logger.Info("dsh launching in detached systemd scope")
+			args = append([]string{"--user", "--scope", "--quiet", execPath}, args...)
+			execPath = "systemd-run"
+		}
+	}
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
 	cmd.Cancel = func() error { return nil }
