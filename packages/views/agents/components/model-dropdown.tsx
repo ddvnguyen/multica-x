@@ -39,6 +39,7 @@ export function ModelDropdown({
   onChange,
   onAutomaticChange = onChange,
   disabled,
+  account,
 }: {
   runtimeId: string | null;
   runtimeOnline: boolean;
@@ -47,6 +48,11 @@ export function ModelDropdown({
   /** Automatic value cleanup, separate from explicit user selections. */
   onAutomaticChange?: (value: string) => void;
   disabled?: boolean;
+  /**
+   * Account scope of the catalog: an account id, or `all`. Omitted lists the
+   * runtime's default catalog. Chosen by `AgentAccountField`.
+   */
+  account?: string;
 }) {
   const { t } = useT("agents");
   const queryClient = useQueryClient();
@@ -54,7 +60,7 @@ export function ModelDropdown({
   const [search, setSearch] = useState("");
 
   const modelsQuery = useQuery(
-    runtimeModelsOptions(runtimeOnline ? runtimeId : null),
+    runtimeModelsOptions(runtimeOnline ? runtimeId : null, account),
   );
 
   const supported = modelsQuery.data?.supported ?? true;
@@ -116,7 +122,7 @@ export function ModelDropdown({
 
   const refresh = () => {
     if (!runtimeId || !runtimeOnline) return;
-    void refreshRuntimeModels(queryClient, runtimeId).catch(() => {
+    void refreshRuntimeModels(queryClient, runtimeId, account).catch(() => {
       // React Query owns the error state rendered below. Swallow the returned
       // promise rejection so a failed manual refresh is not also unhandled.
     });
@@ -224,7 +230,14 @@ export function ModelDropdown({
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{m.label}</div>
+                        <div className="truncate font-medium">
+                          {m.label}
+                          {m.account_label && (
+                            <span className="ml-2 text-caption text-muted-foreground">
+                              {m.account_label}
+                            </span>
+                          )}
+                        </div>
                         {m.label !== m.id && (
                           <div className="truncate text-caption text-muted-foreground">
                             {m.id}

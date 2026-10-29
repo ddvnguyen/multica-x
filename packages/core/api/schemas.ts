@@ -570,6 +570,7 @@ export const IssueWorkflowSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   is_default: z.boolean().default(false),
+  owner_id: z.string().nullable().default(null),
   steps: z.array(IssueWorkflowStepSchema).default([]),
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
@@ -592,6 +593,7 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   name: "",
   description: "",
   is_default: false,
+  owner_id: null,
   steps: [],
   project_ids: [],
   created_at: "",
@@ -880,6 +882,7 @@ export interface AppConfigResponse {
   analytics_environment?: string;
   daemon_server_url?: string;
   daemon_app_url?: string;
+  daemon_setup_target?: "cloud" | "self_host" | "unknown";
   workspace_creation_disabled?: boolean;
   /** Whether this deployment offers the self-hosted Git provider integration
    * (self-host only; off on the managed cloud). Absent/false hides the whole
@@ -1157,6 +1160,7 @@ export const AppConfigSchema = z.object({
   analytics_environment: OptionalStringSchema,
   daemon_server_url: OptionalStringSchema,
   daemon_app_url: OptionalStringSchema,
+  daemon_setup_target: z.enum(["cloud", "self_host", "unknown"]).optional().catch("unknown"),
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
   vcs_integration_available: BooleanWithDefaultSchema(false).optional(),
   feature_flags: FeatureFlagsSchema,
@@ -1175,6 +1179,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   google_client_id: "",
   daemon_server_url: "",
   daemon_app_url: "",
+  daemon_setup_target: "unknown",
   workspace_creation_disabled: false,
   vcs_integration_available: false,
   // Fail closed: an unreadable config must not look like a server that
@@ -1931,13 +1936,13 @@ const RuntimeUsageSchema = z.object({
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
 
-// Freebuff account schemas — the account state a Freebuff runtime's daemon
-// reports (`/api/runtimes/:id/freebuff`).
+// Freebuff account schemas — the accounts a Freebuff runtime holds
+// (`/api/runtimes/:id/freebuff`).
 //
-// The status block is the wrapper's own `--status --json` output, verbatim:
-// the open session slot, the per-model price and the credit. It is kept
-// lenient on purpose — the wrapper owns that shape, and a field this UI does
-// not know about must not cost the fields it does.
+// The status block is the daemon's own report: the open session slot, the
+// per-model price and the credit. It is kept lenient on purpose — the daemon
+// owns that shape, and a field this UI does not know about must not cost the
+// fields it does.
 
 const FreebuffCreditSchema = z
   .object({
@@ -1968,22 +1973,25 @@ const FreebuffStatusSchema = z
   })
   .loose();
 
-export const FreebuffConnectSchema = z
+export const FreebuffAccountSchema = z
   .object({
+    id: z.string().catch(""),
+    label: z.string().nullish().catch(null),
+    // An unknown state renders as "not signed in" rather than failing the list.
     state: z.string().catch(""),
     login_url: z.string().nullish().catch(null),
     expires_at: z.string().nullish().catch(null),
-    account: z.string().nullish().catch(null),
     error: z.string().nullish().catch(null),
+    status: FreebuffStatusSchema.nullish().catch(null),
     requested_at: z.string().nullish().catch(null),
     updated_at: z.string().nullish().catch(null),
   })
   .loose();
 
-export const FreebuffAccountSchema = z
+export const FreebuffAccountsSchema = z
   .object({
-    status: FreebuffStatusSchema.nullish().catch(null),
-    connect: FreebuffConnectSchema.nullish().catch(null),
+    accounts: z.array(FreebuffAccountSchema).catch([]),
+    default_account_id: z.string().nullish().catch(null),
     updated_at: z.string().nullish().catch(null),
   })
   .loose();
@@ -2117,6 +2125,9 @@ export const AgentTaskSchema = z.object({
   relative_work_dir: z.string().optional().catch(undefined),
   durable_work_dir: z.string().optional().catch(undefined),
   relative_durable_work_dir: z.string().optional().catch(undefined),
+  // Base URL of the dsh web app whose sidebar lists this run's session;
+  // set only for dsh-runtime tasks (dsh session store owns the transcript).
+  dsh_session_url: z.string().optional().catch(undefined),
   branch_name: z.string().optional().catch(undefined),
   attribution: TaskAttributionSchema.optional(),
   // Per-run token usage. Same independent-degradation rule as the coverage
@@ -2374,12 +2385,15 @@ export const StoredAgentDraftSchema = z.object({
   model: z.string().catch(""),
   thinking_level: z.string().catch(""),
   service_tier: z.string().catch(""),
+  account_mode: z.string().catch(""),
+  account_id: z.string().catch(""),
   skill_ids: z.array(z.string()).catch([]),
   permission_scope: z
     .enum(["private", "workspace", "members"])
     .catch("private"),
   member_ids: z.array(z.string()).catch([]),
   team_ids: z.array(z.string()).catch([]),
+  qoder_agent_id: z.string().catch(""),
   applied_message_id: z.string().nullable().catch(null),
   dismissed_message_id: z.string().nullish().catch(null),
 }).loose();
@@ -3847,8 +3861,8 @@ export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("label"), label_id: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("property"), property_id: z.string(), value: z.unknown() }),
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
-  z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged"]) }),
-  z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review"]), identifier: z.string().optional() }),
+  z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
+  z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
 ]);
 
 export const WakeupRunSchema = z.object({

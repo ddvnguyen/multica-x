@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,6 +36,10 @@ type Model struct {
 	ID                                  string             `json:"id"`
 	Label                               string             `json:"label"`
 	Provider                            string             `json:"provider,omitempty"`
+	AccountID                           string             `json:"account_id,omitempty"`
+	AccountLabel                        string             `json:"account_label,omitempty"`
+	AccountIDs                          []string           `json:"account_ids,omitempty"`
+	AccountLabels                       []string           `json:"account_labels,omitempty"`
 	Default                             bool               `json:"default,omitempty"`
 	ServiceTiers                        []ModelServiceTier `json:"service_tiers,omitempty"`
 	SupportsExplicitStandardServiceTier bool               `json:"supports_explicit_standard_service_tier,omitempty"`
@@ -285,6 +290,18 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 			return discovered(discoverOpenclawAgents(ctx, runtimeCmd))
 		})
 	case "codebuddy":
+		// The freebuff-desktop bridge speaks codebuddy's stream-json for runs
+		// but does not implement ACP, so it enumerates models with its own
+		// `--list-models --json` and takes the account from its environment.
+		if isFreebuffDesktopCommand(runtimeCmd) {
+			return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+				models, err := discoverFreebuffDesktopModels(ctx, runtimeCmd)
+				if err != nil {
+					return Catalog{}, err
+				}
+				return Catalog{Models: models}, nil
+			})
+		}
 		// discoverCodebuddyModels owns the thinking annotation too, so the one
 		// `--help` capture feeds both catalogs. Annotating out here would run
 		// the command a second time (MUL-5549).
@@ -304,6 +321,10 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		// makes model selection session-scoped, restore a discovery helper
 		// here modelled on discoverTraecliModels.
 		return Catalog{Models: []Model{}}, nil
+	case "devin":
+		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+			return discovered(discoverDevinModels(ctx, runtimeCmd))
+		})
 	case "mcode":
 		// MCode's ACP server does not expose session-scoped model selection or
 		// a model catalog. The configured MCode runtime owns the model choice.
@@ -330,6 +351,9 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
 			return discoverDimModels(ctx, runtimeCmd)
 		})
+	case "freebuff":
+		// The orchestrator picks the free-tier model itself; nothing to enumerate.
+		return Catalog{Models: []Model{}}, nil
 	case "zeroclaw":
 		// ZeroClaw's ACP server advertises no catalog: session/new answers
 		// exactly {sessionId, workspaceDir} (verified against 0.8.4), and it
@@ -440,7 +464,7 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 // dropdown plus a silently-ignored manual-entry field.
 func ModelSelectionSupported(providerType string) bool {
 	switch providerType {
-	case "qwenpaw", "mcode", "zeroclaw":
+	case "freebuff", "qwenpaw", "mcode", "zeroclaw":
 		// QwenPaw's `session/set_model` persists to agent.json at the agent
 		// scope, not the session scope. Calling it would mutate the user's
 		// shared, persistent agent config. Model override is therefore
@@ -1589,9 +1613,11 @@ func discoverHermesModels(ctx context.Context, runtimeCmd Command) ([]Model, err
 		// The same handshake carries an effort selector on jcode and carries
 		// none on Hermes Agent, so annotate is what tells the two apart —
 		// Hermes Agent models come back with a nil Thinking and show no
-		// picker. Only the session's current model is annotated; see
-		// annotateACPThinkingForSessionModel.
-		annotate: annotateACPThinkingForSessionModel,
+		// picker. annotate covers the session's current model; the probe
+		// switches the discovery session onto each remaining model for its
+		// own catalog. See probeACPModelEffort.
+		annotate:         annotateACPThinkingForSessionModel,
+		probeModelEffort: true,
 	})
 	if err != nil {
 		return nil, annotateHermesDiscoveryUnconfigured(err)
@@ -1911,7 +1937,7 @@ func acpConfigOptionCurrentValue(raw json.RawMessage, configID string) (string, 
 // Only the session's current model gets a catalog: reasonix derives the effort
 // vocabulary from the current model's provider entry, so the advertised list
 // describes that model alone. Every other model keeps a nil Thinking and shows
-// no picker until per-model probing exists. See
+// no picker until reasonix opts into probeModelEffort. See
 // annotateACPThinkingForSessionModel.
 func discoverReasonixModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
 	return discoverACPModels(ctx, runtimeCmd, acpDiscoveryProvider{
@@ -2030,6 +2056,9 @@ type acpDiscoveryProvider struct {
 	// ignores. CodeBuddy uses it to read its effort catalog out of the same
 	// handshake, which is why it needs no separate discovery call at all.
 	annotate func([]Model, json.RawMessage)
+	// probeModelEffort switches the throwaway session onto each non-current
+	// model to read that model's own effort catalog; see probeACPModelEffort.
+	probeModelEffort bool
 	// timeout bounds the whole handshake — spawn, initialize, session/new.
 	// Zero means acpDiscoveryDefaultTimeout.
 	//
@@ -2124,7 +2153,7 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
 	nextID := 1
-	requestACP := func(method string, params map[string]any) (json.RawMessage, error) {
+	requestACP := func(method string, params any) (json.RawMessage, error) {
 		id := nextID
 		nextID++
 		msg := map[string]any{
@@ -2248,6 +2277,14 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	}
 	if p.annotate != nil {
 		p.annotate(models, sessionResult)
+	}
+	if p.probeModelEffort {
+		probeACPModelEffort(runCtx, func(_ context.Context, method string, params any) (json.RawMessage, error) {
+			return requestACP(method, params)
+		}, sessionResult, models)
+		if err := runCtx.Err(); err != nil {
+			return fail("per-model effort discovery", err)
+		}
 	}
 	return models, nil
 }
@@ -3060,4 +3097,76 @@ func discoverDimModels(ctx context.Context, runtimeCmd Command) (Catalog, error)
 		return Catalog{Models: []Model{}, Fallback: true}, nil
 	}
 	return Catalog{Models: models}, nil
+}
+
+// freebuffDesktopEnvURL is the environment variable that selects which
+// Freebuff Desktop account endpoint the bridge talks to.
+const freebuffDesktopEnvURL = "FREEBUFF_DESKTOP_URL"
+
+// isFreebuffDesktopCommand reports whether the runtime command is the
+// freebuff-desktop bridge: either its binary is named freebuff-desktop*, or a
+// per-account bridge environment was applied to it.
+func isFreebuffDesktopCommand(c Command) bool {
+	if _, ok := c.envValue(freebuffDesktopEnvURL); ok {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(filepath.Base(c.Path)), "freebuff-desktop")
+}
+
+// discoverFreebuffDesktopModels runs `<bridge> --list-models --json` with the
+// command's environment, so one call enumerates one account's models. Failure
+// is returned, not masked by a static catalog: a per-account fallback would
+// make every account look identical.
+func discoverFreebuffDesktopModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if _, err := exec.LookPath(runtimeCmd.Path); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model discovery: %w", err)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := runtimeCmd.exec(runCtx, "--list-models", "--json")
+	hideAgentWindow(cmd)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := outputOwned(cmd, runtimeCmd.logger)
+	if err != nil {
+		return nil, fmt.Errorf("freebuff-desktop --list-models: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return parseFreebuffDesktopModels(stdout)
+}
+
+// parseFreebuffDesktopModels parses the bridge's `--list-models --json`
+// output: {"models":[{"id":"...","name":"...","provider":"..."}]}. `label` is
+// accepted as an alias of `name`. Entries without an id are dropped and
+// duplicate ids keep their first entry.
+func parseFreebuffDesktopModels(data []byte) ([]Model, error) {
+	var wrapper struct {
+		Models []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Label    string `json:"label"`
+			Provider string `json:"provider"`
+			Default  bool   `json:"default"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &wrapper); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model list: invalid JSON: %w", err)
+	}
+	seen := map[string]bool{}
+	models := make([]Model, 0, len(wrapper.Models))
+	for _, m := range wrapper.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		label := strings.TrimSpace(m.Name)
+		if label == "" {
+			label = strings.TrimSpace(m.Label)
+		}
+		if label == "" {
+			label = id
+		}
+		models = append(models, Model{ID: id, Label: label, Provider: strings.TrimSpace(m.Provider), Default: m.Default})
+	}
+	return models, nil
 }

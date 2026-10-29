@@ -64,7 +64,7 @@ func postToolUse(conversationID string) map[string]any {
 func supplementAsync(t *testing.T, s *cursorSupplementSession, ctx context.Context, text string) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- s.supplement(ctx, text) }()
+	go func() { done <- s.supplement(ctx, text, "steer") }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		s.mu.Lock()
@@ -106,7 +106,7 @@ func TestCursorSupplementDeliversThroughHookRelay(t *testing.T) {
 	if s.ready() {
 		t.Fatal("ready before the CLI reported its conversation")
 	}
-	if err := s.supplement(t.Context(), "early"); err == nil || !strings.Contains(err.Error(), "turn has not started") {
+	if err := s.supplement(t.Context(), "early", "steer"); err == nil || !strings.Contains(err.Error(), "turn has not started") {
 		t.Fatalf("supplement before start = %v, want turn-not-started", err)
 	}
 	s.activate("conv-main")
@@ -259,7 +259,7 @@ func TestCursorSupplementEndFailsPendingAndCleansUp(t *testing.T) {
 	if s.ready() {
 		t.Fatal("ready after the turn ended")
 	}
-	if err := s.supplement(t.Context(), "after"); !errors.Is(err, context.Canceled) {
+	if err := s.supplement(t.Context(), "after", "steer"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("supplement after end = %v, want context.Canceled", err)
 	}
 
@@ -276,7 +276,7 @@ func TestCursorSupplementEndFailsPendingAndCleansUp(t *testing.T) {
 func TestCursorSupplementRejectsOversizedGuidance(t *testing.T) {
 	s, _ := startTestCursorSupplements(t, t.Context())
 	s.activate("conv-main")
-	err := s.supplement(t.Context(), strings.Repeat("界", cursorHookContextLimit))
+	err := s.supplement(t.Context(), strings.Repeat("界", cursorHookContextLimit), "steer")
 	if err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("oversized supplement = %v, want limit error", err)
 	}

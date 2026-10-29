@@ -49,19 +49,42 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
+  /* Anchors the bottom-right build stamp (M-155). The popup seat's z-index
+     (60) still paints every portal above it, so the stamp never covers a
+     popup or the toast zone in the same corner. */
+  position: relative;
 }
 
 /* The container the island's popups render into.
  *
- * Inside the panel it is the fallback seat: a relative stacking context above
- * the page the island renders. When the shell exposes its overlay layer, the
- * same class is the shadow-internal container of the popup seat there — and
- * that seat inherits the layer's own pointer-events pattern: the seat is
- * inert (`pointer-events:none`), this container re-enables hit-testing for
- * every popup under it. Dropping the `auto` would let the seat swallow each
- * popup click one layer deeper than the bug this seat exists to fix. */
+ * It is the shadow-internal container of the popup seat (`popup-seat.ts`):
+ * a relative stacking context whose popups are positioned against it. The seat
+ * is inert (`pointer-events:none`, like the overlay layer around it), so this
+ * container re-enables hit-testing for every popup under it. Dropping the
+ * `auto` would let the seat swallow each popup click one layer deeper than the
+ * bug this seat exists to fix. */
 .multica-island-portals {
   position: relative;
   z-index: 60;
   pointer-events: auto;
+}
+
+/* A popup that has closed must leave the screen.
+ *
+ * Base UI keeps a closed popup mounted until its exit animation reports
+ * `finished`, then unmounts it in one `flushSync`; inside the island's shadow
+ * root that completion never arrives, so the node stays in the portal
+ * container for good, marked `data-closed` (menus also keep
+ * `data-ending-style`). The exit animation does run — `exit 0.15s` is on the
+ * popup — but it carries no retained end state, so the popup snaps back to
+ * opacity 1 and stays painted: the tooltip that will not go away, the filter
+ * menu that covers the list after Esc (M-146).
+ *
+ * Hiding the closed state here is what makes "closed" mean closed regardless
+ * of whether that unmount ever lands. It costs the fade — the popup disappears
+ * on the frame it closes — and that is the right trade: a fade is decoration,
+ * a popup you cannot dismiss is a broken panel. Scoped to the portal container
+ * so `data-closed` on anything else in the island keeps its own meaning. */
+.multica-island-portals [data-closed] {
+  display: none !important;
 }

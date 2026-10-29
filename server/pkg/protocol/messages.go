@@ -71,6 +71,16 @@ const (
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
+	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
+	// descendant cleanup and explicitly confirms its cancellation outcome.
+	// Persist only at start; old daemons must retain their cancellation contract.
+	DaemonCapabilityPiProcessCleanupV1 = "pi-process-cleanup-v1"
+	// DaemonCapabilityWorkflowStatusRulesV1 advertises that the daemon's
+	// runtime brief drops its built-in in_progress / in_review rules for an
+	// issue whose claim carries a project workflow (MUL-8145). Only then may
+	// the server leave out the workflow brief's lines that override those
+	// rules; an older daemon still states them, so it keeps getting them.
+	DaemonCapabilityWorkflowStatusRulesV1 = "workflow-status-rules-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -446,8 +456,17 @@ type DaemonHeartbeatPendingUpdate struct {
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to
 // enumerate the runtime's supported models.
+type DaemonModelAccount struct {
+	ID            string `json:"id"`
+	Label         string `json:"label,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	CredentialRef  string `json:"credential_ref,omitempty"`
+}
+
 type DaemonHeartbeatPendingModelList struct {
-	ID string `json:"id"`
+	ID       string                `json:"id"`
+	Account  string                `json:"account,omitempty"`
+	Accounts []DaemonModelAccount  `json:"accounts,omitempty"`
 }
 
 // DaemonHeartbeatPendingLocalSkills describes a request for the runtime's

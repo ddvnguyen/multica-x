@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -76,9 +78,34 @@ type Command struct {
 	// by FilterLaunchPrefix. Never mutate a Command's Prefix in place; Argv
 	// copies it precisely so a caller cannot alias it.
 	Prefix []string
+	// Env is extra KEY=VALUE environment for processes this command spawns,
+	// layered over the daemon's own environment. It is how a per-account
+	// setting (FREEBUFF_DESKTOP_URL, ...) reaches one invocation without
+	// mutating the daemon's process-wide environment, which concurrent tasks
+	// and discoveries share. Never mutate in place; use WithEnv.
+	Env []string
 	// logger reports prefix/argument conflicts at the moment a process is
 	// built. Optional: a zero Command logs nothing.
 	logger *slog.Logger
+}
+
+// WithEnv returns a copy of the command whose processes also see kv
+// (KEY=VALUE entries). Later entries win over earlier ones and over the
+// daemon's environment.
+func (c Command) WithEnv(kv ...string) Command {
+	c.Env = append(append([]string(nil), c.Env...), kv...)
+	return c
+}
+
+// envValue returns the value of key in the command's extra environment.
+func (c Command) envValue(key string) (string, bool) {
+	prefix := key + "="
+	for i := len(c.Env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(c.Env[i], prefix) {
+			return strings.TrimPrefix(c.Env[i], prefix), true
+		}
+	}
+	return "", false
 }
 
 // NewCommand builds a Command from a resolved executable path and a launch
@@ -111,7 +138,11 @@ func (c Command) Argv(args ...string) []string {
 // reintroduce GH #7046. TestOnlyLaunchGoSpawnsRuntimeProcesses enforces it.
 func (c Command) exec(ctx context.Context, args ...string) *exec.Cmd {
 	warnLaunchPrefixOverlap(c.Prefix, args, c.logger)
-	return newRuntimeCmd(exec.CommandContext(ctx, c.Path, c.Argv(args...)...))
+	cmd := newRuntimeCmd(exec.CommandContext(ctx, c.Path, c.Argv(args...)...))
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
+	}
+	return cmd
 }
 
 // newRuntimeCmd applies the process-lifecycle defaults every runtime process in
@@ -291,11 +322,18 @@ func (c Command) withFilteredPrefix(fn func([]string) []string) Command {
 // different catalogs — `ccms start q36` and `ccms start opus` are the same
 // executable with different models behind it, and keying on the path alone
 // would serve the first one's catalog to the second (see discoveryCacheKey).
+//
+// Env is part of it for the same reason: the same binary run with a different
+// account's environment enumerates a different catalog.
 func (c Command) cacheKey() string {
-	if len(c.Prefix) == 0 {
-		return c.Path
+	key := c.Path
+	if len(c.Prefix) > 0 {
+		key += "\x00" + strings.Join(c.Prefix, "\x00")
 	}
-	return c.Path + "\x00" + strings.Join(c.Prefix, "\x00")
+	if len(c.Env) > 0 {
+		key += "\x01" + strings.Join(c.Env, "\x01")
+	}
+	return key
 }
 
 // String renders the command the way a user wrote it in the Runtimes UI, for
@@ -455,6 +493,8 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"hermes":      hermesBlockedArgs,
 	"kimi":        kimiBlockedArgs,
 	"kiro":        kiroBlockedArgs,
+	"mcode":       mcodeBlockedArgs,
+	"muse":        museBlockedArgs,
 	"opencode":    opencodeBlockedArgs,
 	"openclaw":    openclawBlockedArgs,
 	"pi":          piBlockedArgs,
@@ -465,7 +505,32 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"reasonix":    reasonixBlockedArgs,
 	"traecli":     traecliBlockedArgs,
 	"dim":         dimBlockedArgs,
+	"devin":       devinBlockedArgs,
 	"zeroclaw":    zeroclawBlockedArgs,
+}
+
+// ValidateCustomArgs rejects arguments that the runtime always discards at launch.
+func ValidateCustomArgs(agentType string, args []string) error {
+	protocolFamily := agentType
+	if family, ok := RuntimeProtocolFamily(agentType); ok {
+		protocolFamily = family
+	}
+	blocked := launchPrefixBlockedArgs[protocolFamily]
+	for _, arg := range args {
+		flag := unshellQuoteArg(arg)
+		if idx := strings.Index(flag, "="); idx > 0 {
+			flag = flag[:idx]
+		}
+		_, isBlocked := blocked[flag]
+		if agentType == "omp" {
+			_, sessionArg := ompSessionArgs[flag]
+			isBlocked = isBlocked || sessionArg
+		}
+		if isBlocked {
+			return fmt.Errorf("custom_args: %q is managed by Multica for runtime %q and cannot be overridden; remove it from custom_args", flag, agentType)
+		}
+	}
+	return nil
 }
 
 // FilterLaunchPrefix is the exported form for callers outside this package —

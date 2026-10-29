@@ -46,6 +46,14 @@ export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
 export { InboxPage } from "@multica/views/inbox";
 export { ChatPage } from "@multica/views/chat";
 
+// Dialogs. The fork's pages ask for a dialog through a module-level store and
+// one component renders whatever the store names; the island has no layout that
+// mounts it, so it mounts `ModalRegistry` itself (M-146). `useModalStore` is
+// here for the other half of that contract: detaching the island has to close
+// an open dialog, or the next attach brings it back with the panel.
+export { ModalRegistry } from "@multica/views/modals/registry";
+export { useModalStore } from "@multica/core/modals";
+
 // The settings page itself, plus the layout it hands a host-supplied group, so
 // the MOCT tabs look like every other settings page instead of a second design.
 export {
@@ -71,8 +79,20 @@ export {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 
+// Locale resolution. The island has no cookie and must not write one on dsh's
+// origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and
+// resolves it with the fork's own rule instead of a second implementation
+// (`client/locale.ts`). Both are DOM-free and server-safe.
+export { pickLocale } from "@multica/core/i18n";
+export type { LocaleAdapter } from "@multica/core/i18n";
+
 // Shared presentation the island has to own: translations, the error boundary,
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";
 export { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 export { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
+
+// The stamped build identity (M-155): one string for one build, injected by
+// this package's vite config, so the island's badge, the Settings row and the
+// client identity sent to multica-be all read the same value.
+export { mmxBuild } from "@multica/views/build-info";

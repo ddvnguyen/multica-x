@@ -50,7 +50,7 @@ func activeClaudeSupplementSession(t *testing.T) *claudeSupplementSession {
 func queueClaudeSupplement(t *testing.T, s *claudeSupplementSession, ctx context.Context, text string, count int) <-chan error {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- s.supplement(ctx, text) }()
+	go func() { done <- s.supplement(ctx, text, "steer") }()
 	deadline := time.After(3 * time.Second)
 	for {
 		s.mu.Lock()
@@ -131,7 +131,7 @@ func TestClaudeSupplementRejectsAfterStopAndEnd(t *testing.T) {
 	if s.ready() {
 		t.Fatal("empty Stop must close admission before result arrives")
 	}
-	if err := s.supplement(t.Context(), "too late"); err == nil {
+	if err := s.supplement(t.Context(), "too late", "steer"); err == nil {
 		t.Fatal("supplement accepted after Stop")
 	}
 	s.end()
@@ -148,7 +148,7 @@ func TestClaudeSupplementRacingStopNeverStartsAnotherTurn(t *testing.T) {
 		done := make(chan error, 1)
 		go func() {
 			<-start
-			done <- s.supplement(t.Context(), "racing input")
+			done <- s.supplement(t.Context(), "racing input", "steer")
 		}()
 		var wire bytes.Buffer
 		close(start)
@@ -358,7 +358,7 @@ func testClaudeSupplementExecute(t *testing.T, delay string, handshakeTimeout ti
 		case <-time.After(time.Millisecond):
 		}
 	}
-	if err := session.Supplement(ctx, strings.Repeat("context ", 8192)); err != nil {
+	if err := session.Supplement(ctx, strings.Repeat("context ", 8192), "steer"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -372,7 +372,7 @@ func testClaudeSupplementExecute(t *testing.T, delay string, handshakeTimeout ti
 	if session.SupplementReady() {
 		t.Fatal("completed process still accepts supplements")
 	}
-	if err := session.Supplement(ctx, "late input"); err == nil {
+	if err := session.Supplement(ctx, "late input", "steer"); err == nil {
 		t.Fatal("late input accepted")
 	}
 }

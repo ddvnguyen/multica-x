@@ -195,7 +195,7 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed"
 		}
 		supplementCalls++
 		supplementErr = session.Supplement(context.Background(),
-			"[ADDITIONAL GUIDANCE] Human \"Alice\" added guidance while you were working.\n\nHuman message:\nApprove")
+			"[ADDITIONAL GUIDANCE] Human \"Alice\" added guidance while you were working.\n\nHuman message:\nApprove", "steer")
 	}
 	if supplementCalls != 1 {
 		t.Fatalf("question messages = %d, want 1", supplementCalls)
@@ -228,7 +228,7 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-q","status":"completed"
 	if result.Status != "completed" {
 		t.Fatalf("bad result: %#v", result)
 	}
-	if err := session.Supplement(context.Background(), "again"); err == nil || !strings.Contains(err.Error(), "no question is pending") {
+	if err := session.Supplement(context.Background(), "again", "steer"); err == nil || !strings.Contains(err.Error(), "no question is pending") {
 		t.Fatalf("second Supplement should report no pending question, got %v", err)
 	}
 }
@@ -262,7 +262,7 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-old","status":"complete
 				t.Fatal("SupplementReady false after the session frame")
 			}
 			go func() {
-				supplementErr <- session.Supplement(context.Background(), "answer me")
+				supplementErr <- session.Supplement(context.Background(), "answer me", "steer")
 			}()
 		}
 	}

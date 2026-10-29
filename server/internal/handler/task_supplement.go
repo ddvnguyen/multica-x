@@ -218,6 +218,7 @@ func (h *Handler) loadTaskSupplementTarget(w http.ResponseWriter, r *http.Reques
 type createTaskSupplementRequest struct {
 	Content         string `json:"content"`
 	ClientRequestID string `json:"client_request_id"`
+	Mode            string `json:"mode,omitempty"`
 }
 
 // CreateTaskSupplement adds one ordinary historical comment to one exact run.
@@ -241,6 +242,20 @@ func (h *Handler) CreateTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Content) == "" {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
+	}
+	if req.Mode == "" {
+		req.Mode = "steer"
+	}
+	if req.Mode != "steer" && req.Mode != "queue" {
+		writeError(w, http.StatusBadRequest, "mode must be steer or queue")
+		return
+	}
+	if req.Mode == "queue" {
+		runtime, err := h.Queries.GetAgentRuntime(r.Context(), task.RuntimeID)
+		if err != nil || runtime.Provider != "dsh" {
+			writeError(w, http.StatusBadRequest, "queue mode is only supported for dsh runtimes")
+			return
+		}
 	}
 	requestID, ok := parseUUIDOrBadRequest(w, req.ClientRequestID, "client_request_id")
 	if !ok {
@@ -274,6 +289,7 @@ func (h *Handler) CreateTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	created, err := h.Queries.CreateTaskSupplement(r.Context(), db.CreateTaskSupplementParams{
 		TaskID: task.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 		AuthorID: authorID, Content: req.Content, ClientRequestID: requestID,
+		Mode: req.Mode,
 	})
 	if isUniqueViolation(err) {
 		if existing, loadErr := h.Queries.GetTaskSupplementByRequest(r.Context(), lookup); loadErr == nil {
@@ -396,6 +412,7 @@ func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"comment_id": uuidToString(row.CommentID), "author_name": row.AuthorName, "content": row.Content,
+		"mode": row.Mode,
 	})
 }
 

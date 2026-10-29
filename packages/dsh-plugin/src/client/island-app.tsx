@@ -13,9 +13,13 @@ import {
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
+import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
+import { PanelZoomRow } from "./zoom-row";
+import { useZoom } from "./zoom-store";
 import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
 import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
+import { IslandVersionBadge } from "./version-badge";
 import {
   AgentDetailPage,
   AgentsPage,
@@ -26,6 +30,8 @@ import {
   InboxPage,
   IssueDetailRoute,
   IssuesPage,
+  mmxBuild,
+  ModalRegistry,
   NavigationProvider,
   PortalContainerProvider,
   RESOURCES,
@@ -38,8 +44,14 @@ import {
   WorkspaceSlugProvider,
 } from "../fork";
 
-/** Bumping this changes the client identity multica-be records for the panel. */
-export const ISLAND_VERSION = "0.1.0";
+/**
+ * The stamped build identity multica-be records for the panel (M-155):
+ * `x.x.x-yyMMMdd.HH.mm`, the same string the Settings row and the bottom-right
+ * badge show, so a server log line or API identity points at the exact build
+ * that produced an error. "dev" only survives where a host built the island
+ * without injecting a build — no real deployment does.
+ */
+export const ISLAND_VERSION = mmxBuild()?.stamp ?? "dev";
 
 export interface IslandAppProps {
   /** Where Base UI portals render, inside the island's shadow root. */
@@ -54,26 +66,6 @@ export interface IslandAppProps {
   problem: string | null;
   /** Entry the seat asked for; the board unless a deep link named one issue. */
   route?: IslandRoute;
-}
-
-const SUPPORTED = ["en", "zh-Hans", "ko", "ja", "fr"] as const;
-type Locale = (typeof SUPPORTED)[number];
-
-/** Follow the shell's document language instead of inventing a preference. */
-export function detectLocale(): Locale {
-  const candidates =
-    typeof navigator === "undefined"
-      ? []
-      : [...(navigator.languages ?? []), navigator.language];
-  for (const candidate of candidates) {
-    const tag = (candidate ?? "").toLowerCase();
-    if (tag.startsWith("zh")) return "zh-Hans";
-    if (tag.startsWith("ko")) return "ko";
-    if (tag.startsWith("ja")) return "ja";
-    if (tag.startsWith("fr")) return "fr";
-    if (tag.startsWith("en")) return "en";
-  }
-  return "en";
 }
 
 /**
@@ -148,30 +140,53 @@ export function IslandApp({
   route,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
-  const locale = useMemo(detectLocale, []);
+  // The adapter is what the fork's Preferences page reads its Language row
+  // through; without it `useLocaleAdapter` throws and the page renders as the
+  // error boundary (M-154). `syncUserLocale` stays off: the Language row still
+  // PATCHes `/api/me` itself, and the dsh shell's own language is not ours.
+  const localeAdapter = useMemo(
+    () => createIslandLocaleAdapter(storage),
+    [storage],
+  );
+  const locale = useMemo(
+    () => resolveIslandLocale(localeAdapter),
+    [localeAdapter],
+  );
+  const zoom = useZoom();
   return (
-    <CoreProvider
-      apiBaseUrl={ISLAND_API_BASE}
-      wsUrl={wsUrl}
-      storage={storage}
-      // Cookie mode: the host proxy authenticates every request and the
-      // WebSocket upgrade with its own token, so the island sends nothing and
-      // the sliding-renewal flow (a cookie-session concern) stays off.
-      cookieAuth
-      identity={{ platform: "dsh", version: ISLAND_VERSION, os: detectOs() }}
-      locale={locale}
-      resources={{ [locale]: RESOURCES[locale] }}
-      syncUserLocale={false}
+    // Zoom scales the panel's own surface, not the shell and not the overlays:
+    // popups are portalled outside this tree (`popup-seat.ts`), so they keep
+    // their size and their anchoring at every level. Percentage heights still
+    // resolve, because the containing block is expressed in the zoomed space.
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ zoom: zoom / 100 }}
+      data-panel-zoom={zoom}
     >
-      <PortalContainerProvider container={portalHost}>
-        <WorkspaceGate
-          preferredSlug={preferredSlug}
-          wsPath={wsPath}
-          problem={problem}
-          route={route}
-        />
-      </PortalContainerProvider>
-    </CoreProvider>
+      <CoreProvider
+        apiBaseUrl={ISLAND_API_BASE}
+        wsUrl={wsUrl}
+        storage={storage}
+        // Cookie mode: the host proxy authenticates every request and the
+        // WebSocket upgrade with its own token, so the island sends nothing and
+        // the sliding-renewal flow (a cookie-session concern) stays off.
+        cookieAuth
+        identity={{ platform: "dsh", version: ISLAND_VERSION, os: detectOs() }}
+        locale={locale}
+        localeAdapter={localeAdapter}
+        resources={{ [locale]: RESOURCES[locale] }}
+        syncUserLocale={false}
+      >
+        <PortalContainerProvider container={portalHost}>
+          <WorkspaceGate
+            preferredSlug={preferredSlug}
+            wsPath={wsPath}
+            problem={problem}
+            route={route}
+          />
+        </PortalContainerProvider>
+      </CoreProvider>
+    </div>
   );
 }
 
@@ -369,11 +384,28 @@ export function IslandPages({
             <SettingsPage
               extraGroups={[moctGroup]}
               hiddenTabs={HIDDEN_SETTINGS_TABS}
+              preferencesExtraRows={<PanelZoomRow />}
             />
           ) : (
             <IslandPage route={route} extraAgentSections={agentMemorySections} />
           )}
         </ErrorBoundary>
+        {/* The fork's pages ask for a dialog through `useModalStore` and one
+            component renders whatever it names; the web and desktop layouts
+            mount it, and the island had no equivalent, so every dialog in the
+            panel (create issue, delete confirm, set parent, …) was a no-op
+            (M-146). It sits here rather than beside `UnreadReporter` because
+            the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
+            (`packages/views/modals/create-issue.tsx:244`) and would throw
+            outside `NavigationProvider`. Inside `IslandPages` it is also
+            outside the route switch, so a dialog survives a page change; the
+            portal container comes from `IslandApp`, so it renders into the
+            island's shadow root and not the shell's document. */}
+        <ModalRegistry />
+        {/* The build stamp (M-155): a sibling of the route switch, so it
+            survives page changes and renders even when the boundary shows
+            its fallback — the one moment an error report needs it most. */}
+        <IslandVersionBadge />
       </NavigationProvider>
     </ViewStoreProvider>
   );

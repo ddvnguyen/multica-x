@@ -143,6 +143,7 @@ describe("ModelDropdown", () => {
     expect(mockRefreshRuntimeModels).toHaveBeenCalledWith(
       expect.any(QueryClient),
       "rt-codex",
+      undefined,
     );
   });
 

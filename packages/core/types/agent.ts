@@ -48,8 +48,8 @@ export interface AgentInvocationTargetInput {
 
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
-// only the runtime owner can bind agents to it — workspace admins included,
-// and only the owner may flip the flag (MUL-6126); "public" opens binding to
+// the runtime owner and shared_with members can bind agents to it;
+// only the owner may edit access (MUL-6126); "public" opens binding to
 // any workspace member. Older backends that haven't shipped MUL-2062 omit the
 // field; the consumer must default to "private" so the strictest behavior is
 // the fallback.
@@ -76,6 +76,8 @@ export interface RuntimeDevice {
   owner_id: string | null;
   /** Defaults to "private" when the backend predates the visibility flag. */
   visibility: RuntimeVisibility;
+  /** Workspace user IDs granted access while visibility is private. */
+  shared_with?: string[];
   /**
    * The custom runtime profile this registered runtime was launched from,
    * or `null` for a built-in protocol family. The UI uses this to stamp a
@@ -118,6 +120,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "kimi",
   "reasonix",
   "dsh",
+  "freebuff",
   "dim",
   "kiro",
   "antigravity",
@@ -129,6 +132,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "qwenpaw",
   "mcode",
   "muse",
+  "devin",
   "zeroclaw",
 ] as const;
 
@@ -423,6 +427,13 @@ export interface AgentTask {
    */
   relative_durable_work_dir?: string;
   /**
+   * Base URL of the dsh web app whose sidebar lists this run's session.
+   * Set ONLY for dsh-runtime tasks whose transcript is owned by the dsh
+   * session store; every other runtime (and older backends) omit the field
+   * entirely — render the "Open session" affordance only when present.
+   */
+  dsh_session_url?: string;
+  /**
    * Git branch this run delivered its work on. Set only by worktree-mode
    * local_directory tasks, where the agent never touches the user's working
    * copy — the branch is the only pointer to what it produced.
@@ -611,6 +622,8 @@ export interface Agent {
    * account defaults remain authoritative.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   /** Runtime-local skills this agent must not inherit. Older servers omit it. */
@@ -715,6 +728,7 @@ export type AgentPermissionScope = "private" | "workspace" | "members";
  * over edits the user made after it.
  */
 export interface StoredAgentDraft {
+  qoder_agent_id?: string;
   name: string;
   description: string;
   instructions: string;
@@ -723,6 +737,8 @@ export interface StoredAgentDraft {
   model: string;
   thinking_level: string;
   service_tier: string;
+  account_mode?: string;
+  account_id?: string;
   skill_ids: string[];
   permission_scope: AgentPermissionScope;
   member_ids: string[];
@@ -827,6 +843,8 @@ export interface UpdateAgentRequest {
    * clears it, and a non-empty value stores a runtime-catalog ID.
    */
   service_tier?: string;
+  account_mode?: string;
+  account_id?: string;
 }
 
 /**
@@ -977,15 +995,13 @@ export interface RuntimeHourlyActivity {
 
 // Freebuff account state.
 //
-// A Freebuff runtime runs against an account that lives on the daemon's
-// machine: the token file is there, and only there can a browser login be
-// completed. The daemon reads the account and reports it; these types are
+// A Freebuff runtime holds any number of accounts. Each account's login lives
+// on the daemon's machine; the daemon reports what it finds and these types are
 // that report.
 //
-// The status block mirrors the wrapper's `--status --json` output: the open
-// session slot, the per-model price and the credit. Every field is optional
-// — a runtime whose account the daemon cannot read reports a message, not a
-// full snapshot.
+// The status block is the open session slot, the per-model price and the
+// credit. Every field is optional — an account the daemon cannot read yet
+// reports a message, not a full snapshot.
 export interface FreebuffCredit {
   balance?: number | null;
   dailyLimit?: number | null;
@@ -1009,25 +1025,31 @@ export interface FreebuffStatus {
   prices?: Record<string, unknown> | null;
 }
 
-// The browser-login state machine.
+// One Freebuff account of a runtime.
 //
-// "requested"  the user clicked the button; the daemon has not started yet
-// "awaiting_login"  the daemon has a one-time URL for the user to open
-// "connected"  the browser confirmed; `account` names the account
-// "failed"  `error` says why
-export interface FreebuffConnect {
+// "requested"  the user added it; the daemon has not started the sign-in yet
+// "awaiting_login"  `login_url` is the one-time link to open in any browser
+// "connected"  signed in; `label` names the account
+// "signed_out"  the account exists but is no longer signed in
+// "failed"  the sign-in failed; `error` says why
+// "removing"  the user removed it; the daemon has not deleted it yet
+export interface FreebuffAccount {
+  id: string;
+  label?: string | null;
   state: string;
   login_url?: string | null;
   expires_at?: string | null;
-  account?: string | null;
   error?: string | null;
+  status?: FreebuffStatus | null;
   requested_at?: string | null;
   updated_at?: string | null;
 }
 
-export interface FreebuffAccount {
-  status?: FreebuffStatus | null;
-  connect?: FreebuffConnect | null;
+// The accounts a Freebuff runtime holds. `default_account_id` is the account
+// tasks run on.
+export interface FreebuffAccounts {
+  accounts: FreebuffAccount[];
+  default_account_id?: string | null;
   updated_at?: string | null;
 }
 
@@ -1192,6 +1214,10 @@ export interface RuntimeModel {
   id: string;
   label: string;
   provider?: string;
+  account_id?: string;
+  account_label?: string;
+  account_ids?: string[];
+  account_labels?: string[];
   default?: boolean;
   /**
    * Per-model reasoning/effort catalog discovered by the daemon. Currently
@@ -1404,3 +1430,31 @@ export interface RuntimeLocalSkillImportResult {
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
 }
+
+// Per-workspace freebuff-desktop accounts (M-153). An agent on a
+// freebuff-desktop runtime runs against one account (`specific`), any enabled
+// account (`any`), or none (`default`, the runtime's own configuration).
+// `credential_ref` is a daemon-local reference, never a secret, and the server
+// only returns it to workspace owners and admins.
+export type AgentAccountMode = "default" | "specific" | "any";
+
+export interface WorkspaceAccount {
+  id: string;
+  workspace_id: string;
+  provider: string;
+  label: string;
+  endpoint?: string;
+  enabled: boolean;
+  credential_ref?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWorkspaceAccountRequest {
+  label: string;
+  endpoint?: string;
+  credential_ref?: string;
+  enabled?: boolean;
+}
+
+export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;
