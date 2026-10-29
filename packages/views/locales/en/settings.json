@@ -637,6 +637,11 @@
       "failed": "Couldn't delete label"
     }
   },
+  "mmx": {
+    "version_label": "MMX version",
+    "copy": "Copy version",
+    "copied": "Copied"
+  },
   "account": {
     "section_profile": "Personal information",
     "avatar_label": "Avatar",

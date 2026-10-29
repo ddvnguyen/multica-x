@@ -632,6 +632,11 @@
       "failed": "레이블을 삭제하지 못했습니다"
     }
   },
+  "mmx": {
+    "version_label": "MMX 버전",
+    "copy": "버전 복사",
+    "copied": "복사됨"
+  },
   "account": {
     "section_profile": "개인 정보",
     "avatar_label": "아바타",

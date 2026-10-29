@@ -16,6 +16,7 @@ import {
   SettingsTab,
 } from "./settings-layout";
 import { useAutoSave } from "./use-auto-save";
+import { MmxVersionRow } from "./mmx-version-row";
 
 // Mirror server/internal/handler/auth.go:MaxProfileDescriptionLen. Counted in
 // JS String.length (UTF-16 code units) here while the server counts runes,
@@ -186,6 +187,8 @@ export function AccountTab() {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+      {/* Build identity (M-155): renders only when the host stamped one. */}
+      <MmxVersionRow />
     </SettingsTab>
   );
 }

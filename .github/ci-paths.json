@@ -14,7 +14,9 @@
     ".github/workflows/ci.yml",
     ".github/ci-paths.json",
     "scripts/ci-scope.mjs",
-    "scripts/ci-scope.test.mjs"
+    "scripts/ci-scope.test.mjs",
+    "scripts/mmx-version.mjs",
+    "scripts/mmx-version.test.mjs"
   ],
   "backend": [
     "server/**",

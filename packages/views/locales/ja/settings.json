@@ -632,6 +632,11 @@
       "failed": "ラベルを削除できませんでした"
     }
   },
+  "mmx": {
+    "version_label": "MMX バージョン",
+    "copy": "バージョンをコピー",
+    "copied": "コピーしました"
+  },
   "account": {
     "section_profile": "個人情報",
     "avatar_label": "アバター",
