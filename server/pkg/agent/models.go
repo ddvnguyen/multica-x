@@ -352,7 +352,11 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 			return discoverDimModels(ctx, runtimeCmd)
 		})
 	case "freebuff":
-		// The orchestrator picks the free-tier model itself; nothing to enumerate.
+		// Model selection is now supported (see ModelSelectionSupported), but
+		// enumeration cannot run here: the catalog is the account picker of a
+		// running orchestrator, and only the daemon can launch one per account
+		// profile (see daemon's freebuff model discovery). An empty list keeps
+		// manual entry alive for callers outside that path.
 		return Catalog{Models: []Model{}}, nil
 	case "zeroclaw":
 		// ZeroClaw's ACP server advertises no catalog: session/new answers
@@ -464,7 +468,7 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 // dropdown plus a silently-ignored manual-entry field.
 func ModelSelectionSupported(providerType string) bool {
 	switch providerType {
-	case "freebuff", "qwenpaw", "mcode", "zeroclaw":
+	case "qwenpaw", "mcode", "zeroclaw":
 		// QwenPaw's `session/set_model` persists to agent.json at the agent
 		// scope, not the session scope. Calling it would mutate the user's
 		// shared, persistent agent config. Model override is therefore
@@ -478,6 +482,13 @@ func ModelSelectionSupported(providerType string) bool {
 		// profile (`agents.<alias>.model_provider`) and nothing Multica sends
 		// can change it.
 		return false
+	case "freebuff":
+		// The orchestrator pins a thread's model at creation (POST
+		// /api/threads carrying `model`), and the backend applies the pick
+		// there — see freebuffBackend.run. Delete this (and the empty
+		// ListModels case) if the orchestrator ever learns to change a
+		// running thread's model.
+		return true
 	default:
 		return true
 	}

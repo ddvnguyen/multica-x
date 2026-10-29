@@ -282,15 +282,25 @@ func (b *freebuffBackend) run(ctx context.Context, c freebuffClient, prompt stri
 	threadID := opts.ResumeSessionID
 	resumed := threadID != ""
 	if resumed {
-		if _, err := c.GetThread(ctx, threadID); err != nil {
+		t, err := c.GetThread(ctx, threadID)
+		if err != nil {
 			var apiErr *freebuffAPIError
 			if errors.As(err, &apiErr) && apiErr.Status == 404 {
 				return Result{Status: "failed", Error: "freebuff thread not found", SessionID: threadID, ResumeRejected: true}
 			}
 			return fail("failed", "freebuff thread %s: %v", threadID, err)
 		}
-	} else {
-		t, err := c.CreateThread(ctx, opts.Cwd)
+		// A thread's model is fixed when it is created, so the resumed thread
+		// and a newly pinned model can disagree. The turn must honour the
+		// pinned model, so the task starts on a fresh thread instead of
+		// silently running on the old one's model. A thread snapshot without
+		// a model (older orchestrator) can't disagree, so it resumes.
+		if opts.Model != "" && t.Model != nil && *t.Model != opts.Model {
+			resumed = false
+		}
+	}
+	if !resumed {
+		t, err := c.CreateThreadWithModel(ctx, opts.Cwd, opts.Model)
 		if err != nil {
 			return fail("failed", "freebuff create thread: %v", err)
 		}

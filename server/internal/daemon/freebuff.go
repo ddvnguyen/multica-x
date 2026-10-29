@@ -66,6 +66,7 @@ func freebuffLoginKey(runtimeID, accountID string) string { return runtimeID + "
 // is satisfied by *freebuffrt.Client and replaced in tests.
 type freebuffAccount interface {
 	AuthStatus(ctx context.Context) (freebuffrt.AuthStatus, error)
+	ModelCatalog(ctx context.Context) (freebuffrt.ModelCatalog, error)
 	StartLogin(ctx context.Context) (freebuffrt.LoginStart, error)
 	CancelLogin(ctx context.Context) error
 }

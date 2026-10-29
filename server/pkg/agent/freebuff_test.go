@@ -16,16 +16,17 @@ import (
 // starts a scripted turn: the events are delivered on the stream and the
 // thread snapshot flips from running to idle.
 type fakeFreebuff struct {
-	mu        sync.Mutex
-	authed    bool
-	threads   map[string]*freebuffrt.Thread
-	events    chan freebuffrt.Event
-	script    []string
-	outcome   string
-	stopped   bool
-	posted    string
-	createCwd string
-	holdTurn  bool
+	mu          sync.Mutex
+	authed      bool
+	threads     map[string]*freebuffrt.Thread
+	events      chan freebuffrt.Event
+	script      []string
+	outcome     string
+	stopped     bool
+	posted      string
+	createCwd   string
+	createModel string
+	holdTurn    bool
 }
 
 func newFakeFreebuff() *fakeFreebuff {
@@ -40,11 +41,16 @@ func (f *fakeFreebuff) Events(ctx context.Context) (<-chan freebuffrt.Event, fun
 	return f.events, func() error { return nil }, nil
 }
 
-func (f *fakeFreebuff) CreateThread(_ context.Context, cwd string) (freebuffrt.Thread, error) {
+func (f *fakeFreebuff) CreateThreadWithModel(_ context.Context, cwd, model string) (freebuffrt.Thread, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCwd = cwd
-	t := &freebuffrt.Thread{ID: "t1", TurnState: "idle"}
+	f.createModel = model
+	var modelPtr *string
+	if model != "" {
+		modelPtr = new(model)
+	}
+	t := &freebuffrt.Thread{ID: "t1", TurnState: "idle", Model: modelPtr}
 	f.threads[t.ID] = t
 	return *t, nil
 }
@@ -168,6 +174,49 @@ func TestFreebuffResumeUsesExistingThread(t *testing.T) {
 	res, _ := runFake(t, f, ExecOptions{Cwd: "/work", ResumeSessionID: "old"})
 	if res.Status != "completed" || res.SessionID != "old" || f.createCwd != "" {
 		t.Fatalf("result = %+v createCwd=%q", res, f.createCwd)
+	}
+}
+
+func TestFreebuffRunPinsTheModelOnThreadCreation(t *testing.T) {
+	f := newFakeFreebuff()
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work", Model: "luna"})
+	if res.Status != "completed" {
+		t.Fatalf("result = %+v", res)
+	}
+	if f.createModel != "luna" || f.createCwd != "/work" {
+		t.Fatalf("createModel=%q createCwd=%q", f.createModel, f.createCwd)
+	}
+}
+
+func TestFreebuffRunWithoutModelUsesDefaultThread(t *testing.T) {
+	f := newFakeFreebuff()
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work"})
+	if res.Status != "completed" {
+		t.Fatalf("result = %+v", res)
+	}
+	if f.createModel != "" {
+		t.Fatalf("createModel=%q, want empty", f.createModel)
+	}
+}
+
+func TestFreebuffResumeKeepsThreadOnModelMatch(t *testing.T) {
+	f := newFakeFreebuff()
+	f.threads["old"] = &freebuffrt.Thread{ID: "old", TurnState: "idle", Model: new("luna")}
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work", ResumeSessionID: "old", Model: "luna"})
+	if res.Status != "completed" || res.SessionID != "old" || f.createCwd != "" {
+		t.Fatalf("result = %+v createCwd=%q", res, f.createCwd)
+	}
+}
+
+func TestFreebuffResumeForksThreadOnModelChange(t *testing.T) {
+	f := newFakeFreebuff()
+	f.threads["old"] = &freebuffrt.Thread{ID: "old", TurnState: "idle", Model: new("luna")}
+	res, _ := runFake(t, f, ExecOptions{Cwd: "/work", ResumeSessionID: "old", Model: "solar"})
+	if res.Status != "completed" || res.SessionID != "t1" {
+		t.Fatalf("result = %+v", res)
+	}
+	if f.createModel != "solar" || f.createCwd != "/work" {
+		t.Fatalf("createModel=%q createCwd=%q", f.createModel, f.createCwd)
 	}
 }
 

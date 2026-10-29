@@ -1702,6 +1702,12 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	// Freebuff account pick in runtime_config (M-165). Validated against the
+	// runtime the agent is being created on.
+	if status, msg := validateFreebuffAccountPick(runtime, rc); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:              wsUUID,
@@ -2450,6 +2456,33 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if status, msg := h.validateAgentAccount(r.Context(), existing.WorkspaceID, targetRuntime, accountSel); status != 0 {
 			writeError(w, status, msg)
 			return
+		}
+	}
+
+	// Freebuff account pick in runtime_config (M-165). Validated against the
+	// runtime that will be in force after this update; moving an agent to a
+	// runtime that cannot honour the pick strips it from the stored config,
+	// the same reset rule the freebuff-desktop account columns follow.
+	freebuffPickRC := existing.RuntimeConfig
+	if params.RuntimeConfig != nil {
+		freebuffPickRC = params.RuntimeConfig
+	}
+	if pick := freebuffAccountPickFromRuntimeConfig(freebuffPickRC); pick.HasPick {
+		effRuntime, rtErr := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+			ID: targetRuntimeID, WorkspaceID: existing.WorkspaceID,
+		})
+		if rtErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid runtime_id")
+			return
+		}
+		if status, msg := validateFreebuffAccountPick(effRuntime, freebuffPickRC); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+		if effRuntime.Provider != FreebuffProvider {
+			if stripped, changed := stripFreebuffAccountPick(freebuffPickRC); changed {
+				params.RuntimeConfig = stripped
+			}
 		}
 	}
 

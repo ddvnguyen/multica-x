@@ -4668,6 +4668,14 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
+	// Freebuff discovery (M-165) precedes the CLI-command resolution below:
+	// there is no CLI to enumerate — the catalog is the account picker of a
+	// running orchestrator, launched per account profile on this machine.
+	if rt.Provider == freebuffProvider {
+		d.discoverFreebuffModelList(ctx, rt, requestID)
+		return
+	}
+
 	// Discovery must enumerate the binary this runtime will actually execute,
 	// otherwise the picker advertises a catalog the launched CLI never agreed
 	// to (MUL-5789). Mirror runTask's resolution order: a custom runtime
@@ -6553,7 +6561,7 @@ func taskRootDirParams(workspacesRoot string, task Task) execenv.RootDirParams {
 var runtimeDisplayNameOverrides = map[string]string{
 	"codearts":   "CodeArts",
 	"dsh":        "DeepSeek Harness",
-	"freebuff":   "Freebuff",
+	"freebuff":   "Freebuff-CLI",
 	"traecli":    "Trae",
 	"grok":       "Grok",
 	"qoderclicn": "Qoder CN",
@@ -8781,6 +8789,20 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if v := strings.TrimSpace(task.Agent.AccountCredentialRef); v != "" {
 			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"]; !ok {
 				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = v
+			}
+		}
+	}
+	// freebuff account pick (M-165): an agent's runtime_config pins the
+	// orchestrator account the runtime's tasks use. The pin is layered UNDER
+	// the agent's custom_env so custom_env wins, the same precedence the
+	// freebuff-desktop account injection above gives its knobs.
+	if task.Agent != nil && provider == freebuffProvider {
+		if v := freebuffRuntimeAccount(task.Agent.RuntimeConfig); v != "" {
+			if agentCustomEnv == nil {
+				agentCustomEnv = map[string]string{}
+			}
+			if _, ok := agentCustomEnv[agent.FreebuffEnvAccount]; !ok {
+				agentCustomEnv[agent.FreebuffEnvAccount] = v
 			}
 		}
 	}

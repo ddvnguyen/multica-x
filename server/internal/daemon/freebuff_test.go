@@ -63,6 +63,8 @@ func (fx *freebuffFixture) snapshot() []map[string]any {
 type fakeAccount struct {
 	mu       sync.Mutex
 	statuses []freebuffrt.AuthStatus // returned in order; the last repeats
+	catalogs []freebuffrt.ModelCatalog // returned in order; the last repeats
+	catalogErr error
 	login    freebuffrt.LoginStart
 	loginErr error
 	canceled bool
@@ -80,6 +82,22 @@ func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error)
 
 func (f *fakeAccount) StartLogin(context.Context) (freebuffrt.LoginStart, error) {
 	return f.login, f.loginErr
+}
+
+func (f *fakeAccount) ModelCatalog(context.Context) (freebuffrt.ModelCatalog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.catalogErr != nil {
+		return freebuffrt.ModelCatalog{}, f.catalogErr
+	}
+	if len(f.catalogs) == 0 {
+		return freebuffrt.ModelCatalog{}, nil
+	}
+	cat := f.catalogs[0]
+	if len(f.catalogs) > 1 {
+		f.catalogs = f.catalogs[1:]
+	}
+	return cat, nil
 }
 
 func (f *fakeAccount) CancelLogin(context.Context) error {

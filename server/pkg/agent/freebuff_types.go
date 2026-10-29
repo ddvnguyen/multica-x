@@ -19,7 +19,7 @@ type (
 type freebuffClient interface {
 	AuthStatus(ctx context.Context) (freebuffrt.AuthStatus, error)
 	Events(ctx context.Context) (<-chan freebuffrt.Event, func() error, error)
-	CreateThread(ctx context.Context, projectPath string) (freebuffrt.Thread, error)
+	CreateThreadWithModel(ctx context.Context, projectPath, model string) (freebuffrt.Thread, error)
 	GetThread(ctx context.Context, id string) (freebuffrt.Thread, error)
 	PostMessage(ctx context.Context, threadID, text string) error
 	StopTurn(ctx context.Context, threadID string) error
