@@ -958,7 +958,12 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 //	  CancelQueuedAgentTask / CancelQueuedAgentTasksForSession stay
 //	  queued-only by design (chat queue editing) — a chat task never blocks.
 //
-//	EXCLUDE 'blocked' (parked by design, not stuck / not executing):
+//	EXCLUDE 'blocked' (parked by design, not stuck / not executing; the one
+//	  time-based exception is M-131's ask/plan timeout sweep, which is NOT
+//	  any query in this file — ListParkedAskPlanSweepCandidates in askplan.sql
+//	  reaps a parked row only while its card is open / its plan in_review and
+//	  only past the effective timeout, through this CANCEL family plus the
+//	  amendment-3 settle, escalating to the project lead):
 //	  ClaimAgentTask serialization guard, StartAgentTask, LockAgentTaskStartClaim,
 //	  MarkAgentTaskWaitingLocalDirectory, ReclaimStaleDispatched*,
 //	  ExtendAgentTaskPrepareLease, FailAgentTask, CompleteAgentTask,

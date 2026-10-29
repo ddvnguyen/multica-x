@@ -154,3 +154,49 @@ FROM agent_task_queue
 WHERE issue_id = $1
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
   AND id <> sqlc.narg('excluded_task_id')::uuid;
+
+-- name: ListParkedAskPlanSweepCandidates :many
+-- M-131 timeout sweep candidate set. A parked ask/plan task is 'blocked' with
+-- wait_reason 'awaiting human answer' (BlockTaskForAskPlan), but so is every
+-- ANSWERED park — the parked row keeps the session after the resume enqueues —
+-- so only rows whose evidence is still LIVE qualify: an open card or an
+-- in_review plan. The park clock is the evidence row's own stamp: the card is
+-- created immediately before the block, and SubmitAgentPlan sets the plan's
+-- updated_at as its last write before the block. Both joins ride their partial
+-- indexes (idx_aqc_task WHERE status='open', idx_ap_task WHERE status IN
+-- ('draft','in_review','changes_requested')), so the scan touches live evidence
+-- only. Settings come along because the effective timeout is per project; the
+-- expiry judgment itself happens in Go, one row at a time.
+SELECT
+    t.id AS task_id,
+    t.issue_id,
+    i.workspace_id,
+    i.project_id,
+    w.settings AS workspace_settings,
+    p.settings AS project_settings,
+    COALESCE(c.created_at, pl.updated_at) AS parked_at
+FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+LEFT JOIN workspace w ON w.id = i.workspace_id
+LEFT JOIN project p ON p.id = i.project_id
+LEFT JOIN agent_question_card c ON c.task_id = t.id AND c.status = 'open'
+LEFT JOIN agent_plan pl ON pl.task_id = t.id AND pl.status = 'in_review'
+WHERE t.status = 'blocked'
+  AND t.wait_reason = 'awaiting human answer'
+  AND (c.id IS NOT NULL OR pl.id IS NOT NULL)
+ORDER BY COALESCE(c.created_at, pl.updated_at) ASC
+LIMIT $1;
+
+-- name: GetAgentQuestionCardForUpdate :one
+-- M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
+-- row ITSELF, keyed by the parked task's trigger_evidence_ref_id. A concurrent
+-- AnswerQuestionCard then blocks on this lock, and once the sweep commits its
+-- status='open' CAS matches no row -> ErrQuestionCardClosed -> 409. First
+-- answer wins with no double outcome, in either interleaving.
+SELECT * FROM agent_question_card WHERE id = $1 FOR UPDATE;
+
+-- name: GetAgentPlanForUpdate :one
+-- M-131 expiry gate: same guarantee for ReviewPlan — a verdict arriving after
+-- the sweep's plan-row lock fails its own status/revision CAS against the plan
+-- this transaction already cancelled.
+SELECT * FROM agent_plan WHERE id = $1 FOR UPDATE;

@@ -302,12 +302,73 @@ func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, 
 	return i, err
 }
 
+const getAgentPlanForUpdate = `-- name: GetAgentPlanForUpdate :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at FROM agent_plan WHERE id = $1 FOR UPDATE
+`
+
+// M-131 expiry gate: same guarantee for ReviewPlan — a verdict arriving after
+// the sweep's plan-row lock fails its own status/revision CAS against the plan
+// this transaction already cancelled.
+func (q *Queries) GetAgentPlanForUpdate(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, getAgentPlanForUpdate, id)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getAgentQuestionCard = `-- name: GetAgentQuestionCard :one
 SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card WHERE id = $1
 `
 
 func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
 	row := q.db.QueryRow(ctx, getAgentQuestionCard, id)
+	var i AgentQuestionCard
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Status,
+		&i.Context,
+		&i.Questions,
+		&i.Answers,
+		&i.AnsweredBy,
+		&i.AnsweredAt,
+		&i.WithdrawnAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getAgentQuestionCardForUpdate = `-- name: GetAgentQuestionCardForUpdate :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card WHERE id = $1 FOR UPDATE
+`
+
+// M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
+// row ITSELF, keyed by the parked task's trigger_evidence_ref_id. A concurrent
+// AnswerQuestionCard then blocks on this lock, and once the sweep commits its
+// status='open' CAS matches no row -> ErrQuestionCardClosed -> 409. First
+// answer wins with no double outcome, in either interleaving.
+func (q *Queries) GetAgentQuestionCardForUpdate(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
+	row := q.db.QueryRow(ctx, getAgentQuestionCardForUpdate, id)
 	var i AgentQuestionCard
 	err := row.Scan(
 		&i.ID,
@@ -387,6 +448,77 @@ func (q *Queries) ListOpenQuestionCardsByIssue(ctx context.Context, issueID pgty
 			&i.WithdrawnAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listParkedAskPlanSweepCandidates = `-- name: ListParkedAskPlanSweepCandidates :many
+SELECT
+    t.id AS task_id,
+    t.issue_id,
+    i.workspace_id,
+    i.project_id,
+    w.settings AS workspace_settings,
+    p.settings AS project_settings,
+    COALESCE(c.created_at, pl.updated_at) AS parked_at
+FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+LEFT JOIN workspace w ON w.id = i.workspace_id
+LEFT JOIN project p ON p.id = i.project_id
+LEFT JOIN agent_question_card c ON c.task_id = t.id AND c.status = 'open'
+LEFT JOIN agent_plan pl ON pl.task_id = t.id AND pl.status = 'in_review'
+WHERE t.status = 'blocked'
+  AND t.wait_reason = 'awaiting human answer'
+  AND (c.id IS NOT NULL OR pl.id IS NOT NULL)
+ORDER BY COALESCE(c.created_at, pl.updated_at) ASC
+LIMIT $1
+`
+
+type ListParkedAskPlanSweepCandidatesRow struct {
+	TaskID            pgtype.UUID        `json:"task_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	WorkspaceSettings []byte             `json:"workspace_settings"`
+	ProjectSettings   []byte             `json:"project_settings"`
+	ParkedAt          pgtype.Timestamptz `json:"parked_at"`
+}
+
+// M-131 timeout sweep candidate set. A parked ask/plan task is 'blocked' with
+// wait_reason 'awaiting human answer' (BlockTaskForAskPlan), but so is every
+// ANSWERED park — the parked row keeps the session after the resume enqueues —
+// so only rows whose evidence is still LIVE qualify: an open card or an
+// in_review plan. The park clock is the evidence row's own stamp: the card is
+// created immediately before the block, and SubmitAgentPlan sets the plan's
+// updated_at as its last write before the block. Both joins ride their partial
+// indexes (idx_aqc_task WHERE status='open', idx_ap_task WHERE status IN
+// ('draft','in_review','changes_requested')), so the scan touches live evidence
+// only. Settings come along because the effective timeout is per project; the
+// expiry judgment itself happens in Go, one row at a time.
+func (q *Queries) ListParkedAskPlanSweepCandidates(ctx context.Context, limit int32) ([]ListParkedAskPlanSweepCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listParkedAskPlanSweepCandidates, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListParkedAskPlanSweepCandidatesRow{}
+	for rows.Next() {
+		var i ListParkedAskPlanSweepCandidatesRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.IssueID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.WorkspaceSettings,
+			&i.ProjectSettings,
+			&i.ParkedAt,
 		); err != nil {
 			return nil, err
 		}

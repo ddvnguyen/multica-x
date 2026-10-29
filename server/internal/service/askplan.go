@@ -18,9 +18,13 @@
 //	         description), changes_requested (≥1 comment or note), cancel
 //	         (frees the issue for a new plan) — each then resumes the run.
 //
-// The parked task is NOT terminal. It leaves blocked only via human cancel
-// (which withdraws the card / cancels the plan — amendment 3) or issue/agent
-// teardown. No sweeper reaps it; no wall clock expires it.
+// The parked task is NOT terminal. It leaves blocked via human cancel (which
+// withdraws the card / cancels the plan — amendment 3), issue/agent teardown,
+// or — since M-131 — the ask/plan timeout sweeper, which reaps it only while
+// its evidence is still open and only after the effective timeout: withdraw /
+// cancel through the same settle, cancel the parked task, escalate to the
+// project lead. An answered park is never a candidate (first answer wins), no
+// run is ever cancelled outright, and no resume is ever written with a notice.
 package service
 
 import (

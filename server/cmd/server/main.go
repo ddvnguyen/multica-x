@@ -773,6 +773,10 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// M-131: parked ask/plan tasks past their effective timeout are reaped and
+	// escalated to the project lead — its own 30s tick, since each candidate is
+	// judged against its project's override rather than a shared wall clock.
+	go runAskPlanTimeoutSweeper(sweepCtx, queries, taskSvc)
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
