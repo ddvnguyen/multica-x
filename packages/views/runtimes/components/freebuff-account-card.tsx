@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { ExternalLink, Timer, Wallet } from "lucide-react";
 import type { AgentRuntime } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { runtimeProfileListOptions } from "@multica/core/runtimes";
 // Deep import on purpose: the freebuff helpers live behind their own
 // entry point so a test that stubs the runtimes barrel does not have to
 // know about them.
@@ -29,7 +28,7 @@ import { openExternal } from "../../platform";
 //
 // The card renders nothing for a runtime that is not a Freebuff runtime.
 
-const FREEBUFF_COMMAND_NAME = "codebuddy-freebuff";
+const FREEBUFF_PROVIDER = "freebuff";
 
 // A tick so the countdown in the session row moves on its own.
 const TICK_MS = 15_000;
@@ -65,15 +64,10 @@ function formatPrice(value: unknown): string | null {
 
 export function FreebuffAccountCard({ runtime }: { runtime: AgentRuntime }) {
   const { t } = useT("runtimes");
-  const wsId = useWorkspaceId();
   const [, setTick] = useState(0);
 
-  const { data: profiles = [] } = useQuery(runtimeProfileListOptions(wsId));
-  const isFreebuff = useMemo(() => {
-    if (!runtime.profile_id) return false;
-    const profile = profiles.find((p) => p.id === runtime.profile_id);
-    return profile?.command_name === FREEBUFF_COMMAND_NAME;
-  }, [profiles, runtime.profile_id]);
+  const wsId = useWorkspaceId();
+  const isFreebuff = runtime.provider === FREEBUFF_PROVIDER;
 
   const { data: account } = useQuery({
     ...freebuffAccountOptions(runtime.id),

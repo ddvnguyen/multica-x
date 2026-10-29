@@ -67,10 +67,9 @@ type FreebuffConnect struct {
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
-// FreebuffCommandName is the runtime-profile command that makes a runtime a
-// Freebuff runtime. The account client on the daemon's machine recognises
-// the same name.
-const FreebuffCommandName = "codebuddy-freebuff"
+// FreebuffProvider is the provider (protocol family) that makes a runtime a
+// Freebuff runtime. The daemon recognises the same value.
+const FreebuffProvider = "freebuff"
 
 // Freebuff connect states.
 const (
@@ -134,22 +133,10 @@ func (h *Handler) ListFreebuffConnectPending(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to list runtimes")
 		return
 	}
-	profiles, err := h.Queries.ListRuntimeProfiles(r.Context(), wsUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list runtime profiles")
-		return
-	}
-	commandByProfile := make(map[string]string, len(profiles))
-	for _, profile := range profiles {
-		commandByProfile[uuidToString(profile.ID)] = profile.CommandName
-	}
 
 	out := make([]map[string]any, 0)
 	for _, rt := range runtimes {
-		if !rt.ProfileID.Valid {
-			continue
-		}
-		if commandByProfile[uuidToString(rt.ProfileID)] != FreebuffCommandName {
+		if rt.Provider != FreebuffProvider {
 			continue
 		}
 		block := freebuffBlockFromRuntime(rt)

@@ -3,17 +3,17 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/pkg/freebuffrt"
 )
 
-// freebuffFixture stands up a Daemon whose Freebuff reports are captured,
-// plus a fake wrapper that behaves like the real one: it prints one JSON
-// line with the login URL, then one with the outcome.
+// freebuffFixture stands up a Daemon whose Freebuff reports are captured.
 type freebuffFixture struct {
 	daemon *Daemon
 
@@ -39,7 +39,6 @@ func newFreebuffFixture(t *testing.T) *freebuffFixture {
 	t.Cleanup(srv.Close)
 
 	d := freshDaemon(srv.URL)
-	d.profileLaunchSpecs = make(map[string]profileLaunchSpec)
 	fx.daemon = d
 	return fx
 }
@@ -50,128 +49,190 @@ func (fx *freebuffFixture) snapshot() []map[string]any {
 	return append([]map[string]any(nil), fx.reports...)
 }
 
-// fakeFreebuffWrapper writes an executable that mimics the wrapper's two
-// modes: `--status --json` prints an account snapshot, `login --json` prints
-// the login URL and then the outcome.
-func fakeFreebuffWrapper(t *testing.T, statusJSON string, loginLines []string) string {
+// fakeAccount is an orchestrator stand-in for the account flow.
+type fakeAccount struct {
+	mu       sync.Mutex
+	statuses []freebuffrt.AuthStatus // returned in order; the last repeats
+	login    freebuffrt.LoginStart
+	loginErr error
+	canceled bool
+}
+
+func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.statuses[0]
+	if len(f.statuses) > 1 {
+		f.statuses = f.statuses[1:]
+	}
+	return st, nil
+}
+
+func (f *fakeAccount) StartLogin(context.Context) (freebuffrt.LoginStart, error) {
+	return f.login, f.loginErr
+}
+
+func (f *fakeAccount) CancelLogin(context.Context) error {
+	f.mu.Lock()
+	f.canceled = true
+	f.mu.Unlock()
+	return nil
+}
+
+func useFakeAccount(t *testing.T, acct freebuffAccount, startErr error) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "codebuddy-freebuff")
-	script := "#!/bin/sh\n"
-	script += "if [ \"$1\" = \"--status\" ]; then\n"
-	script += "  cat <<'EOF'\n" + statusJSON + "\nEOF\n  exit 0\nfi\n"
-	script += "cat <<'EOF'\n"
-	for _, line := range loginLines {
-		script += line + "\n"
+	prev := startFreebuffAccount
+	startFreebuffAccount = func(context.Context, string) (freebuffAccount, func(), error) {
+		if startErr != nil {
+			return nil, nil, startErr
+		}
+		return acct, func() {}, nil
 	}
-	script += "EOF\nexit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake wrapper: %v", err)
-	}
-	return path
+	t.Cleanup(func() { startFreebuffAccount = prev })
 }
 
-func freebuffRuntime(path string) Runtime {
-	return Runtime{ID: "rt-freebuff", Provider: "codebuddy", ProfileID: "prof-fb"}
+func freebuffRuntime() Runtime {
+	return Runtime{ID: "rt-fb", Name: "Freebuff", Provider: freebuffProvider, Status: "online"}
 }
 
-// TestReportFreebuffStatus_SendsAccountSnapshot pins the account report:
-// the daemon runs the wrapper's `--status --json` and hands the snapshot to
-// the server unchanged.
-func TestReportFreebuffStatus_SendsAccountSnapshot(t *testing.T) {
+func signedIn(email string) freebuffrt.AuthStatus {
+	return freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"` + email + `"}`)}
+}
+
+func TestReportFreebuffStatus_SendsSignInSnapshot(t *testing.T) {
 	fx := newFreebuffFixture(t)
-	d := fx.daemon
+	useFakeAccount(t, &fakeAccount{statuses: []freebuffrt.AuthStatus{signedIn("owner@example.com")}}, nil)
 
-	wrapper := fakeFreebuffWrapper(t,
-		`{"status":"active","remainingMs":120000,"credit":{"dailyRemaining":4,"dailyLimit":5,"balance":21},"prices":{"z-ai/glm-5.3-flash":2}}`,
-		nil,
-	)
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: wrapper, commandName: freebuffCommandName}
-	rt := freebuffRuntime(wrapper)
-	d.runtimeIndex[rt.ID] = rt
-
-	d.reportFreebuffStatus(context.Background(), rt)
+	fx.daemon.reportFreebuffStatus(context.Background(), freebuffRuntime())
 
 	reports := fx.snapshot()
 	if len(reports) != 1 {
 		t.Fatalf("expected 1 report, got %d", len(reports))
 	}
-	status, ok := reports[0]["status"].(map[string]any)
-	if !ok {
-		t.Fatalf("report has no status object: %#v", reports[0])
-	}
-	if status["status"] != "active" {
-		t.Fatalf("status state = %v, want active", status["status"])
-	}
-	if status["remainingMs"] != float64(120000) {
-		t.Fatalf("remainingMs = %v, want 120000", status["remainingMs"])
-	}
-	credit, ok := status["credit"].(map[string]any)
-	if !ok {
-		t.Fatalf("status has no credit object: %#v", status)
-	}
-	if credit["dailyRemaining"] != float64(4) {
-		t.Fatalf("dailyRemaining = %v, want 4", credit["dailyRemaining"])
+	status, _ := reports[0]["status"].(map[string]any)
+	if status["message"] != "Signed in as owner@example.com" {
+		t.Fatalf("status = %#v", reports[0])
 	}
 }
 
-// TestHandleFreebuffConnect_ReportsURLThenOutcome pins the browser login:
-// the daemon forwards the one-time URL as soon as the wrapper has it, and the
-// outcome when the browser confirms.
+func TestReportFreebuffStatus_SignedOut(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, &fakeAccount{statuses: []freebuffrt.AuthStatus{{}}}, nil)
+
+	fx.daemon.reportFreebuffStatus(context.Background(), freebuffRuntime())
+
+	status, _ := fx.snapshot()[0]["status"].(map[string]any)
+	if status["message"] != "Not signed in to Freebuff" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+// A runtime whose orchestrator cannot start reports nothing: the last
+// snapshot stays, and the failure is only logged.
+func TestReportFreebuffStatus_StartFailureReportsNothing(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, nil, errors.New("bundle not found"))
+
+	fx.daemon.reportFreebuffStatus(context.Background(), freebuffRuntime())
+
+	if got := len(fx.snapshot()); got != 0 {
+		t.Fatalf("expected no report, got %d", got)
+	}
+}
+
+// TestHandleFreebuffConnect_ReportsURLThenOutcome pins the browser login: the
+// URL goes out as soon as the orchestrator has it, the outcome when the
+// account appears.
 func TestHandleFreebuffConnect_ReportsURLThenOutcome(t *testing.T) {
 	fx := newFreebuffFixture(t)
-	d := fx.daemon
+	prev := freebuffLoginPollInterval
+	freebuffLoginPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { freebuffLoginPollInterval = prev })
+	useFakeAccount(t, &fakeAccount{
+		statuses: []freebuffrt.AuthStatus{{}, {}, signedIn("owner@example.com")},
+		login:    freebuffrt.LoginStart{URL: "http://127.0.0.1:1234/auth/login/launch/x"},
+	}, nil)
 
-	wrapper := fakeFreebuffWrapper(t, "{}", []string{
-		`{"status":"awaiting_login","loginUrl":"https://freebuff.com/login?auth_code=abc"}`,
-		`{"status":"connected","account":"owner@example.com"}`,
-	})
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: wrapper, commandName: freebuffCommandName}
-	rt := freebuffRuntime(wrapper)
-	d.runtimeIndex[rt.ID] = rt
+	fx.daemon.handleFreebuffConnect(context.Background(), freebuffRuntime())
 
-	d.handleFreebuffConnect(context.Background(), rt)
-
-	reports := fx.snapshot()
-	if len(reports) != 2 {
-		t.Fatalf("expected 2 reports (url, outcome), got %d: %#v", len(reports), reports)
+	var states []string
+	var url, account string
+	for _, r := range fx.snapshot() {
+		c, ok := r["connect"].(map[string]any)
+		if !ok {
+			continue
+		}
+		states = append(states, c["state"].(string))
+		if u, ok := c["login_url"].(string); ok {
+			url = u
+		}
+		if a, ok := c["account"].(string); ok {
+			account = a
+		}
 	}
-	first := reports[0]["connect"].(map[string]any)
-	if first["state"] != "awaiting_login" {
-		t.Fatalf("first state = %v, want awaiting_login", first["state"])
+	if len(states) != 2 || states[0] != "awaiting_login" || states[1] != "connected" {
+		t.Fatalf("connect states = %v", states)
 	}
-	if first["login_url"] != "https://freebuff.com/login?auth_code=abc" {
-		t.Fatalf("login_url = %v", first["login_url"])
-	}
-	second := reports[1]["connect"].(map[string]any)
-	if second["state"] != "connected" {
-		t.Fatalf("second state = %v, want connected", second["state"])
-	}
-	if second["account"] != "owner@example.com" {
-		t.Fatalf("account = %v", second["account"])
+	if url != "http://127.0.0.1:1234/auth/login/launch/x" || account != "owner@example.com" {
+		t.Fatalf("url=%q account=%q", url, account)
 	}
 }
 
-// TestFreebuffRuntimes_OnlyFreebuffProfiles pins which runtimes the daemon
-// treats as Freebuff runtimes: the ones whose profile command is the
-// wrapper. A runtime on the same protocol family but a different command
-// must not be picked up — it would run someone else's CLI with the
-// wrapper's arguments.
-func TestFreebuffRuntimes_OnlyFreebuffProfiles(t *testing.T) {
+func TestHandleFreebuffConnect_AlreadySignedIn(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, &fakeAccount{statuses: []freebuffrt.AuthStatus{signedIn("a@b.c")}}, nil)
+
+	fx.daemon.handleFreebuffConnect(context.Background(), freebuffRuntime())
+
+	reports := fx.snapshot()
+	c, _ := reports[0]["connect"].(map[string]any)
+	if len(reports) != 1 || c["state"] != "connected" {
+		t.Fatalf("reports = %#v", reports)
+	}
+}
+
+func TestHandleFreebuffConnect_FailuresAreReported(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, nil, errors.New("bun not found"))
+
+	fx.daemon.handleFreebuffConnect(context.Background(), freebuffRuntime())
+
+	c, _ := fx.snapshot()[0]["connect"].(map[string]any)
+	if c["state"] != "failed" || c["error"] != "bun not found" {
+		t.Fatalf("connect = %#v", c)
+	}
+}
+
+func TestHandleFreebuffConnect_TimeoutCancelsLogin(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	prevTimeout, prevPoll := freebuffLoginTimeout, freebuffLoginPollInterval
+	freebuffLoginTimeout, freebuffLoginPollInterval = 80*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { freebuffLoginTimeout, freebuffLoginPollInterval = prevTimeout, prevPoll })
+	acct := &fakeAccount{statuses: []freebuffrt.AuthStatus{{}}, login: freebuffrt.LoginStart{URL: "http://127.0.0.1:1/x"}}
+	useFakeAccount(t, acct, nil)
+
+	fx.daemon.handleFreebuffConnect(context.Background(), freebuffRuntime())
+
+	reports := fx.snapshot()
+	last, _ := reports[len(reports)-1]["connect"].(map[string]any)
+	if last["state"] != "failed" {
+		t.Fatalf("last connect = %#v", last)
+	}
+	acct.mu.Lock()
+	defer acct.mu.Unlock()
+	if !acct.canceled {
+		t.Fatal("pending login was not cancelled")
+	}
+}
+
+func TestFreebuffRuntimes_SelectsByProvider(t *testing.T) {
 	fx := newFreebuffFixture(t)
 	d := fx.daemon
+	d.runtimeIndex["rt-fb"] = freebuffRuntime()
+	d.runtimeIndex["rt-other"] = Runtime{ID: "rt-other", Provider: "codebuddy"}
 
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: "/usr/local/bin/codebuddy-freebuff", commandName: freebuffCommandName}
-	d.profileLaunchSpecs["prof-other"] = profileLaunchSpec{path: "/usr/local/bin/codebuddy", commandName: "codebuddy"}
-	d.runtimeIndex["rt-freebuff"] = Runtime{ID: "rt-freebuff", Provider: "codebuddy", ProfileID: "prof-fb"}
-	d.runtimeIndex["rt-plain"] = Runtime{ID: "rt-plain", Provider: "codebuddy", ProfileID: "prof-other"}
-	d.runtimeIndex["rt-builtin"] = Runtime{ID: "rt-builtin", Provider: "codebuddy"}
-
-	runtimes := d.freebuffRuntimes()
-	if len(runtimes) != 1 {
-		t.Fatalf("expected 1 freebuff runtime, got %d: %#v", len(runtimes), runtimes)
-	}
-	if runtimes[0].ID != "rt-freebuff" {
-		t.Fatalf("freebuff runtime = %s, want rt-freebuff", runtimes[0].ID)
+	got := d.freebuffRuntimes()
+	if len(got) != 1 || got[0].ID != "rt-fb" {
+		t.Fatalf("freebuffRuntimes = %#v", got)
 	}
 }

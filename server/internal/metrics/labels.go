@@ -151,6 +151,7 @@ var (
 		"copilot":       "copilot",
 		"cursor":        "cursor",
 		"dsh":           "dsh",
+		"freebuff":      "freebuff",
 		"gemini":        "gemini",
 		"grok":          "grok",
 		"hermes":        "hermes",

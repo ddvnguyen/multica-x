@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AgentRuntime, RuntimeProfile } from "@multica/core/types";
+import type { AgentRuntime } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { FreebuffAccountCard } from "./freebuff-account-card";
 
@@ -21,7 +21,6 @@ vi.mock("@multica/core/api", () => ({
       mockGetFreebuffAccount(...args),
     requestFreebuffConnect: (...args: unknown[]) =>
       mockRequestFreebuffConnect(...args),
-    listRuntimeProfiles: vi.fn(),
   },
   ApiError: class ApiError extends Error {},
 }));
@@ -30,47 +29,12 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-// The profile list decides whether this runtime is a Freebuff runtime at
-// all; the account endpoint is what the card renders.
-const profiles: RuntimeProfile[] = [
-  {
-    id: "profile-1",
-    workspace_id: "ws-1",
-    display_name: "Freebuff (CodeBuddy)",
-    protocol_family: "codebuddy",
-    runtime_type: "codebuddy",
-    command_name: "codebuddy-freebuff",
-    description: null,
-    fixed_args: [],
-    visibility: "workspace",
-    created_by: null,
-    enabled: true,
-    created_at: "",
-    updated_at: "",
-  },
-];
-
-vi.mock("@multica/core/runtimes", async () => {
-  const actual =
-    await vi.importActual<typeof import("@multica/core/runtimes")>(
-      "@multica/core/runtimes",
-    );
-  return {
-    ...actual,
-    runtimeProfileListOptions: () => ({
-      queryKey: ["runtime-profiles", "ws-1", "list"],
-      queryFn: async () => profiles,
-    }),
-  };
-});
-
 function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
   return {
     id: "rt-freebuff",
-    name: "Freebuff (CodeBuddy) (ddv-server)",
-    provider: "codebuddy",
+    name: "Freebuff (ddv-server)",
+    provider: "freebuff",
     status: "online",
-    profile_id: "profile-1",
     metadata: {},
     ...overrides,
   } as AgentRuntime;
@@ -139,7 +103,7 @@ describe("FreebuffAccountCard", () => {
 
   it("renders nothing for a runtime that is not a Freebuff runtime", async () => {
     const { container } = renderCard(
-      makeRuntime({ id: "rt-other", profile_id: null }),
+      makeRuntime({ id: "rt-other", provider: "codebuddy" }),
     );
     await waitFor(() => {
       expect(mockGetFreebuffAccount).not.toHaveBeenCalled();
