@@ -1041,5 +1041,10 @@
     "runtime_default": "런타임 기본값",
     "any": "아무 계정",
     "hint": "이 에이전트를 실행할 Freebuff 계정입니다. “아무 계정”은 실행마다 가장 한가한 계정을 선택합니다."
+  },
+  "freebuff_account_field": {
+    "label": "계정",
+    "runtime_default": "런타임 기본값",
+    "hint": "이 에이전트를 실행할 Freebuff-CLI 계정입니다."
   }
 }

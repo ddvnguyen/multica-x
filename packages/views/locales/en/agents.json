@@ -1068,5 +1068,10 @@
     "runtime_default": "Runtime default",
     "any": "Any account",
     "hint": "Which Freebuff account runs this agent. “Any account” picks the least busy one for each run."
+  },
+  "freebuff_account_field": {
+    "label": "Account",
+    "runtime_default": "Runtime default",
+    "hint": "Which Freebuff-CLI account runs this agent."
   }
 }

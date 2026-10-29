@@ -193,3 +193,87 @@ func TestStartLoginFallsBackWhenTheRedirectIsUnusable(t *testing.T) {
 		t.Fatalf("a loopback redirect must not be offered as a remote URL: %+v %v", got, err)
 	}
 }
+
+func TestModelCatalogReadsTheFirstStateEvent(t *testing.T) {
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET /api/events" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(": hello\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"other"}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"state","snapshot":{"freebuff":{"models":[{"id":"luna","displayName":"Luna 2"},{"id":""},{"id":"solar","displayName":"Solar Pro","tagline":"free tier"}],"recommendedModels":["luna"]}}}` + "\n\n"))
+	})
+	cat, err := c.ModelCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.Default != "luna" {
+		t.Fatalf("default = %q, want luna", cat.Default)
+	}
+	if len(cat.Models) != 2 {
+		t.Fatalf("models = %+v", cat.Models)
+	}
+	if cat.Models[0].ID != "luna" || cat.Models[0].DisplayName != "Luna 2" {
+		t.Fatalf("first model = %+v", cat.Models[0])
+	}
+	if cat.Models[1].ID != "solar" || cat.Models[1].Tagline != "free tier" {
+		t.Fatalf("second model = %+v", cat.Models[1])
+	}
+}
+
+func TestModelCatalogErrorsWithoutAPublishedCatalog(t *testing.T) {
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"state","snapshot":{"freebuff":{}}}` + "\n\n"))
+	})
+	if _, err := c.ModelCatalog(context.Background()); err == nil {
+		t.Fatal("want an error when no state event publishes models")
+	}
+}
+
+func TestModelCatalogSurfacesAPIError(t *testing.T) {
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"no stream for you"}`, http.StatusForbidden)
+	})
+	_, err := c.ModelCatalog(context.Background())
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("want APIError 403, got %#v", err)
+	}
+}
+
+func TestCreateThreadWithModelBody(t *testing.T) {
+	var bodies []map[string]any
+	c := fakeOrchestrator(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "POST /api/threads" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		_, _ = w.Write([]byte(`{"id":"t1"}`))
+	})
+	th, err := c.CreateThreadWithModel(context.Background(), "/work", "")
+	if err != nil || th.ID != "t1" {
+		t.Fatalf("create with empty model: %+v %v", th, err)
+	}
+	th, err = c.CreateThreadWithModel(context.Background(), "/work", "luna")
+	if err != nil || th.ID != "t1" {
+		t.Fatalf("create with model: %+v %v", th, err)
+	}
+	want := []map[string]any{
+		{"projectPath": "/work"},
+		{"projectPath": "/work", "harnessId": "codebuff", "model": "luna"},
+	}
+	if len(bodies) != len(want) {
+		t.Fatalf("bodies = %+v", bodies)
+	}
+	for i, w := range want {
+		for k, v := range w {
+			if bodies[i][k] != v {
+				t.Fatalf("body %d field %s = %v, want %v", i, k, bodies[i][k], v)
+			}
+		}
+	}
+}

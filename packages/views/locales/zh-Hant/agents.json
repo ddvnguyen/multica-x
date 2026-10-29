@@ -1041,5 +1041,10 @@
     "runtime_default": "執行環境默認",
     "any": "任意帳號",
     "hint": "運行此智慧體所用的 Freebuff 帳號。“任意帳號”會為每次運行選擇最空閒的帳號。"
+  },
+  "freebuff_account_field": {
+    "label": "帳號",
+    "runtime_default": "執行環境預設",
+    "hint": "執行此智慧體所用的 Freebuff-CLI 帳號。"
   }
 }

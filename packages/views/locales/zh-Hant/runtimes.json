@@ -655,7 +655,7 @@
     }
   },
   "freebuff": {
-    "title": "Freebuff 帳號",
+    "title": "Freebuff-CLI 帳號",
     "session_title": "工作階段",
     "session_state": "{{state}}",
     "session_remaining": "剩餘 {{time}}",

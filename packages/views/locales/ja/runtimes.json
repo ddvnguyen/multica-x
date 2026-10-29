@@ -522,7 +522,7 @@
     "no_data": "まだ使用量データがありません"
   },
   "freebuff": {
-    "title": "Freebuff アカウント",
+    "title": "Freebuff-CLI アカウント",
     "add_account": "アカウントを追加",
     "empty": "Freebuff アカウントはまだありません。追加してサインインしてください。",
     "new_account": "新しいアカウント",

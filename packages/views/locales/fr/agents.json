@@ -1068,5 +1068,10 @@
     "runtime_default": "Par défaut du runtime",
     "any": "N’importe quel compte",
     "hint": "Le compte Freebuff qui exécute cet agent. « N’importe quel compte » choisit le moins occupé à chaque exécution."
+  },
+  "freebuff_account_field": {
+    "label": "Compte",
+    "runtime_default": "Par défaut du runtime",
+    "hint": "Le compte Freebuff-CLI qui exécute cet agent."
   }
 }

@@ -215,8 +215,29 @@ type Thread struct {
 
 // CreateThread opens a thread rooted at projectPath.
 func (c *Client) CreateThread(ctx context.Context, projectPath string) (Thread, error) {
+	return c.CreateThreadWithModel(ctx, projectPath, "")
+}
+
+// CreateThreadWithModel opens a thread rooted at projectPath, pinned to
+// model. A thread's model is fixed when the thread is created — the
+// orchestrator offers no way to change it afterwards — so a model change
+// means a new thread (the Freebuff fork's own desktop bridge uses the same
+// contract: one reusable thread per model, POST /api/threads carrying
+// {projectPath, harnessId: "codebuff", model}).
+//
+// An empty model keeps the default: the body omits the model field and the
+// orchestrator picks its own (the same body CreateThread used to send).
+func (c *Client) CreateThreadWithModel(ctx context.Context, projectPath, model string) (Thread, error) {
+	body := map[string]any{"projectPath": projectPath}
+	if model != "" {
+		// harnessId "codebuff" is the same value the bridge sends; without it
+		// the orchestrator treats the model field differently (verified against
+		// the bridge in the freebuff fork, freebuff-desktop-bridge.mjs).
+		body["harnessId"] = "codebuff"
+		body["model"] = model
+	}
 	var t Thread
-	err := c.do(ctx, http.MethodPost, "/api/threads", map[string]any{"projectPath": projectPath}, &t)
+	err := c.do(ctx, http.MethodPost, "/api/threads", body, &t)
 	return t, err
 }
 
@@ -230,6 +251,102 @@ func (c *Client) GetThread(ctx context.Context, id string) (Thread, error) {
 // PostMessage sends a user message, starting a turn.
 func (c *Client) PostMessage(ctx context.Context, threadID, text string) error {
 	return c.do(ctx, http.MethodPost, "/api/thread/"+url.PathEscape(threadID)+"/message", map[string]any{"text": text}, nil)
+}
+
+// ModelCatalogEntry is one model of an account's picker catalog, and
+// Catalog is the flattened read: Default marks the account's recommended
+// head, exactly one entry at most.
+type ModelCatalogEntry struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	Tagline     string `json:"tagline"`
+}
+
+type ModelCatalog struct {
+	Models      []ModelCatalogEntry
+	Default     string // id of the recommended model, empty when none
+	Recommended []string
+}
+
+// freebuffSnapshot is the freebuff slot of the orchestrator's state event,
+// where the account's picker catalog is published. The desktop bridge reads
+// exactly this shape from the first `state` event of GET /api/events.
+type freebuffSnapshot struct {
+	Models            []ModelCatalogEntry `json:"models"`
+	RecommendedModels []string            `json:"recommendedModels"`
+}
+
+// ModelCatalog returns the picker catalog of the account signed in on this
+// orchestrator. There is no plain-GET endpoint for it: the orchestrator
+// publishes it as the first `state` event of GET /api/events
+// (snapshot.freebuff.models), so one short read of that stream collects it.
+// The function returns as soon as a state event carries a model list.
+//
+// An error means the orchestrator or its event stream is unusable. Whether
+// the account is signed in is the caller's check (AuthStatus), not this read.
+func (c *Client) ModelCatalog(ctx context.Context) (ModelCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/events", nil)
+	if err != nil {
+		return ModelCatalog{}, err
+	}
+	req.Header.Set(launchHeader, c.launchID)
+	req.Header.Set("accept", "text/event-stream")
+	// The catalog usually lands in the first frame or two, but a busy
+	// orchestrator may take a moment to publish its state; the caller's ctx
+	// is the deadline. The stream may idle otherwise, so the per-request
+	// timeout of c.http must not cut it — a fresh client, like Events.
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return ModelCatalog{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return ModelCatalog{}, &APIError{Status: resp.StatusCode, Message: errorMessage(raw)}
+	}
+	defer resp.Body.Close()
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
+	for sc.Scan() {
+		payload, ok := strings.CutPrefix(sc.Text(), "data:")
+		if !ok {
+			continue
+		}
+		payload = strings.TrimSpace(payload)
+		var head struct {
+			Type     string `json:"type"`
+			Snapshot *struct {
+				Freebuff *freebuffSnapshot `json:"freebuff"`
+			} `json:"snapshot"`
+		}
+		if json.Unmarshal([]byte(payload), &head) != nil || head.Snapshot == nil || head.Snapshot.Freebuff == nil {
+			continue
+		}
+		fb := head.Snapshot.Freebuff
+		if len(fb.Models) == 0 {
+			continue
+		}
+		out := ModelCatalog{Recommended: fb.RecommendedModels}
+		recommended := make(map[string]bool, len(fb.RecommendedModels))
+		for _, id := range fb.RecommendedModels {
+			recommended[id] = true
+		}
+		for _, m := range fb.Models {
+			if strings.TrimSpace(m.ID) == "" {
+				continue
+			}
+			if recommended[m.ID] && out.Default == "" {
+				out.Default = m.ID
+			}
+			out.Models = append(out.Models, m)
+		}
+		return out, nil
+	}
+	if err := sc.Err(); err != nil {
+		return ModelCatalog{}, err
+	}
+	return ModelCatalog{}, errors.New("freebuff model catalog unavailable: the event stream closed without publishing one")
 }
 
 // StopTurn interrupts the running turn.

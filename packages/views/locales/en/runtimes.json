@@ -539,7 +539,7 @@
     "no_data": "No usage data yet"
   },
   "freebuff": {
-    "title": "Freebuff accounts",
+    "title": "Freebuff-CLI accounts",
     "add_account": "Add account",
     "empty": "No Freebuff account yet. Add one to sign in.",
     "new_account": "New account",
