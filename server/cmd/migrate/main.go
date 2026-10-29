@@ -482,6 +482,18 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
+	// Fork-rename gates (M-167, M-165 deploy): the v0.7.1 sync renumbered
+	// migrations previously applied to fork lanes under other numbers, so
+	// their SQL ships again under 596–600/601/602. A database that ran the
+	// old numbers has the objects and must record these versions without
+	// re-running; a fresh database applies them. See
+	// migrate_fork_rename_conditions.go.
+	"596_agent_question_card":  whenRenamedObjectsAllPresent(objects596AgentQuestionCard),
+	"597_agent_plan":           whenRenamedObjectsAllPresent(objects597AgentPlan),
+	"598_agent_plan_review":    whenRenamedObjectsAllPresent(objects598AgentPlanReview),
+	"600_project_settings":     whenRenamedObjectsAllPresent(objects600ProjectSettings),
+	"601_workspace_account":    whenRenamedObjectsAllPresent(objects601WorkspaceAccount),
+	"602_task_supplement_mode": whenRenamedObjectsAllPresent(objects602TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index
