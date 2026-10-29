@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useStore } from "zustand";
 import {
   ISLAND_API_BASE,
   islandWebSocketUrl,
@@ -9,10 +10,14 @@ import {
   BOARD_ROUTE,
   createIslandNavigation,
   ISLAND_FAMILIES,
+  islandPath,
   islandRouteKey,
+  parseIslandRoute,
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
+import { createTabsStore } from "./tabs";
+import { TabBar } from "./tab-bar";
 import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
 import { PanelZoomRow } from "./zoom-row";
 import { useZoom } from "./zoom-store";
@@ -32,6 +37,7 @@ import {
   IssuesPage,
   mmxBuild,
   ModalRegistry,
+  PageChromeProvider,
   NavigationProvider,
   PortalContainerProvider,
   RESOURCES,
@@ -320,29 +326,43 @@ export function IslandPages({
   route: entryRoute = BOARD_ROUTE,
 }: {
   slug: string;
-  /** The resolved workspace UUID the MOCT settings tabs write to. */
   workspaceId: string;
   wsPath: string;
   problem: string | null;
-  /** The entry the seat asked for; a rail click re-renders this tree with it. */
   route?: IslandRoute;
 }) {
-  const [route, setRoute] = useState<IslandRoute>(entryRoute);
-  const [refused, setRefused] = useState<string | null>(null);
-  const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+  const storage = useMemo(() => createIslandStorage(), []);
+  const tabsStore = useMemo(() => createTabsStore(storage, slug), [storage, slug]);
 
-  // The keep-alive island re-renders this tree instead of remounting it, so a
-  // new entry arrives as a prop and has to be folded into the state the
-  // navigation writes. Adjusting during render (not in an effect) means the
-  // first commit after a rail click is already the new page, not the previous
-  // one for a frame. A re-attach of the same entry keeps whatever the reader
-  // had open in that family.
-  const [entry, setEntry] = useState(() => islandRouteKey(entryRoute));
+  const [entry, setEntry] = useState<string | null>(null);
+
+  // initial tab
+  useEffect(() => {
+    const st = tabsStore.getState();
+    const url = islandPath(slug, entryRoute);
+    const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
+    if (isRailEntry) st.railEntry(entryRoute);
+    else st.openOrFocus(url);
+  }, [tabsStore, entryRoute, slug]);
+
+  // rail click handling
   const requested = islandRouteKey(entryRoute);
   if (entry !== requested) {
     setEntry(requested);
-    setRoute(entryRoute);
+    const st = tabsStore.getState();
+    const url = islandPath(slug, entryRoute);
+    const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
+    if (isRailEntry) st.railEntry(entryRoute);
+    else st.openOrFocus(url);
   }
+
+  const tabsState = useStore(tabsStore);
+  const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeId) ?? null;
+  const route: IslandRoute =
+    activeTab !== null ? (parseIslandRoute(activeTab.url) ?? entryRoute) : entryRoute;
+
+  const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+
   const moctGroup = useMemo(
     () => createMoctGroup({ workspaceSlug: slug, workspaceId, wsPath, problem }),
     [slug, workspaceId, wsPath, problem],
@@ -356,18 +376,19 @@ export function IslandPages({
     () =>
       createIslandNavigation({
         slug,
-        route,
-        onChange: setRoute,
-        onRefused: setRefused,
+        tabs: tabsStore,
+        onRefused: setRefusedState,
       }),
-    [slug, route],
+    [slug, tabsStore],
   );
+
+  const [refused, setRefused] = useState<string | null>(null);
+  function setRefusedState(v: string) {
+    setRefused(v);
+  }
 
   useEffect(() => {
     if (refused === null) return;
-    // One line, once per destination: a refused path is a deliberate scoping
-    // decision (the five views below, or a Q8 surface), not a bug to report per
-    // click.
     console.info(
       `[multica] ${refused} is not one of the dsh panel's views (${ISLAND_FAMILIES.join(", ")})`,
     );
@@ -376,36 +397,41 @@ export function IslandPages({
   return (
     <ViewStoreProvider store={viewStore}>
       <NavigationProvider value={navigation}>
-        <ErrorBoundary resetKeys={[islandRouteKey(route)]}>
-          {route.view === "settings" ? (
-            // The fork's page, scoped to what this shell can actually render:
-            // no billing, integrations, plugins or shortcut reference, plus the
-            // one group that only exists here.
-            <SettingsPage
-              extraGroups={[moctGroup]}
-              hiddenTabs={HIDDEN_SETTINGS_TABS}
-              preferencesExtraRows={<PanelZoomRow />}
-            />
-          ) : (
-            <IslandPage route={route} extraAgentSections={agentMemorySections} />
-          )}
-        </ErrorBoundary>
-        {/* The fork's pages ask for a dialog through `useModalStore` and one
-            component renders whatever it names; the web and desktop layouts
-            mount it, and the island had no equivalent, so every dialog in the
-            panel (create issue, delete confirm, set parent, …) was a no-op
-            (M-146). It sits here rather than beside `UnreadReporter` because
-            the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
-            (`packages/views/modals/create-issue.tsx:244`) and would throw
-            outside `NavigationProvider`. Inside `IslandPages` it is also
-            outside the route switch, so a dialog survives a page change; the
-            portal container comes from `IslandApp`, so it renders into the
-            island's shadow root and not the shell's document. */}
-        <ModalRegistry />
-        {/* The build stamp (M-155): a sibling of the route switch, so it
-            survives page changes and renders even when the boundary shows
-            its fallback — the one moment an error report needs it most. */}
-        <IslandVersionBadge />
+        <PageChromeProvider titleInHostChrome>
+          <TabBar tabsStore={tabsStore} navigation={navigation} />
+          <ErrorBoundary
+            resetKeys={[tabsState.activeId ?? "none", islandRouteKey(route)]}
+          >
+            {route.view === "settings" ? (
+              // The fork's page, scoped to what this shell can actually render:
+              // no billing, integrations, plugins or shortcut reference, plus the
+              // one group that only exists here.
+              <SettingsPage
+                extraGroups={[moctGroup]}
+                hiddenTabs={HIDDEN_SETTINGS_TABS}
+                preferencesExtraRows={<PanelZoomRow />}
+              />
+            ) : (
+              <IslandPage route={route} extraAgentSections={agentMemorySections} />
+            )}
+          </ErrorBoundary>
+          {/* The fork's pages ask for a dialog through `useModalStore` and one
+              component renders whatever it names; the web and desktop layouts
+              mount it, and the island had no equivalent, so every dialog in the
+              panel (create issue, delete confirm, set parent, …) was a no-op
+              (M-146). It sits here rather than beside `UnreadReporter` because
+              the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
+              (`packages/views/modals/create-issue.tsx:244`) and would throw
+              outside `NavigationProvider`. Inside `IslandPages` it is also
+              outside the route switch, so a dialog survives a page change; the
+              portal container comes from `IslandApp`, so it renders into the
+              island's shadow root and not the shell's document. */}
+          <ModalRegistry />
+          {/* The build stamp (M-155): a sibling of the route switch, so it
+              survives page changes and renders even when the boundary shows
+              its fallback — the one moment an error report needs it most. */}
+          <IslandVersionBadge />
+        </PageChromeProvider>
       </NavigationProvider>
     </ViewStoreProvider>
   );

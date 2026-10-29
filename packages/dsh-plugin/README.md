@@ -104,6 +104,18 @@ routes in the fork, but they are authoring surfaces rather than views of what
 already exists, so a "New agent" click logs one line and stays put rather than
 opening a page this cut does not cover.
 
+## Header tabs
+
+The island now carries its own header row above the page: back/forward
+buttons, a horizontally scrolling tab strip, and an empty trailing slot
+reserved for card B. Every MMX view (board, issue, agents, agent, skills,
+skill, inbox, chat, settings) opens as a tab; each tab keeps its own
+back/forward history in `src/client/tabs.ts`. A rail click focuses that
+family's tab (or opens one), and closing the last tab opens the family
+root so the strip is never empty. The board's own title `PageHeader` is
+suppressed when the island hosts the chrome (`PageChromeProvider`), while
+its filter toolbar stays.
+
 ## How it renders
 
 `dsh.client` declares the client bundle, and dsh fetches it as one classic script.

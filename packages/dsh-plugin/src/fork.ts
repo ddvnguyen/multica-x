@@ -29,6 +29,12 @@ export type { InboxWorkspaceUnread } from "@multica/core/types/inbox";
 
 // Navigation and view state.
 export { NavigationProvider } from "@multica/views/navigation";
+export {
+  useTabPresentation,
+  ResourceLeadingVisual,
+} from "@multica/views/layout";
+export type { TabPresentationResult } from "@multica/views/layout";
+export { PageChromeProvider } from "@multica/views/layout";
 export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";

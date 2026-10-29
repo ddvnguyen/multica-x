@@ -10,6 +10,7 @@ import type {
 import { useIssuesScope } from "@multica/core/issues/stores/issues-scope-store";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { PageHeader } from "../../layout/page-header";
+import { usePageChrome } from "../../layout/page-chrome";
 import { RefreshablePageIcon } from "../../layout/refreshable-page-icon";
 import { useT } from "../../i18n";
 import { IssueSurface } from "../surface/issue-surface";
@@ -31,17 +32,20 @@ function IssuesSurfaceHeader({
   onTableFacetChange: (facet: IssueTableFacetSpec | null) => void;
 }) {
   const { t } = useT("issues");
+  const { titleInHostChrome } = usePageChrome();
   const dateFilter = useViewStore((s) => s.dateFilter);
   const setDateFilter = useViewStore((s) => s.setDateFilter);
 
   return (
     <>
-      <PageHeader>
-        <RefreshablePageIcon refreshing={isRefreshing}>
-          <ListTodo className="size-4" />
-        </RefreshablePageIcon>
-        <h1 className="text-body font-medium">{t(($) => $.page.breadcrumb_title)}</h1>
-      </PageHeader>
+      {titleInHostChrome ? null : (
+        <PageHeader>
+          <RefreshablePageIcon refreshing={isRefreshing}>
+            <ListTodo className="size-4" />
+          </RefreshablePageIcon>
+          <h1 className="text-body font-medium">{t(($) => $.page.breadcrumb_title)}</h1>
+        </PageHeader>
+      )}
       <IssuesHeader
         scopedIssues={issues}
         workingAgents={workingAgents}
