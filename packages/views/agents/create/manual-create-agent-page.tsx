@@ -297,7 +297,7 @@ function RuntimeSummaryCard({
       <div className="flex min-h-10 items-center gap-2.5 rounded-lg border bg-muted/30 px-3 py-2">
         {runtime ? (
           <>
-            <ProviderLogo provider={runtime.provider} className="size-4 shrink-0" />
+            <ProviderLogo provider={runtime.provider} runtime={runtime} className="size-4 shrink-0" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-label font-medium">
                 {runtimeDisplayLabel(runtime)}

@@ -530,7 +530,7 @@ function RuntimeCell({ row }: { row: AgentListRow }) {
         // these run on Codex" is a shape match, not a read.
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <ProviderLogo
-            provider={runtime.provider}
+            provider={runtime.provider} runtime={runtime}
             className="h-3.5 w-3.5 shrink-0"
           />
           <span className="min-w-0 truncate text-caption text-muted-foreground">

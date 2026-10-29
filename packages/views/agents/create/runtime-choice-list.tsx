@@ -175,7 +175,7 @@ function HarnessRow({
       <Radio checked={selected} disabled={!online} />
       <Tile>
         <ProviderLogo
-          provider={option.runtime.provider}
+          provider={option.runtime.provider} runtime={option.runtime}
           className={cn("size-4", !online && "opacity-50")}
         />
       </Tile>
@@ -204,7 +204,7 @@ function LogoStack({ options }: { options: HarnessOption[] }) {
           key={option.runtime.id}
           className="-mr-1 flex size-5 items-center justify-center rounded-sm bg-background ring-1 ring-border"
         >
-          <ProviderLogo provider={option.runtime.provider} className="size-3" />
+          <ProviderLogo provider={option.runtime.provider} runtime={option.runtime} className="size-3" />
         </span>
       ))}
       {extra > 0 ? (
