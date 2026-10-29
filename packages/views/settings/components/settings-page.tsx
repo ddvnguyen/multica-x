@@ -125,6 +125,11 @@ interface SettingsPageProps {
    * not there to open.
    */
   hiddenTabs?: readonly string[];
+  /**
+   * Rows a host appends to Preferences → Appearance. Optional: without it the
+   * page is the one the web and desktop apps already render.
+   */
+  preferencesExtraRows?: React.ReactNode;
 }
 
 type SettingsEntry = ExtraSettingsTab & {
@@ -156,6 +161,7 @@ export function SettingsPage({
   extraDeviceTabs = [],
   extraGroups = [],
   hiddenTabs = [],
+  preferencesExtraRows,
 }: SettingsPageProps = {}) {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
@@ -201,7 +207,7 @@ export function SettingsPage({
               "preferences",
               t(($) => $.page.tabs.preferences),
               SlidersHorizontal,
-              <PreferencesTab />,
+              <PreferencesTab extraRows={preferencesExtraRows} />,
             ),
             entry(
               "notifications",

@@ -13,6 +13,9 @@ import {
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
+import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
+import { PanelZoomRow } from "./zoom-row";
+import { useZoom } from "./zoom-store";
 import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
 import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
@@ -55,26 +58,6 @@ export interface IslandAppProps {
   problem: string | null;
   /** Entry the seat asked for; the board unless a deep link named one issue. */
   route?: IslandRoute;
-}
-
-const SUPPORTED = ["en", "zh-Hans", "ko", "ja", "fr"] as const;
-type Locale = (typeof SUPPORTED)[number];
-
-/** Follow the shell's document language instead of inventing a preference. */
-export function detectLocale(): Locale {
-  const candidates =
-    typeof navigator === "undefined"
-      ? []
-      : [...(navigator.languages ?? []), navigator.language];
-  for (const candidate of candidates) {
-    const tag = (candidate ?? "").toLowerCase();
-    if (tag.startsWith("zh")) return "zh-Hans";
-    if (tag.startsWith("ko")) return "ko";
-    if (tag.startsWith("ja")) return "ja";
-    if (tag.startsWith("fr")) return "fr";
-    if (tag.startsWith("en")) return "en";
-  }
-  return "en";
 }
 
 /**
@@ -149,30 +132,53 @@ export function IslandApp({
   route,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
-  const locale = useMemo(detectLocale, []);
+  // The adapter is what the fork's Preferences page reads its Language row
+  // through; without it `useLocaleAdapter` throws and the page renders as the
+  // error boundary (M-154). `syncUserLocale` stays off: the Language row still
+  // PATCHes `/api/me` itself, and the dsh shell's own language is not ours.
+  const localeAdapter = useMemo(
+    () => createIslandLocaleAdapter(storage),
+    [storage],
+  );
+  const locale = useMemo(
+    () => resolveIslandLocale(localeAdapter),
+    [localeAdapter],
+  );
+  const zoom = useZoom();
   return (
-    <CoreProvider
-      apiBaseUrl={ISLAND_API_BASE}
-      wsUrl={wsUrl}
-      storage={storage}
-      // Cookie mode: the host proxy authenticates every request and the
-      // WebSocket upgrade with its own token, so the island sends nothing and
-      // the sliding-renewal flow (a cookie-session concern) stays off.
-      cookieAuth
-      identity={{ platform: "dsh", version: ISLAND_VERSION, os: detectOs() }}
-      locale={locale}
-      resources={{ [locale]: RESOURCES[locale] }}
-      syncUserLocale={false}
+    // Zoom scales the panel's own surface, not the shell and not the overlays:
+    // popups are portalled outside this tree (`popup-seat.ts`), so they keep
+    // their size and their anchoring at every level. Percentage heights still
+    // resolve, because the containing block is expressed in the zoomed space.
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ zoom: zoom / 100 }}
+      data-panel-zoom={zoom}
     >
-      <PortalContainerProvider container={portalHost}>
-        <WorkspaceGate
-          preferredSlug={preferredSlug}
-          wsPath={wsPath}
-          problem={problem}
-          route={route}
-        />
-      </PortalContainerProvider>
-    </CoreProvider>
+      <CoreProvider
+        apiBaseUrl={ISLAND_API_BASE}
+        wsUrl={wsUrl}
+        storage={storage}
+        // Cookie mode: the host proxy authenticates every request and the
+        // WebSocket upgrade with its own token, so the island sends nothing and
+        // the sliding-renewal flow (a cookie-session concern) stays off.
+        cookieAuth
+        identity={{ platform: "dsh", version: ISLAND_VERSION, os: detectOs() }}
+        locale={locale}
+        localeAdapter={localeAdapter}
+        resources={{ [locale]: RESOURCES[locale] }}
+        syncUserLocale={false}
+      >
+        <PortalContainerProvider container={portalHost}>
+          <WorkspaceGate
+            preferredSlug={preferredSlug}
+            wsPath={wsPath}
+            problem={problem}
+            route={route}
+          />
+        </PortalContainerProvider>
+      </CoreProvider>
+    </div>
   );
 }
 
@@ -370,6 +376,7 @@ export function IslandPages({
             <SettingsPage
               extraGroups={[moctGroup]}
               hiddenTabs={HIDDEN_SETTINGS_TABS}
+              preferencesExtraRows={<PanelZoomRow />}
             />
           ) : (
             <IslandPage route={route} extraAgentSections={agentMemorySections} />
