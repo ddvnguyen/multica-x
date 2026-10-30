@@ -8981,7 +8981,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
 
 	var idleWatchdogTimeout time.Duration
-	if provider == "opencode" || provider == "codearts" {
+	if family := agent.Family(provider); family == "opencode" || family == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
 	execOpts := agent.ExecOptions{

@@ -75,6 +75,12 @@ type BuiltinRuntime struct {
 // propagate to the picker, which shows the reason and supports manual entry.
 type ModelDiscoveryFunc func(ctx context.Context, runtimeCmd Command) ([]Model, error)
 
+// opencode2RuntimeID is the built-in runtime identity for the OpenCode 2 CLI.
+// It is a constant because the descriptor table below references
+// discoverOpenCode2Models, which must not reach back into BuiltinRuntimes
+// during package initialization.
+const opencode2RuntimeID = "opencode2"
+
 // BuiltinRuntimes is the registry of built-in runtime identities that are
 // NOT in SupportedTypes (they are protocol-family derivatives, not families
 // themselves). The daemon probes each one independently and dispatches it
@@ -97,6 +103,25 @@ var BuiltinRuntimes = []BuiltinRuntime{
 		ProviderLabel:     "omp",
 		ModelDiscovery:    discoverOmpModels,
 	},
+	{
+		// OpenCode 2 is the 2.x CLI registered as its own runtime identity so a
+		// host can run it beside the 1.x `opencode` binary. Everything below
+		// the executable name — model discovery, `provider/model`
+		// qualification, launch args, thinking variants — comes from the
+		// opencode protocol family; the 2.x wire contract is detected from the
+		// CLI's own version (see opencodeUsesV2Contract), not from this ID.
+		ID:                opencode2RuntimeID,
+		ProtocolFamily:    "opencode",
+		DefaultCommand:    "opencode2",
+		EnvPrefix:         "MULTICA_OPENCODE2",
+		DisplayName:       "OpenCode 2",
+		SkillsDir:         ".opencode/skills",
+		UserSkillsDir:     ".config/opencode/skills",
+		LaunchHeader:      "opencode2 run (json)",
+		DefaultExecutable: "opencode2",
+		ProviderLabel:     "opencode2",
+		ModelDiscovery:    discoverOpenCode2Models,
+	},
 }
 
 // BuiltinRuntimeByID returns the descriptor for the given runtime identity,
@@ -115,6 +140,22 @@ func BuiltinRuntimeByID(id string) (BuiltinRuntime, bool) {
 func IsBuiltinRuntime(id string) bool {
 	_, ok := BuiltinRuntimeByID(id)
 	return ok
+}
+
+// Family maps a runtime identity to the protocol family that executes it: a
+// built-in runtime identity (e.g. "opencode2") resolves to its descriptor's
+// family ("opencode"), and a protocol family resolves to itself.
+//
+// This is the one seam provider-keyed behaviour uses to accept a runtime
+// identity. Anything that decides *how a runtime behaves* — thinking
+// vocabulary, model qualification, blocked args, resume semantics — asks for
+// the family; anything that reports *which runtime this is* (display name,
+// metrics label, stored provider) keeps the identity.
+func Family(provider string) string {
+	if desc, ok := BuiltinRuntimeByID(provider); ok {
+		return desc.ProtocolFamily
+	}
+	return provider
 }
 
 // BuiltinRuntimeCommands returns the default CLI command names for all

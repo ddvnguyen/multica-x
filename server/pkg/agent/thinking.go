@@ -753,7 +753,7 @@ func CheckThinkingLevelWith(loadCatalog func() (Catalog, error), providerType, m
 			// opencode has no single default model, so it accepts a level any
 			// advertised model supports. Providers that instead require a pinned
 			// model never reach here — they were already rejected above.
-			if providerType == "opencode" {
+			if Family(providerType) == "opencode" {
 				if anyModelSupportsThinkingValue(models, value) {
 					return ThinkingLevelCheck{Valid: true}, nil
 				}
@@ -1053,9 +1053,12 @@ var acpCatalogThinkingProviders = map[string]bool{
 }
 
 // usesDynamicThinkingCatalog reports whether a provider's effort vocabulary is
-// owned by a daemon-local catalog rather than a fixed server-side enum.
+// owned by a daemon-local catalog rather than a fixed server-side enum. A
+// built-in runtime identity inherits its family's answer: the vocabulary comes
+// from the catalog the backend discovered, not from the registered name.
 func usesDynamicThinkingCatalog(providerType string) bool {
-	return thinkingDynamicCatalogProviders[providerType] || acpCatalogThinkingProviders[providerType]
+	family := Family(providerType)
+	return thinkingDynamicCatalogProviders[family] || acpCatalogThinkingProviders[family]
 }
 
 // UsesACPCatalogThinking reports whether a provider's effort support is decided

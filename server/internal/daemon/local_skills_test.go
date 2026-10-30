@@ -779,6 +779,42 @@ func TestLoadRuntimeLocalSkillBundle_OpenCode(t *testing.T) {
 	}
 }
 
+// TestListRuntimeLocalSkills_OpenCode2SharesFamilyRoot covers the alias seam on
+// the local-skills surface (M-169 review): "opencode2" is a built-in runtime
+// identity, so localSkillRootsForProvider must resolve it through its descriptor
+// to the family's user skills root rather than falling into the raw-provider
+// switch's default (which yields no roots at all).
+func TestListRuntimeLocalSkills_OpenCode2SharesFamilyRoot(t *testing.T) {
+	home := t.TempDir()
+	redirectTestHome(t, home)
+
+	writeTestLocalSkill(t, filepath.Join(home, ".config", "opencode", "skills"), "release/reporter", map[string]string{
+		"SKILL.md": "---\nname: Release Reporter\ndescription: Summarize release notes\n---\n# Release Reporter\n",
+	})
+
+	skills, supported, err := listRuntimeLocalSkills("opencode2")
+	if err != nil {
+		t.Fatalf("listRuntimeLocalSkills: %v", err)
+	}
+	if !supported {
+		t.Fatal("opencode2 should be supported through its opencode family")
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if skills[0].SourcePath != "~/.config/opencode/skills/release/reporter" {
+		t.Fatalf("source_path = %q", skills[0].SourcePath)
+	}
+
+	bundle, supported, err := loadRuntimeLocalSkillBundle("opencode2", "release/reporter")
+	if err != nil || !supported {
+		t.Fatalf("loadRuntimeLocalSkillBundle: supported=%v err=%v", supported, err)
+	}
+	if bundle.Name != "Release Reporter" {
+		t.Fatalf("name = %q", bundle.Name)
+	}
+}
+
 func TestListRuntimeLocalSkills_OpenClaw(t *testing.T) {
 	home := t.TempDir()
 	redirectTestHome(t, home)

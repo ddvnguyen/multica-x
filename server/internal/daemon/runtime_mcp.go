@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -54,7 +55,7 @@ func mergeRuntimeAndAgentMcpConfig(provider string, agentConfig json.RawMessage)
 	agentServers := map[string]any{}
 	if servers, ok := nestedRuntimeMcpMap(agentDocument, "mcpServers"); ok {
 		agentServers = servers
-	} else if provider == "opencode" || provider == "codearts" {
+	} else if family := agent.Family(provider); family == "opencode" || family == "codearts" {
 		// Older OpenCode agents may store the provider-native top-level `mcp`
 		// map. Its individual entries can still flow through the existing
 		// OpenCode adapter when placed under the canonical mcpServers envelope.
@@ -285,7 +286,13 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 		path, key, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "toml"
 	case "cursor":
 		path, key, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "json"
-	case "opencode":
+	case "opencode", "opencode2":
+		// A built-in runtime identity shares the family's config root: the
+		// OpenCode 2 identity is the same tool, so it reads the same
+		// opencode.json the 1.x binary does. Listed explicitly rather than
+		// canonicalised through agent.Family, because the config root is a
+		// per-binary fact, not a protocol one — omp is the precedent (it
+		// reads ~/.omp/agent/mcp.json, not pi's ~/.pi/agent/mcp.json).
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(home, ".config")
@@ -422,7 +429,7 @@ func listRuntimeLocalMcpServers(provider string) ([]runtimeLocalMcpServerSummary
 		path, key, source, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "User config", "toml"
 	case "cursor":
 		path, key, source, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "User config", "json"
-	case "opencode":
+	case "opencode", "opencode2":
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(home, ".config")

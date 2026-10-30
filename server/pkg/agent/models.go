@@ -804,6 +804,17 @@ func isOpenAIReasoningSeriesID(id string) bool {
 
 // ── Dynamic discovery ──
 
+// discoverOpenCode2Models enumerates the OpenCode 2 identity through the
+// family's discovery. It only fills in the identity's own binary when the
+// caller passed no command, so an empty Command cannot silently enumerate the
+// 1.x `opencode` binary instead of the 2.x one this runtime runs.
+func discoverOpenCode2Models(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if runtimeCmd.Path == "" {
+		runtimeCmd.Path = opencode2RuntimeID
+	}
+	return discoverOpenCodeModels(ctx, runtimeCmd)
+}
+
 // discoverOpenCodeModels reads model metadata using the installed CLI's contract:
 // the model API on 2.x, and verbose model rows on 1.x. Plain IDs remain a
 // fallback when metadata discovery fails; no reasoning levels are invented.

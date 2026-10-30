@@ -19,6 +19,7 @@ muse
 omp
 openclaw
 opencode
+opencode2
 pi
 qodercli
 qoderclicn
