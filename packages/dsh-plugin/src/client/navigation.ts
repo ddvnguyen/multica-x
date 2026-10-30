@@ -1,4 +1,6 @@
 import type { NavigationAdapter } from "../fork";
+import type { StoreApi } from "zustand/vanilla";
+import type { TabsState } from "./tabs";
 
 /**
  * The island's own navigation, across the five places the sidebar menu opens.
@@ -199,40 +201,135 @@ export function islandRouteKey(route: IslandRoute): string {
 
 export interface IslandNavigationOptions {
   slug: string;
-  route: IslandRoute;
-  onChange: (route: IslandRoute) => void;
+  route?: IslandRoute;
+  tabs?: StoreApi<TabsState>;
+  onChange?: (route: IslandRoute) => void;
   /** Reports a refused destination; used for one diagnostic, never for UI. */
   onRefused?: (path: string) => void;
 }
 
 export function createIslandNavigation({
   slug,
-  route,
+  route: initialRoute = BOARD_ROUTE,
+  tabs,
   onChange,
   onRefused,
 }: IslandNavigationOptions): NavigationAdapter {
+  const currentRoute = (): IslandRoute => {
+    if (tabs) {
+      const st = tabs.getState();
+      const active = st.tabs.find((t) => t.id === st.activeId);
+      if (active) {
+        const r = parseIslandRoute(active.url);
+        if (r !== null) return r;
+      }
+    }
+    return initialRoute;
+  };
+
   const go = (path: string): void => {
     const next = parseIslandRoute(path);
     if (next === null) {
       onRefused?.(path);
       return;
     }
-    onChange(next);
+    if (tabs) {
+      tabs.getState().push(path);
+    }
+    onChange?.(next);
   };
-  const parent = islandParent(route);
+
+  const replaceGo = (path: string): void => {
+    const next = parseIslandRoute(path);
+    if (next === null) {
+      onRefused?.(path);
+      return;
+    }
+    if (tabs) {
+      tabs.getState().replace(path);
+    } else {
+      // fallback: no-op history
+    }
+    onChange?.(next);
+  };
+
+  const route = currentRoute();
+
+  const back = () => {
+    const r = currentRoute();
+    if (tabs) {
+      const st = tabs.getState();
+      const active = st.tabs.find((t) => t.id === st.activeId);
+      if (active && active.history.index > 0) {
+        const moved = st.back();
+        if (moved) {
+          const newActive = st.activeTab();
+          if (newActive) {
+            const nr = parseIslandRoute(newActive.url);
+            if (nr !== null) onChange?.(nr);
+          }
+          return;
+        }
+      }
+    }
+    const p = islandParent(r);
+    if (p !== null) onChange?.(p);
+  };
+
+  const forward = () => {
+    if (tabs) {
+      const st = tabs.getState();
+      const moved = st.forward();
+      if (moved) {
+        const newActive = st.activeTab();
+        if (newActive) {
+          const nr = parseIslandRoute(newActive.url);
+          if (nr !== null) onChange?.(nr);
+        }
+      }
+    }
+  };
+
+  const canGoBackFn = () => {
+    if (tabs) {
+      const r = currentRoute();
+      return tabs.getState().canGoBack(r);
+    }
+    return islandParent(route) !== null;
+  };
+
+  const openInNewTab = (
+    path: string,
+    _title?: string,
+    opts?: { activate?: boolean },
+  ) => {
+    const next = parseIslandRoute(path);
+    if (next === null) {
+      onRefused?.(path);
+      return;
+    }
+    if (tabs) {
+      tabs.getState().openTab(path, { activate: opts?.activate === true });
+      if (opts?.activate === true) {
+        onChange?.(next);
+      }
+    } else {
+      onChange?.(next);
+    }
+  };
+
   return {
     push: go,
-    replace: go,
-    back: () => {
-      if (parent !== null) onChange(parent);
-    },
-    pathname: islandPathname(slug, route),
+    replace: replaceGo,
+    back,
+    pathname: tabs
+      ? (tabs.getState().activeTab()?.url ?? islandPathname(slug, route)).split("?")[0]!
+      : islandPathname(slug, route),
     searchParams: new URLSearchParams(route.query ?? ""),
     hash: "",
-    // A copied link would address this dsh page, which has no Multica route,
-    // so there is nothing useful to hand out. The issue's own Multica URL is a
-    // web-app concept and is deliberately not invented here.
+    openInNewTab,
     getShareableUrl: () => "",
-    canGoBack: () => parent !== null,
+    canGoBack: canGoBackFn,
+    forward,
   };
 }
