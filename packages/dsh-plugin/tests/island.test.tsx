@@ -79,7 +79,14 @@ const ISSUE = {
 };
 
 function stubBackend(
-  options: { workspaces?: unknown[]; problem?: string | null; issues?: unknown[] } = {},
+  options: {
+    workspaces?: unknown[];
+    problem?: string | null;
+    issues?: unknown[];
+    /** Host-configured slug; `""` is an unconfigured host. */
+    workspaceSlug?: string;
+    projects?: unknown[];
+  } = {},
 ) {
   const handler = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -87,12 +94,17 @@ function stubBackend(
     if (url.startsWith("/multica/config")) {
       return json({
         wsPath: "/multica/ws",
-        workspaceSlug: "",
+        // One workspace (M-173): the configured slug is the only source, so
+        // the stub defaults to the workspace it serves.
+        workspaceSlug: options.workspaceSlug ?? WORKSPACE.slug,
         problem: options.problem ?? null,
       });
     }
     if (url.startsWith("/multica/api/workspaces")) {
       return json(options.workspaces ?? [WORKSPACE]);
+    }
+    if (url.startsWith("/multica/api/projects")) {
+      return json({ projects: options.projects ?? [] });
     }
     if (url.startsWith("/multica/api/me")) {
       return json({ id: "user-1", name: "Ada", email: "ada@example.test" });
@@ -449,6 +461,29 @@ describe("mountIsland", () => {
 
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("No Multica workspace");
+    });
+  });
+
+  // M-173: the island is one workspace. A host slug the token cannot read is
+  // an error to show, never an invitation to open the next workspace the token
+  // happens to see — that would render another tenant's data under this header.
+  it("does not fall back to another workspace when the configured slug is unreadable", async () => {
+    stubBackend({
+      workspaceSlug: "missing",
+      workspaces: [
+        WORKSPACE,
+        { ...WORKSPACE, id: "ws-2", slug: "other", name: "Other" },
+      ],
+    });
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).toContain("No Multica workspace");
+      expect(text).toContain('The configured workspace "missing" is not readable');
+      // No board, no tabs: the fallback workspace is never mounted.
+      expect(text).not.toContain("Issues");
     });
   });
 

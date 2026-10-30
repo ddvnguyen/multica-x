@@ -10,7 +10,7 @@ import type {
 import { useIssuesScope } from "@multica/core/issues/stores/issues-scope-store";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { PageHeader } from "../../layout/page-header";
-import { usePageChrome } from "../../layout/page-chrome";
+import { usePageChrome, usePageScope } from "../../layout/page-chrome";
 import { RefreshablePageIcon } from "../../layout/refreshable-page-icon";
 import { useT } from "../../i18n";
 import { IssueSurface } from "../surface/issue-surface";
@@ -62,13 +62,24 @@ function IssuesSurfaceHeader({
 export function IssuesPage() {
   const { t } = useT("issues");
   const scope = useIssuesScope("issues");
+  // A host that owns a global project filter (the dsh island header) narrows
+  // the board through the project scope the fork already supports, so the
+  // server-side query, the facets and the new-issue default all agree with it.
+  const { projectId } = usePageScope();
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <IssueSurface
-        scope={{ type: "workspace", actorKind: scope }}
+        scope={
+          projectId === null
+            ? { type: "workspace", actorKind: scope }
+            : { type: "project", projectId, actorKind: scope }
+        }
         modes={["board", "list", "table", "swimlane"]}
         batchToolbar="list"
+        createDefaults={
+          projectId === null ? undefined : { project_id: projectId }
+        }
         renderHeader={({ controller }) => (
           <IssuesSurfaceHeader
             issues={controller.surfaceIssues}

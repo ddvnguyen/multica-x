@@ -60,9 +60,12 @@ function TabItem({
 export function TabBar({
   tabsStore,
   navigation,
+  projectPicker,
 }: {
   tabsStore: StoreApi<TabsState>;
   navigation: NavigationAdapter;
+  /** Host-owned project filter rendered between back/forward and the strip. */
+  projectPicker?: React.ReactNode;
 }) {
   const state = useStore(tabsStore);
   const tabs = state.tabs;
@@ -120,6 +123,7 @@ export function TabBar({
       >
         ›
       </button>
+      {projectPicker}
       <div ref={stripRef} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {tabs.map((tab) => (
           <TabItem

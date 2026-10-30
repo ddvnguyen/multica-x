@@ -215,6 +215,11 @@ export function useIssueSurfaceController({
   );
   const scopeKey = queryPlan.scopeKey;
   const projectId = scope.type === "project" ? scope.projectId : undefined;
+  // A my-scope narrowed by a host-owned project (the dsh island header) is
+  // still a my-scope relation, so the project travels as a server filter and
+  // the surface's own project chips are not the thing that decides it.
+  const hostProjectId =
+    scope.type === "my" ? scope.projectId : undefined;
 
   const viewMode = useViewStore((s) => s.viewMode);
   const setViewMode = useViewStore((s) => s.setViewMode);
@@ -389,10 +394,16 @@ export function useIssueSurfaceController({
 
   const projectFilterState = useMemo(
     () => ({
-      projectFilters: scope.type === "project" ? [] : projectFilters,
-      includeNoProject: scope.type === "project" ? false : includeNoProject,
+      projectFilters:
+        scope.type === "project" || hostProjectId !== undefined
+          ? []
+          : projectFilters,
+      includeNoProject:
+        scope.type === "project" || hostProjectId !== undefined
+          ? false
+          : includeNoProject,
     }),
-    [includeNoProject, projectFilters, scope.type],
+    [hostProjectId, includeNoProject, projectFilters, scope.type],
   );
   const { projectFilters: viewProjectFilters, includeNoProject: viewIncludeNoProject } =
     projectFilterState;
@@ -495,9 +506,11 @@ export function useIssueSurfaceController({
         ...(assigneeFilters.length > 0 ? { assignees: assigneeFilters } : {}),
         ...(includeNoAssignee ? { include_no_assignee: true } : {}),
         ...(creatorFilters.length > 0 ? { creators: creatorFilters } : {}),
-        ...(viewProjectFilters.length > 0
-          ? { project_ids: viewProjectFilters }
-          : {}),
+        ...(hostProjectId === undefined
+          ? viewProjectFilters.length > 0
+            ? { project_ids: viewProjectFilters }
+            : {}
+          : { project_ids: [hostProjectId] }),
         ...(viewIncludeNoProject ? { include_no_project: true } : {}),
         ...(projectStatusFilters.length > 0
           ? { project_statuses: projectStatusFilters }
@@ -527,6 +540,7 @@ export function useIssueSurfaceController({
     dateParams,
     debouncedActiveSearch,
     effectivePropertyFilters,
+    hostProjectId,
     includeNoAssignee,
     labelFilters,
     priorityFilters,

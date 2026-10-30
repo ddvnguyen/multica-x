@@ -8,6 +8,7 @@ import {
   myIssuesViewStore,
 } from "@multica/core/issues/stores/my-issues-view-store";
 import { PageHeader } from "../../layout/page-header";
+import { usePageScope } from "../../layout/page-chrome";
 import { RefreshablePageIcon } from "../../layout/refreshable-page-icon";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { useT } from "../../i18n";
@@ -18,6 +19,9 @@ export function MyIssuesPage() {
   const user = useAuthStore((s) => s.user);
   const scope = useStore(myIssuesViewStore, (s) => s.scope);
   const setScope = useStore(myIssuesViewStore, (s) => s.setScope);
+  // A host-owned project filter narrows the relation the page already picks;
+  // without one the page keeps its plain my-scope.
+  const { projectId } = usePageScope();
 
   const renderTitle = (refreshing = false) => (
     <PageHeader>
@@ -36,9 +40,13 @@ export function MyIssuesPage() {
             type: "my",
             userId: user.id,
             relation: myIssuesRelationFromScope(scope),
+            ...(projectId === null ? {} : { projectId }),
           }}
           modes={["board", "list", "table", "swimlane"]}
           batchToolbar="list"
+          createDefaults={
+            projectId === null ? undefined : { project_id: projectId }
+          }
           renderHeader={({ controller }) => (
             <>
               {renderTitle(controller.isRefreshing)}
