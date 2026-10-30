@@ -35,13 +35,15 @@ window.__ModuleLoader__.load({
       // A shell with no React row: fall through to the bundled copy below.
       hostReact = null;
     }
-${indent(bundle)}
-    var api = module.exports;
-    if (api.configureHostRuntime) {
-      api.configureHostRuntime(hostReact && hostReact.createElement ? hostReact.createElement : null);
+    (function (module, exports) {
+${indent(bundle).replace(/^    /gm, "      ")}
+    })(module, exports);
+    var __pluginExports = module.exports;
+    if (__pluginExports.configureHostRuntime) {
+      __pluginExports.configureHostRuntime(hostReact && hostReact.createElement ? hostReact.createElement : null);
     }
-    api.default = api;
-    return api;
+    __pluginExports.default = __pluginExports;
+    return __pluginExports;
   },
 });
 `;
