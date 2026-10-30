@@ -18,36 +18,47 @@ func TestFailStaleTasksDetachedTimeoutIsBounded(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	_, agentID, oldTaskID := setupSweeperTestFixture(t, "running")
-	_, _, youngTaskID := setupSweeperTestFixture(t, "running")
+	// One fixture: the helper creates the issue and first task; the second task
+	// is inserted directly so the shared issue fixture is only built once.
+	issueID, agentID, oldTaskID := setupSweeperTestFixture(t, "running")
 
-	// Both tasks belong to the same agent, hence the same runtime. Age one past
-	// the detached bound and keep the other inside it.
 	var runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
 		t.Fatalf("load runtime: %v", err)
 	}
+
+	var youngTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, dispatched_at, started_at)
+		VALUES ($1, $2, $3, 'running', 0, now() - interval '1 hour', now() - interval '1 hour')
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&youngTaskID); err != nil {
+		t.Fatalf("create young task: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		for _, taskID := range []string{oldTaskID, youngTaskID} {
+			_, _ = testPool.Exec(cleanupCtx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		}
+	})
+
+	// Age one task past the detached bound and keep the other inside it.
 	if _, err := testPool.Exec(ctx, `
 		UPDATE agent_task_queue SET started_at = now() - interval '4 hours' WHERE id = $1
 	`, oldTaskID); err != nil {
 		t.Fatalf("age old task: %v", err)
 	}
-	if _, err := testPool.Exec(ctx, `
-		UPDATE agent_task_queue SET started_at = now() - interval '1 hour' WHERE id = $1
-	`, youngTaskID); err != nil {
-		t.Fatalf("age young task: %v", err)
-	}
 
 	// The runtime advertises the detached capability and is heartbeating now:
 	// exactly the state that used to strand the orphan forever.
-	var previousMetadata []byte
-	if err := testPool.QueryRow(ctx, `SELECT metadata FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&previousMetadata); err != nil {
+	var previousMetadata *string
+	if err := testPool.QueryRow(ctx, `SELECT metadata::text FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&previousMetadata); err != nil {
 		t.Fatalf("load runtime metadata: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `
 			UPDATE agent_runtime SET metadata = $2::jsonb WHERE id = $1
-		`, runtimeID, string(previousMetadata))
+		`, runtimeID, previousMetadata)
 	})
 	if _, err := testPool.Exec(ctx, `
 		UPDATE agent_runtime
