@@ -173,6 +173,11 @@ type Config struct {
 	// command_name on PATH. nil/empty means "always resolve via PATH".
 	ProfileCommandOverrides map[string]string
 
+	// DetachedRuntime enables launching dsh tasks in their own transient
+	// systemd user scope so they survive a daemon restart (S3-C, M-139).
+	// Linux only, off by default.
+	DetachedRuntime bool
+
 	// MoctBaseURL is the base URL of this host's moct-be, the memory plane
 	// (M-97 decision 3). Empty — the default everywhere but a lane that runs
 	// moct-be — switches the whole MOCT seam off: no pre-run inject, no `moct`
@@ -649,6 +654,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		messageSink = ""
 	}
 
+	// S3-C (M-139): detached runtime scope is Linux-only and off by default.
+	detachedRuntime := boolFromEnv("MULTICA_DETACHED_RUNTIME", false) && runtime.GOOS == "linux"
+
 	// S3-B1: the dsh prompt-cache summary clock. Defaults come from the
 	// M-133 spike's provisional values; every one is env-tunable because the
 	// spike could not measure a real cache TTL (re-measure after M-126).
@@ -667,6 +675,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
 		MessageSink:                     messageSink,
+		DetachedRuntime:                 detachedRuntime,
 		DshSummary:                      dshSummary,
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,

@@ -6225,6 +6225,8 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 }
 
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
+// Detached-capable runtimes never call it: the handler returns early for them
+// and the sweeper's detached branch bounds those rows (S3-C, M-139).
 func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.RecoverOrphanedTasksForRuntime(ctx, runtimeID)

@@ -111,6 +111,8 @@ type Client struct {
 	version  string
 	os       string
 
+	detachedRuntime bool
+
 	workspaceMu                    sync.Mutex
 	workspaceETag                  string
 	workspaceCache                 []WorkspaceInfo
@@ -180,15 +182,15 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 	if c.os != "" {
 		req.Header.Set("X-Client-OS", c.os)
 	}
-	req.Header.Set("X-Client-Capabilities", daemonHTTPClientCapabilities())
+	req.Header.Set("X-Client-Capabilities", daemonHTTPClientCapabilities(c.detachedRuntime))
 }
 
 // daemonClientCapabilities is the X-Client-Capabilities value the daemon
 // advertises on the WS handshake. A claim built over WS gets the common
 // capability gating plus WS-only scheduling metadata. rpc-v1 advertises WS
 // request/response support (MUL-4257).
-func daemonClientCapabilities() string {
-	return strings.Join(append(daemonCommonCapabilities(),
+func daemonClientCapabilities(detached bool) string {
+	return strings.Join(append(daemonCommonCapabilities(detached),
 		protocol.DaemonCapabilityClaimPollHintsV1,
 	), ",")
 }
@@ -197,12 +199,12 @@ func daemonClientCapabilities() string {
 // responses cannot drive the healthy-WS scheduler. Advertising it there would
 // make the server run the deferred-task hint query only for the daemon to ignore
 // the result.
-func daemonHTTPClientCapabilities() string {
-	return strings.Join(daemonCommonCapabilities(), ",")
+func daemonHTTPClientCapabilities(detached bool) string {
+	return strings.Join(daemonCommonCapabilities(detached), ",")
 }
 
-func daemonCommonCapabilities() []string {
-	return []string{
+func daemonCommonCapabilities(detached bool) []string {
+	caps := []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityExecutionManifestV1,
@@ -216,11 +218,21 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityWorkflowStatusRulesV1,
 	}
+	if detached {
+		caps = append(caps, protocol.DaemonCapabilityDetachedRuntimeV1)
+	}
+	return caps
 }
 
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
 	c.token = token
+}
+
+// SetDetachedRuntime toggles advertisement of the detached-runtime capability
+// (S3-C, M-139). Must be called before registration/claim traffic.
+func (c *Client) SetDetachedRuntime(enabled bool) {
+	c.detachedRuntime = enabled
 }
 
 // Token returns the current auth token.

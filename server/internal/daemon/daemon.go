@@ -775,6 +775,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	// Tag every daemon HTTP request with the daemon's CLI version so the
 	// server can split logs/metrics by client version (parallel to the CLI).
 	client.SetVersion(cfg.CLIVersion)
+	client.SetDetachedRuntime(cfg.DetachedRuntime)
 	d := &Daemon{
 		cfg:                         cfg,
 		client:                      client,

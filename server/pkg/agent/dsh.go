@@ -319,33 +319,19 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 
 	runCtx, cancel := runContext(ctx, opts.Timeout)
 	args := dshLaunchArgs()
-	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
-	hideAgentWindow(cmd)
-	cmd.Cancel = func() error { return nil }
-	cmd.WaitDelay = 10 * time.Second
-	if opts.Cwd != "" {
-		cmd.Dir = opts.Cwd
-	}
-	cmd.Env = buildEnv(b.cfg.Env)
-	if b.cfg.TaskID != "" {
-		cmd.Env = append(cmd.Env, "DSH_SESSION_OWNER=Multica run "+b.cfg.TaskID)
-	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("dsh stdout pipe: %w", err)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("dsh stdin pipe: %w", err)
-	}
-	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[dsh:stderr] "), agentStderrTailBytes)
-	cmd.Stderr = stderrBuf
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
-		cancel()
-		return nil, fmt.Errorf("start dsh: %w", err)
+	// S3-C (M-139): a detached run binds no daemon pipe — the pipes die with
+	// the daemon and would SIGPIPE a surviving child. See dsh_detached.go. Off
+	// by default; a host without systemd-run falls back to the direct launch.
+	var detached *dshDetachedRun
+	if dshDetachedRequested() {
+		plan, planErr := prepareDshDetachedRun(opts.Cwd, b.cfg.TaskID)
+		if planErr != nil {
+			cancel()
+			return nil, fmt.Errorf("prepare detached dsh run: %w", planErr)
+		}
+		detached = plan
+		defer detached.Close()
 	}
 
 	requestID := b.cfg.TaskID
@@ -358,22 +344,92 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		Cwd: opts.Cwd, Prompt: prompt, ResumeSessionID: opts.ResumeSessionID,
 		Model: model, ReasoningEffort: opts.ThinkingLevel, MCPServers: mcpServers,
 	}
-	var writeMu sync.Mutex
-	encoder := json.NewEncoder(stdin)
-	writeFrame := func(value any) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return encoder.Encode(value)
+
+	var (
+		cmd        *exec.Cmd
+		stdout     io.ReadCloser
+		stdin      io.WriteCloser
+		stderrTail func() string
+		tailDone   chan struct{}
+	)
+	if detached != nil {
+		b.cfg.Logger.Info("dsh launching in detached systemd scope", "unit", detached.unit, "dir", detached.dir)
+		cmd = b.cfg.commandAt("systemd-run").exec(runCtx, detached.argv(execPath, args)...)
+		stdinReader, openErr := detached.stdinReader()
+		if openErr != nil {
+			cancel()
+			return nil, openErr
+		}
+		cmd.Stdin = stdinReader
+		cmd.Stdout = detached.stdoutFile
+		cmd.Stderr = detached.stderrFile
+		if writeErr := detached.writeExecuteFrame(command); writeErr != nil {
+			cancel()
+			return nil, writeErr
+		}
+		tailDone = make(chan struct{})
+		stdout = detached.stdoutReader(tailDone)
+		stderrTail = detached.stderrTail
+	} else {
+		cmd = b.cfg.commandAt(execPath).exec(runCtx, args...)
+	}
+	hideAgentWindow(cmd)
+	cmd.Cancel = func() error { return nil }
+	cmd.WaitDelay = 10 * time.Second
+	if opts.Cwd != "" {
+		cmd.Dir = opts.Cwd
+	}
+	cmd.Env = buildEnv(b.cfg.Env)
+	if b.cfg.TaskID != "" {
+		cmd.Env = append(cmd.Env, "DSH_SESSION_OWNER=Multica run "+b.cfg.TaskID)
+	}
+	if detached != nil {
+		// The wrapper records the exit status here; a daemon that restarts can
+		// read it even though it never saw Wait return.
+		cmd.Env = append(cmd.Env, "MULTICA_DETACHED_EXIT="+detached.exitPath)
+	} else {
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("dsh stdout pipe: %w", err)
+		}
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("dsh stdin pipe: %w", err)
+		}
+		stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[dsh:stderr] "), agentStderrTailBytes)
+		cmd.Stderr = stderrBuf
+		stderrTail = stderrBuf.Tail
+	}
+	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+		cancel()
+		return nil, fmt.Errorf("start dsh: %w", err)
+	}
+
+	var writeFrame func(any) error
+	if detached != nil {
+		// stdin was the pre-written execute frame. A detached run takes no
+		// further input: live re-attach across restarts is out of scope (S3-C).
+		writeFrame = func(any) error { return errDshDetachedNoInput }
+	} else {
+		var writeMu sync.Mutex
+		encoder := json.NewEncoder(stdin)
+		writeFrame = func(value any) error {
+			writeMu.Lock()
+			defer writeMu.Unlock()
+			return encoder.Encode(value)
+		}
+		if err := writeFrame(command); err != nil {
+			signalProcessGroup(cmd, syscall.SIGKILL)
+			_ = cmd.Wait()
+			releaseProcessGroup(cmd)
+			cancel()
+			return nil, fmt.Errorf("send dsh execute command: %w", err)
+		}
 	}
 	state.writeAnswer = func(command dshAnswerCommand) error { return writeFrame(command) }
 	state.writeCommand = writeFrame
-	if err := writeFrame(command); err != nil {
-		signalProcessGroup(cmd, syscall.SIGKILL)
-		_ = cmd.Wait()
-		releaseProcessGroup(cmd)
-		cancel()
-		return nil, fmt.Errorf("send dsh execute command: %w", err)
-	}
 
 	b.cfg.Logger.Info("dsh started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
 	msgCh := make(chan Message, 256)
@@ -394,6 +450,11 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			return
 		case <-timer.C:
 		}
+		if detached != nil {
+			// The scoped child is not in this process group, so systemd owns
+			// the only signal that reaches it.
+			detached.stopScope(b.cfg.Logger)
+		}
 		signalProcessGroup(cmd, syscall.SIGTERM)
 		if !waitProcessGroupGone(cmd, dshTerminateGrace) {
 			signalProcessGroup(cmd, syscall.SIGKILL)
@@ -405,8 +466,21 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
-		defer func() { _ = stdin.Close() }()
+		if stdin != nil {
+			defer func() { _ = stdin.Close() }()
+		}
 		started := time.Now()
+		var waitCh chan error
+		if detached != nil {
+			// The scanner can only finish once the tail reader is told the
+			// process exited, so Wait has to run alongside it rather than after.
+			waitCh = make(chan error, 1)
+			go func() {
+				waitErr := cmd.Wait()
+				close(tailDone)
+				waitCh <- waitErr
+			}()
+		}
 		scanner := newAgentStreamScanner(stdout)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -425,7 +499,12 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		if scanErr != nil {
 			_ = stdout.Close()
 		}
-		exitErr := cmd.Wait()
+		var exitErr error
+		if waitCh != nil {
+			exitErr = <-waitCh
+		} else {
+			exitErr = cmd.Wait()
+		}
 		close(procDone)
 		releaseProcessGroup(cmd)
 
@@ -453,7 +532,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			}
 		}
 		if result.Error != "" {
-			result.Error = withAgentStderr(result.Error, "dsh", stderrBuf.Tail())
+			result.Error = withAgentStderr(result.Error, "dsh", stderrTail())
 		}
 		result.DurationMs = time.Since(started).Milliseconds()
 		b.cfg.Logger.Info("dsh finished", "pid", cmd.Process.Pid, "status", result.Status,

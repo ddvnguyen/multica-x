@@ -764,11 +764,22 @@ func main() {
 		)
 		runtimeReconnectGrace = minimumRuntimeReconnectGrace
 	}
+	// S3-C (M-139): a detached-capable runtime's running task may outlive the
+	// daemon that launched it, so its wall clock — not the heartbeat — bounds
+	// it. Default is the standard running budget plus the detached grace.
+	detachedTaskTimeout := envDuration("MULTICA_DETACHED_TASK_TIMEOUT", defaultDetachedTaskTimeout)
+	if detachedTaskTimeout < minimumRuntimeReconnectGrace {
+		slog.Warn("detached task timeout is shorter than heartbeat freshness; clamping",
+			"configured", detachedTaskTimeout,
+			"minimum", minimumRuntimeReconnectGrace,
+		)
+		detachedTaskTimeout = minimumRuntimeReconnectGrace
+	}
 	// Queued work now expires on the same runtime-liveness signal as in-flight
 	// work, so there is no separate queue TTL to tune: a busy runtime keeps its
 	// backlog, and a departed one retires everything it owned at once.
 	go h.RunQoderConnections(sweepCtx, pool, "http://localhost:"+port)
-	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace)
+	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace, detachedTaskTimeout)
 	if telemetryWorker != nil {
 		go telemetryWorker.Run(sweepCtx)
 	}
