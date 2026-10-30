@@ -1260,7 +1260,7 @@ export function RuntimeLocalSkillImportPanel({
                 {selectedRuntime ? (
                   <>
                     <ProviderLogo
-                      provider={selectedRuntime.provider}
+                      provider={selectedRuntime.provider} runtime={selectedRuntime}
                       className="h-4 w-4 shrink-0"
                     />
                     <span className="truncate">

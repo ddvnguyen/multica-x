@@ -427,27 +427,28 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	origins := allowedOrigins()
 
 	signupConfig := handler.Config{
-		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
-		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
-		AppURL:                   appURLFromEnv(),
-		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudURL:                 strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
-		CloudTimeout:             35 * time.Second,
-		AttachmentDownloadMode:   os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
-		AttachmentDownloadURLTTL: envDuration("ATTACHMENT_DOWNLOAD_URL_TTL", 30*time.Minute),
-		AttachmentFrameAncestors: origins,
-		PluginSurfaceOrigin:      strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PLUGIN_SURFACE_ORIGIN")), "/"),
-		LLMAPIKey:                strings.TrimSpace(os.Getenv("MULTICA_LLM_API_KEY")),
-		LLMBaseURL:               strings.TrimSpace(os.Getenv("MULTICA_LLM_BASE_URL")),
-		LLMDefaultModel:          strings.TrimSpace(os.Getenv("MULTICA_LLM_DEFAULT_MODEL")),
-		LLMMaxRetries:            opts.LLMMaxRetries,
-		LLMDisableThinking:       opts.LLMDisableThinking,
-		ServerVersion:            normalizeServerVersion(version),
-		GitExtraCACerts:          gitca.Load(slog.Default()),
+		AllowSignup:                    os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:                  splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:            splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		DisableWorkspaceCreation:       os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		WorkspaceCreationAllowedEmails: splitAndTrim(os.Getenv("WORKSPACE_CREATION_ALLOWED_EMAILS")),
+		VCSIntegrationEnabled:          os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
+		PublicURL:                      strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		AppURL:                         appURLFromEnv(),
+		TrustedProxies:                 parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudURL:                       strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:                   35 * time.Second,
+		AttachmentDownloadMode:         os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		AttachmentDownloadURLTTL:       envDuration("ATTACHMENT_DOWNLOAD_URL_TTL", 30*time.Minute),
+		AttachmentFrameAncestors:       origins,
+		PluginSurfaceOrigin:            strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PLUGIN_SURFACE_ORIGIN")), "/"),
+		LLMAPIKey:                      strings.TrimSpace(os.Getenv("MULTICA_LLM_API_KEY")),
+		LLMBaseURL:                     strings.TrimSpace(os.Getenv("MULTICA_LLM_BASE_URL")),
+		LLMDefaultModel:                strings.TrimSpace(os.Getenv("MULTICA_LLM_DEFAULT_MODEL")),
+		LLMMaxRetries:                  opts.LLMMaxRetries,
+		LLMDisableThinking:             opts.LLMDisableThinking,
+		ServerVersion:                  normalizeServerVersion(version),
+		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -516,6 +517,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.LocalSkillListStore = handler.NewRedisLocalSkillListStore(rdb)
 		h.LocalSkillImportStore = handler.NewRedisLocalSkillImportStore(rdb)
 		h.LivenessStore = handler.NewRedisLivenessStore(rdb)
+		h.QoderRateLimiter = handler.NewRedisWebhookRateLimiter(rdb, handler.WebhookRateLimit{Limit: 6, Window: time.Minute})
 		h.WebhookRateLimiter = handler.NewRedisWebhookRateLimiter(rdb, handler.DefaultWebhookRateLimit())
 		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
 		h.WebhookAbsoluteIPRateLimiter = handler.NewRedisWebhookAbsoluteIPRateLimiter(rdb, handler.DefaultWebhookAbsoluteIPRateLimit())
@@ -616,6 +618,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
+				if store != nil && patcher.SetAttachments(store) {
+					h.DeclareChannelFileDelivery(string(channel.TypeFeishu))
+				}
 				patcher.Register(bus)
 
 				// Typing indicator: shows a "processing" reaction on the user's
@@ -1591,7 +1596,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
 		r.Post("/runtimes/{runtimeId}/freebuff", h.ReportFreebuffAccount)
-		r.Get("/runtimes/{runtimeId}/freebuff/pending", h.GetFreebuffConnectPending)
+		r.Get("/runtimes/{runtimeId}/freebuff/pending", h.GetFreebuffPending)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1619,6 +1624,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Post("/runtimes/{runtimeId}/recover-orphans", h.RecoverOrphanedTasks)
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
+		// S3-B1: the dsh summary clock's late decision merge — the clock
+		// fires at TTL−margin, long past the terminal callback.
+		r.Post("/tasks/{taskId}/summary-decision", h.RecordTaskSummaryDecision)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
@@ -1667,7 +1675,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
 		r.Post("/api/me/onboarding/cloud-waitlist", h.JoinCloudWaitlist)
-		r.Post("/api/cli-token", h.IssueCliToken)
+		// Credential minting is human-only (MUL-8154): an agent task token
+		// (mat_) or cloud-node PAT (mcn_) authenticates as its owner, so
+		// without this guard a prompt-injected agent could trade its scoped,
+		// short-lived credential for a 30-day session JWT.
+		r.With(handler.RequireHumanActor).Post("/api/cli-token", h.IssueCliToken)
 		// Sliding session renewal for clients that hold the session as a
 		// string (Desktop, mobile). Browsers get theirs re-issued inline by
 		// middleware.Auth and never call this (MUL-7436).
@@ -1720,6 +1732,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
 					r.Get("/vcs/connections", h.ListVCSConnections)
+					r.Get("/qoder", h.GetQoderConnection)
+					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
 					// (the Runtime page renders for everyone; create/edit/delete
 					// are admin-gated below).
@@ -1727,14 +1741,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
 					// Per-workspace accounts (freebuff-desktop) — member-visible listing.
 					r.Get("/accounts", h.ListWorkspaceAccounts)
-					// Freebuff browser login. The account client on the
-					// daemon's machine owns the login, so it asks here
-					// whether a login was requested and reports the
-					// one-time URL (or the account that signed in) back.
-					// Member-visible: it is the same account a member can
-					// already connect from the runtime page.
-					r.Get("/freebuff/connect-pending", h.ListFreebuffConnectPending)
-					r.Post("/runtimes/{runtimeId}/freebuff/login", h.ReportFreebuffLogin)
 					// The workspace MCP library — member-visible so an agent
 					// owner can see what is available to add to their agent.
 					// The payload is names and transports only; the stored
@@ -1844,6 +1850,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
 					// VCS connect / disconnect / webhook regeneration (admin-only).
 					r.Post("/vcs/connections", h.ConnectVCS)
+					r.Put("/qoder", h.SaveQoderConnection)
+					r.Post("/qoder/check", h.CheckQoderConnection)
+					r.Post("/qoder/environments", h.ListQoderEnvironments)
+					r.Post("/qoder/stop", h.StopQoderConnection)
+					r.Post("/qoder/resume", h.ResumeQoderConnection)
+					r.Delete("/qoder", h.DisconnectQoderConnection)
 					r.Post("/vcs/connections/{connectionId}/rotate-webhook", h.RotateVCSConnectionWebhook)
 					r.Delete("/vcs/connections/{connectionId}", h.DeleteVCSConnection)
 				})
@@ -1961,7 +1973,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/invitations/{id}/decline", h.DeclineInvitation)
 		r.Post("/api/share-links/join", h.JoinByShareLink)
 
+		// PAT management is human-only (MUL-8154): a machine credential must
+		// not mint a non-expiring PAT, enumerate the owner's PATs, or revoke
+		// them. /current/renew already accepts only mul_ PATs, which are human
+		// credentials, so the group-wide guard does not change its behavior.
 		r.Route("/api/tokens", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
 			r.Get("/", h.ListPersonalAccessTokens)
 			r.Post("/", h.CreatePersonalAccessToken)
 			r.Post("/current/renew", h.RenewCurrentPersonalAccessToken)
@@ -2169,9 +2186,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
-			// Project workflows (MUL-7420). Reads are open to any member; writes
-			// are gated inside the handlers to workspace owners/admins and, for
-			// switching a project's workflow, its lead.
+			// Project workflows (MUL-7420). Reads and creates are open to any
+			// member; edits and deletes are gated inside the handlers to the
+			// workflow's owner and workspace owners/admins (MUL-8120), and
+			// switching a project's workflow to admins and the project's lead.
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
@@ -2407,11 +2425,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/local-skills/{requestId}", h.GetLocalSkillListRequest)
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
-					// Freebuff account: the open session slot, the
-					// per-model price, the credit, and the browser
-					// login that produces them.
+					// Freebuff accounts: the list, add (returns a login URL
+					// through the daemon), remove, and the default.
 					r.Get("/freebuff", h.GetFreebuffAccount)
-					r.Post("/freebuff/connect", h.RequestFreebuffConnect)
+					r.Post("/freebuff/accounts", h.AddFreebuffAccount)
+					r.Delete("/freebuff/accounts/{accountId}", h.RemoveFreebuffAccount)
+					r.Post("/freebuff/accounts/{accountId}/default", h.SetFreebuffDefaultAccount)
+					r.Post("/freebuff/accounts/{accountId}/login", h.RetryFreebuffAccountLogin)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and

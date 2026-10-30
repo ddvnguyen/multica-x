@@ -9,10 +9,12 @@ package handler
 //
 // Three deliberate limits, all of them the card's:
 //
-//   - The interaction timeout is STORED AND SURFACED, never enforced. Nothing
-//     here cancels a parked run, resumes one, or writes the notice a reader
-//     would get. Enforcement is M-131; a settings page that silently shortened
-//     a running wait would be a behavior change disguised as a preference.
+//   - The interaction wait is stored, surfaced, and ENFORCED by the sweeper
+//     M-131 adds: nothing in this file cancels a parked run or writes the
+//     notice a reader would get — the sweeper reaps a park past
+//     EffectiveAskPlanTimeoutSeconds and escalates to the project lead. The
+//     resolver lives here (and is exported) because the settings surfaces and
+//     the sweeper must agree on one number and one source.
 //   - The values live in the existing `workspace.settings` / `project.settings`
 //     objects under their own keys rather than in a new column: every existing
 //     reader treats those objects as open sets, and an absent key falls back to
@@ -156,6 +158,53 @@ func workspaceTimeoutSeconds(ws db.Workspace) (int, bool) {
 
 func validTimeoutSeconds(seconds int) bool {
 	return seconds >= interactionsMinTimeoutSeconds && seconds <= interactionsMaxTimeoutSeconds
+}
+
+// TimeoutSource names which setting supplied the effective ask/plan wait.
+// M-131 amendment 1: the resolver answers the source alongside the seconds —
+// the sweep's durable escalation comment names it, and the settings response
+// derives `timeout_seconds_set` from it, so one resolution serves both
+// instead of a second pass that could disagree.
+type TimeoutSource int
+
+const (
+	// TimeoutSourceDefault: neither object carries a valid key; the
+	// compiled-in default won.
+	TimeoutSourceDefault TimeoutSource = iota
+	// TimeoutSourceWorkspace: the workspace default won (no project override).
+	TimeoutSourceWorkspace
+	// TimeoutSourceProject: this project's override won.
+	TimeoutSourceProject
+)
+
+// String is the source's name in logs and on the escalation comment.
+func (s TimeoutSource) String() string {
+	switch s {
+	case TimeoutSourceProject:
+		return "project override"
+	case TimeoutSourceWorkspace:
+		return "workspace default"
+	default:
+		return "built-in default"
+	}
+}
+
+// EffectiveAskPlanTimeoutSeconds resolves the ask/plan wait for a project:
+// a valid project override, else a valid workspace value, else the compiled-in
+// default — the resolution order M-123's Architect answer fixed (Q2), and the
+// only place that order lives. projectSettings/workspaceSettings are the raw
+// JSONB bytes; a missing or malformed key reads as "no opinion".
+//
+// Both the Interactions surfaces and M-131's timeout sweeper call this, so a
+// park expires against exactly the number the settings page shows.
+func EffectiveAskPlanTimeoutSeconds(projectSettings, workspaceSettings []byte) (int, TimeoutSource) {
+	if seconds, ok := settingNumber(projectSettings, askPlanTimeoutSettingKey); ok && validTimeoutSeconds(seconds) {
+		return seconds, TimeoutSourceProject
+	}
+	if seconds, ok := settingNumber(workspaceSettings, askPlanTimeoutSettingKey); ok && validTimeoutSeconds(seconds) {
+		return seconds, TimeoutSourceWorkspace
+	}
+	return interactionsDefaultTimeoutSeconds, TimeoutSourceDefault
 }
 
 // moctInjectEnabled is the one reader of the memory switch, and it is
@@ -474,19 +523,19 @@ func (h *Handler) projectResponseWithCounts(r *http.Request, project db.Project)
 }
 
 // projectInteractionsResponse is the project's effective wait: its own override
-// when it has one, otherwise the workspace default.
+// when it has one, otherwise the workspace default. One resolver with the
+// sweeper (M-131 amendment 1), so the panel can never show a number the sweep
+// would not enforce.
 func (h *Handler) projectInteractionsResponse(r *http.Request, project db.Project) map[string]any {
-	seconds, set := settingNumber(project.Settings, askPlanTimeoutSettingKey)
-	if !set || !validTimeoutSeconds(seconds) {
-		seconds, set = interactionsDefaultTimeoutSeconds, false
-		if ws, err := h.Queries.GetWorkspace(r.Context(), project.WorkspaceID); err == nil {
-			seconds, set = workspaceTimeoutSeconds(ws)
-		}
+	var workspaceSettings []byte
+	if ws, err := h.Queries.GetWorkspace(r.Context(), project.WorkspaceID); err == nil {
+		workspaceSettings = ws.Settings
 	}
+	seconds, source := EffectiveAskPlanTimeoutSeconds(project.Settings, workspaceSettings)
 	return map[string]any{
 		"project_id":          uuidToString(project.ID),
 		"timeout_seconds":     seconds,
-		"timeout_seconds_set": set,
+		"timeout_seconds_set": source != TimeoutSourceDefault,
 	}
 }
 

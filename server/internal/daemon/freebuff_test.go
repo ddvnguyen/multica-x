@@ -3,22 +3,26 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/freebuffrt"
 )
 
-// freebuffFixture stands up a Daemon whose Freebuff reports are captured,
-// plus a fake wrapper that behaves like the real one: it prints one JSON
-// line with the login URL, then one with the outcome.
+// freebuffFixture stands up a Daemon whose Freebuff reports are captured.
 type freebuffFixture struct {
 	daemon *Daemon
 
 	mu      sync.Mutex
 	reports []map[string]any
+	pending string // body served for the daemon's pending poll
 }
 
 func newFreebuffFixture(t *testing.T) *freebuffFixture {
@@ -27,19 +31,24 @@ func newFreebuffFixture(t *testing.T) *freebuffFixture {
 
 	fx := &freebuffFixture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fx.mu.Lock()
+			body := fx.pending
+			fx.mu.Unlock()
+			_, _ = w.Write([]byte(body))
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		fx.mu.Lock()
 		fx.reports = append(fx.reports, body)
 		fx.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	d := freshDaemon(srv.URL)
-	d.profileLaunchSpecs = make(map[string]profileLaunchSpec)
 	fx.daemon = d
 	return fx
 }
@@ -50,128 +59,325 @@ func (fx *freebuffFixture) snapshot() []map[string]any {
 	return append([]map[string]any(nil), fx.reports...)
 }
 
-// fakeFreebuffWrapper writes an executable that mimics the wrapper's two
-// modes: `--status --json` prints an account snapshot, `login --json` prints
-// the login URL and then the outcome.
-func fakeFreebuffWrapper(t *testing.T, statusJSON string, loginLines []string) string {
+// fakeAccount is an orchestrator stand-in for the account flow.
+type fakeAccount struct {
+	mu       sync.Mutex
+	statuses []freebuffrt.AuthStatus // returned in order; the last repeats
+	catalogs []freebuffrt.ModelCatalog // returned in order; the last repeats
+	catalogErr error
+	login    freebuffrt.LoginStart
+	loginErr error
+	canceled bool
+}
+
+func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.statuses[0]
+	if len(f.statuses) > 1 {
+		f.statuses = f.statuses[1:]
+	}
+	return st, nil
+}
+
+func (f *fakeAccount) StartLogin(context.Context) (freebuffrt.LoginStart, error) {
+	return f.login, f.loginErr
+}
+
+func (f *fakeAccount) ModelCatalog(context.Context) (freebuffrt.ModelCatalog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.catalogErr != nil {
+		return freebuffrt.ModelCatalog{}, f.catalogErr
+	}
+	if len(f.catalogs) == 0 {
+		return freebuffrt.ModelCatalog{}, nil
+	}
+	cat := f.catalogs[0]
+	if len(f.catalogs) > 1 {
+		f.catalogs = f.catalogs[1:]
+	}
+	return cat, nil
+}
+
+func (f *fakeAccount) CancelLogin(context.Context) error {
+	f.mu.Lock()
+	f.canceled = true
+	f.mu.Unlock()
+	return nil
+}
+
+func useFakeAccount(t *testing.T, acct freebuffAccount, startErr error) {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "codebuddy-freebuff")
-	script := "#!/bin/sh\n"
-	script += "if [ \"$1\" = \"--status\" ]; then\n"
-	script += "  cat <<'EOF'\n" + statusJSON + "\nEOF\n  exit 0\nfi\n"
-	script += "cat <<'EOF'\n"
-	for _, line := range loginLines {
-		script += line + "\n"
+	prev := startFreebuffAccount
+	startFreebuffAccount = func(context.Context, string, string) (freebuffAccount, func(), error) {
+		if startErr != nil {
+			return nil, nil, startErr
+		}
+		return acct, func() {}, nil
 	}
-	script += "EOF\nexit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake wrapper: %v", err)
-	}
-	return path
+	t.Cleanup(func() { startFreebuffAccount = prev })
 }
 
-func freebuffRuntime(path string) Runtime {
-	return Runtime{ID: "rt-freebuff", Provider: "codebuddy", ProfileID: "prof-fb"}
+// useProfiles points the Freebuff profile root at a fresh directory.
+func useProfiles(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv(agent.FreebuffEnvProfilesDir, root)
+	return root
 }
 
-// TestReportFreebuffStatus_SendsAccountSnapshot pins the account report:
-// the daemon runs the wrapper's `--status --json` and hands the snapshot to
-// the server unchanged.
-func TestReportFreebuffStatus_SendsAccountSnapshot(t *testing.T) {
+func freebuffRuntime() Runtime {
+	return Runtime{ID: "rt-fb", Name: "Freebuff", Provider: freebuffProvider, Status: "online"}
+}
+
+func signedIn(email string) freebuffrt.AuthStatus {
+	return freebuffrt.AuthStatus{Authed: true, User: json.RawMessage(`{"email":"` + email + `"}`)}
+}
+
+// accountReports flattens the account entries of every captured report.
+func (fx *freebuffFixture) accountReports() []map[string]any {
+	var out []map[string]any
+	for _, r := range fx.snapshot() {
+		entries, _ := r["accounts"].([]any)
+		for _, e := range entries {
+			if m, ok := e.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+func fastLogin(t *testing.T) {
+	t.Helper()
+	prev := freebuffLoginPollInterval
+	freebuffLoginPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { freebuffLoginPollInterval = prev })
+}
+
+// The sign-in URL goes out as soon as the orchestrator has it, the outcome
+// when the account appears. The account host's page is preferred over the
+// loopback one: it is the one that opens from another machine.
+func TestHandleFreebuffLogin_ReportsRemoteURLThenOutcome(t *testing.T) {
 	fx := newFreebuffFixture(t)
-	d := fx.daemon
+	fastLogin(t)
+	useFakeAccount(t, &fakeAccount{
+		statuses: []freebuffrt.AuthStatus{{}, {}, signedIn("owner@example.com")},
+		login: freebuffrt.LoginStart{
+			URL:       "http://127.0.0.1:1234/auth/login/launch/x",
+			RemoteURL: "https://freebuff.com/login?auth_code=abc",
+		},
+	}, nil)
+	useProfiles(t)
 
-	wrapper := fakeFreebuffWrapper(t,
-		`{"status":"active","remainingMs":120000,"credit":{"dailyRemaining":4,"dailyLimit":5,"balance":21},"prices":{"z-ai/glm-5.3-flash":2}}`,
-		nil,
-	)
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: wrapper, commandName: freebuffCommandName}
-	rt := freebuffRuntime(wrapper)
-	d.runtimeIndex[rt.ID] = rt
+	fx.daemon.handleFreebuffLogin(context.Background(), freebuffRuntime(), "a1")
 
-	d.reportFreebuffStatus(context.Background(), rt)
-
-	reports := fx.snapshot()
-	if len(reports) != 1 {
-		t.Fatalf("expected 1 report, got %d", len(reports))
-	}
-	status, ok := reports[0]["status"].(map[string]any)
-	if !ok {
-		t.Fatalf("report has no status object: %#v", reports[0])
-	}
-	if status["status"] != "active" {
-		t.Fatalf("status state = %v, want active", status["status"])
-	}
-	if status["remainingMs"] != float64(120000) {
-		t.Fatalf("remainingMs = %v, want 120000", status["remainingMs"])
-	}
-	credit, ok := status["credit"].(map[string]any)
-	if !ok {
-		t.Fatalf("status has no credit object: %#v", status)
-	}
-	if credit["dailyRemaining"] != float64(4) {
-		t.Fatalf("dailyRemaining = %v, want 4", credit["dailyRemaining"])
-	}
-}
-
-// TestHandleFreebuffConnect_ReportsURLThenOutcome pins the browser login:
-// the daemon forwards the one-time URL as soon as the wrapper has it, and the
-// outcome when the browser confirms.
-func TestHandleFreebuffConnect_ReportsURLThenOutcome(t *testing.T) {
-	fx := newFreebuffFixture(t)
-	d := fx.daemon
-
-	wrapper := fakeFreebuffWrapper(t, "{}", []string{
-		`{"status":"awaiting_login","loginUrl":"https://freebuff.com/login?auth_code=abc"}`,
-		`{"status":"connected","account":"owner@example.com"}`,
-	})
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: wrapper, commandName: freebuffCommandName}
-	rt := freebuffRuntime(wrapper)
-	d.runtimeIndex[rt.ID] = rt
-
-	d.handleFreebuffConnect(context.Background(), rt)
-
-	reports := fx.snapshot()
+	reports := fx.accountReports()
 	if len(reports) != 2 {
-		t.Fatalf("expected 2 reports (url, outcome), got %d: %#v", len(reports), reports)
+		t.Fatalf("reports = %#v", reports)
 	}
-	first := reports[0]["connect"].(map[string]any)
-	if first["state"] != "awaiting_login" {
-		t.Fatalf("first state = %v, want awaiting_login", first["state"])
+	if reports[0]["state"] != "awaiting_login" || reports[0]["login_url"] != "https://freebuff.com/login?auth_code=abc" {
+		t.Fatalf("first report = %#v", reports[0])
 	}
-	if first["login_url"] != "https://freebuff.com/login?auth_code=abc" {
-		t.Fatalf("login_url = %v", first["login_url"])
+	if reports[0]["expires_at"] == nil {
+		t.Fatalf("the link's expiry was not reported: %#v", reports[0])
 	}
-	second := reports[1]["connect"].(map[string]any)
-	if second["state"] != "connected" {
-		t.Fatalf("second state = %v, want connected", second["state"])
-	}
-	if second["account"] != "owner@example.com" {
-		t.Fatalf("account = %v", second["account"])
+	if reports[1]["state"] != "connected" || reports[1]["label"] != "owner@example.com" || reports[1]["id"] != "a1" {
+		t.Fatalf("second report = %#v", reports[1])
 	}
 }
 
-// TestFreebuffRuntimes_OnlyFreebuffProfiles pins which runtimes the daemon
-// treats as Freebuff runtimes: the ones whose profile command is the
-// wrapper. A runtime on the same protocol family but a different command
-// must not be picked up — it would run someone else's CLI with the
-// wrapper's arguments.
-func TestFreebuffRuntimes_OnlyFreebuffProfiles(t *testing.T) {
+func TestHandleFreebuffLogin_FallsBackToTheLoopbackURL(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	fastLogin(t)
+	useFakeAccount(t, &fakeAccount{
+		statuses: []freebuffrt.AuthStatus{{}, signedIn("a@b.c")},
+		login:    freebuffrt.LoginStart{URL: "http://127.0.0.1:1234/auth/login/launch/x"},
+	}, nil)
+	useProfiles(t)
+
+	fx.daemon.handleFreebuffLogin(context.Background(), freebuffRuntime(), "a1")
+
+	if got := fx.accountReports()[0]["login_url"]; got != "http://127.0.0.1:1234/auth/login/launch/x" {
+		t.Fatalf("login_url = %v", got)
+	}
+}
+
+func TestHandleFreebuffLogin_AlreadySignedIn(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, &fakeAccount{statuses: []freebuffrt.AuthStatus{signedIn("a@b.c")}}, nil)
+	useProfiles(t)
+
+	fx.daemon.handleFreebuffLogin(context.Background(), freebuffRuntime(), "a1")
+
+	reports := fx.accountReports()
+	if len(reports) != 1 || reports[0]["state"] != "connected" {
+		t.Fatalf("reports = %#v", reports)
+	}
+}
+
+func TestHandleFreebuffLogin_FailuresAreReported(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useFakeAccount(t, nil, errors.New("bun not found"))
+	useProfiles(t)
+
+	fx.daemon.handleFreebuffLogin(context.Background(), freebuffRuntime(), "a1")
+
+	r := fx.accountReports()[0]
+	if r["state"] != "failed" || r["error"] != "bun not found" {
+		t.Fatalf("report = %#v", r)
+	}
+}
+
+func TestHandleFreebuffLogin_TimeoutCancelsLogin(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	prevTimeout, prevPoll := freebuffLoginTimeout, freebuffLoginPollInterval
+	freebuffLoginTimeout, freebuffLoginPollInterval = 80*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { freebuffLoginTimeout, freebuffLoginPollInterval = prevTimeout, prevPoll })
+	acct := &fakeAccount{statuses: []freebuffrt.AuthStatus{{}}, login: freebuffrt.LoginStart{URL: "http://127.0.0.1:1/x"}}
+	useFakeAccount(t, acct, nil)
+	useProfiles(t)
+
+	fx.daemon.handleFreebuffLogin(context.Background(), freebuffRuntime(), "a1")
+
+	reports := fx.accountReports()
+	if last := reports[len(reports)-1]; last["state"] != "failed" {
+		t.Fatalf("last report = %#v", last)
+	}
+	acct.mu.Lock()
+	defer acct.mu.Unlock()
+	if !acct.canceled {
+		t.Fatal("pending login was not cancelled")
+	}
+}
+
+// A sign-in cancelled because the user removed the account reports nothing:
+// nobody is left to read it, and a "failed" would resurrect the entry.
+func TestHandleFreebuffLogin_CancelledByRemovalIsSilent(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	fastLogin(t)
+	acct := &fakeAccount{statuses: []freebuffrt.AuthStatus{{}}, login: freebuffrt.LoginStart{URL: "http://127.0.0.1:1/x"}}
+	useFakeAccount(t, acct, nil)
+	useProfiles(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		fx.daemon.handleFreebuffLogin(ctx, freebuffRuntime(), "a1")
+		close(done)
+	}()
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("login did not stop")
+	}
+	for _, r := range fx.accountReports() {
+		if r["state"] == "failed" {
+			t.Fatalf("cancellation reported as failure: %#v", r)
+		}
+	}
+}
+
+// Each account on disk is asked; an account that cannot be asked is reported
+// as present with no state, and the report is complete so the server can drop
+// accounts that are gone.
+func TestReportFreebuffAccounts_CompleteSnapshot(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	root := useProfiles(t)
+	for _, id := range []string{"a1", "a2"} {
+		if err := os.MkdirAll(filepath.Join(root, "rt-fb", "accounts", id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := startFreebuffAccount
+	t.Cleanup(func() { startFreebuffAccount = prev })
+	startFreebuffAccount = func(_ context.Context, _, accountID string) (freebuffAccount, func(), error) {
+		if accountID == "a2" {
+			return nil, nil, errors.New("profile busy")
+		}
+		return &fakeAccount{statuses: []freebuffrt.AuthStatus{signedIn("owner@example.com")}}, func() {}, nil
+	}
+
+	fx.daemon.reportFreebuffAccounts(context.Background(), freebuffRuntime())
+
+	reports := fx.snapshot()
+	if len(reports) != 1 || reports[0]["complete"] != true {
+		t.Fatalf("reports = %#v", reports)
+	}
+	entries := fx.accountReports()
+	if len(entries) != 2 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	if entries[0]["id"] != "a1" || entries[0]["state"] != "connected" || entries[0]["label"] != "owner@example.com" {
+		t.Fatalf("a1 = %#v", entries[0])
+	}
+	if entries[1]["id"] != "a2" || entries[1]["state"] != nil {
+		t.Fatalf("a busy account must be reported present, state unchanged: %#v", entries[1])
+	}
+}
+
+func TestReportFreebuffAccounts_SignedOut(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	root := useProfiles(t)
+	if err := os.MkdirAll(filepath.Join(root, "rt-fb", "accounts", "a1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	useFakeAccount(t, &fakeAccount{statuses: []freebuffrt.AuthStatus{{}}}, nil)
+
+	fx.daemon.reportFreebuffAccounts(context.Background(), freebuffRuntime())
+
+	if got := fx.accountReports()[0]["state"]; got != "signed_out" {
+		t.Fatalf("state = %v", got)
+	}
+}
+
+// Removing deletes the login from disk, tells the server what remains, and
+// the default follows the server's choice.
+func TestSyncFreebuffRuntime_RemovesAccountsAndFollowsDefault(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	root := useProfiles(t)
+	for _, id := range []string{"keep", "bye"} {
+		if err := os.MkdirAll(filepath.Join(root, "rt-fb", "accounts", id), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.mu.Lock()
+	fx.pending = `{"accounts":[{"id":"bye","state":"removing"}],"default_account_id":"keep"}`
+	fx.mu.Unlock()
+
+	fx.daemon.syncFreebuffRuntime(context.Background(), freebuffRuntime())
+
+	if _, err := os.Stat(filepath.Join(root, "rt-fb", "accounts", "bye")); !os.IsNotExist(err) {
+		t.Fatalf("removed account still on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "rt-fb", "accounts", "keep")); err != nil {
+		t.Fatalf("other account was touched: %v", err)
+	}
+	id, err := agent.FreebuffAccountForRun(agent.Config{RuntimeID: "rt-fb"})
+	if err != nil || id != "keep" {
+		t.Fatalf("default account = %q, %v", id, err)
+	}
+	reports := fx.snapshot()
+	if len(reports) != 1 || reports[0]["complete"] != true {
+		t.Fatalf("reports = %#v", reports)
+	}
+	entries := fx.accountReports()
+	if len(entries) != 1 || entries[0]["id"] != "keep" {
+		t.Fatalf("the report must list what remains: %#v", entries)
+	}
+}
+
+func TestFreebuffRuntimes_SelectsByProvider(t *testing.T) {
 	fx := newFreebuffFixture(t)
 	d := fx.daemon
+	d.runtimeIndex["rt-fb"] = freebuffRuntime()
+	d.runtimeIndex["rt-other"] = Runtime{ID: "rt-other", Provider: "codebuddy"}
 
-	d.profileLaunchSpecs["prof-fb"] = profileLaunchSpec{path: "/usr/local/bin/codebuddy-freebuff", commandName: freebuffCommandName}
-	d.profileLaunchSpecs["prof-other"] = profileLaunchSpec{path: "/usr/local/bin/codebuddy", commandName: "codebuddy"}
-	d.runtimeIndex["rt-freebuff"] = Runtime{ID: "rt-freebuff", Provider: "codebuddy", ProfileID: "prof-fb"}
-	d.runtimeIndex["rt-plain"] = Runtime{ID: "rt-plain", Provider: "codebuddy", ProfileID: "prof-other"}
-	d.runtimeIndex["rt-builtin"] = Runtime{ID: "rt-builtin", Provider: "codebuddy"}
-
-	runtimes := d.freebuffRuntimes()
-	if len(runtimes) != 1 {
-		t.Fatalf("expected 1 freebuff runtime, got %d: %#v", len(runtimes), runtimes)
-	}
-	if runtimes[0].ID != "rt-freebuff" {
-		t.Fatalf("freebuff runtime = %s, want rt-freebuff", runtimes[0].ID)
+	got := d.freebuffRuntimes()
+	if len(got) != 1 || got[0].ID != "rt-fb" {
+		t.Fatalf("freebuffRuntimes = %#v", got)
 	}
 }

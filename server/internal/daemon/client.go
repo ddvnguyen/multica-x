@@ -217,6 +217,7 @@ func daemonCommonCapabilities(detached bool) []string {
 		protocol.DaemonCapabilityPlatformSkillV1,
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
+		protocol.DaemonCapabilityWorkflowStatusRulesV1,
 	}
 	if detached {
 		caps = append(caps, protocol.DaemonCapabilityDetachedRuntimeV1)
@@ -567,6 +568,8 @@ func (c *Client) ReportTaskBlocked(ctx context.Context, taskID, sessionID, workD
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
+	// Nil is an older daemon with no explicit cleanup acknowledgement.
+	ProcessCleanupConfirmed *bool
 	// BranchName: a cancelled worktree task has already finalized — its
 	// partial work is committed to a branch in the user's repo. The cancel
 	// path discards the rest of the result, so this ack is the only channel
@@ -582,6 +585,10 @@ type TaskCancelAck struct {
 	// swallow it entirely.
 	ErrorMessage  string
 	FailureReason string
+	// RetiredSessionID: a resumed session this run produced no output on
+	// before the cancel landed, or one a fresh-session retry abandoned. The
+	// server retires it so later triggers start fresh (MUL-8188).
+	RetiredSessionID string
 }
 
 // AckTaskCancelled tells the server this daemon observed the task's
@@ -596,6 +603,9 @@ type TaskCancelAck struct {
 // The server never overwrites already-recorded values, so replays are safe.
 func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCancelAck) error {
 	body := map[string]any{}
+	if ack.ProcessCleanupConfirmed != nil {
+		body["process_cleanup_confirmed"] = *ack.ProcessCleanupConfirmed
+	}
 	if ack.BranchName != "" {
 		body["branch_name"] = ack.BranchName
 	}
@@ -607,6 +617,9 @@ func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCa
 	}
 	if ack.FailureReason != "" {
 		body["failure_reason"] = ack.FailureReason
+	}
+	if ack.RetiredSessionID != "" {
+		body["retired_session_id"] = ack.RetiredSessionID
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/cancel-ack", taskID), body, nil, defaultTerminalRetrySchedule)
 }
@@ -736,6 +749,16 @@ func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir 
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session", taskID), body, nil)
 }
 
+// RecordTaskSummaryDecision merges the dsh summary clock's decision for one
+// run into that run row's result JSONB (S3-B1). The clock fires at TTL−margin,
+// long after the terminal callback, so the decision cannot ride the completion
+// report and needs this late, idempotent merge. The server merges the payload
+// under its own key; a server that predates the endpoint answers 404, which
+// taskSupplementEndpointUnsupported-class callers treat as "not supported".
+func (c *Client) RecordTaskSummaryDecision(ctx context.Context, taskID string, record dshSummaryRunRowRecord) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/summary-decision", taskID), record, nil)
+}
+
 // RecoverOrphans tells the server to fail any dispatched/running tasks the
 // previous daemon process for this runtime left behind. The server will
 // auto-retry eligible tasks.
@@ -789,19 +812,27 @@ func (c *Client) ReportFreebuffAccount(ctx context.Context, runtimeID string, pa
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff", runtimeID), payload, nil)
 }
 
-// GetFreebuffConnectPending asks the server whether the user asked for a
-// Freebuff browser login on this runtime. The daemon polls it rather than
-// receiving the request in a heartbeat acknowledgement, because the request
-// lives in the runtime row's metadata and the WebSocket heartbeat path never
-// reads that row.
-func (c *Client) GetFreebuffConnectPending(ctx context.Context, runtimeID string) (bool, error) {
-	var resp struct {
-		ConnectRequested bool `json:"connect_requested"`
-	}
-	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff/pending", runtimeID), &resp); err != nil {
-		return false, err
-	}
-	return resp.ConnectRequested, nil
+// FreebuffPending is what the user asked the daemon to do to a runtime's
+// Freebuff accounts.
+type FreebuffPending struct {
+	// Accounts lists the accounts that need the daemon: a sign-in to start or
+	// resume ("requested", "awaiting_login") or a login to delete ("removing").
+	Accounts []struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	} `json:"accounts"`
+	// DefaultAccountID is the account tasks run on.
+	DefaultAccountID string `json:"default_account_id"`
+}
+
+// GetFreebuffPending asks the server what the user wants done to a Freebuff
+// runtime's accounts. The daemon polls it rather than receiving the request in
+// a heartbeat acknowledgement, because the request lives in the runtime row's
+// metadata and the WebSocket heartbeat path never reads that row.
+func (c *Client) GetFreebuffPending(ctx context.Context, runtimeID string) (FreebuffPending, error) {
+	var resp FreebuffPending
+	err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/freebuff/pending", runtimeID), &resp)
+	return resp, err
 }
 
 // ReportModelListResult sends the model-discovery result back to the server.

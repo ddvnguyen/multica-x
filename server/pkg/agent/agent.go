@@ -129,6 +129,12 @@ type ExecOptions struct {
 	// ignore this field, mirroring ThinkingLevel's renderer-side fall-through
 	// pattern. See issue #3260.
 	OpenclawMode string
+	// OpenclawModelOverride is the claim-time snapshot of the agent's persistent
+	// underlying-model override. The setting applies to all newly claimed runs
+	// until changed or cleared. OpenClaw receives it as `--model <id>` alongside
+	// `--agent <id>`, preserving the identity, workspace, sessions, and memory
+	// selected by Model. Other backends ignore this field.
+	OpenclawModelOverride string
 	// ClaudeSettingsPath is a daemon-owned, task-local settings file passed
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
@@ -158,6 +164,10 @@ func runContext(ctx context.Context, timeout time.Duration) (context.Context, co
 
 // Session represents a running agent execution.
 type Session struct {
+	// CleanupRequired means Result is also the acknowledgement that the
+	// backend's bounded process cleanup finished. A missing acknowledgement
+	// must prevent automatic continuation, even after upstream cancellation.
+	CleanupRequired bool
 	// Supplement delivers an additional human instruction to the currently
 	// active provider turn. Nil means the backend cannot safely do so.
 	// Adapters bound their own transport calls; a hook-based adapter may wait
@@ -273,6 +283,19 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// FirstPromptTokens is the prompt size (input + cache_read +
+	// cache_write) of the run's FIRST model request, in frame order — for a
+	// run that started its session, the session's init prefix. LastPromptTokens
+	// is the same measure for the run's LAST model request, i.e. the size of
+	// the conversation a resume (or a summary) would re-read. S3-B1 (M-137):
+	// the dsh backend records both from its per-request usage frames (the
+	// bridge emits one usage frame per assistant message, verified against
+	// dsh-multica-runtime's observeSessionEvent); other backends leave both
+	// zero. The summary clock's trigger is Last − First, so a one-shot run
+	// can reach it — unlike a sum over Usage, which is billed volume across
+	// steps, not conversation size.
+	FirstPromptTokens int64
+	LastPromptTokens  int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history
@@ -385,6 +408,7 @@ var SupportedTypes = []string{
 	"opencode",
 	"codearts",
 	"deveco",
+	"freebuff",
 	"openclaw",
 	"hermes",
 	"pi",
@@ -403,6 +427,7 @@ var SupportedTypes = []string{
 	"mcode",
 	"muse",
 	"dim",
+	"devin",
 	"zeroclaw",
 }
 
@@ -475,6 +500,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return newCodeArtsBackend(cfg)
 	case "deveco":
 		return &devecoBackend{cfg: cfg}, nil
+	case "freebuff":
+		return &freebuffBackend{cfg: cfg}, nil
 	case "openclaw":
 		return &openclawBackend{cfg: cfg}, nil
 	case "hermes":
@@ -507,6 +534,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &qwenpawBackend{cfg: cfg}, nil
 	case "mcode":
 		return &mcodeBackend{cfg: cfg}, nil
+	case "devin":
+		return &devinBackend{cfg: cfg}, nil
 	case "muse":
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
@@ -541,6 +570,7 @@ var launchHeaders = map[string]string{
 	"cursor":      "cursor-agent (stream-json)",
 	"codearts":    "codearts run (json)",
 	"deveco":      "deveco run (json)",
+	"freebuff":    "bun orchestrator.js (local HTTP)",
 	"hermes":      "hermes acp",
 	"kimi":        "kimi acp",
 	"reasonix":    "reasonix acp",
@@ -556,6 +586,7 @@ var launchHeaders = map[string]string{
 	"qwen":        "qwen -p (stream-json)",
 	"qwenpaw":     "qwenpaw acp",
 	"dim":         "dim acp",
+	"devin":       "devin acp",
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",

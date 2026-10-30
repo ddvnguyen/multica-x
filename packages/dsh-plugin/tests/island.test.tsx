@@ -15,6 +15,7 @@ import { shadowStyles } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
 import { useModalStore } from "../src/fork";
+import { zoomStore } from "../src/client/zoom-store";
 
 /**
  * The island is a second React tree inside a shadow root, so these tests drive
@@ -352,6 +353,44 @@ describe("mountIsland", () => {
     ]) {
       expect(labels).not.toContain(hidden);
     }
+  });
+
+  it("renders Preferences without the error boundary, with the panel zoom row", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, {
+        initialRoute: { view: "settings", query: "tab=preferences" },
+      }),
+    );
+
+    // Before M-154 this page threw: `useLocaleAdapter` had no provider, so the
+    // whole tab rendered as the boundary's fallback.
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).toContain("Panel zoom");
+      expect(text).toContain("Scales this panel");
+      expect(text).not.toContain("Something went wrong displaying this section");
+    });
+  });
+
+  it("scales the panel surface from the zoom store, without a reload", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: BOARD_ROUTE }));
+
+    const surface = () =>
+      host.shadowRoot?.querySelector<HTMLElement>("[data-panel-zoom]") ?? null;
+
+    await settle(() => {
+      expect(surface()?.dataset.panelZoom).toBe("100");
+    });
+
+    act(() => zoomStore.set(125));
+    expect(surface()?.dataset.panelZoom).toBe("125");
+
+    // Leave the shared store as the next test expects it.
+    act(() => zoomStore.set(100));
   });
 
   it("reads the memory plane on the MOCT page and nowhere else", async () => {

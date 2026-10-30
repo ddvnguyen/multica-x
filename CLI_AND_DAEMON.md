@@ -287,6 +287,7 @@ The daemon auto-detects these AI CLIs on your PATH:
 | Kimi | `kimi` | Moonshot coding agent |
 | [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) | `reasonix` | DeepSeek-focused ACP coding agent (run `reasonix setup` first) |
 | Dim | `dim` | DimCode ACP coding agent (speaks the ACP protocol via `dim acp`) |
+| [Devin CLI](https://docs.devin.ai/cli/quickstart) | `devin` | Version 3000.3.22+. Host-local ACP (`devin acp`), not cloud Devin VMs. Run `devin auth login` first. |
 | Kiro CLI | `kiro-cli` | Kiro ACP coding agent |
 | [Qoder CLI](https://docs.qoder.com/) | `qodercli` | Qoder ACP coding agent |
 | [Qoder CN CLI](https://help.aliyun.com/en/lingma/qodercli-cn/product-overview/what-is-qoder-cli-cn) | `qoderclicn` | Qoder CN ACP coding agent |
@@ -341,6 +342,33 @@ Daemon behavior is configured via flags or environment variables:
 | GC Hermes memory TTL (per-agent `memories/`) | — | `MULTICA_GC_HERMES_MEMORY_TTL` | `2160h` (90d; set `0` to disable) |
 | GC Hermes session TTL (per-conversation `state.db`) | — | `MULTICA_GC_HERMES_SESSION_TTL` | `336h` (14d; set `0` to disable) |
 | GC task temp legacy TTL (pre-lock `multica-task-*`) | — | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` (disabled; set a duration to opt in) |
+| dsh summary clock | — | `MULTICA_DSH_SUMMARY_ENABLED` | `true` (set `false`/`0` to disable) |
+| dsh summary size target | — | `MULTICA_DSH_SUMMARY_TOKENS` | `2048` tokens |
+| dsh summary size cap (flagged, not enforced) | — | `MULTICA_DSH_SUMMARY_TOKEN_CAP` | `4096` tokens |
+| dsh summary trigger (conversation tokens above the init prefix) | — | `MULTICA_DSH_SUMMARY_TRIGGER_TOKENS` | `20000` |
+| dsh assumed cache TTL | — | `MULTICA_DSH_SUMMARY_TTL` | `1h` (provisional until re-measured with a real DeepSeek key) |
+| dsh summary margin (summarize at TTL − margin) | — | `MULTICA_DSH_SUMMARY_MARGIN` | `15m` |
+| dsh cold/warm cache price ratio (cost rule) | — | `MULTICA_DSH_SUMMARY_COLD_WARM_RATIO` | `30` |
+| dsh per-model prompt-cache TTLs | — | `MULTICA_DSH_PROMPT_CACHE` | unset; JSON map, e.g. `{"deepseek/v4-pro": {"short": "5m", "long": "1h"}}` |
+
+#### dsh prompt-cache summary clock
+
+For a `dsh`-backed run, the daemon starts a per-session clock when the run
+ends and, at TTL − margin — while the provider's prompt cache is still warm —
+builds a summary of the conversation with dsh's own compaction and stores it
+beside the session (`summary.json` in the session store, carrying `summary`,
+`tokens`, `made_at`, and `parent_session`). A resumed session disarms its
+clock. Whether the summary is built is decided from the run's usage facts
+(`cache_read_tokens`/`cache_write_tokens`): the conversation above the init
+prefix — the run's last model request's prompt size minus its first request's,
+so a one-shot session can reach the trigger — must reach the token trigger,
+and the expected cold re-read
+must cost more than the summary. Every decision is logged on the run row
+(`result.dsh_summary`). The clock lives in the daemon — an idle session never
+keeps a dsh process alive. Summary timers are in daemon memory, so a daemon
+restart drops pending fires (re-arming on start is deferred to M-139). All
+defaults are provisional (M-133) pending
+re-measurement with a real DeepSeek credential; nothing here is hard-coded.
 
 #### Workspace garbage collection
 
@@ -390,7 +418,7 @@ Agent-specific overrides:
 | `MULTICA_OPENCODE_PATH` | Custom path to the `opencode` binary |
 | `MULTICA_OPENCODE_MODEL` | Override the OpenCode model used |
 | `MULTICA_OPENCLAW_PATH` | Custom path to the `openclaw` binary |
-| `MULTICA_OPENCLAW_MODEL` | Override the OpenClaw model used |
+| `MULTICA_OPENCLAW_MODEL` | Select the registered OpenClaw agent ID used by default; the agent's `runtime_config.model_override` persistently overrides its underlying model for all newly claimed runs until changed or cleared |
 | `MULTICA_OPENCLAW_CLI_TIMEOUT` | Deadline for each `openclaw config ...` call during task preparation (default 30s; accepts `45s` or `45`). Raise it when the local CLI is slow to start; the daemon also reads it from `backends.openclaw.cli_timeout` in the CLI config |
 | `MULTICA_HERMES_PATH` | Custom path to the `hermes` binary |
 | `MULTICA_HERMES_MODEL` | Override the Hermes model used |
@@ -404,6 +432,8 @@ Agent-specific overrides:
 | `MULTICA_REASONIX_MODEL` | Override the Reasonix model used |
 | `MULTICA_DIM_PATH` | Custom path to the `dim` binary |
 | `MULTICA_DIM_MODEL` | Override the Dim model used |
+| `MULTICA_DEVIN_PATH` | Custom path to the `devin` binary |
+| `MULTICA_DEVIN_MODEL` | Override the Devin model used |
 | `MULTICA_KIRO_PATH` | Custom path to the `kiro-cli` binary |
 | `MULTICA_KIRO_MODEL` | Override the Kiro model used |
 | `MULTICA_QODER_PATH` | Custom path to the `qodercli` binary |
@@ -594,13 +624,23 @@ multica issue list --metadata pipeline_status=waiting_review
 multica issue list --metadata pr_number=482 --metadata is_blocked=true
 ```
 
-Use `--property "Name=Value"` (repeatable; one value per flag) to filter by custom property. Names and select option values are case-insensitive and resolve to ids; repeating the same property matches any of its values, different properties must all match. Values are option names or ids (select types), `true`/`false` (checkbox), a member name, email, or id (actor types), or the stored value itself for `text`, `url`, `number`, and `date` (`YYYY-MM-DD`). Only `=` is supported today; the `>=`, `<=` and `!=` spellings are reserved for comparison filters and are rejected. The reserved value `__none__` matches issues where the property is unset:
+Use `--property "Name=Value"` (repeatable; one member per flag) to filter by custom property. Names and select option values are case-insensitive and resolve to ids; repeating the same property matches any of its members, different properties must all match. Values are option names or ids (select types), `true`/`false` (checkbox), a member name, email, or id (actor types), or the stored value itself for `text`, `url`, `number`, and `date` (`YYYY-MM-DD`). The reserved value `__none__` matches issues where the property is unset:
 
 ```bash
 multica issue list --property "Impact=High" --property "Impact=Medium"
 multica issue list --property "Impact=__none__" --status in_review
 multica issue list --property "Score=42" --property "Ship Date=2026-08-28"
 ```
+
+Comparisons go in the same flag. `number` takes `>`, `>=`, `<` and `<=`; `date` takes `>` (after) and `<` (before); `text` and `url` take `~=` (contains, case-insensitive, matched exactly as typed). Quote the flag so the shell does not read `<` and `>` as redirection:
+
+```bash
+multica issue list --property "Score>=3" --property "Impact=High"
+multica issue list --property "Ship Date<2026-09-01" --status todo
+multica issue list --property "Notes~=follow up"
+```
+
+A comparison on a type that cannot honour it is rejected with an error naming the type. So is `!=` (the server has no not-equal filter), and so are `>=` and `<=` on a date: the server only compares dates strictly, and the error names the strict form to use instead. Repeating a property ORs its members, so `"Score>1"` plus `"Score<10"` is not a range. A property whose name contains `=`, `<`, `>`, `!` or `~` has to be given by its UUID.
 
 In JSON output, `properties` is a map from definition id to the stored value: an option id for `select`, a list of option ids for `multi_select`, a `member:<uuid>` reference for the actor types, and the value itself otherwise. Pass `--resolve-properties` to replace that map with the rows `issue property list` prints, one per set property, in catalog order: `property_id`, `name`, `type`, the stored `value`, a human `display`, `display_values` (the per-item names of a `multi_select` or `multi_actor` value) and `archived` when the definition is archived. Archived definitions still resolve, since their values stay on the issue. An option that is no longer in the definition, or a member who has left the workspace, keeps its raw id in `display`. The flag adds at most two requests: the catalog, shared with `--property` and `--sort property:`, and the member list, fetched only when an actor `--property` filter or an actor value on the page needs it and shared between the two. If either request fails the command fails rather than printing ids. In JSON output it combines with `--fields` only when that list keeps `properties`; a `--fields` list without it is rejected rather than resolving a key the same command would delete. The flag has no effect on `--output table`, where it and `--fields` are both ignored and neither is rejected.
 

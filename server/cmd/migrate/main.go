@@ -140,6 +140,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"594_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"563_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"562_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
 	"552_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
@@ -187,6 +188,8 @@ var concurrentIndexCleanups = map[string]string{
 	"486_maintenance_job_id_index":                              "idx_maintenance_job_id",
 	"487_maintenance_job_idempotency_index":                     "idx_maintenance_job_idempotency",
 	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
+	"587_cloud_agent_connection_provider_index":                 "cloud_agent_connection_provider_index",
+	"590_member_delegation_day_unique_index":                    "member_delegation_day_user_date_uidx",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",
@@ -479,6 +482,18 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
+	// Fork-rename gates (M-167, M-165 deploy): the v0.7.1 sync renumbered
+	// migrations previously applied to fork lanes under other numbers, so
+	// their SQL ships again under 596–600/601/602. A database that ran the
+	// old numbers has the objects and must record these versions without
+	// re-running; a fresh database applies them. See
+	// migrate_fork_rename_conditions.go.
+	"596_agent_question_card":  whenRenamedObjectsAllPresent(objects596AgentQuestionCard),
+	"597_agent_plan":           whenRenamedObjectsAllPresent(objects597AgentPlan),
+	"598_agent_plan_review":    whenRenamedObjectsAllPresent(objects598AgentPlanReview),
+	"600_project_settings":     whenRenamedObjectsAllPresent(objects600ProjectSettings),
+	"601_workspace_account":    whenRenamedObjectsAllPresent(objects601WorkspaceAccount),
+	"602_task_supplement_mode": whenRenamedObjectsAllPresent(objects602TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index

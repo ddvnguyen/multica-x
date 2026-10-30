@@ -710,6 +710,9 @@ func main() {
 		LLMMaxRetries:       llmMaxRetries,
 		LLMDisableThinking:  llmDisableThinking,
 	})
+	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
+	// stops writing it as well as sending the snapshot.
+	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -764,11 +767,16 @@ func main() {
 	// Queued work now expires on the same runtime-liveness signal as in-flight
 	// work, so there is no separate queue TTL to tune: a busy runtime keeps its
 	// backlog, and a departed one retires everything it owned at once.
+	go h.RunQoderConnections(sweepCtx, pool, "http://localhost:"+port)
 	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace)
 	if telemetryWorker != nil {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// M-131: parked ask/plan tasks past their effective timeout are reaped and
+	// escalated to the project lead — its own 30s tick, since each candidate is
+	// judged against its project's override rather than a shared wall clock.
+	go runAskPlanTimeoutSweeper(sweepCtx, queries, taskSvc)
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.

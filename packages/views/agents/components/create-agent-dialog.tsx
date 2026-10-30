@@ -5,6 +5,11 @@ import { Globe, Lock, Users } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ModelDropdown } from "./model-dropdown";
 import { AgentAccountField } from "./agent-account-field";
+import {
+  AgentFreebuffAccountField,
+  agentFreebuffAccountId,
+  setAgentFreebuffAccountId,
+} from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./runtime-picker";
 import {
   accountModelScope,
@@ -40,6 +45,7 @@ import {
   DialogDescription,
 } from "@multica/ui/components/ui/dialog";
 import { Button } from "@multica/ui/components/ui/button";
+import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -152,6 +158,9 @@ export function CreateAgentDialog({
   const [accountSelection, setAccountSelection] = useState<AgentAccountSelection>(() =>
     agentAccountSelection(template ?? {}),
   );
+  const [freebuffAccountId, setFreebuffAccountId] = useState(() =>
+    agentFreebuffAccountId(template?.runtime_config),
+  );
   const [instructions, setInstructions] = useState(template?.instructions ?? "");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(template?.avatar_url ?? null);
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(
@@ -239,6 +248,17 @@ export function CreateAgentDialog({
         model: model.trim() || undefined,
         ...(runtimeSupportsAccounts(selectedRuntime.provider) && accountSelection.mode !== "default"
           ? accountRequestFields(accountSelection)
+          : {}),
+        // Freebuff-CLI account pick lives in runtime_config, not a top-level
+        // request field. Only set for freebuff runtimes so other providers
+        // see no change at all.
+        ...(selectedRuntime.provider === "freebuff"
+          ? {
+              runtime_config: setAgentFreebuffAccountId(
+                template?.runtime_config,
+                freebuffAccountId,
+              ),
+            }
           : {}),
         instructions: trimmedInstructions || undefined,
         avatar_url: avatarUrl ?? undefined,
@@ -439,6 +459,9 @@ export function CreateAgentDialog({
                 if (id !== selectedRuntimeId) {
                   setModel("");
                   setAccountSelection(agentAccountSelection({}));
+                  // Same rule as accounts: a Freebuff-CLI account pick is
+                  // meaningless on a different runtime.
+                  setFreebuffAccountId("");
                 }
                 setSelectedRuntimeId(id);
               }}
@@ -453,6 +476,14 @@ export function CreateAgentDialog({
                 setAccountSelection(next);
                 setModel("");
               }}
+            />
+
+            <AgentFreebuffAccountField
+              runtimeProvider={selectedRuntime?.provider}
+              runtimeId={selectedRuntime?.id}
+              value={freebuffAccountId}
+              disabled={!selectedRuntime}
+              onChange={setFreebuffAccountId}
             />
 
             <ModelDropdown
@@ -494,19 +525,25 @@ export function CreateAgentDialog({
           <Button variant="ghost" onClick={onClose}>
             {t(($) => $.create_dialog.cancel)}
           </Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={
-              creating || !name.trim() || !selectedRuntime || selectedRuntimeLocked
-            }
-            title={
+          <TooltipHint
+            label={
               selectedRuntimeLocked
                 ? t(($) => $.create_dialog.runtime_private_locked_tooltip)
                 : undefined
             }
           >
-            {creating ? t(($) => $.create_dialog.creating) : t(($) => $.create_dialog.create)}
-          </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={
+                creating || !name.trim() || !selectedRuntime || selectedRuntimeLocked
+              }
+              // Keeps the button hoverable so its tooltip can say why it is blocked.
+              focusableWhenDisabled={selectedRuntimeLocked}
+              className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+            >
+              {creating ? t(($) => $.create_dialog.creating) : t(($) => $.create_dialog.create)}
+            </Button>
+          </TooltipHint>
         </div>
       </DialogContent>
     </Dialog>
