@@ -19,8 +19,11 @@ func TestFailStaleTasksDetachedTimeoutIsBounded(t *testing.T) {
 	ctx := context.Background()
 
 	// One fixture: the helper creates the issue and first task; the second task
-	// is inserted directly so the shared issue fixture is only built once.
+	// is inserted directly so the shared issue fixture is only built once. Its
+	// cleanup also drops the issue — the raw fixture insert leaves number = 0,
+	// so leaving it behind would collide with the next test's issue.
 	issueID, agentID, oldTaskID := setupSweeperTestFixture(t, "running")
+	defer cleanupSweeperFixture(t, issueID, agentID)
 
 	var runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
@@ -35,12 +38,6 @@ func TestFailStaleTasksDetachedTimeoutIsBounded(t *testing.T) {
 	`, agentID, runtimeID, issueID).Scan(&youngTaskID); err != nil {
 		t.Fatalf("create young task: %v", err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx := context.Background()
-		for _, taskID := range []string{oldTaskID, youngTaskID} {
-			_, _ = testPool.Exec(cleanupCtx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-		}
-	})
 
 	// Age one task past the detached bound and keep the other inside it.
 	if _, err := testPool.Exec(ctx, `
