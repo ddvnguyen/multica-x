@@ -74,6 +74,15 @@ type ExecOptions struct {
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
 	ResumeSessionID        string // if non-empty, resume a previous agent session
+	// ForkParent names a dsh session to fork instead of resuming (S3-B2/M-138):
+	// the new session inherits a seed built from that session's summary and is
+	// linked to it as its parent. Sent only when the bridge advertises the
+	// `fork` capability on its ready frame; otherwise the backend resumes
+	// ForkParent, which is the behaviour every bridge before S3-B2 had.
+	ForkParent string
+	// Seed is the summary+trigger text the forked child inherits. Ignored when
+	// ForkParent is empty or the bridge cannot fork.
+	Seed string
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
@@ -326,6 +335,12 @@ type Result struct {
 	// shouldRetryWithFreshSession, where "was this run a resume?" is already
 	// known. Do not encode it here.
 	ResumeRejected bool
+	// DshForkUsed reports that this dsh run opened as a forked child of the
+	// session named in ExecOptions.ForkParent (S3-B2/M-138). False on every
+	// other backend, and false on a dsh bridge that did not advertise the
+	// `fork` capability — the backend then resumed the parent instead, which
+	// is the fallback the daemon records as a plain resume.
+	DshForkUsed bool
 	// ResumeRejectedTransient is positive evidence that this run's requested
 	// resume cannot proceed right now, but the session itself remains healthy.
 	// The daemon may use a fresh session for this turn, but must not retire the

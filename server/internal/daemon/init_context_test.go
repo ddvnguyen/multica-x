@@ -40,6 +40,7 @@ func TestNewInitContextDoesNotDoubleCountMemory(t *testing.T) {
 		block+body,
 		block,
 		Task{IssueID: "issue-1", TriggerCommentID: "comment-1"},
+		initctx.SeedPart(),
 	)
 
 	byPart := map[initctx.Part]initctx.PartReport{}
@@ -57,7 +58,7 @@ func TestNewInitContextDoesNotDoubleCountMemory(t *testing.T) {
 func TestNewInitContextRendersEveryPartInOrder(t *testing.T) {
 	t.Parallel()
 
-	report := newInitContext("dsh", briefFixture(), initctx.PartReport{Part: initctx.PartMemory, Measured: true, Note: "no memory for this scope"}, "task", "", Task{IssueID: "issue-1"})
+	report := newInitContext("dsh", briefFixture(), initctx.PartReport{Part: initctx.PartMemory, Measured: true, Note: "no memory for this scope"}, "task", "", Task{IssueID: "issue-1"}, initctx.SeedPart())
 
 	if len(report.Parts) != len(initctx.Order) {
 		t.Fatalf("report has %d parts, want %d", len(report.Parts), len(initctx.Order))

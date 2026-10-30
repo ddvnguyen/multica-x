@@ -44,9 +44,9 @@ const (
 	// PartTask is the per-turn task prompt: the trigger, the issue id, and the
 	// run-scoped blocks appended after the cached prefix.
 	PartTask Part = "task"
-	// PartSeed is reserved for S3-B seeded sessions (M-137). Nothing produces
-	// it yet; the slot is held so the budget table does not have to change when
-	// it lands.
+	// PartSeed is the summary+trigger text a seeded dsh session inherits
+	// (S3-B2/M-138). Zero tokens when the run resumed or started fresh; the
+	// daemon fills it through SeedPartFor when it composed one.
 	PartSeed Part = "seed"
 )
 
@@ -299,11 +299,25 @@ func ToolPart(provider string) PartReport {
 	}
 }
 
-// SeedPart returns the reserved S3-B row.
+// SeedPart returns the seed row for a run that did not start from a summary.
 func SeedPart() PartReport {
 	return PartReport{
 		Part:     PartSeed,
 		Measured: true,
-		Note:     "reserved for S3-B seeded sessions (M-137); nothing produces this part yet",
+		Note:     "no seed: this run resumed a session or started fresh",
+	}
+}
+
+// SeedPartFor returns the seed row for a run whose session was seeded from a
+// summary (S3-B2/M-138). The seed is composed by the daemon, so the count is
+// this run's own estimate; trimmed and dropped say what the 32K cap cost.
+func SeedPartFor(tokens int, trimmed bool, dropped []string, note string) PartReport {
+	return PartReport{
+		Part:     PartSeed,
+		Tokens:   tokens,
+		Measured: true,
+		Trimmed:  trimmed,
+		Dropped:  dropped,
+		Note:     note,
 	}
 }

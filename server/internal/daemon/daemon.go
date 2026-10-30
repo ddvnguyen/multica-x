@@ -29,6 +29,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -277,6 +278,10 @@ type terminalTaskReport struct {
 	// already marshalled. Carried through the outbox so a replayed callback
 	// reports the same context facts as the original attempt.
 	initContext json.RawMessage
+	// sessionStart is how a dsh run opened its session (S3-B2/M-138). Carried
+	// through the outbox for the same reason as initContext: a replayed
+	// callback must not lose the fact the run recorded.
+	sessionStart string
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -6372,6 +6377,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
 			initContext:           result.InitContext,
+			sessionStart:          result.SessionStart,
 		})
 		if err == nil {
 			return
@@ -6417,6 +6423,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
 			initContext:           result.InitContext,
+			sessionStart:          result.SessionStart,
 		}); err != nil {
 			taskLog.Error("report failed task failed", "error", err)
 		}
@@ -6516,7 +6523,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.initContext, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.initContext, report.sessionStart, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -8642,6 +8649,86 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	cancelPrepare()
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
+	// Two-tier model resolution: an explicit agent.model wins,
+	// then the daemon-wide MULTICA_<PROVIDER>_MODEL env var. If
+	// both are empty we deliberately pass "" through — each
+	// backend omits `--model` from the CLI invocation, so the
+	// provider picks its own default (Claude Code's shipped
+	// default, codex app-server's account-scoped default, etc.).
+	// Baking a Go-side "recommended default" here is how the
+	// cursor regression happened — static guesses drift from
+	// whatever the upstream CLI actually accepts.
+	//
+	// Resolved before the start log rather than at first use: logging
+	// entry.Model there reported the env-var tier alone, so every task whose
+	// model came from agent.model — the common case — announced itself with an
+	// empty model and looked like the selection had been dropped (GH #7300).
+	//
+	// It sits this early because the dsh seeded-session decision (S3-B2)
+	// resolves the cache TTL from the model, and that decision has to run
+	// before the brief and the prompt are written.
+	model := ""
+	if task.Agent != nil && task.Agent.Model != "" {
+		model = task.Agent.Model
+	}
+	if model == "" {
+		model = entry.Model
+	}
+
+	// S3-B1: the store root the summary clock writes beside. Resolved here,
+	// before the brief, because the seeded-session decision (S3-B2) reads the
+	// summary sidecar beside the prior session and the start it picks changes
+	// what the brief says. The dsh branch below still owns the environment
+	// variable derived from it.
+	dshStoreRoot, err := d.prepareDshStoreRoot(task, provider, taskLog)
+	if err != nil {
+		return TaskResult{}, err
+	}
+
+	// S3-B2 (M-138): how does this dsh run start? Resumed, seeded from a
+	// summary, or fresh — decided here, before the brief and prompt are built,
+	// because a seeded or fresh start must not carry the resume language a
+	// resumed one does. Non-dsh providers keep today's behaviour untouched.
+	sessionStart := dshSessionStartPlan{ResumeSessionID: task.PriorSessionID}
+	if provider == "dsh" {
+		sessionStart = decideDshSessionStart(dshSessionStartInput{
+			Now:             time.Now(),
+			Cfg:             d.cfg.DshSummary,
+			Model:           model,
+			StoreRoot:       dshStoreRoot,
+			PriorSessionID:  task.PriorSessionID,
+			PriorEndedAt:    task.PriorSessionEndedAt,
+			PriorWorkDir:    task.PriorWorkDir,
+			LinkedSessionID: task.LinkedPriorSessionID,
+			LinkedIssueID:   task.LinkedPriorSessionIssueID,
+			LinkedEndedAt:   task.LinkedPriorSessionEndedAt,
+			LinkedWorkDir:   task.LinkedPriorSessionWorkDir,
+			Trigger:         dshSessionTrigger(task),
+			ReadSummary: func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool) {
+				return readDshSummarySidecar(dshStoreRoot, candidate.WorkDir, candidate.SessionID)
+			},
+		})
+		taskLog.Info("dsh session start",
+			"verdict", sessionStart.Verdict,
+			"session_id", sessionStart.Candidate.SessionID,
+			"issue_id", sessionStart.Candidate.IssueID,
+			"age", sessionStart.Age.Round(time.Second).String(),
+			"ttl", sessionStart.TTL.String(),
+			"margin", sessionStart.Margin.String(),
+			"seed_tokens", sessionStart.SeedTokens,
+			"reason", sessionStart.Reason,
+		)
+		if sessionStart.Verdict != dshSessionStartResumed {
+			// Neither a seeded nor a fresh start continues the prior session:
+			// clear it before the brief is generated so nothing on disk claims
+			// continuity this run does not have. The seed, when there is one,
+			// carries the conversation instead.
+			task.PriorSessionID = ""
+			taskCtx.PriorSessionResumed = false
+		}
+	}
+	defer func() { taskResult.SessionStart = sessionStart.Verdict }()
+
 	// usesCustomProfileCommand is the same provenance the backend receives as
 	// agent.Config.BuiltinRuntime: it separates the provider's own discovered
 	// binary from an arbitrary command speaking its protocol. Reused here so
@@ -8822,9 +8909,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
-	// S3-B1: the store root the summary clock writes beside, resolved in the
-	// dsh branch below (shared store or the private per-runtime root).
-	var dshStoreRoot string
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -8835,26 +8919,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "dsh" {
 		// M-102: with MESSAGE_SINK=dsh the transcript is owned by the dsh
 		// session store every dsh surface on this machine reads, so the
-		// session must land in that shared store — leave
-		// MULTICA_DSH_SESSION_ROOT unset and the runtime bridge's patch
+		// session must land in that shared store — MULTICA_DSH_SESSION_ROOT
+		// stays unset and the runtime bridge's patch
 		// (MULTICA_DSH_SESSION_ROOT ?? dshHomePath('sessions')) falls back to
 		// $DSH_HOME/sessions. Resume still works: the session id is pinned
 		// mid-run and resumed by id, and prior-session eligibility keeps
 		// resolving it the same way. Without the flag the private per-
 		// runtime/agent root stays the default (capability-gated, M-97 rule 4).
-		if d.cfg.MessageSink == "dsh" {
-			taskLog.Info("dsh message sink enabled; session goes to the shared dsh store",
-				"dsh_home", os.Getenv("DSH_HOME"))
-			// S3-B1: the summary clock stores the summary beside the session,
-			// so it needs the same root the bridge will have written into.
-			dshStoreRoot = dshSharedSessionStoreRoot()
-		} else {
-			dshSessionRoot, err := prepareDshTaskSessionRoot(d.cfg.Profile, task.RuntimeID, task.AgentID)
-			if err != nil {
-				return TaskResult{}, fmt.Errorf("prepare dsh session root: %w", err)
-			}
-			agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
-			dshStoreRoot = dshSessionRoot
+		if d.cfg.MessageSink != "dsh" {
+			agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshStoreRoot
 		}
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
 	}
@@ -8917,28 +8990,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
 	}
 
-	// Two-tier model resolution: an explicit agent.model wins,
-	// then the daemon-wide MULTICA_<PROVIDER>_MODEL env var. If
-	// both are empty we deliberately pass "" through — each
-	// backend omits `--model` from the CLI invocation, so the
-	// provider picks its own default (Claude Code's shipped
-	// default, codex app-server's account-scoped default, etc.).
-	// Baking a Go-side "recommended default" here is how the
-	// cursor regression happened — static guesses drift from
-	// whatever the upstream CLI actually accepts.
-	//
-	// Resolved before the start log rather than at first use: logging
-	// entry.Model there reported the env-var tier alone, so every task whose
-	// model came from agent.model — the common case — announced itself with an
-	// empty model and looked like the selection had been dropped (GH #7300).
-	model := ""
-	if task.Agent != nil && task.Agent.Model != "" {
-		model = task.Agent.Model
-	}
-	if model == "" {
-		model = entry.Model
-	}
-
 	taskLog.Info("starting agent",
 		"provider", provider,
 		"workdir", env.WorkDir,
@@ -8999,6 +9050,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		TurnInterruptTimeout:       d.cfg.CodexTurnInterruptTimeout,
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		ResumeSessionID:            task.PriorSessionID,
+		// S3-B2 (M-138): a summary-seeded start. ForkParent is the session the
+		// bridge forks from once it advertises `fork`; a bridge that does not
+		// falls back to resuming it, which is why ResumeSessionID above is left
+		// empty only for a seeded run and the backend restores it on the
+		// fallback path. Seed is the summary+trigger text the child inherits.
+		ForkParent: sessionStart.ForkParent,
+		Seed:       sessionStart.Seed,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
@@ -9073,7 +9131,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// run outside the 20–30 K band carries its own explanation instead of
 	// needing a second investigation. Registered as a deferred assignment so
 	// every terminal path — completed, blocked, timed out — reports it.
-	initContext := newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task)
+	// S3-B2: the seed row prices what the fork actually inherits. It is zero
+	// for every run that resumed or started fresh, and it is reset below if
+	// the bridge turns out not to support forking.
+	seedPart := initctx.SeedPart()
+	if sessionStart.Seed != "" {
+		seedPart = initctx.SeedPartFor(sessionStart.SeedTokens, sessionStart.SeedTrimmed, sessionStart.SeedDropped,
+			"summary of "+sessionStart.Candidate.SessionID+" plus this run's trigger; capped at 32K tokens")
+	}
+	initContext := newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task, seedPart)
 	defer func() { taskResult.InitContext = marshalInitContext(initContext) }()
 
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
@@ -9149,6 +9215,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// task and taskCtx are local (runTask takes task by value), so these
 		// mutations only affect the retry.
 		execOpts.ResumeSessionID = ""
+		// S3-B2: a fresh retry must not fork either — the seed would rebuild
+		// the very conversation the provider just refused.
+		execOpts.ForkParent, execOpts.Seed = "", ""
 		task.PriorSessionID = ""
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
@@ -9166,7 +9235,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// notice), so the report has to describe THAT one, not the poisoned
 		// attempt's. The prefix hash is the check that matters: it must come out
 		// equal across the two, or the brief was not byte-stable.
-		initContext = newInitContext(provider, runtimeBrief, memoryPart, freshPrompt, memoryBlock, task)
+		//
+		// S3-B2: the retry is a fresh start by definition — no resume, no seed
+		// — so both the seed row and the run row's verdict follow it.
+		sessionStart = dshSessionStartPlan{Verdict: dshSessionStartFresh, Reason: "fresh-session retry"}
+		seedPart = initctx.SeedPart()
+		initContext = newInitContext(provider, runtimeBrief, memoryPart, freshPrompt, memoryBlock, task, seedPart)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq, dshSink)
 		if retryErr != nil {
@@ -9184,6 +9258,25 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+	}
+
+	// S3-B2 (M-138): the bridge negotiates fork on its ready frame. A bridge
+	// that does not advertise it got the fallback — it resumed the candidate
+	// session instead — so both the run row and the seed row must describe
+	// what actually happened rather than what was planned. The verdict stays
+	// inside the closed set: a dropped seed is a resume, which is exactly what
+	// every pre-S3-B2 daemon did.
+	if sessionStart.ForkParent != "" && !result.DshForkUsed {
+		taskLog.Warn("dsh seed dropped: the run resumed the candidate session instead of forking",
+			"session_id", sessionStart.ForkParent)
+		sessionStart = dshSessionStartPlan{
+			Verdict:         dshSessionStartResumed,
+			Candidate:       sessionStart.Candidate,
+			ResumeSessionID: sessionStart.ForkParent,
+			Reason:          "bridge did not fork",
+		}
+		seedPart = initctx.SeedPart()
+		initContext = newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task, seedPart)
 	}
 
 	// Worktree mode: if the agent finished with its work somewhere Finalize

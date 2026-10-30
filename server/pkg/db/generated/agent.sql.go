@@ -4584,7 +4584,7 @@ WITH retired_sessions AS (
       AND t.status IN ('completed', 'failed', 'cancelled')
     ORDER BY t.session_id, COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) DESC
 )
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot FROM latest_per_session
+SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, terminal_at FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -4640,6 +4640,7 @@ type GetLastTaskSessionRow struct {
 	Status        string             `json:"status"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	IssueSnapshot []byte             `json:"issue_snapshot"`
+	TerminalAt    pgtype.Timestamptz `json:"terminal_at"`
 }
 
 // Find resume context for an agent/issue from completed, failed, or cancelled
@@ -4670,6 +4671,9 @@ type GetLastTaskSessionRow struct {
 // and retired sessions, so it can legitimately return an OLDER run than the
 // newest one. Measuring against the newest one would then tell an agent whose
 // resumed memory predates an edit that the issue is unchanged.
+// terminal_at rides along for S3-B2 (M-138): the seeded-session decision needs
+// to know how long the session has been idle (cache warm vs cold) and whether
+// a summary beside the session is younger than the run that ended it.
 func (q *Queries) GetLastTaskSession(ctx context.Context, arg GetLastTaskSessionParams) (GetLastTaskSessionRow, error) {
 	row := q.db.QueryRow(ctx, getLastTaskSession, arg.AgentID, arg.IssueID)
 	var i GetLastTaskSessionRow
@@ -4680,6 +4684,7 @@ func (q *Queries) GetLastTaskSession(ctx context.Context, arg GetLastTaskSession
 		&i.Status,
 		&i.StartedAt,
 		&i.IssueSnapshot,
+		&i.TerminalAt,
 	)
 	return i, err
 }
@@ -5955,6 +5960,38 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLinkedIssueIDs = `-- name: ListLinkedIssueIDs :many
+SELECT i.id FROM issue i WHERE i.parent_issue_id = $1
+UNION
+SELECT p.id FROM issue p JOIN issue c ON c.parent_issue_id = p.id WHERE c.id = $1
+`
+
+// S3-B2 (M-138): the issues one session may legitimately continue into — the
+// issue's parent and its children, nothing else. Deterministic relevance v1:
+// an explicit parent/child link IS the whole rule, no model judge, and never a
+// sibling or an arbitrary workspace issue. The daemon still runs the resume
+// guards per linked issue (GetLastTaskSession), so a poisoned or retired
+// session can never enter the candidate set.
+func (q *Queries) ListLinkedIssueIDs(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listLinkedIssueIDs, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

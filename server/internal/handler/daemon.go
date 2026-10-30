@@ -3508,6 +3508,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
 					resumedRunStartedAt = prior.StartedAt
+					// S3-B2 (M-138): the dsh seeded-session decision measures
+					// cache warmth from when this session's run ended, not from
+					// the new trigger — an issue can sit untouched for hours and
+					// its provider cache still expire. Unset on rows that never
+					// recorded a terminal timestamp, which reads as "age
+					// unknown" and can never be called warm.
+					if prior.TerminalAt.Valid {
+						resp.PriorSessionEndedAt = prior.TerminalAt.Time.UTC().Format(time.RFC3339)
+					}
 					// Same rule as the rerun path: date the deltas from the run
 					// this session belongs to. GetLastTaskSession skips poisoned
 					// and retired sessions, so `prior` can be an older run than
@@ -3537,6 +3546,24 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// parent's workdir, never its session. A force_fresh task with no
 			// retry lineage still resumes nothing.
 			applyFreshSessionRetryWorkdir(*task, &resp, requestHasClientCapability(r, protocol.DaemonCapabilityCheckoutKeepsWorkV1))
+		}
+
+		// S3-B2 (M-138): a dsh run with nothing resumable on its own issue can
+		// still be seeded from the newest terminal session on an explicitly
+		// linked issue — its parent or a child. Resolved here, server-side, so
+		// the candidate carries the same resume guards as the same-issue prior
+		// (GetLastTaskSession skips poisoned and retired sessions) and the
+		// daemon never has to duplicate that safety filter. Deterministic
+		// relevance v1: the link is the whole rule — never a sibling, never an
+		// arbitrary issue in the workspace. Only consulted when this issue has
+		// no session of its own: a same-issue session always wins.
+		if resp.PriorSessionID == "" && h.taskRuntimeProvider(r.Context(), task.RuntimeID) == "dsh" {
+			if linked, ok := h.linkedPriorSession(r.Context(), task.AgentID, task.IssueID, task.RuntimeID); ok {
+				resp.LinkedPriorSessionID = linked.SessionID.String
+				resp.LinkedPriorSessionIssueID = uuidToString(linked.issueID)
+				resp.LinkedPriorSessionEndedAt = linked.TerminalAt.Time.UTC().Format(time.RFC3339)
+				resp.LinkedPriorSessionWorkDir = linked.WorkDir.String
+			}
 		}
 
 		// MUL-8218: a comment edit cancels the affected run and retriggers from
@@ -4864,6 +4891,11 @@ type TaskCompleteRequest struct {
 	// string so the run row is readable without decoding twice. Older daemons
 	// omit it, which reads as "not measured", not as "zero tokens".
 	InitContext json.RawMessage `json:"init_context,omitempty"`
+	// SessionStart is how a dsh run opened its session (S3-B2/M-138): exactly
+	// one of "resumed warm", "seeded from summary of <session>" or "fresh".
+	// Absent for every other provider and for daemons that predate it, which
+	// reads as "not measured".
+	SessionStart string `json:"session_start,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -4882,6 +4914,7 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	req.SessionStart = util.SanitizeTextForPostgres(req.SessionStart)
 	req.InitContext = sanitizeEmbeddedJSON(req.InitContext)
 }
 
@@ -5722,6 +5755,68 @@ func (h *Handler) taskRuntimeProvider(ctx context.Context, runtimeID pgtype.UUID
 	provider := strings.ToLower(strings.TrimSpace(rt.Provider))
 	runtimeProviderCache.Store(key, provider)
 	return provider
+}
+
+// linkedPriorSessionCandidate is the newest terminal dsh session on an issue
+// explicitly linked to the claiming task's issue (S3-B2/M-138).
+type linkedPriorSessionCandidate struct {
+	issueID    pgtype.UUID
+	SessionID  pgtype.Text
+	WorkDir    pgtype.Text
+	TerminalAt pgtype.Timestamptz
+	runtimeID  pgtype.UUID
+}
+
+// linkedPriorSession picks the newest terminal dsh session among the issues
+// explicitly linked to issueID — its parent and its children, nothing else
+// (deterministic relevance v1).
+//
+// The candidate is chosen from GetLastTaskSession per linked issue on purpose:
+// that query already applies the resume guards (poisoned, retired and
+// invalid-request rows are skipped), so a session the platform would refuse to
+// resume can never reach the daemon as a seed source.
+func (h *Handler) linkedPriorSession(ctx context.Context, agentID, issueID, runtimeID pgtype.UUID) (linkedPriorSessionCandidate, bool) {
+	ids, err := h.Queries.ListLinkedIssueIDs(ctx, issueID)
+	if err != nil || len(ids) == 0 {
+		return linkedPriorSessionCandidate{}, false
+	}
+	candidates := make([]linkedPriorSessionCandidate, 0, len(ids))
+	for _, id := range ids {
+		prior, err := h.Queries.GetLastTaskSession(ctx, db.GetLastTaskSessionParams{
+			AgentID: agentID,
+			IssueID: id,
+		})
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, linkedPriorSessionCandidate{
+			issueID:    id,
+			SessionID:  prior.SessionID,
+			WorkDir:    prior.WorkDir,
+			TerminalAt: prior.TerminalAt,
+			runtimeID:  prior.RuntimeID,
+		})
+	}
+	return newestLinkedPriorSession(candidates, runtimeID)
+}
+
+// newestLinkedPriorSession ranks the linked issues' last sessions. Sessions on
+// another runtime are dropped: a dsh session store is machine-local, and a fork
+// that cannot find its parent would fail only after the run had started. A row
+// with no terminal timestamp cannot date a warm/cold decision and is dropped
+// too, as is one with no session to fork.
+func newestLinkedPriorSession(candidates []linkedPriorSessionCandidate, runtimeID pgtype.UUID) (linkedPriorSessionCandidate, bool) {
+	var best linkedPriorSessionCandidate
+	for _, candidate := range candidates {
+		if !candidate.SessionID.Valid || !candidate.TerminalAt.Valid || candidate.runtimeID != runtimeID {
+			continue
+		}
+		if best.SessionID.Valid && !candidate.TerminalAt.Time.After(best.TerminalAt.Time) {
+			continue
+		}
+		best = candidate
+	}
+	return best, best.SessionID.Valid
 }
 
 // dshOwnedTranscript reports whether this task's transcript is owned by the
