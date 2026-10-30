@@ -1302,12 +1302,9 @@ WHERE id = $1
 -- restart so the human can still answer; the answer's resume task then starts
 -- fresh if the park report never recorded a session (documented degradation).
 --
--- S3-C (M-139): @max_running_age_secs lets a detached-capable runtime keep the
--- running rows its transient systemd scope may still be executing. A running
--- row younger than the bound survives the re-register; anything older fails
--- here exactly as it does for every other runtime, so a detached task can
--- never outlive its bound just because the daemon restarted. Zero keeps the
--- legacy behaviour (every in-flight running row fails).
+-- S3-C (M-139): a detached-capable runtime never reaches this query — the
+-- handler returns before it and the sweeper's detached branch bounds those
+-- running rows instead (see FailStaleTasks below).
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -1315,17 +1312,7 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1
-  AND (
-    status IN ('dispatched', 'waiting_local_directory')
-    OR (
-      status = 'running'
-      AND (
-        @max_running_age_secs::double precision <= 0
-        OR started_at < now() - make_interval(secs => @max_running_age_secs::double precision)
-      )
-    )
-  )
+WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
 RETURNING *;
 
 -- name: FailStaleTasks :many

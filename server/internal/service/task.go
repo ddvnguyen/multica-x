@@ -6225,18 +6225,11 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 }
 
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
-//
-// maxRunningAgeSeconds keeps running rows younger than the bound alive, which
-// only a detached-capable runtime asks for (S3-C, M-139): its tasks execute in
-// their own transient scope and may still be running. Zero fails every
-// in-flight running row, which is the legacy behaviour every other runtime
-// keeps.
-func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID, maxRunningAgeSeconds float64) ([]db.AgentTaskQueue, error) {
+// Detached-capable runtimes never call it: the handler returns early for them
+// and the sweeper's detached branch bounds those rows (S3-C, M-139).
+func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.RecoverOrphanedTasksForRuntime(ctx, db.RecoverOrphanedTasksForRuntimeParams{
-			RuntimeID:         runtimeID,
-			MaxRunningAgeSecs: maxRunningAgeSeconds,
-		})
+		return qtx.RecoverOrphanedTasksForRuntime(ctx, runtimeID)
 	})
 }
 
