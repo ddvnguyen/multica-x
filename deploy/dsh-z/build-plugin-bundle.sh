@@ -45,6 +45,9 @@ VER="$(node -p "require('$SRC/packages/dsh-plugin/package.json').version")"
 if [ -n "${2:-}" ]; then VER="$2"; fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
+# Absolute from here on: the load checks below require() paths inside the
+# bundle, and require() reads a bare "dist/..." as a package name, not a path.
+OUT="$(cd "$OUT" && pwd)"
 
 cp -a "$SRC/packages/dsh-plugin/lib" "$OUT/lib"
 cp "$SRC/packages/dsh-plugin/cordis.patch.yml" \
