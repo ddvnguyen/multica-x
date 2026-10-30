@@ -1301,6 +1301,13 @@ WHERE id = $1
 -- task is parked by design, not an orphan of a dead daemon. It survives the
 -- restart so the human can still answer; the answer's resume task then starts
 -- fresh if the park report never recorded a session (documented degradation).
+--
+-- S3-C (M-139): @max_running_age_secs lets a detached-capable runtime keep the
+-- running rows its transient systemd scope may still be executing. A running
+-- row younger than the bound survives the re-register; anything older fails
+-- here exactly as it does for every other runtime, so a detached task can
+-- never outlive its bound just because the daemon restarted. Zero keeps the
+-- legacy behaviour (every in-flight running row fails).
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -1308,7 +1315,17 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE runtime_id = $1
+  AND (
+    status IN ('dispatched', 'waiting_local_directory')
+    OR (
+      status = 'running'
+      AND (
+        @max_running_age_secs::double precision <= 0
+        OR started_at < now() - make_interval(secs => @max_running_age_secs::double precision)
+      )
+    )
+  )
 RETURNING *;
 
 -- name: FailStaleTasks :many
@@ -1348,6 +1365,14 @@ RETURNING *;
 -- S1-A1: 'blocked' also excluded — a parked task waits for a human, not for
 -- a liveness signal; no wall clock may reap it. Cancellation is the only exit
 -- besides the answer/verdict re-queue.
+--
+-- S3-C (M-139): the last branch is the detached-runtime backstop. A detached
+-- run executes in its own transient systemd scope, so the daemon heartbeat is
+-- NOT evidence about that task — a restarted daemon heartbeats while the
+-- orphaned row it can no longer observe keeps its status. Without this branch
+-- such a row would stay 'running' forever. A detached task therefore gets its
+-- wall-clock budget plus the detached grace and is then failed whatever the
+-- runtime heartbeat says; @detached_timeout_secs <= 0 disables the branch.
 UPDATE agent_task_queue
 SET status = 'failed', completed_at = now(), error = 'task timed out',
     failure_reason = 'timeout',
@@ -1388,6 +1413,16 @@ WHERE (
           AND COALESCE(r.last_seen_at, r.updated_at) >=
               now() - make_interval(secs => @runtime_reconnect_grace_secs::double precision)
       )
+    )
+  )
+   OR (
+    status = 'running'
+    AND @detached_timeout_secs::double precision > 0
+    AND started_at < now() - make_interval(secs => @detached_timeout_secs::double precision)
+    AND EXISTS (
+      SELECT 1 FROM agent_runtime r
+      WHERE r.id = agent_task_queue.runtime_id
+        AND r.metadata -> 'capabilities' ? 'detached-runtime-v1'
     )
   )
 RETURNING *;

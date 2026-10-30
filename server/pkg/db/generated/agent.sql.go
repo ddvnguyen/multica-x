@@ -3873,6 +3873,16 @@ WHERE (
       )
     )
   )
+   OR (
+    status = 'running'
+    AND $5::double precision > 0
+    AND started_at < now() - make_interval(secs => $5::double precision)
+    AND EXISTS (
+      SELECT 1 FROM agent_runtime r
+      WHERE r.id = agent_task_queue.runtime_id
+        AND r.metadata -> 'capabilities' ? 'detached-runtime-v1'
+    )
+  )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id
 `
 
@@ -3881,6 +3891,7 @@ type FailStaleTasksParams struct {
 	RuntimeStaleSecs          float64 `json:"runtime_stale_secs"`
 	RuntimeReconnectGraceSecs float64 `json:"runtime_reconnect_grace_secs"`
 	RunningTimeoutSecs        float64 `json:"running_timeout_secs"`
+	DetachedTimeoutSecs       float64 `json:"detached_timeout_secs"`
 }
 
 // Fails tasks stuck in dispatched/running beyond the given thresholds.
@@ -3919,12 +3930,21 @@ type FailStaleTasksParams struct {
 // S1-A1: 'blocked' also excluded — a parked task waits for a human, not for
 // a liveness signal; no wall clock may reap it. Cancellation is the only exit
 // besides the answer/verdict re-queue.
+//
+// S3-C (M-139): the last branch is the detached-runtime backstop. A detached
+// run executes in its own transient systemd scope, so the daemon heartbeat is
+// NOT evidence about that task — a restarted daemon heartbeats while the
+// orphaned row it can no longer observe keeps its status. Without this branch
+// such a row would stay 'running' forever. A detached task therefore gets its
+// wall-clock budget plus the detached grace and is then failed whatever the
+// runtime heartbeat says; @detached_timeout_secs <= 0 disables the branch.
 func (q *Queries) FailStaleTasks(ctx context.Context, arg FailStaleTasksParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failStaleTasks,
 		arg.DispatchTimeoutSecs,
 		arg.RuntimeStaleSecs,
 		arg.RuntimeReconnectGraceSecs,
 		arg.RunningTimeoutSecs,
+		arg.DetachedTimeoutSecs,
 	)
 	if err != nil {
 		return nil, err
@@ -8325,9 +8345,24 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE runtime_id = $1
+  AND (
+    status IN ('dispatched', 'waiting_local_directory')
+    OR (
+      status = 'running'
+      AND (
+        $2::double precision <= 0
+        OR started_at < now() - make_interval(secs => $2::double precision)
+      )
+    )
+  )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id
 `
+
+type RecoverOrphanedTasksForRuntimeParams struct {
+	RuntimeID         pgtype.UUID `json:"runtime_id"`
+	MaxRunningAgeSecs float64     `json:"max_running_age_secs"`
+}
 
 // Called by the daemon at startup. Atomically fails any dispatched/running/
 // waiting_local_directory task that the prior incarnation of this runtime
@@ -8340,8 +8375,15 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // task is parked by design, not an orphan of a dead daemon. It survives the
 // restart so the human can still answer; the answer's resume task then starts
 // fresh if the park report never recorded a session (documented degradation).
-func (q *Queries) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, recoverOrphanedTasksForRuntime, runtimeID)
+//
+// S3-C (M-139): @max_running_age_secs lets a detached-capable runtime keep the
+// running rows its transient systemd scope may still be executing. A running
+// row younger than the bound survives the re-register; anything older fails
+// here exactly as it does for every other runtime, so a detached task can
+// never outlive its bound just because the daemon restarted. Zero keeps the
+// legacy behaviour (every in-flight running row fails).
+func (q *Queries) RecoverOrphanedTasksForRuntime(ctx context.Context, arg RecoverOrphanedTasksForRuntimeParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, recoverOrphanedTasksForRuntime, arg.RuntimeID, arg.MaxRunningAgeSecs)
 	if err != nil {
 		return nil, err
 	}

@@ -205,7 +205,6 @@ func daemonHTTPClientCapabilities(detached bool) string {
 
 func daemonCommonCapabilities(detached bool) []string {
 	caps := []string{
-
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityExecutionManifestV1,

@@ -33,10 +33,13 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// S3-C (M-139): runtimes that declare the detached capability launch their
-	// tasks in their own transient systemd user scope, so those tasks survive
-	// a daemon restart. The server must NOT fail them on re-register; the daemon
-	// recovers their outcome from the session/result record instead. Non-detached
-	// runtimes keep the legacy behaviour exactly.
+	// tasks in their own transient systemd user scope, so a row here may still
+	// be executing a live child after the restart. Failing it on re-register
+	// would be wrong; leaving it running forever would be worse. The bound
+	// lives in the sweeper (`detachedTaskTimeout` in cmd/server): a detached
+	// running row is failed once it exceeds its wall-clock budget plus the
+	// detached grace, whatever the daemon heartbeat says. Non-detached runtimes
+	// keep the legacy behaviour exactly.
 	if rt, err := h.Queries.GetAgentRuntime(r.Context(), parseUUID(runtimeID)); err == nil && runtimeHasDetachedCapability(rt) {
 		slog.Info("recover-orphans skipped for detached-capable runtime",
 			"runtime_id", runtimeID)
@@ -48,7 +51,10 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.TaskService.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID))
+	// Zero keeps the legacy shape: every in-flight running row fails. The
+	// detached branch above returns before reaching this call; the sweeper's
+	// detached-timeout branch bounds those rows instead.
+	rows, err := h.TaskService.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID), 0)
 	if err != nil {
 		slog.Warn("recover-orphans failed", "runtime_id", runtimeID, "error", err)
 		writeError(w, http.StatusInternalServerError, "recover orphans failed")
