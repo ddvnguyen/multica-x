@@ -289,7 +289,10 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 	case "opencode", "opencode2":
 		// A built-in runtime identity shares the family's config root: the
 		// OpenCode 2 identity is the same tool, so it reads the same
-		// opencode.json the 1.x binary does.
+		// opencode.json the 1.x binary does. Listed explicitly rather than
+		// canonicalised through agent.Family, because the config root is a
+		// per-binary fact, not a protocol one — omp is the precedent (it
+		// reads ~/.omp/agent/mcp.json, not pi's ~/.pi/agent/mcp.json).
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(home, ".config")
