@@ -352,6 +352,24 @@ jobs:
           fi
           echo "stamp verified in bundle and release.json: $STAMP"
 
+      # M-151: lane z's Multica UI is this plugin row, not the apps/web bundle
+      # web-dist carries, so a merge that changes the plugin has to ship the
+      # built row or the lane keeps rendering stale code behind a fresh backend.
+      # Packaged by the lane's own script (same shape a hand-built bundle has,
+      # load check included) and uploaded only on push. The auto-deploy treats
+      # a missing dsh-plugin artifact as "the plugin did not change".
+      - name: Stage dsh-plugin artifact
+        if: github.event_name != 'pull_request'
+        run: bash deploy/dsh-z/build-plugin-bundle.sh . "" dist/dsh-plugin
+
+      - name: Upload dsh-plugin artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dsh-plugin-${{ github.sha }}
+          if-no-files-found: error
+          path: dist/dsh-plugin
+
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
   frontend-build:

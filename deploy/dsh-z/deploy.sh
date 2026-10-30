@@ -115,27 +115,44 @@ fi
 # ---------------------------------------------------------------------------
 # Phase 3 — multica-be release (server + migrate + lane CLI)
 # ---------------------------------------------------------------------------
-log "phase 3: multica-be release from $MULTICA_X_REPO @ $MULTICA_X_REF"
+log "phase 3: multica-be release"
 
-MC_SRC="$LANE_ROOT/src/multica-x"
-if [ ! -d "$MC_SRC/.git" ]; then
-  git clone "$MULTICA_X_REPO" "$MC_SRC"
-fi
-git -C "$MC_SRC" fetch origin "$MULTICA_X_REF" --tags >/dev/null 2>&1 || true
-MC_SHA="$(git -C "$MC_SRC" rev-parse "origin/$MULTICA_X_REF")"
-git -C "$MC_SRC" checkout -q --detach "$MC_SHA"
-log "multica-be sha: $MC_SHA"
+# Artifact mode (M-151): install a prebuilt release from MULTICA_BE_ARTIFACT_DIR
+# instead of cloning/building. Used by the lane autodeploy; no rebuild.
+if [ -n "${MULTICA_BE_ARTIFACT_DIR:-}" ] && [ -f "${MULTICA_BE_ARTIFACT_DIR}/bin/server" ] && [ -f "${MULTICA_BE_ARTIFACT_DIR}/release.json" ]; then
+  MC_SHA="$(jq -r '.sha' "${MULTICA_BE_ARTIFACT_DIR}/release.json")"
+  [ -n "$MC_SHA" ] && [ "$MC_SHA" != "null" ] || { echo "bad artifact release.json" >&2; exit 1; }
+  MC_REL="$LANE_ROOT/multica-be/releases/$MC_SHA"
+  if [ ! -f "$MC_REL/.complete" ]; then
+    rm -rf "$MC_REL"; mkdir -p "$MC_REL"
+    cp -a "${MULTICA_BE_ARTIFACT_DIR}/." "$MC_REL/"
+    [ -f "$MC_REL/.complete" ] || touch "$MC_REL/.complete"
+    log "installed artifact release $MC_SHA"
+  else
+    log "release already present, reusing $MC_REL"
+  fi
+  MMX_VERSION="$(jq -r '.version' "$MC_REL/release.json")"
+  log "multica-be sha: $MC_SHA  version: $MMX_VERSION"
+else
+  MC_SRC="$LANE_ROOT/src/multica-x"
+  if [ ! -d "$MC_SRC/.git" ]; then
+    git clone "$MULTICA_X_REPO" "$MC_SRC"
+  fi
+  git -C "$MC_SRC" fetch origin "$MULTICA_X_REF" --tags >/dev/null 2>&1 || true
+  MC_SHA="$(git -C "$MC_SRC" rev-parse "origin/$MULTICA_X_REF")"
+  git -C "$MC_SRC" checkout -q --detach "$MC_SHA"
+  log "multica-be sha: $MC_SHA"
 
-# One version string for this build (M-155): x.x.x-yyMMMdd.HH.mm on the UTC+7
-# clock, taken from the checked-out commit's committer time so this SHA always
-# packages the same string — the same script CI asserts against.
-MMX_VERSION="$(node "$MC_SRC/scripts/mmx-version.mjs" --from-git)"
-log "mmx version: $MMX_VERSION"
+  # One version string for this build (M-155): x.x.x-yyMMMdd.HH.mm on the UTC+7
+  # clock, taken from the checked-out commit's committer time so this SHA always
+  # packages the same string — the same script CI asserts against.
+  MMX_VERSION="$(node "$MC_SRC/scripts/mmx-version.mjs" --from-git)"
+  log "mmx version: $MMX_VERSION"
 
-MC_REL="$LANE_ROOT/multica-be/releases/$MC_SHA"
-if [ ! -f "$MC_REL/.complete" ]; then
-  rm -rf "$MC_REL"; mkdir -p "$MC_REL/bin"
-  GO_BIN="${MULTICA_GO:-}"
+  MC_REL="$LANE_ROOT/multica-be/releases/$MC_SHA"
+  if [ ! -f "$MC_REL/.complete" ]; then
+    rm -rf "$MC_REL"; mkdir -p "$MC_REL/bin"
+    GO_BIN="${MULTICA_GO:-}"
   if [ -z "$GO_BIN" ]; then
     if command -v go >/dev/null 2>&1; then GO_BIN="$(command -v go)"
     elif [ -x /mnt/workspace/tmp/spike-tools/go-sdk/bin/go ]; then GO_BIN=/mnt/workspace/tmp/spike-tools/go-sdk/bin/go
@@ -167,6 +184,7 @@ if [ ! -f "$MC_REL/.complete" ]; then
   log "packaged $MC_REL"
 else
   log "release already built, reusing $MC_REL"
+fi
 fi
 ln -sfn "$MC_REL" "$LANE_ROOT/multica-be/current"
 
@@ -258,7 +276,7 @@ install_unit() { # $1=template $2=target $3..=substitutions (NAME=VALUE)
 
 mkdir -p "$UNIT_DIR"
 install_unit multica-be-z.service "$MULTICA_BE_Z_UNIT" \
-  "RELEASE_DIR=$MC_REL" \
+  "RELEASE_DIR=$LANE_ROOT/multica-be/current" \
   "SERVER_ENV=$LANE_ROOT/multica-be/env"
 install_unit moct-backend-z.service "$MOCT_BE_Z_UNIT" \
   "MOCT_ROOT=$MOCT_Z_ROOT" \
@@ -515,6 +533,7 @@ else
     else
       log "installing @multica/dsh-plugin into $WEB_PROFILE"
       dsh_plugin_bin add "$DSH_Z_PLUGIN_BUNDLE" >/dev/null
+      touch "$LANE_ROOT/data/.plugin-changed"
     fi
 
     if ! node -p "require('$WEB_PROFILE/node_modules/@multica/dsh-plugin/package.json').version" >/dev/null 2>&1; then
@@ -601,11 +620,16 @@ mc --profile "$MULTICA_Z_PROFILE" issue list >/dev/null \
 log "phase 11: lane web"
 
 if [ -n "${DSH_Z_WEB_UNIT:-}" ]; then
-  systemctl --user restart "$DSH_Z_WEB_UNIT"
-  # wait_http on the web root: the shell must answer before acceptance opens it
-  wait_http "http://127.0.0.1:3180/" 60 '' \
-    || { journalctl --user -u "$DSH_Z_WEB_UNIT" -n 30 --no-pager >&2; die "lane web http://127.0.0.1:3180/ did not come up"; }
-  log "lane web up on http://127.0.0.1:3180/ (unit $DSH_Z_WEB_UNIT, profile web, multica row patch applied)"
+  if [ -f "$LANE_ROOT/data/.plugin-changed" ]; then
+    systemctl --user restart "$DSH_Z_WEB_UNIT"
+    # wait_http on the web root: the shell must answer before acceptance opens it
+    wait_http "http://127.0.0.1:3180/" 60 '' \
+      || { journalctl --user -u "$DSH_Z_WEB_UNIT" -n 30 --no-pager >&2; die "lane web http://127.0.0.1:3180/ did not come up"; }
+    log "lane web up on http://127.0.0.1:3180/ (unit $DSH_Z_WEB_UNIT, profile web, multica row patch applied)"
+    rm -f "$LANE_ROOT/data/.plugin-changed"
+  else
+    log "phase 11: plugin bundle unchanged; not restarting $DSH_Z_WEB_UNIT"
+  fi
 else
   log "skip phase 11: DSH_Z_WEB_UNIT unset, so the multica row needs a manual web restart:"
   log "  systemctl --user restart dsh-z.service"

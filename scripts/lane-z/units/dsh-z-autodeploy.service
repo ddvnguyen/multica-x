@@ -1,0 +1,19 @@
+[Unit]
+Description=Lane z auto-deploy — pull the newest green CI run and install it (M-151)
+Documentation=https://github.com/ddvnguyen/multica-x/blob/multica-moct/scripts/lane-z/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/workspace/clouds/dsh-z
+Environment=HOME=/home/ddv
+Environment=TMPDIR=/mnt/workspace/tmp/dsh-z-autodeploy
+Environment=XDG_CACHE_HOME=/mnt/workspace/cache/xdg
+# gh and multica live outside the systemd default PATH; node/nvm is not needed
+# (everything here is jq, curl, podman, systemctl).
+Environment=PATH=/home/ddv/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env bash __BIN_DIR__/autodeploy.sh
+# One tick is a download (~105 MB), a dump, a migrate and two restarts; a
+# stalled tick must not wedge the timer.
+TimeoutStartSec=20min
+Nice=10
