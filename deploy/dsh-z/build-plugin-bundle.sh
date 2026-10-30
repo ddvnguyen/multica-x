@@ -17,6 +17,12 @@
 # runtime dependency. The load check at the end is what holds that line.
 #
 # Run once per plugin version: bash deploy/dsh-z/build-plugin-bundle.sh <checkout-root>
+#
+# The output directory is DSH_Z_PLUGIN_BUNDLE (the lane's live bundle) unless a
+# third argument names another one — CI passes a staging directory so the same
+# script packages the `dsh-plugin-<sha>` artifact the auto-deploy installs
+# (M-151). Same code path means the artifact and a hand-built bundle cannot
+# drift apart.
 
 set -euo pipefail
 
@@ -25,30 +31,32 @@ source "$SCRIPT_DIR/dsh-z.env"
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 SRC="${1:-}"
-[ -n "$SRC" ] || die "usage: $0 <multica-x checkout root> [base-version]"
+[ -n "$SRC" ] || die "usage: $0 <multica-x checkout root> [base-version] [out-dir]"
 for f in package.json cordis.patch.yml FORK.md README.md; do
   [ -f "$SRC/packages/dsh-plugin/$f" ] || die "missing packages/dsh-plugin/$f in $SRC"
 done
 [ -f "$SRC/packages/dsh-plugin/lib/index.js" ] || die "packages/dsh-plugin is not built in $SRC (run: pnpm --filter @multica/dsh-plugin build)"
 [ -d "$SRC/packages/dsh-plugin/node_modules/ws" ] || die "$SRC has no pnpm install; run pnpm install in the checkout first"
-[ -n "${DSH_Z_PLUGIN_BUNDLE:-}" ] || die "set DSH_Z_PLUGIN_BUNDLE in dsh-z.env"
+
+OUT="${3:-${DSH_Z_PLUGIN_BUNDLE:-}}"
+[ -n "$OUT" ] || die "set DSH_Z_PLUGIN_BUNDLE in dsh-z.env or pass an output directory"
 
 VER="$(node -p "require('$SRC/packages/dsh-plugin/package.json').version")"
 if [ -n "${2:-}" ]; then VER="$2"; fi
-rm -rf "$DSH_Z_PLUGIN_BUNDLE"
-mkdir -p "$DSH_Z_PLUGIN_BUNDLE"
+rm -rf "$OUT"
+mkdir -p "$OUT"
 
-cp -a "$SRC/packages/dsh-plugin/lib" "$DSH_Z_PLUGIN_BUNDLE/lib"
+cp -a "$SRC/packages/dsh-plugin/lib" "$OUT/lib"
 cp "$SRC/packages/dsh-plugin/cordis.patch.yml" \
    "$SRC/packages/dsh-plugin/FORK.md" \
    "$SRC/packages/dsh-plugin/README.md" \
-   "$DSH_Z_PLUGIN_BUNDLE/"
+   "$OUT/"
 
 # Runtime manifest only: workspace devDeps ("@multica/core": "workspace:*",
 # ...) are compiled into lib/ and must not be resolved again by the profile's
 # own pnpm install — there is no workspace in the profile to resolve them
 # from. The same rule drops the build/test tooling.
-node - "$SRC/packages/dsh-plugin/package.json" "$DSH_Z_PLUGIN_BUNDLE/package.json" "$VER" <<'EOF'
+node - "$SRC/packages/dsh-plugin/package.json" "$OUT/package.json" "$VER" <<'EOF'
 const fs = require("node:fs");
 const [src, out, ver] = process.argv.slice(2);
 const p = JSON.parse(fs.readFileSync(src, "utf8"));
@@ -78,11 +86,11 @@ EOF
 # packages/dsh-plugin pins ws ^8.18.3 through its own link.
 # -L: the ws path in a pnpm tree is a symlink into .pnpm; the vendor copy must
 # materialize real files or the bundle ships a dangling link.
-mkdir -p "$DSH_Z_PLUGIN_BUNDLE/node_modules"
-cp -aL "$SRC/packages/dsh-plugin/node_modules/ws" "$DSH_Z_PLUGIN_BUNDLE/node_modules/ws"
-node -e 'require(process.argv[1])' "$DSH_Z_PLUGIN_BUNDLE/node_modules/ws/package.json" >/dev/null \
+mkdir -p "$OUT/node_modules"
+cp -aL "$SRC/packages/dsh-plugin/node_modules/ws" "$OUT/node_modules/ws"
+node -e 'require(process.argv[1])' "$OUT/node_modules/ws/package.json" >/dev/null \
   || die "vendored ws is unusable"
-if [ "$(node -p "require('$DSH_Z_PLUGIN_BUNDLE/node_modules/ws/package.json').version.startsWith('8.')")" != "true" ]; then
+if [ "$(node -p "require('$OUT/node_modules/ws/package.json').version.startsWith('8.')")" != "true" ]; then
   die "vendored ws is not v8 — the host half is compiled against the ws v8 export shape"
 fi
 
@@ -103,6 +111,6 @@ node --input-type=module -e '
   if (typeof plugin.default !== "function" && typeof plugin.apply !== "function") {
     throw new Error("lib/index.js did not export the host plugin");
   }
-' "$DSH_Z_PLUGIN_BUNDLE" || die "bundled lib/ does not load as ESM from $DSH_Z_PLUGIN_BUNDLE"
+' "$OUT" || die "bundled lib/ does not load as ESM from $OUT"
 
-echo "wrote $DSH_Z_PLUGIN_BUNDLE (built from $SRC @ $(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown))"
+echo "wrote $OUT (built from $SRC @ $(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown))"
