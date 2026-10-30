@@ -68,14 +68,34 @@ func opencodeSeparatesReasoning(cfg Config) bool {
 	return err == nil && version.Major == 1 && !version.lessThan(semver{Major: 1, Minor: 3, Patch: 16})
 }
 
+// opencodeCommandName returns the CLI this identity spawns when no executable
+// path was pinned. A built-in runtime identity ("opencode2") declares its own
+// binary in the descriptor; the protocol family keeps "opencode". A custom
+// runtime profile always arrives with cfg.ExecutablePath set, so this default
+// never overrides an operator's wrapper.
+func opencodeCommandName(provider string) string {
+	if desc, ok := BuiltinRuntimeByID(provider); ok && desc.DefaultExecutable != "" {
+		return desc.DefaultExecutable
+	}
+	return "opencode"
+}
+
+// applyBuiltinRuntimeOverrides lets the opencode family host runtime
+// identities. There is nothing to copy onto the backend: the identity arrives
+// in Config.provider (NewRuntime sets it to the descriptor ID) and both the
+// executable name and the log label derive from it, so a per-run copy of the
+// backend cannot silently lose an override.
+func (b *opencodeBackend) applyBuiltinRuntimeOverrides(BuiltinRuntime) {}
+
 func resolveOpenCodeExecutable(cfg Config) (string, error) {
+	fallback := opencodeCommandName(cfg.provider)
 	execPath := cfg.ExecutablePath
 	if execPath == "" {
-		execPath = "opencode"
+		execPath = fallback
 	}
 	resolved, err := exec.LookPath(execPath)
 	if err != nil {
-		return "", fmt.Errorf("opencode executable not found at %q: %w", execPath, err)
+		return "", fmt.Errorf("%s executable not found at %q: %w", fallback, execPath, err)
 	}
 	if runtime.GOOS == "windows" {
 		if native := resolveOpenCodeNativeFromShim(resolved, os.Stat); native != "" {

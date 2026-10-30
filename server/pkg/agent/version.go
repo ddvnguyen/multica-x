@@ -35,6 +35,10 @@ var MinVersions = map[string]string{
 	// filename in a shared /tmp is not safe, so refusing the CLI is the only
 	// place we can stop it. See #8392: ~2,960 files, 11.16 GiB, root at 99%.
 	"opencode": "1.1.54",
+	// opencode2 is the 2.x runtime identity. 2.0.0 is the contract it claims
+	// (see opencodeUsesV2Contract), so a 1.x binary registered under it is
+	// refused rather than launched with argv it does not understand.
+	"opencode2": "2.0.0",
 }
 
 // MinQuickCreateCLIVersion gates the agent-create (quick-create) flow against

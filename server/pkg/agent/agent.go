@@ -454,8 +454,12 @@ var resumeRejectionUndetectable = map[string]bool{
 // cannot tell a refused resume from any other startup failure. Callers use it
 // to read a false Result.ResumeRejected correctly: "could not tell" for these,
 // "checked, not a rejection" for everything else.
+//
+// A built-in runtime identity inherits its family's answer: the capability
+// belongs to the backend that scrapes the stream, not to the name a host
+// registered it under.
 func ResumeRejectionUndetectable(agentType string) bool {
-	return resumeRejectionUndetectable[agentType]
+	return resumeRejectionUndetectable[Family(agentType)]
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
