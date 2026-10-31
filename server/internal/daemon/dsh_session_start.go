@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/pkg/dshsession"
 )
 
@@ -105,6 +106,12 @@ type dshSessionStartInput struct {
 	// the handoff note). It rides the seed so the forked child knows what it
 	// was asked to do.
 	Trigger string
+	// Reachable reports whether this run can actually continue a candidate's
+	// session. Injected so the decision is pure AND so it asks the same
+	// question the resume gate does: a warm candidate whose session store this
+	// run cannot reach is not a resume, it is a fresh or seeded start (F3).
+	// Nil means "assume reachable", which is the pre-F3 behaviour.
+	Reachable func(candidate dshSessionCandidate) bool
 	// ReadSummary loads the summary sidecar beside one candidate. Injected so
 	// the decision is pure; production passes readDshSummarySidecar.
 	ReadSummary func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool)
@@ -158,29 +165,43 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 		Margin:          in.Cfg.Margin,
 	}
 
-	// An unknown end time cannot prove the cache cold. Resume, which is what
-	// this daemon did before the decision existed: additive, never a silent
-	// behaviour change on a server that predates prior_session_ended_at.
-	if candidate.EndedAt.IsZero() {
-		plan.Reason = "session end time unknown"
-		return plan
+	reachable := true
+	if in.Reachable != nil {
+		reachable = in.Reachable(candidate)
 	}
 
-	plan.Age = in.Now.Sub(candidate.EndedAt)
-	if plan.Age < 0 {
-		// A clock that disagrees with the server's is not evidence of warmth;
-		// treat it as just-ended rather than as a negative age.
-		plan.Age = 0
-	}
-	warmWindow := ttl - in.Cfg.Margin
-	if warmWindow > 0 && plan.Age < warmWindow {
-		plan.Reason = fmt.Sprintf("warm: idle %s < %s", plan.Age.Round(time.Second), warmWindow)
-		return plan
-	}
-	if warmWindow <= 0 {
-		plan.Reason = "cold: no positive warm window configured"
+	// An unknown end time cannot prove the cache cold. Resume, which is what
+	// this daemon did before the decision existed: additive, never a silent
+	// behaviour change on a server that predates prior_session_ended_at. A
+	// candidate this run cannot reach is the one exception: the gate would
+	// drop that resume, so returning it here would record a resume that never
+	// happens (F3).
+	if candidate.EndedAt.IsZero() {
+		if reachable {
+			plan.Reason = "session end time unknown"
+			return plan
+		}
+		plan.Reason = "cold: session store not reachable"
 	} else {
-		plan.Reason = fmt.Sprintf("cold: idle %s >= %s", plan.Age.Round(time.Second), warmWindow)
+		plan.Age = in.Now.Sub(candidate.EndedAt)
+		if plan.Age < 0 {
+			// A clock that disagrees with the server's is not evidence of warmth;
+			// treat it as just-ended rather than as a negative age.
+			plan.Age = 0
+		}
+		warmWindow := ttl - in.Cfg.Margin
+		switch {
+		case warmWindow > 0 && plan.Age < warmWindow && reachable:
+			plan.Reason = fmt.Sprintf("warm: idle %s < %s", plan.Age.Round(time.Second), warmWindow)
+			return plan
+		case warmWindow > 0 && plan.Age < warmWindow:
+			// Warm by the clock, but unreachable from here: never "resumed".
+			plan.Reason = fmt.Sprintf("cold: session store not reachable (idle %s < %s)", plan.Age.Round(time.Second), warmWindow)
+		case warmWindow <= 0:
+			plan.Reason = "cold: no positive warm window configured"
+		default:
+			plan.Reason = fmt.Sprintf("cold: idle %s >= %s", plan.Age.Round(time.Second), warmWindow)
+		}
 	}
 
 	// Cold from here on: the only way to keep the conversation is a summary
@@ -220,6 +241,45 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 	plan.SeedDropped = dropped
 	plan.Reason += "; summary is fresh"
 	return plan
+}
+
+// applyDshSessionStartPlan carries the decision onto the task the rest of the
+// run reads. The task's prior-session fields are the only input to the resume
+// gate, to the brief and to `agent.ExecOptions.ResumeSessionID` (daemon.go,
+// `ResumeSessionID: task.PriorSessionID`), so a verdict that is not applied
+// here is recorded on the run row and then never happens — which is what F2
+// was: a warm LINKED session decided `resumed`, with the run starting fresh
+// because nothing copied the plan's candidate onto the task.
+//
+// A non-resumed verdict clears the same-issue pointer: neither a seeded nor a
+// fresh start continues the prior session, and nothing on disk may claim
+// continuity the run does not have. The seed, when there is one, carries the
+// conversation instead.
+func applyDshSessionStartPlan(task *Task, taskCtx *execenv.TaskContextForEnv, plan dshSessionStartPlan) {
+	if plan.Verdict != dshSessionStartResumed {
+		task.PriorSessionID = ""
+		taskCtx.PriorSessionResumed = false
+		// A same-issue candidate the run cannot continue is the user's own
+		// prior conversation, and starting fresh over it must disclose the
+		// loss — which is what the resume gate said until F3 moved the
+		// reachability question ahead of it. A linked candidate is another
+		// issue's conversation: a fresh start here loses nothing the user was
+		// continuing, and a seeded one carries it in the seed.
+		if plan.Verdict == dshSessionStartFresh && plan.Candidate.SessionID != "" && plan.Candidate.IssueID == "" {
+			task.PriorSessionResumeUnavailable = true
+		}
+		return
+	}
+	// Only overwrite with values the plan actually has: an empty workdir in the
+	// claim is "the server did not say", not "run nowhere". Leaving the old
+	// value lets the gate below judge the resume on the facts it has.
+	if plan.ResumeSessionID != "" {
+		task.PriorSessionID = plan.ResumeSessionID
+	}
+	if plan.Candidate.WorkDir != "" {
+		task.PriorWorkDir = plan.Candidate.WorkDir
+	}
+	taskCtx.PriorSessionResumed = task.PriorSessionID != ""
 }
 
 // dshPickSessionCandidate ranks the two related candidates: newest end time

@@ -6641,6 +6641,19 @@ func providerNeedsInlineSystemPrompt(provider string) bool {
 	}
 }
 
+// dshResumeReachable is the single reachability rule for a dsh resume: the
+// session's own workdir must still be the directory this run executes in. dsh
+// keys its session store per cwd, and gateResumeToReachableSession enforces
+// exactly this for every non-Pi/Hermes/Codex-worktree provider — so the
+// session-start decision (F3) and the gate ask the same question, and a
+// candidate the gate would drop can never be recorded as resumed.
+func dshResumeReachable(env *execenv.Environment, envReused bool, workDir string) bool {
+	if env == nil || workDir == "" {
+		return false
+	}
+	return sameExistingDir(env.WorkDir, workDir) && sessionHomeReachable("dsh", env, envReused)
+}
+
 // gateResumeToReachableSession clears the task's prior session unless this run
 // can actually reach the store the session lives in, and reports whether that
 // held. Most CLI backends key their session stores to the cwd (Claude Code
@@ -8704,6 +8717,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			LinkedEndedAt:   task.LinkedPriorSessionEndedAt,
 			LinkedWorkDir:   task.LinkedPriorSessionWorkDir,
 			Trigger:         dshSessionTrigger(task),
+			// F3: the same rule the resume gate below applies, so the verdict
+			// cannot record a resume the gate then drops.
+			Reachable: func(candidate dshSessionCandidate) bool {
+				return dshResumeReachable(env, envReused, candidate.WorkDir)
+			},
 			ReadSummary: func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool) {
 				return readDshSummarySidecar(dshStoreRoot, candidate.WorkDir, candidate.SessionID)
 			},
@@ -8718,14 +8736,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			"seed_tokens", sessionStart.SeedTokens,
 			"reason", sessionStart.Reason,
 		)
-		if sessionStart.Verdict != dshSessionStartResumed {
-			// Neither a seeded nor a fresh start continues the prior session:
-			// clear it before the brief is generated so nothing on disk claims
-			// continuity this run does not have. The seed, when there is one,
-			// carries the conversation instead.
-			task.PriorSessionID = ""
-			taskCtx.PriorSessionResumed = false
-		}
+		// F2: the verdict has to reach the task, not only the run row. A warm
+		// linked session is decided here and executed from these fields, so
+		// without this the run starts fresh while saying "resumed". Runs before
+		// the resume gate, which then judges the candidate the decision picked.
+		applyDshSessionStartPlan(&task, &taskCtx, sessionStart)
 	}
 	defer func() { taskResult.SessionStart = sessionStart.Verdict }()
 
@@ -9001,6 +9016,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// S3-B1: a resumed session is being worked again, so disarm its
 		// pending summary clock — compacting mid-conversation is wrong.
 		d.dshSummary.Cancel(task.PriorSessionID)
+	}
+	// F20: a seeded run forks the candidate instead of continuing it, so the
+	// parent session is idle and its armed clock would summarize it for a
+	// conversation this run already copied into the child. Disarm by the
+	// candidate's id, which is NOT task.PriorSessionID on a seeded run.
+	if sessionStart.ForkParent != "" {
+		d.dshSummary.Cancel(sessionStart.ForkParent)
 	}
 
 	taskStart := time.Now()
