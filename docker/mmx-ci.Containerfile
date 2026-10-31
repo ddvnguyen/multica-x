@@ -24,6 +24,10 @@ RUN apt-get update \
 RUN mkdir -p /mnt/workspace/cache/mmx /mnt/workspace/tmp/mmx \
  && chown -R node:node /home/node /mnt/workspace/cache/mmx /mnt/workspace/tmp/mmx
 
+# Give Node-based builds (Next.js) enough heap; the container has 12G but
+# Node's auto-detection can under-size in nested cgroups.
+ENV NODE_OPTIONS=--max-old-space-size=6144
+
 
 # Egress ruleset (installed by entrypoint inside the container netns).
 COPY docker/mmx-nft.rules /etc/mmx-nft.rules
