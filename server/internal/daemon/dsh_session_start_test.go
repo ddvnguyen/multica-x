@@ -352,3 +352,96 @@ func TestDshSessionStartRecordedOnTheRunRow(t *testing.T) {
 		t.Fatalf("seeded verdict = %q", verdicts[1])
 	}
 }
+
+// TestDecideDshSessionStartUnreachableWarm pins F3: a warm candidate whose
+// session store cannot be reached from this run never records "resumed"; it
+// falls through to the seeded branch when a fresh summary exists, else fresh.
+func TestDecideDshSessionStartUnreachableWarm(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	const priorID = "sess-prior"
+	ended := now.Add(-10 * time.Minute)
+	freshSummary := summaryStore{priorID: {
+		Summary:       "digest",
+		MadeAt:        ended.Add(time.Minute),
+		ParentSession: priorID,
+	}}
+
+	for _, tc := range []struct {
+		name    string
+		store   summaryStore
+		reach   bool
+		want    string
+	}{
+		{name: "unreachable warm, fresh summary seeds", store: freshSummary, reach: false, want: dshSessionStartSeededPrefix + priorID},
+		{name: "unreachable warm, no summary starts fresh", store: summaryStore{}, reach: false, want: dshSessionStartFresh},
+		{name: "reachable warm resumes", store: summaryStore{}, reach: true, want: dshSessionStartResumed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := dshSessionStartInput{
+				Now:            now,
+				Cfg:            testSessionStartConfig(),
+				PriorSessionID: priorID,
+				PriorEndedAt:   ended.Format(time.RFC3339),
+				PriorWorkDir:   "/wd",
+				ReadSummary:    tc.store.read,
+				Reachable:      func(dshSessionCandidate) bool { return tc.reach },
+			}
+			if tc.store == nil {
+				in.ReadSummary = summaryStore{}.read
+			}
+			plan := decideDshSessionStart(in)
+			if plan.Verdict != tc.want {
+				t.Fatalf("verdict = %q, want %q (reason %q)", plan.Verdict, tc.want, plan.Reason)
+			}
+			if tc.want == dshSessionStartResumed && plan.ResumeSessionID != priorID {
+				t.Fatalf("resume = %q, want %q", plan.ResumeSessionID, priorID)
+			}
+		})
+	}
+}
+
+// TestDecideDshSessionStartLinkedWarm pins the linked-session semantics: a
+// warm linked session is only resumed when its store is reachable from this
+// run; otherwise it seeds from its summary (or starts fresh).
+func TestDecideDshSessionStartLinkedWarm(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	const linkedID = "sess-linked"
+	ended := now.Add(-5 * time.Minute)
+	freshSummary := summaryStore{linkedID: {
+		Summary:       "linked digest",
+		MadeAt:        ended.Add(time.Minute),
+		ParentSession: linkedID,
+	}}
+
+	t.Run("reachable linked warm resumes", func(t *testing.T) {
+		in := dshSessionStartInput{
+			Now:             now,
+			Cfg:             testSessionStartConfig(),
+			LinkedSessionID: linkedID,
+			LinkedEndedAt:   ended.Format(time.RFC3339),
+			LinkedWorkDir:   "/wd",
+			ReadSummary:     freshSummary.read,
+			Reachable:       func(dshSessionCandidate) bool { return true },
+		}
+		plan := decideDshSessionStart(in)
+		if plan.Verdict != dshSessionStartResumed || plan.ResumeSessionID != linkedID {
+			t.Fatalf("verdict=%q resume=%q", plan.Verdict, plan.ResumeSessionID)
+		}
+	})
+
+	t.Run("unreachable linked warm seeds from summary", func(t *testing.T) {
+		in := dshSessionStartInput{
+			Now:             now,
+			Cfg:             testSessionStartConfig(),
+			LinkedSessionID: linkedID,
+			LinkedEndedAt:   ended.Format(time.RFC3339),
+			LinkedWorkDir:   "/other",
+			ReadSummary:     freshSummary.read,
+			Reachable:       func(dshSessionCandidate) bool { return false },
+		}
+		plan := decideDshSessionStart(in)
+		if plan.Verdict != dshSessionStartSeededPrefix+linkedID {
+			t.Fatalf("verdict=%q", plan.Verdict)
+		}
+	})
+}

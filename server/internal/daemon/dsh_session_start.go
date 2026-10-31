@@ -80,10 +80,6 @@ type dshSessionCandidate struct {
 	// WorkDir is the directory the session ran in; the summary sidecar is
 	// stored under the project key derived from it.
 	WorkDir string
-	// Model is the model the prior run that owns this session used, so the
-	// warm/cold TTL is judged against the cache that was actually armed
-	// (F19). Empty falls back to the new run's model.
-	Model string
 }
 
 // dshSessionStartInput is every fact the decision reads. All of it is
@@ -167,14 +163,7 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 		return dshSessionStartPlan{Verdict: dshSessionStartFresh, Reason: "no related session"}
 	}
 
-	// F19: judge the warm/cold TTL against the model that actually armed the
-	// clock (the prior run's), falling back to the new run's model when the
-	// prior one is unknown.
-	ttlModel := in.Model
-	if strings.TrimSpace(candidate.Model) != "" {
-		ttlModel = candidate.Model
-	}
-	ttl := in.Cfg.ttlForModel(ttlModel)
+	ttl := in.Cfg.ttlForModel(in.Model)
 	plan := dshSessionStartPlan{
 		Verdict:         dshSessionStartResumed,
 		Candidate:       candidate,
@@ -274,9 +263,6 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 // neither end time is known the same-issue session wins — it is the more
 // relevant of the two, and the verdict for it is "resume" anyway.
 func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool) {
-	priorModel := firstNonEmpty(in.PriorModel, in.PriorSessionModel, in.PriorSessionModel)
-	linkedModel := firstNonEmpty(in.LinkedModel, in.LinkedPriorModel, in.LinkedSessionModel, in.LinkedPriorSessionModel)
-
 	var (
 		same, linked     dshSessionCandidate
 		haveSame, haveLk bool
@@ -286,7 +272,6 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 			SessionID: in.PriorSessionID,
 			EndedAt:   parseDshSessionEndedAt(in.PriorEndedAt),
 			WorkDir:   in.PriorWorkDir,
-			Model:     priorModel,
 		}
 		haveSame = true
 	}
@@ -296,7 +281,6 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 			IssueID:   in.LinkedIssueID,
 			EndedAt:   parseDshSessionEndedAt(in.LinkedEndedAt),
 			WorkDir:   in.LinkedWorkDir,
-			Model:     linkedModel,
 		}
 		haveLk = true
 	}
@@ -318,16 +302,6 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 // parseDshSessionEndedAt reads the claim payload's RFC3339 end time. An
 // unparseable or empty value is a zero time, which the decision reads as
 // "unknown" rather than as "ended at the epoch".
-// firstNonEmpty returns the first non-blank string among its arguments.
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
 func parseDshSessionEndedAt(value string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
