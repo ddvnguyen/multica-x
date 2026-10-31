@@ -304,6 +304,10 @@ type dshSummaryRequest struct {
 	Model             string
 	FirstPromptTokens int64 // prompt tokens of the run's first model request
 	LastPromptTokens  int64 // prompt tokens of the run's last model request
+	// PriorSessionID is non-empty when this run resumed an existing session;
+	// in that case the init prefix is owned by the session's first run and
+	// must not be (re)written here.
+	PriorSessionID string
 	Summarize         func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
 	RecordDecision    func(ctx context.Context, record dshSummaryRunRowRecord)
 }
@@ -369,7 +373,7 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 	if strings.TrimSpace(req.SessionID) == "" || req.Summarize == nil {
 		return
 	}
-	if req.FirstPromptTokens > 0 && strings.TrimSpace(req.StoreRoot) != "" {
+	if req.PriorSessionID == "" && req.FirstPromptTokens > 0 && strings.TrimSpace(req.StoreRoot) != "" {
 		if _, err := readDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID); err != nil {
 			_ = writeDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID, req.FirstPromptTokens)
 		}
@@ -679,6 +683,7 @@ func (d *Daemon) armDshSummaryClock(task Task, provider, model string, result ag
 		WorkDir:           workDir,
 		StoreRoot:         storeRoot,
 		Model:             model,
+		PriorSessionID:    task.PriorSessionID,
 		FirstPromptTokens: result.FirstPromptTokens,
 		LastPromptTokens:  result.LastPromptTokens,
 		Summarize: func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
