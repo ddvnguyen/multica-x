@@ -1329,6 +1329,17 @@ SET status = 'failed',
 WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
 RETURNING *;
 
+-- name: ListRunningTasksForRuntime :many
+-- Lists the tasks the server believes are executing on a runtime. A restarted
+-- daemon of a detached-capable runtime (S3-C) does not know which of its
+-- scopes still belong to a live run; recover-orphans hands it this list so it
+-- can re-attach to or finalize each one. Callers must have authorized the
+-- runtime already.
+SELECT id, work_dir, session_id
+FROM agent_task_queue
+WHERE runtime_id = $1 AND status = 'running'
+ORDER BY started_at ASC NULLS LAST, id;
+
 -- name: FailStaleTasks :many
 -- Fails tasks stuck in dispatched/running beyond the given thresholds.
 --

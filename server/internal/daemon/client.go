@@ -763,11 +763,35 @@ func (c *Client) RecordTaskSummaryDecision(ctx context.Context, taskID string, r
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/summary-decision", taskID), record, nil)
 }
 
+// RunningDetachedTask is a task the server still records as running on a
+// detached-capable runtime, as reported by recover-orphans.
+type RunningDetachedTask struct {
+	TaskID    string `json:"task_id"`
+	WorkDir   string `json:"work_dir"`
+	SessionID string `json:"session_id"`
+}
+
+// RecoverOrphansResult is the recover-orphans response. For a detached-capable
+// runtime the server fails nothing and instead lists RunningDetached so the
+// daemon can re-attach to (or finalize) each task's scope. Servers that predate
+// the field leave RunningDetached empty.
+type RecoverOrphansResult struct {
+	Orphaned        int                   `json:"orphaned"`
+	Retried         int                   `json:"retried"`
+	Detached        bool                  `json:"detached"`
+	RunningDetached []RunningDetachedTask `json:"running_detached"`
+}
+
 // RecoverOrphans tells the server to fail any dispatched/running tasks the
 // previous daemon process for this runtime left behind. The server will
-// auto-retry eligible tasks.
-func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{}, nil)
+// auto-retry eligible tasks. A detached-capable runtime's running tasks are
+// not failed; they are returned in RecoverOrphansResult.RunningDetached.
+func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string) (RecoverOrphansResult, error) {
+	var res RecoverOrphansResult
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{}, &res); err != nil {
+		return RecoverOrphansResult{}, err
+	}
+	return res, nil
 }
 
 // GetTaskStatus returns the current status of a task. Used by the daemon to

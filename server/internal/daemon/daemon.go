@@ -1980,7 +1980,7 @@ func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, worksp
 	// because its surviving runtime IDs may still be actively executing
 	// tasks for the user (MUL-3332).
 	for _, rid := range newIDs {
-		if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+		if _, err := d.client.RecoverOrphans(ctx, rid); err != nil {
 			d.logger.Warn("recover-orphans after re-register failed",
 				"runtime_id", rid, "error", err)
 		}
@@ -4362,9 +4362,14 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 		// at in_progress until the slow heartbeat sweeper or the in-flight
 		// task timeout (2.5h) kicks in.
 		for _, rid := range runtimeIDs {
-			if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+			res, err := d.client.RecoverOrphans(ctx, rid)
+			if err != nil {
 				d.logger.Warn("recover-orphans failed", "runtime_id", rid, "error", err)
+				continue
 			}
+			// A detached-capable runtime's running tasks are not failed by the
+			// server; finish the ones whose scope ended while we were down.
+			d.recoverDetachedRunningTasks(rid, res)
 		}
 
 		d.logger.Info("watching workspace", "workspace_id", id, "name", name, "runtimes", len(runtimeIDs), "repos", len(resp.Repos))
