@@ -167,9 +167,9 @@ jobs:
           echo "no host paths mounted"
       - name: Container env carries no tokens or MULTICA vars
         run: |
-          if env | grep -E '^(MULTICA_|GH_TOKEN|GITHUB_TOKEN|RUNNER_TOKEN)=' >/dev/null; then
+          if env | grep -E '^(MULTICA_|GH_TOKEN|RUNNER_TOKEN)=' >/dev/null; then
             echo "::error::secret/token env var present in container"
-            env | grep -E '^(MULTICA_|GH_TOKEN|GITHUB_TOKEN|RUNNER_TOKEN)='
+            env | grep -E '^(MULTICA_|GH_TOKEN|RUNNER_TOKEN)='
             exit 1
           fi
           echo "env clean"

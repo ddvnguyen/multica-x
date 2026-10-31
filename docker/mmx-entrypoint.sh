@@ -25,9 +25,11 @@ exec setpriv --reuid 1000 --regid 1000 --keep-groups \
     set -eu
     cd "$INSTANCE_DIR"
     if [ -n "$RUNNER_TOKEN" ]; then
-      ./config.sh --ephemeral --unattended --replace \
+      RUNNER_TOKEN="$RUNNER_TOKEN" ./config.sh --ephemeral --unattended --replace \
         --url "$RUNNER_URL" --token "$RUNNER_TOKEN" \
         --labels "$RUNNER_LABELS" --name "$RUNNER_NAME"
     fi
+    # scrub registration token from the job environment
+    unset RUNNER_TOKEN
     RUNNER_MANUALLY_TRAP_SIG=1 exec ./run.sh
   '
