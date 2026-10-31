@@ -615,3 +615,23 @@ func TestTaskSupplementPermissionAndTenantIsolation(t *testing.T) {
 		t.Fatalf("denied requests created %d supplements", count)
 	}
 }
+
+// TestTaskSupplementAckBodyIsCapped: the ack endpoint rejects a body above
+// its 8 KiB cap with 400 before touching the receipt, and the same receipt
+// is still acknowledgeable afterwards with a normal body.
+func TestTaskSupplementAckBodyIsCapped(t *testing.T) {
+	f := newSupplementFixture(t, "codex", "running", true)
+	var sent CommentResponse
+	supplementRequest(t, f, "0199a4e8-22ce-7b01-bba5-111111111111", "inject me").Want(http.StatusCreated).JSON(&sent)
+	if _, err := testHandler.Queries.ClaimNextTaskSupplement(t.Context(), parseUUID(f.taskID)); err != nil {
+		t.Fatal(err)
+	}
+	ack := func(body map[string]any) *testutil.Response {
+		req := withURLParams(newOwnerDaemonRequest(http.MethodPost, "/ack", body), "taskId", f.taskID, "commentId", sent.ID)
+		return testutil.Call(t, testHandler.AckTaskSupplement, req)
+	}
+
+	// Valid JSON, so only the size cap can explain a 400.
+	ack(map[string]any{"delivered": false, "error": strings.Repeat("x", 9000)}).Want(http.StatusBadRequest)
+	ack(map[string]any{"delivered": false, "error": strings.Repeat("x", 1000)}).Want(http.StatusOK)
+}
