@@ -654,8 +654,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		messageSink = ""
 	}
 
-	// S3-C (M-139): detached runtime scope is Linux-only and off by default.
-	detachedRuntime := boolFromEnv("MULTICA_DETACHED_RUNTIME", false) && runtime.GOOS == "linux"
+	// S3-C (M-139): detached runtime scope is Linux-only, off by default and
+	// needs systemd-run. Advertising uses the launcher's own predicate so the
+	// capability is never claimed for runs that would launch attached.
+	detachedRuntime := agent.DshDetachedAvailable()
 
 	// S3-B1: the dsh prompt-cache summary clock. Defaults come from the
 	// M-133 spike's provisional values; every one is env-tunable because the

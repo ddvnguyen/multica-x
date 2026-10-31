@@ -356,7 +356,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	// the daemon and would SIGPIPE a surviving child. See dsh_detached.go. Off
 	// by default; a host without systemd-run falls back to the direct launch.
 	var detached *dshDetachedRun
-	if dshDetachedRequested() {
+	if DshDetachedAvailable() {
 		plan, planErr := prepareDshDetachedRun(opts.Cwd, b.cfg.TaskID)
 		if planErr != nil {
 			cancel()
@@ -451,6 +451,10 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start dsh: %w", err)
+	}
+	if detached != nil {
+		// The child now holds its own descriptor on the frame file.
+		detached.releaseStdin(b.cfg.Logger)
 	}
 
 	var writeFrame func(any) error

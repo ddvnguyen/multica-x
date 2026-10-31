@@ -1368,12 +1368,15 @@ RETURNING *;
 -- besides the answer/verdict re-queue.
 --
 -- S3-C (M-139): the last branch is the detached-runtime backstop. A detached
--- run executes in its own transient systemd scope, so the daemon heartbeat is
--- NOT evidence about that task — a restarted daemon heartbeats while the
--- orphaned row it can no longer observe keeps its status. Without this branch
--- such a row would stay 'running' forever. A detached task therefore gets its
--- wall-clock budget plus the detached grace and is then failed whatever the
--- runtime heartbeat says; @detached_timeout_secs <= 0 disables the branch.
+-- run executes in its own transient systemd scope, so a restarted daemon can
+-- no longer observe the orphaned row it left behind. The bound applies only to
+-- a detached-capable runtime whose heartbeat is stale (older than the
+-- reconnect grace, same predicate as the legacy running branch): a live
+-- runtime's tasks are never failed by it, however long a healthy run takes.
+-- Known gap until re-attach lands (S3 card G): a daemon that restarts and keeps
+-- heartbeating leaves its orphaned detached row 'running' (this branch needs a
+-- stale heartbeat), so MULTICA_DETACHED_RUNTIME stays off until then.
+-- @detached_timeout_secs <= 0 disables the branch.
 UPDATE agent_task_queue
 SET status = 'failed', completed_at = now(), error = 'task timed out',
     failure_reason = 'timeout',
@@ -1424,6 +1427,8 @@ WHERE (
       SELECT 1 FROM agent_runtime r
       WHERE r.id = agent_task_queue.runtime_id
         AND r.metadata -> 'capabilities' ? 'detached-runtime-v1'
+        AND COALESCE(r.last_seen_at, r.updated_at) <
+            now() - make_interval(secs => @runtime_reconnect_grace_secs::double precision)
     )
   )
 RETURNING *;

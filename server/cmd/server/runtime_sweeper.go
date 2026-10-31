@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -90,12 +91,13 @@ const (
 	// detachedTaskGrace is the extra window a detached-capable runtime's running
 	// task gets on top of runningTimeoutSeconds (S3-C, M-139). A detached run
 	// executes in its own systemd scope and may outlive the daemon that
-	// launched it, so the daemon heartbeat proves nothing about it and the
-	// wall clock is the only bound. Without this bound the row would stay
-	// 'running' forever after a restart the daemon cannot observe.
+	// launched it. Once the runtime heartbeat is stale the wall clock is the
+	// bound; without it the row could stay 'running' forever after a restart
+	// the daemon cannot observe.
 	detachedTaskGrace = 30 * time.Minute
 	// defaultDetachedTaskTimeout is that bound: the task's own budget plus the
-	// grace. Overridable with MULTICA_DETACHED_TASK_TIMEOUT.
+	// grace. It only applies once the runtime heartbeat is stale. Overridable
+	// with MULTICA_DETACHED_TASK_TIMEOUT; 0 disables it.
 	defaultDetachedTaskTimeout = time.Duration(runningTimeoutSeconds)*time.Second + detachedTaskGrace
 	// queuedExpireBatchSize caps how many queued rows a single sweeper tick
 	// transitions to failed. Keeps the sweep transaction short even when
@@ -157,6 +159,33 @@ func runPeriodicSweep(ctx context.Context, interval time.Duration, sweep func())
 			sweep()
 		}
 	}
+}
+
+// detachedTaskTimeoutFromEnv parses MULTICA_DETACHED_TASK_TIMEOUT. Unlike
+// envDuration it honours an explicit 0 as "disabled", which the SQL treats as
+// no detached bound.
+func detachedTaskTimeoutFromEnv(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultDetachedTaskTimeout
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil || v < 0 {
+		slog.Warn("invalid env var, using default", "name", "MULTICA_DETACHED_TASK_TIMEOUT", "value", raw, "default", defaultDetachedTaskTimeout.String(), "error", err)
+		return defaultDetachedTaskTimeout
+	}
+	if v == 0 {
+		slog.Info("detached task timeout disabled by MULTICA_DETACHED_TASK_TIMEOUT=0")
+		return 0
+	}
+	if v < minimumRuntimeReconnectGrace {
+		slog.Warn("detached task timeout is shorter than heartbeat freshness; clamping",
+			"configured", v,
+			"minimum", minimumRuntimeReconnectGrace,
+		)
+		return minimumRuntimeReconnectGrace
+	}
+	return v
 }
 
 // runRuntimeSweeper periodically marks runtimes as offline if their

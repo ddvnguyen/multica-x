@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,22 +164,124 @@ func TestDshDetachedStdoutReaderFollowsFile(t *testing.T) {
 	}
 }
 
-// TestDshDetachedRequestedIsOffByDefault guards the opt-in: without the env
-// switch nothing changes for every other host.
-func TestDshDetachedRequestedIsOffByDefault(t *testing.T) {
+// writeFakeSystemdRun puts an executable systemd-run on a fresh PATH and
+// returns that directory.
+func writeFakeSystemdRun(t *testing.T, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestExecutable(t, filepath.Join(dir, "systemd-run"), []byte(script))
+	return dir
+}
+
+// TestDshDetachedAvailable pins the one predicate the daemon advertises under
+// and the launcher launches under: Linux, a true MULTICA_DETACHED_RUNTIME in the
+// daemon's boolean vocabulary, and systemd-run on PATH.
+func TestDshDetachedAvailable(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("detached runs are Linux only")
 	}
-	t.Setenv("MULTICA_DETACHED_RUNTIME", "")
-	if dshDetachedRequested() {
-		t.Fatal("detached launch must be off unless MULTICA_DETACHED_RUNTIME=1")
+	withSystemdRun := writeFakeSystemdRun(t, "#!/bin/sh\nexit 0\n")
+	withoutSystemdRun := t.TempDir()
+
+	cases := []struct {
+		name string
+		path string
+		env  string
+		want bool
+	}{
+		{"true", withSystemdRun, "true", true},
+		{"one", withSystemdRun, "1", true},
+		{"upper yes", withSystemdRun, "YES", true},
+		{"padded on", withSystemdRun, " on ", true},
+		{"unset", withSystemdRun, "", false},
+		{"zero", withSystemdRun, "0", false},
+		{"false", withSystemdRun, "false", false},
+		{"unknown word", withSystemdRun, "bogus", false},
+		{"one without systemd-run", withoutSystemdRun, "1", false},
+		{"true without systemd-run", withoutSystemdRun, "true", false},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", tc.path)
+			t.Setenv("MULTICA_DETACHED_RUNTIME", tc.env)
+			if got := DshDetachedAvailable(); got != tc.want {
+				t.Fatalf("DshDetachedAvailable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDshDetachedExecuteDeletesStdinFrame runs the detached launch path end to
+// end with a fake systemd-run that just execs the wrapped command. The child
+// sleeps before reading stdin, so the frame file is already unlinked when it
+// reads: the run only completes if the descriptor it inherited stays readable.
+func TestDshDetachedExecuteDeletesStdinFrame(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("detached runs are Linux only")
+	}
+	dir := writeFakeSystemdRun(t, "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n")
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
 	t.Setenv("MULTICA_DETACHED_RUNTIME", "1")
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return
+
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{}}'
+sleep 0.2
+IFS= read -r execute
+case "$execute" in *'"type":"execute"'*) ;; *) exit 8 ;; esac
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-detached","session_id":"session-d","resumed":false}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-detached","status":"completed","session_id":"session-d","output":"done","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-detached", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !dshDetachedRequested() {
-		t.Fatal("detached launch must be on when opted in and systemd-run exists")
+	cwd := t.TempDir()
+	session, err := b.Execute(context.Background(), "hello", ExecOptions{Cwd: cwd, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("bad result: %#v", result)
+	}
+
+	runDir := filepath.Join(cwd, dshDetachedDir, dshDetachedUnit("task-detached"))
+	if _, err := os.Stat(filepath.Join(runDir, "stdout.jsonl")); err != nil {
+		t.Fatalf("detached path not taken, stdout.jsonl: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "stdin.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("stdin.jsonl must be deleted once the child holds it, stat err = %v", err)
+	}
+}
+
+// TestDshDetachedCloseRemovesStdinFrame covers the error paths: a run that
+// never reached the start still deletes the frame, and keeps the other
+// artifacts.
+func TestDshDetachedCloseRemovesStdinFrame(t *testing.T) {
+	plan, err := prepareDshDetachedRun(t.TempDir(), "task-close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := dshExecuteCommand{Version: DshProtocolVersion, Type: "execute", RequestID: "req-close", Prompt: "secret"}
+	if err := plan.writeExecuteFrame(frame); err != nil {
+		t.Fatalf("writeExecuteFrame: %v", err)
+	}
+	if _, err := plan.stdinReader(); err != nil {
+		t.Fatalf("stdinReader: %v", err)
+	}
+
+	plan.Close()
+	plan.Close()
+
+	if _, err := os.Stat(plan.stdinPath); !os.IsNotExist(err) {
+		t.Fatalf("stdin.jsonl must be removed by Close, stat err = %v", err)
+	}
+	for _, path := range []string{plan.stdoutPath, plan.stderrPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("artifact %s must survive Close: %v", path, err)
+		}
 	}
 }
 

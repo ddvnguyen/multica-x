@@ -63,7 +63,10 @@ type dshDetachedRun struct {
 	stderrPath string
 	exitPath   string
 
-	stdinFile  *os.File
+	stdinFile *os.File
+	// stdinRead is the parent's read handle on the frame file, kept only so it
+	// can be closed once the child holds its own copy.
+	stdinRead  *os.File
 	stdoutFile *os.File
 	stderrFile *os.File
 }
@@ -73,21 +76,20 @@ type dshDetachedRun struct {
 // re-attach across daemon restarts is out of scope (S3-C).
 var errDshDetachedNoInput = errors.New("detached dsh run does not accept further input")
 
-// dshDetachedEnabledByEnv reports whether the host opted into detached runs.
-// Off by default and Linux only; the capability is advertised by the daemon
-// under exactly the same switch.
-func dshDetachedEnabledByEnv() bool {
+// DshDetachedAvailable reports whether dsh runs launch in their own systemd
+// scope on this host: Linux, MULTICA_DETACHED_RUNTIME set to a true value, and
+// systemd-run on PATH. The daemon advertises detached-runtime-v1 under exactly
+// this function, so advertising and launching cannot disagree.
+//
+// The env vocabulary matches the daemon's boolFromEnv: true/1/yes/on, trimmed
+// and case-insensitive; unset and unrecognized values are false.
+func DshDetachedAvailable() bool {
 	if runtime.GOOS != "linux" {
 		return false
 	}
-	return os.Getenv("MULTICA_DETACHED_RUNTIME") == "1"
-}
-
-// dshDetachedRequested reports whether this process should launch dsh runs in
-// their own systemd scope. Off by default, Linux only, and only with
-// systemd-run on PATH — anything else keeps the direct launch.
-func dshDetachedRequested() bool {
-	if !dshDetachedEnabledByEnv() {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DETACHED_RUNTIME"))) {
+	case "true", "1", "yes", "on":
+	default:
 		return false
 	}
 	_, err := exec.LookPath("systemd-run")
@@ -177,13 +179,32 @@ func (r *dshDetachedRun) writeExecuteFrame(value any) error {
 	return nil
 }
 
-// stdinReader returns the reader the child receives as stdin.
+// stdinReader returns the reader the child receives as stdin. The run keeps the
+// handle so releaseStdin and Close can close it.
 func (r *dshDetachedRun) stdinReader() (*os.File, error) {
 	readOnly, err := os.Open(r.stdinPath)
 	if err != nil {
 		return nil, fmt.Errorf("open detached stdin for read: %w", err)
 	}
+	if r.stdinRead != nil {
+		_ = r.stdinRead.Close()
+	}
+	r.stdinRead = readOnly
 	return readOnly, nil
+}
+
+// releaseStdin closes the parent's read handle and deletes the frame file. The
+// frame carries MCP credentials and env, so it must not outlive the moment the
+// child holds its own open descriptor; the child keeps reading through that
+// descriptor after the unlink.
+func (r *dshDetachedRun) releaseStdin(logger *slog.Logger) {
+	if r.stdinRead != nil {
+		_ = r.stdinRead.Close()
+		r.stdinRead = nil
+	}
+	if err := os.Remove(r.stdinPath); err != nil && !os.IsNotExist(err) && logger != nil {
+		logger.Warn("failed to remove detached dsh stdin frame", "path", r.stdinPath, "error", err)
+	}
 }
 
 // exitStatus reads the wrapper's recorded exit status. A missing file means the
@@ -204,13 +225,19 @@ func (r *dshDetachedRun) exitStatus() (int, bool, error) {
 	return status, true, nil
 }
 
-// Close releases the file handles. The files themselves stay on disk: they are
-// the run's durable record.
+// Close releases the file handles and removes the stdin frame, which holds
+// secrets and is useless once the run is over (idempotent, so every error path
+// is covered). stdout, stderr and the exit record stay on disk: they are the
+// run's durable record.
 func (r *dshDetachedRun) Close() {
-	for _, f := range []*os.File{r.stdinFile, r.stdoutFile, r.stderrFile} {
+	for _, f := range []*os.File{r.stdinFile, r.stdinRead, r.stdoutFile, r.stderrFile} {
 		if f != nil {
 			_ = f.Close()
 		}
+	}
+	r.stdinRead = nil
+	if err := os.Remove(r.stdinPath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("failed to remove detached dsh stdin frame", "path", r.stdinPath, "error", err)
 	}
 }
 
