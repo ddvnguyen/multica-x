@@ -41,12 +41,17 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 	// detached grace, whatever the daemon heartbeat says. Non-detached runtimes
 	// keep the legacy behaviour exactly.
 	if rt, err := h.Queries.GetAgentRuntime(r.Context(), parseUUID(runtimeID)); err == nil && runtimeHasDetachedCapability(rt) {
+		running, err := h.Queries.ListRunningTasksForRuntime(r.Context(), rt.ID)
+		if err != nil {
+			slog.Warn("recover-orphans: list running tasks failed", "runtime_id", runtimeID, "error", err)
+			writeError(w, http.StatusInternalServerError, "list running tasks failed")
+			return
+		}
 		slog.Info("recover-orphans skipped for detached-capable runtime",
-			"runtime_id", runtimeID)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"orphaned": 0,
-			"retried":  0,
-			"detached": true,
+			"runtime_id", runtimeID, "running_detached", len(running))
+		writeJSON(w, http.StatusOK, recoverOrphansDetachedResponse{
+			Detached:        true,
+			RunningDetached: runningDetachedTasks(running),
 		})
 		return
 	}
@@ -77,6 +82,36 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		"orphaned": len(rows),
 		"retried":  retried,
 	})
+}
+
+// RunningDetachedTask is one task the server still records as running on a
+// detached-capable runtime. The restarted daemon uses it to re-attach to the
+// task's systemd scope or finalize it from the scope's recorded outcome.
+type RunningDetachedTask struct {
+	TaskID    string `json:"task_id"`
+	WorkDir   string `json:"work_dir"`
+	SessionID string `json:"session_id"`
+}
+
+// recoverOrphansDetachedResponse keeps the legacy counters (always zero here)
+// so daemons that predate running_detached keep decoding the response.
+type recoverOrphansDetachedResponse struct {
+	Orphaned        int                   `json:"orphaned"`
+	Retried         int                   `json:"retried"`
+	Detached        bool                  `json:"detached"`
+	RunningDetached []RunningDetachedTask `json:"running_detached,omitempty"`
+}
+
+func runningDetachedTasks(rows []db.ListRunningTasksForRuntimeRow) []RunningDetachedTask {
+	out := make([]RunningDetachedTask, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RunningDetachedTask{
+			TaskID:    uuidToString(row.ID),
+			WorkDir:   row.WorkDir.String,
+			SessionID: row.SessionID.String,
+		})
+	}
+	return out
 }
 
 // runtimeHasDetachedCapability reports whether the runtime advertised the
