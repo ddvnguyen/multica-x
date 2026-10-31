@@ -37,9 +37,9 @@ const (
 	// Owner's 1–2K target (4K acceptable) leaning to its upper half because
 	// dsh's compaction writes one replacement node, not a lossless digest.
 	DefaultDshSummaryTokens = 2048
-	// DefaultDshSummaryTokenCap is the hard ceiling the clock flags: a
-	// summary above it still lands (truncating mid-sentence loses more than
-	// it saves) but the decision record says so.
+	// DefaultDshSummaryTokenCap is the hard ceiling: a summary above it is
+	// rejected (decision summary-over-cap, nothing stored) rather than
+	// truncated mid-sentence, and the next run starts fresh.
 	DefaultDshSummaryTokenCap = 4096
 	// DefaultDshSummaryTriggerTokens: conversation tokens above the init
 	// prefix at which summarizing is worth it (~20K, M-133).
@@ -105,6 +105,7 @@ const (
 	dshSummaryReasonFailed    = "summarize-failed"
 	dshSummaryReasonNoBridge  = "skipped-bridge-unsupported"
 	dshSummaryReasonStoreFail = "store-failed"
+	dshSummaryReasonOverCap   = "summary-over-cap"
 )
 
 // dshSummaryVerdict is one clock decision.
@@ -287,7 +288,7 @@ type dshSummaryRunRowRecord struct {
 // dsh backend. Type-asserting it is the daemon-side capability gate: no dsh
 // backend, no clock.
 type dshSessionSummarizer interface {
-	SummarizeSession(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
+	SummarizeSession(ctx context.Context, sessionID, model, cwd string, maxTokens int64) (*agent.DshSessionSummary, error)
 }
 
 // dshSummaryRequest is what a completed dsh run hands the clock. The two
@@ -308,8 +309,8 @@ type dshSummaryRequest struct {
 	// in that case the init prefix is owned by the session's first run and
 	// must not be (re)written here.
 	PriorSessionID string
-	Summarize         func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
-	RecordDecision    func(ctx context.Context, record dshSummaryRunRowRecord)
+	Summarize      func(ctx context.Context, sessionID, model, workDir string, maxTokens int64) (*agent.DshSessionSummary, error)
+	RecordDecision func(ctx context.Context, record dshSummaryRunRowRecord)
 }
 
 // dshSummaryScheduler schedules one delayed callback and returns its cancel
@@ -460,12 +461,15 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 		return
 	}
 
-	summary, err := req.Summarize(c.context(), req.SessionID, req.Model)
+	summary, err := req.Summarize(c.context(), req.SessionID, req.Model, req.WorkDir, c.cfg.SummaryTokenCap)
 	if err != nil {
 		record.Decision = dshSummaryReasonFailed
 		record.Error = err.Error()
 		if errors.Is(err, agent.ErrDshSummarizeUnsupported) {
 			record.Decision = dshSummaryReasonNoBridge
+		}
+		if errors.Is(err, agent.ErrDshSummaryOverCap) {
+			record.Decision = dshSummaryReasonOverCap
 		}
 		c.log.Warn("dsh summary build failed", "task_id", req.TaskID,
 			"session_id", req.SessionID, "decision", record.Decision, "error", err)
@@ -475,6 +479,18 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 	tokens := summary.Tokens
 	if tokens <= 0 {
 		tokens = estimateDshSummaryTokens(summary.Summary)
+	}
+	// The bridge enforces the budget only when it advertises
+	// summarize_max_tokens; this check covers every other bridge. An over-cap
+	// summary is never stored, so the next run starts fresh.
+	if c.cfg.SummaryTokenCap > 0 && tokens > c.cfg.SummaryTokenCap {
+		record.Decision = dshSummaryReasonOverCap
+		record.SummaryTokens = tokens
+		c.log.Warn("dsh summary exceeds the token cap; not stored",
+			"task_id", req.TaskID, "session_id", req.SessionID,
+			"tokens", tokens, "cap", c.cfg.SummaryTokenCap)
+		c.record(req, record)
+		return
 	}
 	stored := dshSessionSummaryRecord{
 		Summary:       summary.Summary,
@@ -493,10 +509,6 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 	record.Decision = dshSummaryReasonProceed
 	record.SummaryTokens = tokens
 	record.MadeAt = now.Format(time.RFC3339)
-	if tokens > c.cfg.SummaryTokenCap {
-		c.log.Warn("dsh summary exceeds the token cap; stored anyway",
-			"session_id", req.SessionID, "tokens", tokens, "cap", c.cfg.SummaryTokenCap)
-	}
 	c.log.Info("dsh summary stored beside session",
 		"task_id", req.TaskID, "session_id", req.SessionID, "tokens", tokens)
 	c.record(req, record)
@@ -686,8 +698,8 @@ func (d *Daemon) armDshSummaryClock(task Task, provider, model string, result ag
 		PriorSessionID:    task.PriorSessionID,
 		FirstPromptTokens: result.FirstPromptTokens,
 		LastPromptTokens:  result.LastPromptTokens,
-		Summarize: func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
-			return summarizer.SummarizeSession(ctx, sessionID, model)
+		Summarize: func(ctx context.Context, sessionID, model, workDir string, maxTokens int64) (*agent.DshSessionSummary, error) {
+			return summarizer.SummarizeSession(ctx, sessionID, model, workDir, maxTokens)
 		},
 		RecordDecision: d.recordDshSummaryDecision(task.ID),
 	})
