@@ -707,3 +707,125 @@ func TestDshSummaryClockStoresSummaryAtCap(t *testing.T) {
 		t.Fatal("a summary exactly at the cap must be stored")
 	}
 }
+
+func readArmRecordFile(t *testing.T, storeRoot, workDir, sessionID string) (dshArmRecord, bool) {
+	t.Helper()
+	rec, err := readDshArmRecord(dshArmRecordPath(storeRoot, workDir, sessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return dshArmRecord{}, false
+	}
+	if err != nil {
+		t.Fatalf("read arm record: %v", err)
+	}
+	return rec, true
+}
+
+func neverSummarize(t *testing.T) func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
+	return func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
+		t.Helper()
+		t.Error("summarize must not be called")
+		return nil, errors.New("must not be called")
+	}
+}
+
+// TestDshSummaryArmPersistsRecordAndFireRemovesIt: Arm leaves the facts a
+// restarted daemon needs beside the session; fire consumes them.
+func TestDshSummaryArmPersistsRecordAndFireRemovesIt(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	armedAt := *now
+
+	// 4000 -> 4500 stays under the trigger, so the fire never summarizes.
+	armOneShot(clock, storeRoot, workDir, 4000, 4500, neverSummarize(t), nil)
+	rec, ok := readArmRecordFile(t, storeRoot, workDir, "session-1")
+	if !ok {
+		t.Fatal("arm.json was not written")
+	}
+	want := dshArmRecord{
+		TaskID: "task-1", WorkDir: workDir, Model: "deepseek/deepseek-v4-pro",
+		EndedAt: armedAt, FirstPromptTokens: 4000, LastPromptTokens: 4500,
+	}
+	if rec != want {
+		t.Fatalf("arm record = %#v, want %#v", rec, want)
+	}
+
+	scheduler.fire(t, 0)
+	if _, ok := readArmRecordFile(t, storeRoot, workDir, "session-1"); ok {
+		t.Fatal("arm.json survived the fire")
+	}
+}
+
+func TestDshSummaryCancelRemovesArmRecord(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, _, _ := newTestSummaryClock(t, testSummarySettings())
+
+	armOneShot(clock, storeRoot, workDir, 20000, 60000, neverSummarize(t), nil)
+	clock.Cancel("session-1")
+	if _, ok := readArmRecordFile(t, storeRoot, workDir, "session-1"); ok {
+		t.Fatal("arm.json survived Cancel")
+	}
+}
+
+// TestDshSummaryArmEndedAtAnchorsDelayToRunEnd: a run that ended 30 s ago with
+// a 120 s TTL and 30 s margin has 60 s left, not the full 90 s.
+func TestDshSummaryArmEndedAtAnchorsDelayToRunEnd(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	endedAt := now.Add(-30 * time.Second)
+
+	clock.Arm(dshSummaryRequest{
+		TaskID: "task-1", SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		Model: "m", EndedAt: endedAt, FirstPromptTokens: 1, LastPromptTokens: 2,
+		Summarize: neverSummarize(t),
+	})
+	if got := scheduler.delay(t, 0); got != 60*time.Second {
+		t.Fatalf("delay = %s, want 60s", got)
+	}
+	rec, ok := readArmRecordFile(t, storeRoot, workDir, "session-1")
+	if !ok || !rec.EndedAt.Equal(endedAt) {
+		t.Fatalf("arm record ended_at = %v (present=%v), want %v", rec.EndedAt, ok, endedAt)
+	}
+}
+
+func TestDshSummaryArmEndedAtPastDueSchedulesNothing(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	dir := dshSessionStoreDir(storeRoot, workDir, "session-1")
+	if err := writeDshArmRecord(filepath.Join(dir, dshArmSidecarName), dshArmRecord{WorkDir: workDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Arm(dshSummaryRequest{
+		SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot, Model: "m",
+		EndedAt: now.Add(-90 * time.Second), Summarize: neverSummarize(t),
+	})
+	if len(scheduler.fires) != 0 {
+		t.Fatalf("scheduled %d fires for a past-due session", len(scheduler.fires))
+	}
+	if _, ok := readArmRecordFile(t, storeRoot, workDir, "session-1"); ok {
+		t.Fatal("arm.json survived a past-due arm")
+	}
+}
+
+// TestDshSummaryFireSkipsExistingSummary: a session that already has a
+// summary.json is never summarized again.
+func TestDshSummaryFireSkipsExistingSummary(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, _ := newTestSummaryClock(t, testSummarySettings())
+	existing := dshSessionSummaryRecord{Summary: "kept", Tokens: 10, ParentSession: "session-1"}
+	if err := writeDshSummarySidecar(storeRoot, workDir, "session-1", existing); err != nil {
+		t.Fatal(err)
+	}
+	var records []dshSummaryRunRowRecord
+
+	armOneShot(clock, storeRoot, workDir, 20000, 60000, neverSummarize(t),
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
+	scheduler.fire(t, 0)
+
+	if len(records) != 0 {
+		t.Fatalf("recorded %#v for an already-summarized session", records)
+	}
+	if got := readSummarySidecar(t, storeRoot, workDir, "session-1"); got.Summary != "kept" {
+		t.Fatalf("summary overwritten: %#v", got)
+	}
+}

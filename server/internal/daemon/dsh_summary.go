@@ -309,6 +309,10 @@ type dshSummaryRequest struct {
 	// in that case the init prefix is owned by the session's first run and
 	// must not be (re)written here.
 	PriorSessionID string
+	// EndedAt is when the run ended. Zero means "just now" (the live path);
+	// set, it anchors the fire time to the run's end instead of the arm time,
+	// which is what re-arming after a daemon restart needs.
+	EndedAt        time.Time
 	Summarize      func(ctx context.Context, sessionID, model, workDir string, maxTokens int64) (*agent.DshSessionSummary, error)
 	RecordDecision func(ctx context.Context, record dshSummaryRunRowRecord)
 }
@@ -338,7 +342,7 @@ type dshSummaryClock struct {
 	cfg       DshSummaryConfig
 	now       func() time.Time
 	scheduler dshSummaryScheduler
-	cancels   map[string]func()
+	cancels   map[string]dshArmedTimer
 	log       *slog.Logger
 	// ctxFn resolves the daemon-lifetime context the summarize call runs
 	// under. The task context is already cancelled when the clock fires, so
@@ -351,10 +355,23 @@ func newDshSummaryClock(cfg DshSummaryConfig, log *slog.Logger) *dshSummaryClock
 		cfg:       cfg,
 		now:       time.Now,
 		scheduler: timeAfterFuncScheduler{},
-		cancels:   make(map[string]func()),
+		cancels:   make(map[string]dshArmedTimer),
 		log:       log,
 		ctxFn:     func() context.Context { return context.Background() },
 	}
+}
+
+// dshArmedTimer is one pending fire plus the arm record that lets a restarted
+// daemon re-arm it; Cancel and the replacing Arm remove that record.
+type dshArmedTimer struct {
+	cancel  func()
+	armPath string
+}
+
+// dueIn is how long until the summarize point (TTL−margin after the run
+// ended) for a model; non-positive once that point has passed.
+func (c *dshSummaryClock) dueIn(model string, endedAt time.Time) time.Duration {
+	return endedAt.Add(c.cfg.ttlForModel(model) - c.cfg.Margin).Sub(c.now())
 }
 
 func (c *dshSummaryClock) context() context.Context {
@@ -385,14 +402,45 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 			"session_id", req.SessionID, "ttl", c.cfg.ttlForModel(req.Model), "margin", c.cfg.Margin)
 		return
 	}
-	c.mu.Lock()
-	if cancel, ok := c.cancels[req.SessionID]; ok {
-		cancel()
-	}
+	armPath := dshArmRecordPath(req.StoreRoot, req.WorkDir, req.SessionID)
 	armedAt := c.now()
-	c.cancels[req.SessionID] = c.scheduler.Schedule(delay, func() {
-		c.fire(req, armedAt)
-	})
+	if !req.EndedAt.IsZero() {
+		armedAt = req.EndedAt
+		delay = c.dueIn(req.Model, req.EndedAt)
+		if delay <= 0 {
+			c.log.Info("dsh summary clock not armed: the run ended past the summarize point",
+				"task_id", req.TaskID, "session_id", req.SessionID, "ended_at", req.EndedAt)
+			removeDshArmRecord(armPath)
+			return
+		}
+	}
+	if armPath != "" {
+		if err := writeDshArmRecord(armPath, dshArmRecord{
+			TaskID:            req.TaskID,
+			WorkDir:           req.WorkDir,
+			Model:             req.Model,
+			EndedAt:           armedAt,
+			FirstPromptTokens: req.FirstPromptTokens,
+			LastPromptTokens:  req.LastPromptTokens,
+			PriorSessionID:    req.PriorSessionID,
+		}); err != nil {
+			c.log.Warn("dsh summary arm record not written; the clock will not survive a daemon restart",
+				"session_id", req.SessionID, "error", err)
+		}
+	}
+	c.mu.Lock()
+	if prior, ok := c.cancels[req.SessionID]; ok {
+		prior.cancel()
+		if prior.armPath != armPath {
+			removeDshArmRecord(prior.armPath)
+		}
+	}
+	c.cancels[req.SessionID] = dshArmedTimer{
+		armPath: armPath,
+		cancel: c.scheduler.Schedule(delay, func() {
+			c.fire(req, armedAt)
+		}),
+	}
 	c.mu.Unlock()
 	c.log.Debug("dsh summary clock armed",
 		"task_id", req.TaskID, "session_id", req.SessionID, "model", req.Model,
@@ -407,11 +455,12 @@ func (c *dshSummaryClock) Cancel(sessionID string) {
 		return
 	}
 	c.mu.Lock()
-	cancel, ok := c.cancels[sessionID]
+	armed, ok := c.cancels[sessionID]
 	delete(c.cancels, sessionID)
 	c.mu.Unlock()
 	if ok {
-		cancel()
+		armed.cancel()
+		removeDshArmRecord(armed.armPath)
 		c.log.Debug("dsh summary clock cancelled: session resumed", "session_id", sessionID)
 	}
 }
@@ -423,6 +472,15 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 	c.mu.Lock()
 	delete(c.cancels, req.SessionID)
 	c.mu.Unlock()
+	removeDshArmRecord(dshArmRecordPath(req.StoreRoot, req.WorkDir, req.SessionID))
+
+	// A session that already has a summary is never summarized again; this is
+	// what keeps a re-armed clock from overwriting one built before a restart.
+	if dshSummarySidecarExists(req.StoreRoot, req.WorkDir, req.SessionID) {
+		c.log.Debug("dsh summary clock skipped: session already has a summary",
+			"task_id", req.TaskID, "session_id", req.SessionID)
+		return
+	}
 
 	now := c.now()
 	idle := now.Sub(armedAt)

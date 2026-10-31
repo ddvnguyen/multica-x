@@ -2176,6 +2176,10 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	// Deregister runtimes on shutdown (uses a fresh context since ctx will be cancelled).
 	defer d.deregisterRuntimes()
 
+	// Re-arm the dsh summary clocks of sessions that are still cache-warm. It
+	// runs before any loop or claim so a resume cannot race the re-arm.
+	d.rearmDshSummaryClocks()
+
 	// Start workspace sync loop to discover newly created workspaces.
 	go d.workspaceSyncLoop(ctx)
 	go d.terminalReportReplayLoop(ctx)
@@ -11206,7 +11210,7 @@ func prepareDshTaskSessionRoot(profile, runtimeID, agentID string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(profileDir, "dsh-sessions", runtimeSegment, agentSegment)
+	path := filepath.Join(profileDir, dshTaskSessionsDirName, runtimeSegment, agentSegment)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", err
 	}
