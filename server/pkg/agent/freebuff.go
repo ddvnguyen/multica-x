@@ -138,7 +138,7 @@ func StartFreebuffOrchestrator(ctx context.Context, cfg Config, profileDir strin
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(profileDir, "state"), 0o700); err != nil {
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create freebuff profile: %w", err)
 	}
 

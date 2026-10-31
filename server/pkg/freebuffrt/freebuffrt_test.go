@@ -52,7 +52,7 @@ func TestLaunchEnv(t *testing.T) {
 	want := map[string]string{
 		"PORT":                          "0",
 		"FREEBUFF_LAUNCH_ID":            "id1",
-		"FREEBUFF_DESKTOP_STATE_PATH":   "/p/state",
+		"FREEBUFF_DESKTOP_STATE_PATH":   "/p/state.json",
 		"FREEBUFF_UI_DIR":               "/r/orchestrator/ui",
 		"FREEBUFF_PROFILE_LOCK_WAIT_MS": "0",
 	}
@@ -63,6 +63,24 @@ func TestLaunchEnv(t *testing.T) {
 	}
 	if err := ValidateProfileDir("rel"); err == nil {
 		t.Error("relative profile dir accepted")
+	}
+}
+
+// The orchestrator reads FREEBUFF_DESKTOP_STATE_PATH as a JSON file and
+// rewrites it on sign-in. Pointing it at a directory makes every read fail, so
+// the runtime reports the account as signed out and a fresh sign-in cannot be
+// stored — the account then looks logged out again on the next launch.
+func TestLaunchEnvStatePathIsAFile(t *testing.T) {
+	dir := t.TempDir()
+	got := LaunchEnv(Bundle{ResourcesDir: "/r"}, dir, "id1")["FREEBUFF_DESKTOP_STATE_PATH"]
+	if got != StateFilePath(dir) {
+		t.Fatalf("state path = %q, want %q", got, StateFilePath(dir))
+	}
+	if filepath.Base(got) != "state.json" {
+		t.Fatalf("state path %q is not a state.json file", got)
+	}
+	if fi, err := os.Stat(got); err == nil && fi.IsDir() {
+		t.Fatalf("state path %q is a directory", got)
 	}
 }
 
