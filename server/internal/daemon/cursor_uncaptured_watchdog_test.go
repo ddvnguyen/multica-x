@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -24,9 +23,7 @@ printf '%s\n' '{"type":"tool_call","subtype":"started","call_id":"bg","tool_call
 printf '%s\n' '{"type":"tool_call","subtype":"completed","call_id":"bg","tool_call":{"shellToolCall":{"result":{"isBackground":true,"success":{"pid":-1}}}}}'
 exec sleep 30
 `
-	if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	writeTestExecutable(t, fake, []byte(script))
 	backend, err := agent.New("cursor", agent.Config{ExecutablePath: fake, Logger: slog.Default()})
 	if err != nil {
 		t.Fatal(err)
