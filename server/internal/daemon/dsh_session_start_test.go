@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/pkg/dshsession"
 )
 
@@ -350,5 +352,226 @@ func TestDshSessionStartRecordedOnTheRunRow(t *testing.T) {
 	}
 	if !strings.HasPrefix(verdicts[1], "seeded from summary of ") {
 		t.Fatalf("seeded verdict = %q", verdicts[1])
+	}
+}
+
+// TestDecideDshSessionStartUnreachableWarm pins F3: a warm candidate whose
+// session store this run cannot reach is never recorded as resumed. It falls
+// through to the seeded branch when a fresh summary exists, else fresh — the
+// same outcome the resume gate produces for it, instead of a run row that says
+// "resumed" over a fresh start.
+func TestDecideDshSessionStartUnreachableWarm(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	const priorID = "sess-prior"
+	ended := now.Add(-10 * time.Minute)
+	freshSummary := summaryStore{priorID: {
+		Summary:       "digest",
+		MadeAt:        ended.Add(time.Minute),
+		ParentSession: priorID,
+	}}
+	staleSummary := summaryStore{priorID: {
+		Summary:       "older digest",
+		MadeAt:        ended.Add(-time.Minute),
+		ParentSession: priorID,
+	}}
+
+	for _, tc := range []struct {
+		name    string
+		store   summaryStore
+		reach   bool
+		endedAt string
+		want    string
+	}{
+		{name: "unreachable warm with a fresh summary is seeded", store: freshSummary, reach: false, endedAt: ended.Format(time.RFC3339), want: dshSessionStartSeededPrefix + priorID},
+		{name: "unreachable warm with no summary starts fresh", store: summaryStore{}, reach: false, endedAt: ended.Format(time.RFC3339), want: dshSessionStartFresh},
+		{name: "unreachable warm with a stale summary starts fresh", store: staleSummary, reach: false, endedAt: ended.Format(time.RFC3339), want: dshSessionStartFresh},
+		{name: "unreachable unknown end time starts fresh", store: freshSummary, reach: false, endedAt: "", want: dshSessionStartSeededPrefix + priorID},
+		{name: "reachable warm resumes", store: summaryStore{}, reach: true, endedAt: ended.Format(time.RFC3339), want: dshSessionStartResumed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.store
+			plan := decideDshSessionStart(dshSessionStartInput{
+				Now:            now,
+				Cfg:            testSessionStartConfig(),
+				PriorSessionID: priorID,
+				PriorEndedAt:   tc.endedAt,
+				PriorWorkDir:   "/wd",
+				ReadSummary:    store.read,
+				Reachable:      func(dshSessionCandidate) bool { return tc.reach },
+			})
+			if plan.Verdict != tc.want {
+				t.Fatalf("verdict = %q, want %q (reason %q)", plan.Verdict, tc.want, plan.Reason)
+			}
+			if tc.want != dshSessionStartResumed && plan.ResumeSessionID != "" {
+				t.Fatalf("a non-resumed plan must not carry a resume id, got %q", plan.ResumeSessionID)
+			}
+			if tc.want == dshSessionStartResumed && plan.ResumeSessionID != priorID {
+				t.Fatalf("resume = %q, want %q", plan.ResumeSessionID, priorID)
+			}
+		})
+	}
+}
+
+// TestDecideDshSessionStartLinkedWarm pins the linked-session semantics the
+// bridge enforces: a resume whose session cwd differs from the run's is
+// rejected (resumeAgent → ResumeRejectedError), so a warm LINKED session in
+// another workdir can only ever be seeded from its summary. Only a linked
+// session this run can reach is resumed — and then it is the linked session's
+// id, never the (absent) same-issue one.
+func TestDecideDshSessionStartLinkedWarm(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	const linkedID = "sess-linked"
+	ended := now.Add(-5 * time.Minute)
+	freshSummary := summaryStore{linkedID: {
+		Summary:       "linked digest",
+		MadeAt:        ended.Add(time.Minute),
+		ParentSession: linkedID,
+	}}
+
+	newInput := func(reachable bool) dshSessionStartInput {
+		return dshSessionStartInput{
+			Now:             now,
+			Cfg:             testSessionStartConfig(),
+			LinkedSessionID: linkedID,
+			LinkedIssueID:   "issue-parent",
+			LinkedEndedAt:   ended.Format(time.RFC3339),
+			LinkedWorkDir:   "/wd",
+			ReadSummary:     freshSummary.read,
+			Reachable:       func(dshSessionCandidate) bool { return reachable },
+		}
+	}
+
+	t.Run("reachable linked warm resumes the linked session", func(t *testing.T) {
+		plan := decideDshSessionStart(newInput(true))
+		if plan.Verdict != dshSessionStartResumed || plan.ResumeSessionID != linkedID {
+			t.Fatalf("verdict = %q, resume = %q, want resumed %q (reason %q)", plan.Verdict, plan.ResumeSessionID, linkedID, plan.Reason)
+		}
+		if plan.Candidate.IssueID != "issue-parent" {
+			t.Fatalf("candidate issue = %q, want the linked issue", plan.Candidate.IssueID)
+		}
+	})
+
+	t.Run("unreachable linked warm is seeded from its summary", func(t *testing.T) {
+		plan := decideDshSessionStart(newInput(false))
+		if plan.Verdict != dshSessionStartSeededPrefix+linkedID {
+			t.Fatalf("verdict = %q, want seeded from %q (reason %q)", plan.Verdict, linkedID, plan.Reason)
+		}
+		if plan.ForkParent != linkedID || plan.ResumeSessionID != "" {
+			t.Fatalf("fork = %q resume = %q, want a fork of %q and no resume", plan.ForkParent, plan.ResumeSessionID, linkedID)
+		}
+	})
+}
+
+// TestApplyDshSessionStartPlanReachesResume pins F2: the decision has to land
+// on the task the run actually executes from. `agent.ExecOptions.ResumeSessionID`
+// is built as `task.PriorSessionID` (daemon.go, "ResumeSessionID:
+// task.PriorSessionID"), so a warm LINKED verdict that is not applied here is
+// recorded on the run row and then starts fresh — the bug this test exists for.
+func TestApplyDshSessionStartPlanReachesResume(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	const linkedID = "sess-linked"
+	workDir := t.TempDir()
+	task := Task{ID: "task-1", IssueID: "issue-child"}
+	taskCtx := execenv.TaskContextForEnv{IssueID: "issue-child"}
+
+	plan := decideDshSessionStart(dshSessionStartInput{
+		Now:             now,
+		Cfg:             testSessionStartConfig(),
+		LinkedSessionID: linkedID,
+		LinkedEndedAt:   now.Add(-5 * time.Minute).Format(time.RFC3339),
+		LinkedWorkDir:   workDir,
+		ReadSummary:     summaryStore{}.read,
+		Reachable:       func(dshSessionCandidate) bool { return true },
+	})
+	if plan.Verdict != dshSessionStartResumed {
+		t.Fatalf("verdict = %q, want resumed (reason %q)", plan.Verdict, plan.Reason)
+	}
+
+	applyDshSessionStartPlan(&task, &taskCtx, plan)
+	if task.PriorSessionID != linkedID {
+		t.Fatalf("task.PriorSessionID = %q, want %q — this is the value ExecOptions.ResumeSessionID is built from", task.PriorSessionID, linkedID)
+	}
+	if task.PriorWorkDir != workDir {
+		t.Fatalf("task.PriorWorkDir = %q, want %q", task.PriorWorkDir, workDir)
+	}
+	if !taskCtx.PriorSessionResumed {
+		t.Fatal("the brief must be told this run resumes the conversation")
+	}
+
+	// A fresh or seeded verdict clears the pointer instead of leaving the run
+	// claiming a continuity it does not have.
+	seeded := dshSessionStartPlan{Verdict: dshSessionStartSeededPrefix + linkedID, ForkParent: linkedID, Candidate: plan.Candidate}
+	applyDshSessionStartPlan(&task, &taskCtx, seeded)
+	if task.PriorSessionID != "" || taskCtx.PriorSessionResumed {
+		t.Fatalf("seeded plan left resume state: id = %q resumed = %v", task.PriorSessionID, taskCtx.PriorSessionResumed)
+	}
+	if task.PriorSessionResumeUnavailable {
+		t.Fatal("a linked seed loses nothing the user was continuing; no notice is owed")
+	}
+}
+
+// TestApplyDshSessionStartPlanDisclosesAnUnreachableResume pins the behaviour
+// F3 moved: an unreachable SAME-ISSUE candidate is still the user's own prior
+// conversation, so a fresh start over it must say the conversation was lost,
+// exactly as the resume gate said when it dropped one.
+func TestApplyDshSessionStartPlanDisclosesAnUnreachableResume(t *testing.T) {
+	task := Task{ID: "task-1", IssueID: "issue-1", PriorSessionID: "sess-prior", PriorWorkDir: "/old"}
+	taskCtx := execenv.TaskContextForEnv{IssueID: "issue-1", PriorSessionResumed: true}
+
+	plan := decideDshSessionStart(dshSessionStartInput{
+		Now:            time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC),
+		Cfg:            testSessionStartConfig(),
+		PriorSessionID: "sess-prior",
+		PriorEndedAt:   time.Date(2026, 10, 30, 11, 55, 0, 0, time.UTC).Format(time.RFC3339),
+		PriorWorkDir:   "/old",
+		ReadSummary:    summaryStore{}.read,
+		Reachable:      func(dshSessionCandidate) bool { return false },
+	})
+	if plan.Verdict != dshSessionStartFresh {
+		t.Fatalf("verdict = %q, want fresh (reason %q)", plan.Verdict, plan.Reason)
+	}
+
+	applyDshSessionStartPlan(&task, &taskCtx, plan)
+	if task.PriorSessionID != "" || taskCtx.PriorSessionResumed {
+		t.Fatalf("resume survived an unreachable plan: id = %q resumed = %v", task.PriorSessionID, taskCtx.PriorSessionResumed)
+	}
+	if !task.PriorSessionResumeUnavailable {
+		t.Fatal("a fresh start over the user's own unreachable session must disclose the loss")
+	}
+}
+
+// TestDshResumeReachableAgreesWithTheGate pins F3's premise: the predicate the
+// decision asks and the gate that later drops an unreachable resume must give
+// the same answer for every candidate shape. If they ever disagree, the run row
+// records "resumed" for a run the gate starts fresh.
+func TestDshResumeReachableAgreesWithTheGate(t *testing.T) {
+	workDir := t.TempDir()
+	other := t.TempDir()
+	env := &execenv.Environment{WorkDir: workDir}
+
+	for _, tc := range []struct {
+		name         string
+		priorWorkDir string
+		want         bool
+	}{
+		{name: "the run's own workdir", priorWorkDir: workDir, want: true},
+		{name: "another existing directory", priorWorkDir: other, want: false},
+		{name: "a directory that no longer exists", priorWorkDir: filepath.Join(workDir, "gone"), want: false},
+		{name: "no workdir at all", priorWorkDir: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := dshResumeReachable(env, false, tc.priorWorkDir)
+
+			task := Task{PriorSessionID: "sess-1", PriorWorkDir: tc.priorWorkDir}
+			taskCtx := execenv.TaskContextForEnv{}
+			gate := gateResumeToReachableSession(&task, &taskCtx, "dsh", env.WorkDir, true, false, false, slog.Default())
+
+			if decision != gate {
+				t.Fatalf("decision says reachable = %v, the gate says %v", decision, gate)
+			}
+			if decision != tc.want {
+				t.Fatalf("reachable = %v, want %v", decision, tc.want)
+			}
+		})
 	}
 }
