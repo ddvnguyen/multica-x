@@ -126,6 +126,10 @@ type dshSummarizeCommand struct {
 	RequestID string             `json:"request_id"`
 	SessionID string             `json:"session_id"`
 	Model     *dshModelSelection `json:"model,omitempty"`
+	// MaxTokens asks the bridge to reject a summary above this size. Sent only
+	// to a bridge that advertised `summarize_max_tokens`: its strict command
+	// parser rejects fields it does not know.
+	MaxTokens int64 `json:"max_tokens,omitempty"`
 }
 
 type dshWireError struct {
@@ -170,6 +174,9 @@ type dshCapabilitiesFrame struct {
 	Steer     bool `json:"steer,omitempty"`
 	Queue     bool `json:"queue,omitempty"`
 	Summarize bool `json:"summarize,omitempty"`
+	// SummarizeMaxTokens advertises summarize.max_tokens: the bridge enforces
+	// the budget and answers DSH_SUMMARY_OVER_CAP instead of a summary.
+	SummarizeMaxTokens bool `json:"summarize_max_tokens,omitempty"`
 	// Fork advertises execute.fork_parent + seed (S3-B2/M-138). Absent on
 	// every bridge that predates it, which keeps the daemon on the resume path.
 	Fork bool `json:"fork,omitempty"`
@@ -1099,6 +1106,12 @@ type DshSessionSummary struct {
 // treats this as a skip decision, never as a failure of the session's own run.
 var ErrDshSummarizeUnsupported = errors.New("dsh runtime bridge predates the summarize command (no `summarize` capability in its ready frame)")
 
+// ErrDshSummaryOverCap reports that the bridge refused to return a summary
+// above the requested token budget (error code DSH_SUMMARY_OVER_CAP).
+var ErrDshSummaryOverCap = errors.New("dsh summary exceeds the requested token budget")
+
+const dshSummaryOverCapCode = "DSH_SUMMARY_OVER_CAP"
+
 // dshSummarizeTimeout bounds the whole summarize process: a fresh dsh boots,
 // resumes the idle session, and makes one model-backed compaction call. It is
 // a ceiling, not an expectation — a summary of a ~20K-token conversation is a
@@ -1112,7 +1125,13 @@ const dshSummarizeTimeout = 15 * time.Minute
 // fires. The bridge must have advertised the `summarize` capability on its
 // ready frame; anything older fails with ErrDshSummarizeUnsupported before any
 // command is written.
-func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model string) (*DshSessionSummary, error) {
+//
+// cwd is the directory the bridge process runs in: the bridge keys sessions by
+// cwd, so a summarize from another directory would not find the session. A
+// positive maxTokens is forwarded only to a bridge that advertised
+// `summarize_max_tokens`; an older bridge gets the command without it and the
+// caller must enforce the budget on the returned summary.
+func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model, cwd string, maxTokens int64) (*DshSessionSummary, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("dsh summarize: session id is empty")
 	}
@@ -1134,6 +1153,9 @@ func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model stri
 	hideAgentWindow(cmd)
 	cmd.Cancel = func() error { return nil }
 	cmd.WaitDelay = 10 * time.Second
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1219,6 +1241,9 @@ func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model stri
 			}
 			// The command goes out only after the capability check: a bridge
 			// that predates summarize never even sees the request.
+			if maxTokens > 0 && frame.Capabilities.SummarizeMaxTokens {
+				command.MaxTokens = maxTokens
+			}
 			if err := writeFrame(command); err != nil {
 				protocolErr = fmt.Errorf("send dsh summarize command: %w", err)
 			}
@@ -1240,7 +1265,11 @@ func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model stri
 				if message == "" {
 					message = "dsh ended the summarize request without a usable result"
 				}
-				protocolErr = fmt.Errorf("dsh summarize failed: %s", message)
+				if frame.Error != nil && frame.Error.Code == dshSummaryOverCapCode {
+					protocolErr = fmt.Errorf("dsh summarize failed: %s: %w", message, ErrDshSummaryOverCap)
+				} else {
+					protocolErr = fmt.Errorf("dsh summarize failed: %s", message)
+				}
 			}
 			if frame.SessionID != "" {
 				reportedID = frame.SessionID

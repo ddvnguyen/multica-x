@@ -462,7 +462,7 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-s","status":"completed"
 	if !ok {
 		t.Fatalf("dsh New returned %T, want *dshBackend", b)
 	}
-	summary, err := backend.SummarizeSession(context.Background(), "session-1", "deepseek-official/deepseek-v4-flash")
+	summary, err := backend.SummarizeSession(context.Background(), "session-1", "deepseek-official/deepseek-v4-flash", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ exit 0
 		t.Fatal(err)
 	}
 	backend := b.(*dshBackend)
-	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); !errors.Is(err, ErrDshSummarizeUnsupported) {
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", "", "", 0); !errors.Is(err, ErrDshSummarizeUnsupported) {
 		t.Fatalf("got %v, want ErrDshSummarizeUnsupported", err)
 	}
 }
@@ -505,8 +505,102 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-f","status":"failed","s
 		t.Fatal(err)
 	}
 	backend := b.(*dshBackend)
-	if _, err := backend.SummarizeSession(context.Background(), "session-1", ""); err == nil || !strings.Contains(err.Error(), "agent is not idle") {
+	if _, err := backend.SummarizeSession(context.Background(), "session-1", "", "", 0); err == nil || !strings.Contains(err.Error(), "agent is not idle") {
 		t.Fatalf("got %v, want the bridge's error", err)
+	}
+}
+
+func newDshSummarizeBackend(t *testing.T, bin, taskID string) *dshBackend {
+	t.Helper()
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: taskID, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.(*dshBackend)
+}
+
+func TestDshSummarizeSessionSendsMaxTokensWhenAdvertised(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true,"summarize_max_tokens":true}}'
+IFS= read -r summarize
+printf '%s\n' "$summarize" | grep -q '"max_tokens":4096' || exit 8
+printf '%s\n' '{"v":1,"type":"summary","request_id":"task-m","session_id":"session-1","summary":"ok","summary_tokens":1}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-m","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	summary, err := newDshSummarizeBackend(t, bin, "task-m").SummarizeSession(context.Background(), "session-1", "", "", 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary != "ok" {
+		t.Fatalf("bad summary: %#v", summary)
+	}
+}
+
+func TestDshSummarizeSessionOmitsMaxTokensWithoutCapability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	// An older bridge parses commands strictly: the field must not be sent.
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+if printf '%s\n' "$summarize" | grep -q 'max_tokens'; then exit 8; fi
+printf '%s\n' '{"v":1,"type":"summary","request_id":"task-n","session_id":"session-1","summary":"ok","summary_tokens":1}'
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-n","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	if _, err := newDshSummarizeBackend(t, bin, "task-n").SummarizeSession(context.Background(), "session-1", "", "", 4096); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// F15: the bridge keys sessions by cwd, so the summarize process must run in
+// the directory the session was created in.
+func TestDshSummarizeSessionRunsInCwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+printf '{"v":1,"type":"summary","request_id":"task-c","session_id":"session-1","summary":"%s","summary_tokens":1}\n' "$(pwd)"
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-c","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	cwd := t.TempDir()
+	summary, err := newDshSummarizeBackend(t, bin, "task-c").SummarizeSession(context.Background(), "session-1", "", cwd, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := filepath.EvalSymlinks(summary.Summary)
+	if err != nil {
+		t.Fatalf("bridge cwd %q: %v", summary.Summary, err)
+	}
+	if got != want {
+		t.Fatalf("bridge ran in %q, want %q", got, want)
+	}
+}
+
+func TestDshSummarizeSessionOverCapResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true,"summarize_max_tokens":true}}'
+IFS= read -r summarize
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-o","status":"failed","session_id":"session-1","output":"","resume_rejected":false,"error":{"code":"DSH_SUMMARY_OVER_CAP","message":"summary is 5000 tokens, cap 4096"}}'
+`)
+	_, err := newDshSummarizeBackend(t, bin, "task-o").SummarizeSession(context.Background(), "session-1", "", "", 4096)
+	if !errors.Is(err, ErrDshSummaryOverCap) {
+		t.Fatalf("got %v, want ErrDshSummaryOverCap", err)
+	}
+	if !strings.Contains(err.Error(), "summary is 5000 tokens") {
+		t.Fatalf("bridge diagnostics lost: %v", err)
 	}
 }
 
@@ -516,7 +610,7 @@ func TestDshSummarizeSessionEmptySessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := b.(*dshBackend)
-	if _, err := backend.SummarizeSession(context.Background(), "  ", ""); err == nil {
+	if _, err := backend.SummarizeSession(context.Background(), "  ", "", "", 0); err == nil {
 		t.Fatal("empty session id must be rejected before spawning")
 	}
 }

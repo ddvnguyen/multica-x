@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func newTestSummaryClock(t *testing.T, cfg DshSummaryConfig) (*dshSummaryClock, 
 // session, whose first model request was the init prefix and whose last
 // request grew the conversation above it. No resume, no second arm — the
 // run itself must be able to reach the summarize decision.
-func armOneShot(clock *dshSummaryClock, storeRoot, workDir string, first, last int64, summarize func(context.Context, string, string) (*agent.DshSessionSummary, error), record func(context.Context, dshSummaryRunRowRecord)) {
+func armOneShot(clock *dshSummaryClock, storeRoot, workDir string, first, last int64, summarize func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error), record func(context.Context, dshSummaryRunRowRecord)) {
 	clock.Arm(dshSummaryRequest{
 		TaskID:            "task-1",
 		SessionID:         "session-1",
@@ -118,7 +119,7 @@ func TestDshSummaryClockBuildsOneShotAtTTLMargin(t *testing.T) {
 	summaryText := strings.Repeat("summary token ", 1500)
 
 	armOneShot(clock, storeRoot, workDir, 20000, 60000,
-		func(_ context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
+		func(_ context.Context, sessionID, model, _ string, _ int64) (*agent.DshSessionSummary, error) {
 			gotSummary = &agent.DshSessionSummary{SessionID: sessionID, Summary: summaryText, Tokens: 1500, Model: model}
 			return gotSummary, nil
 		},
@@ -171,7 +172,7 @@ func TestDshSummaryClockSkipsBelowTrigger(t *testing.T) {
 	// First request 4K (init prefix), last request 4.5K: growth of 500
 	// tokens stays under the 1K trigger.
 	armOneShot(clock, storeRoot, t.TempDir(), 4000, 4500,
-		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+		func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
 			summarized = true
 			return nil, errors.New("must not be called")
 		},
@@ -215,7 +216,7 @@ func TestDshSummaryClockCostRule(t *testing.T) {
 	// ...but growth of 50 tokens × 29 price gap = 1450 < 2000 summary
 	// production cost, so the cost rule says no.
 	armOneShot(clock, t.TempDir(), t.TempDir(), 100, 150,
-		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+		func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
 			summarized = true
 			return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
 		},
@@ -240,7 +241,7 @@ func TestDshSummaryClockReArmsWithNewFacts(t *testing.T) {
 	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
 
 	var records []dshSummaryRunRowRecord
-	summarize := func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+	summarize := func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
 		return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
 	}
 	record := func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) }
@@ -271,7 +272,7 @@ func TestDshSummaryClockCancelOnResume(t *testing.T) {
 
 	summarized := false
 	armOneShot(clock, t.TempDir(), t.TempDir(), 20000, 60000,
-		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+		func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
 			summarized = true
 			return &agent.DshSessionSummary{Summary: "x", Tokens: 1}, nil
 		}, nil)
@@ -290,7 +291,7 @@ func TestDshSummaryClockUnsupportedBridge(t *testing.T) {
 	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
 	var records []dshSummaryRunRowRecord
 	armOneShot(clock, t.TempDir(), t.TempDir(), 20000, 60000,
-		func(context.Context, string, string) (*agent.DshSessionSummary, error) {
+		func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
 			return nil, agent.ErrDshSummarizeUnsupported
 		},
 		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
@@ -449,7 +450,7 @@ func armDshRun(t *testing.T, clock *dshSummaryClock, scheduler *fakeSummarySched
 	var records []dshSummaryRunRowRecord
 	req.TaskID = "task-1"
 	req.Model = "deepseek/deepseek-v4-pro"
-	req.Summarize = func(_ context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
+	req.Summarize = func(_ context.Context, sessionID, model, _ string, _ int64) (*agent.DshSessionSummary, error) {
 		return &agent.DshSessionSummary{SessionID: sessionID, Summary: "summary", Tokens: 100, Model: model}, nil
 	}
 	req.RecordDecision = func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) }
@@ -599,5 +600,110 @@ func TestDshSummaryConfigFromEnvValidation(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func summarySidecarExists(t *testing.T, storeRoot, workDir, sessionID string) bool {
+	t.Helper()
+	path := filepath.Join(storeRoot, dshsession.ProjectKey(workDir), sessionID, dshSummarySidecarName)
+	_, err := os.Stat(path)
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat sidecar: %v", err)
+	}
+	return false
+}
+
+// TestDshSummaryClockRejectsOverCapSummary is the F5 regression: a summary
+// whose reported size exceeds the cap is recorded as summary-over-cap and is
+// never written, so the next session start falls to fresh.
+func TestDshSummaryClockRejectsOverCapSummary(t *testing.T) {
+	storeRoot := t.TempDir()
+	workDir := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	var records []dshSummaryRunRowRecord
+	armOneShot(clock, storeRoot, workDir, 20000, 60000,
+		func(_ context.Context, sessionID, model, _ string, _ int64) (*agent.DshSessionSummary, error) {
+			return &agent.DshSessionSummary{SessionID: sessionID, Summary: "too long", Tokens: 5000, Model: model}, nil
+		},
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, 0)
+
+	if len(records) != 1 || records[0].Decision != dshSummaryReasonOverCap || records[0].SummaryTokens != 5000 {
+		t.Fatalf("unexpected decisions: %#v", records)
+	}
+	if summarySidecarExists(t, storeRoot, workDir, "session-1") {
+		t.Fatal("over-cap summary must not be stored")
+	}
+}
+
+// TestDshSummaryClockOverCapFromBridge: a bridge that enforces the budget
+// itself answers DSH_SUMMARY_OVER_CAP; that is the over-cap decision, not a
+// generic summarize failure.
+func TestDshSummaryClockOverCapFromBridge(t *testing.T) {
+	storeRoot := t.TempDir()
+	workDir := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	var records []dshSummaryRunRowRecord
+	armOneShot(clock, storeRoot, workDir, 20000, 60000,
+		func(context.Context, string, string, string, int64) (*agent.DshSessionSummary, error) {
+			return nil, fmt.Errorf("dsh summarize failed: DSH_SUMMARY_OVER_CAP: %w", agent.ErrDshSummaryOverCap)
+		},
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, 0)
+
+	if len(records) != 1 || records[0].Decision != dshSummaryReasonOverCap {
+		t.Fatalf("unexpected decisions: %#v", records)
+	}
+	if summarySidecarExists(t, storeRoot, workDir, "session-1") {
+		t.Fatal("no sidecar may exist after an over-cap rejection")
+	}
+}
+
+// TestDshSummaryClockPassesWorkDirAndCap: the bridge must run in the same
+// directory the sidecar is keyed by (F15) and receive the configured cap.
+func TestDshSummaryClockPassesWorkDirAndCap(t *testing.T) {
+	workDir := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	var gotWorkDir string
+	var gotCap int64
+	armOneShot(clock, t.TempDir(), workDir, 20000, 60000,
+		func(_ context.Context, sessionID, model, cwd string, maxTokens int64) (*agent.DshSessionSummary, error) {
+			gotWorkDir, gotCap = cwd, maxTokens
+			return &agent.DshSessionSummary{SessionID: sessionID, Summary: "ok", Tokens: 10, Model: model}, nil
+		},
+		func(context.Context, dshSummaryRunRowRecord) {})
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, 0)
+
+	if gotWorkDir != workDir || gotCap != 4096 {
+		t.Fatalf("Summarize got workDir %q cap %d, want %q and 4096", gotWorkDir, gotCap, workDir)
+	}
+}
+
+// TestDshSummaryClockStoresSummaryAtCap pins the boundary: exactly the cap is
+// still stored.
+func TestDshSummaryClockStoresSummaryAtCap(t *testing.T) {
+	storeRoot := t.TempDir()
+	workDir := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	var records []dshSummaryRunRowRecord
+	armOneShot(clock, storeRoot, workDir, 20000, 60000,
+		func(_ context.Context, sessionID, model, _ string, _ int64) (*agent.DshSessionSummary, error) {
+			return &agent.DshSessionSummary{SessionID: sessionID, Summary: "at the cap", Tokens: 4096, Model: model}, nil
+		},
+		func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) })
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, 0)
+
+	if len(records) != 1 || records[0].Decision != dshSummaryReasonProceed || records[0].SummaryTokens != 4096 {
+		t.Fatalf("unexpected decisions: %#v", records)
+	}
+	if !summarySidecarExists(t, storeRoot, workDir, "session-1") {
+		t.Fatal("a summary exactly at the cap must be stored")
 	}
 }

@@ -344,7 +344,7 @@ Daemon behavior is configured via flags or environment variables:
 | GC task temp legacy TTL (pre-lock `multica-task-*`) | — | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` (disabled; set a duration to opt in) |
 | dsh summary clock | — | `MULTICA_DSH_SUMMARY_ENABLED` | `true` (set `false`/`0` to disable) |
 | dsh summary size target | — | `MULTICA_DSH_SUMMARY_TOKENS` | `2048` tokens |
-| dsh summary size cap (flagged, not enforced) | — | `MULTICA_DSH_SUMMARY_TOKEN_CAP` | `4096` tokens |
+| dsh summary size cap (an over-cap summary is rejected with decision `summary-over-cap`, not stored; the next run starts fresh) | — | `MULTICA_DSH_SUMMARY_TOKEN_CAP` | `4096` tokens |
 | dsh summary trigger (conversation tokens above the init prefix) | — | `MULTICA_DSH_SUMMARY_TRIGGER_TOKENS` | `20000` |
 | dsh assumed cache TTL | — | `MULTICA_DSH_SUMMARY_TTL` | `1h` (provisional until re-measured with a real DeepSeek key) |
 | dsh summary margin (summarize at TTL − margin) | — | `MULTICA_DSH_SUMMARY_MARGIN` | `15m` |
