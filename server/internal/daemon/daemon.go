@@ -8704,6 +8704,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			LinkedEndedAt:   task.LinkedPriorSessionEndedAt,
 			LinkedWorkDir:   task.LinkedPriorSessionWorkDir,
 			Trigger:         dshSessionTrigger(task),
+			Reachable: func(candidate dshSessionCandidate) bool {
+				if env == nil {
+					return false
+				}
+				return candidate.WorkDir != "" && sameExistingDir(env.WorkDir, candidate.WorkDir) && sessionHomeReachable(provider, env, envReused)
+			},
 			ReadSummary: func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool) {
 				return readDshSummarySidecar(dshStoreRoot, candidate.WorkDir, candidate.SessionID)
 			},
@@ -8718,7 +8724,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			"seed_tokens", sessionStart.SeedTokens,
 			"reason", sessionStart.Reason,
 		)
-		if sessionStart.Verdict != dshSessionStartResumed {
+		// F2: a resumed verdict (including a warm *linked* session) must
+		// actually drive the run from the candidate it picked. Record the
+		// candidate's session id and workdir on the task before the
+		// reachability gate, so execOpts.ResumeSessionID is populated.
+		if sessionStart.Verdict == dshSessionStartResumed {
+			if sessionStart.ResumeSessionID != "" {
+				task.PriorSessionID = sessionStart.ResumeSessionID
+			}
+			if sessionStart.Candidate.WorkDir != "" {
+				task.PriorWorkDir = sessionStart.Candidate.WorkDir
+			}
+			taskCtx.PriorSessionResumed = true
+		} else {
 			// Neither a seeded nor a fresh start continues the prior session:
 			// clear it before the brief is generated so nothing on disk claims
 			// continuity this run does not have. The seed, when there is one,
@@ -9001,6 +9019,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// S3-B1: a resumed session is being worked again, so disarm its
 		// pending summary clock — compacting mid-conversation is wrong.
 		d.dshSummary.Cancel(task.PriorSessionID)
+	}
+	// F20: a forked (seeded) run leaves the parent's summary clock armed
+	// otherwise, so disarm it by the candidate session id.
+	if sessionStart.ForkParent != "" {
+		d.dshSummary.Cancel(sessionStart.ForkParent)
 	}
 
 	taskStart := time.Now()

@@ -152,6 +152,7 @@ type dshSessionSummaryRecord struct {
 	Tokens        int64     `json:"tokens"`
 	MadeAt        time.Time `json:"made_at"`
 	ParentSession string    `json:"parent_session"`
+	Model         string    `json:"model,omitempty"`
 }
 
 // dshSummarySidecarName is the file the record lands as inside the session's
@@ -390,6 +391,7 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 		Tokens:        tokens,
 		MadeAt:        now,
 		ParentSession: req.SessionID,
+		Model:         req.Model,
 	}
 	if err := writeDshSummarySidecar(req.StoreRoot, req.WorkDir, req.SessionID, stored); err != nil {
 		record.Decision = dshSummaryReasonStoreFail

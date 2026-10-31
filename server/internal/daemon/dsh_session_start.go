@@ -80,6 +80,10 @@ type dshSessionCandidate struct {
 	// WorkDir is the directory the session ran in; the summary sidecar is
 	// stored under the project key derived from it.
 	WorkDir string
+	// Model is the model the prior run that owns this session used, so the
+	// warm/cold TTL is judged against the cache that was actually armed
+	// (F19). Empty falls back to the new run's model.
+	Model string
 }
 
 // dshSessionStartInput is every fact the decision reads. All of it is
@@ -105,6 +109,20 @@ type dshSessionStartInput struct {
 	// the handoff note). It rides the seed so the forked child knows what it
 	// was asked to do.
 	Trigger string
+	// Reachable reports whether a candidate's session store can actually be
+	// reached from this run. Injected so the warm/cold decision can fall
+	// through to the seeded/fresh branch instead of recording "resumed" for
+	// a session the run cannot continue (F3).
+	Reachable func(candidate dshSessionCandidate) bool
+	// PriorModel / LinkedModel carry the model the prior run that owns each
+	// candidate used, so the warm/cold TTL is judged against the cache that
+	// was actually armed (F19). Empty falls back to Model.
+	PriorModel              string
+	PriorSessionModel       string
+	LinkedModel             string
+	LinkedPriorModel        string
+	LinkedSessionModel      string
+	LinkedPriorSessionModel string
 	// ReadSummary loads the summary sidecar beside one candidate. Injected so
 	// the decision is pure; production passes readDshSummarySidecar.
 	ReadSummary func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool)
@@ -149,7 +167,14 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 		return dshSessionStartPlan{Verdict: dshSessionStartFresh, Reason: "no related session"}
 	}
 
-	ttl := in.Cfg.ttlForModel(in.Model)
+	// F19: judge the warm/cold TTL against the model that actually armed the
+	// clock (the prior run's), falling back to the new run's model when the
+	// prior one is unknown.
+	ttlModel := in.Model
+	if strings.TrimSpace(candidate.Model) != "" {
+		ttlModel = candidate.Model
+	}
+	ttl := in.Cfg.ttlForModel(ttlModel)
 	plan := dshSessionStartPlan{
 		Verdict:         dshSessionStartResumed,
 		Candidate:       candidate,
@@ -158,29 +183,51 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 		Margin:          in.Cfg.Margin,
 	}
 
+	reachable := true
+	if in.Reachable != nil {
+		reachable = in.Reachable(candidate)
+	}
+
 	// An unknown end time cannot prove the cache cold. Resume, which is what
 	// this daemon did before the decision existed: additive, never a silent
 	// behaviour change on a server that predates prior_session_ended_at.
+	// F3: an unreachable candidate never resumes — it falls through to the
+	// seeded/fresh branch instead of recording "resumed" for a session the
+	// run cannot continue.
 	if candidate.EndedAt.IsZero() {
-		plan.Reason = "session end time unknown"
-		return plan
+		if reachable {
+			plan.Reason = "session end time unknown"
+			return plan
+		}
+		plan.Reason = "cold: session store not reachable"
+	} else {
+		plan.Age = in.Now.Sub(candidate.EndedAt)
+		if plan.Age < 0 {
+			// A clock that disagrees with the server's is not evidence of warmth;
+			// treat it as just-ended rather than as a negative age.
+			plan.Age = 0
+		}
+		warmWindow := ttl - in.Cfg.Margin
+		if warmWindow > 0 && plan.Age < warmWindow {
+			if reachable {
+				plan.Reason = fmt.Sprintf("warm: idle %s < %s", plan.Age.Round(time.Second), warmWindow)
+				return plan
+			}
+			plan.Reason = fmt.Sprintf("cold: session store not reachable (idle %s < %s)", plan.Age.Round(time.Second), warmWindow)
+		} else if warmWindow <= 0 {
+			plan.Reason = "cold: no positive warm window configured"
+		} else {
+			plan.Reason = fmt.Sprintf("cold: idle %s >= %s", plan.Age.Round(time.Second), warmWindow)
+		}
 	}
 
-	plan.Age = in.Now.Sub(candidate.EndedAt)
-	if plan.Age < 0 {
-		// A clock that disagrees with the server's is not evidence of warmth;
-		// treat it as just-ended rather than as a negative age.
-		plan.Age = 0
-	}
-	warmWindow := ttl - in.Cfg.Margin
-	if warmWindow > 0 && plan.Age < warmWindow {
-		plan.Reason = fmt.Sprintf("warm: idle %s < %s", plan.Age.Round(time.Second), warmWindow)
+	// Cold from here on: the only way to keep the conversation is a summary
+	// written while it was still warm (B1's clock).
+	plan.ResumeSessionID = ""
+	plan.Verdict = dshSessionStartFresh
+	if !in.Cfg.Enabled {
+		plan.Reason += "; summaries disabled"
 		return plan
-	}
-	if warmWindow <= 0 {
-		plan.Reason = "cold: no positive warm window configured"
-	} else {
-		plan.Reason = fmt.Sprintf("cold: idle %s >= %s", plan.Age.Round(time.Second), warmWindow)
 	}
 
 	// Cold from here on: the only way to keep the conversation is a summary
@@ -227,6 +274,9 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 // neither end time is known the same-issue session wins — it is the more
 // relevant of the two, and the verdict for it is "resume" anyway.
 func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool) {
+	priorModel := firstNonEmpty(in.PriorModel, in.PriorSessionModel, in.PriorSessionModel)
+	linkedModel := firstNonEmpty(in.LinkedModel, in.LinkedPriorModel, in.LinkedSessionModel, in.LinkedPriorSessionModel)
+
 	var (
 		same, linked     dshSessionCandidate
 		haveSame, haveLk bool
@@ -236,6 +286,7 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 			SessionID: in.PriorSessionID,
 			EndedAt:   parseDshSessionEndedAt(in.PriorEndedAt),
 			WorkDir:   in.PriorWorkDir,
+			Model:     priorModel,
 		}
 		haveSame = true
 	}
@@ -245,6 +296,7 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 			IssueID:   in.LinkedIssueID,
 			EndedAt:   parseDshSessionEndedAt(in.LinkedEndedAt),
 			WorkDir:   in.LinkedWorkDir,
+			Model:     linkedModel,
 		}
 		haveLk = true
 	}
@@ -266,6 +318,16 @@ func dshPickSessionCandidate(in dshSessionStartInput) (dshSessionCandidate, bool
 // parseDshSessionEndedAt reads the claim payload's RFC3339 end time. An
 // unparseable or empty value is a zero time, which the decision reads as
 // "unknown" rather than as "ended at the epoch".
+// firstNonEmpty returns the first non-blank string among its arguments.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func parseDshSessionEndedAt(value string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
