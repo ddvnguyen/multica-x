@@ -173,3 +173,16 @@ func TestExecuteAndDrainSupplementNegotiation(t *testing.T) {
 		})
 	}
 }
+
+// S3-fix A (M-180, F1): a dsh steer/queue the bridge never confirmed settles as
+// inbox_unconfirmed, a retryable failure, even when wrapped on its way up.
+func TestTaskSupplementFailureReasonInboxUnconfirmed(t *testing.T) {
+	for _, err := range []error{
+		agent.ErrDshInboxUnconfirmed,
+		fmt.Errorf("deliver steer: %w", agent.ErrDshInboxUnconfirmed),
+	} {
+		if got := taskSupplementFailureReason(context.Background(), err); got != protocol.TaskSupplementFailureInboxUnconfirmed {
+			t.Fatalf("taskSupplementFailureReason(%v) = %q, want %q", err, got, protocol.TaskSupplementFailureInboxUnconfirmed)
+		}
+	}
+}

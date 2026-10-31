@@ -33,6 +33,7 @@ func TestStableTaskSupplementFailureReason(t *testing.T) {
 		protocol.TaskSupplementFailureProviderRejected,
 		protocol.TaskSupplementFailureTimeout,
 		protocol.TaskSupplementFailureTurnEnded,
+		protocol.TaskSupplementFailureInboxUnconfirmed,
 	} {
 		if got := stableTaskSupplementFailureReason(reason); got != reason {
 			t.Fatalf("stableTaskSupplementFailureReason(%q) = %q", reason, got)

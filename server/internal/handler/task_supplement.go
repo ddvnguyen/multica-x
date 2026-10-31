@@ -459,7 +459,8 @@ func stableTaskSupplementFailureReason(reason string) string {
 	reason = strings.TrimSpace(sanitizeNullBytes(reason))
 	switch reason {
 	case protocol.TaskSupplementFailureTurnNotStarted, protocol.TaskSupplementFailureTimeout,
-		protocol.TaskSupplementFailureTurnEnded, protocol.TaskSupplementFailureProviderRejected:
+		protocol.TaskSupplementFailureTurnEnded, protocol.TaskSupplementFailureProviderRejected,
+		protocol.TaskSupplementFailureInboxUnconfirmed:
 		return reason
 	default:
 		// Provider and Go errors are private daemon diagnostics. Never persist or

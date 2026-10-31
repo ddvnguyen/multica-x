@@ -520,3 +520,108 @@ func TestDshSummarizeSessionEmptySessionID(t *testing.T) {
 		t.Fatal("empty session id must be rejected before spawning")
 	}
 }
+
+// S3-fix A (M-180, F1): a steer counts as delivered only when the bridge
+// answers it. `accepted` is delivery, `rejected` carries the bridge's reason,
+// and silence is ErrDshInboxUnconfirmed so the daemon never acks a message
+// no one confirmed.
+func TestDshSteerAckFollowsInboxState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	for _, tc := range []struct {
+		name    string
+		answer  string
+		wantErr error
+		wantMsg string
+	}{
+		{name: "accepted is delivered", answer: `{"v":1,"type":"inbox_state","request_id":"task-s","command":"steer","state":"accepted"}`},
+		{name: "rejected keeps the bridge reason", answer: `{"v":1,"type":"inbox_state","request_id":"task-s","command":"steer","state":"rejected","reason":"run_finished"}`, wantMsg: "run_finished"},
+		{name: "silence is unconfirmed", wantErr: ErrDshInboxUnconfirmed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := ""
+			if tc.answer != "" {
+				answer = "printf '%s\\n' '" + tc.answer + "'"
+			}
+			bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"steer":true}}'
+IFS= read -r execute
+printf '%s\n' '{"v":1,"type":"session","request_id":"task-s","session_id":"session-s","resumed":false}'
+IFS= read -r steer
+printf '%s\n' "$steer" | grep -q '"type":"steer"' || exit 7
+`+answer+`
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-s","status":"completed","session_id":"session-s","output":"done","resume_rejected":false}'
+`)
+			b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-s", Logger: slog.Default()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := b.Execute(context.Background(), "hello", ExecOptions{Cwd: t.TempDir(), Timeout: 10 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			supplementErr := make(chan error, 1)
+			for message := range session.Messages {
+				if message.Type == MessageStatus {
+					go func() { supplementErr <- session.Supplement(context.Background(), "use staging", "steer") }()
+				}
+			}
+			if result := <-session.Result; result.Status != "completed" {
+				t.Fatalf("fixture did not complete (steer line missing?): %#v", result)
+			}
+			err = <-supplementErr
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Supplement error = %v, want %v", err, tc.wantErr)
+				}
+			case tc.wantMsg != "":
+				if err == nil || errors.Is(err, ErrDshInboxUnconfirmed) || !strings.Contains(err.Error(), tc.wantMsg) {
+					t.Fatalf("Supplement error = %v, want the bridge reason %q", err, tc.wantMsg)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("Supplement error = %v, want delivered", err)
+				}
+			}
+		})
+	}
+}
+
+// S3-fix A (M-180, F23): a steer/queue the bridge cannot take names the
+// missing capability instead of claiming that no question is pending.
+func TestDshSupplementUnsupportedNamesTheMissingCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		questions bool
+		want      []string
+	}{
+		{name: "steer missing, questions present", mode: "steer", questions: true, want: []string{"does not advertise `steer`", "no question is pending"}},
+		{name: "queue missing, questions present", mode: "queue", questions: true, want: []string{"does not advertise `queue`"}},
+		{name: "nothing advertised", mode: "steer", want: []string{"neither `steer` nor `questions`"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrote := false
+			state := &dshRunState{
+				requestID:        "task-1",
+				questionsCapable: tc.questions,
+				inboxStateCh:     make(chan dshInboxState, 1),
+				writeCommand:     func(any) error { wrote = true; return nil },
+			}
+			err := dshSupplement(state, "Human message:\nhi", tc.mode, context.Background())
+			if err == nil {
+				t.Fatal("expected a capability refusal")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q does not mention %q", err, want)
+				}
+			}
+			if wrote {
+				t.Fatal("a refused supplement must not reach the bridge")
+			}
+		})
+	}
+}

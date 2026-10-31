@@ -92,6 +92,9 @@ const (
 	TaskSupplementFailureProviderRejected = "provider_rejected"
 	TaskSupplementFailureTimeout          = "timeout"
 	TaskSupplementFailureTurnEnded        = "turn_ended"
+	// TaskSupplementFailureInboxUnconfirmed: the dsh bridge never answered the
+	// steer/queue with inbox_state, so delivery is unknown; the human may retry.
+	TaskSupplementFailureInboxUnconfirmed = "inbox_unconfirmed"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:

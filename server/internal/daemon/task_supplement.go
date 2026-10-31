@@ -113,6 +113,9 @@ func taskSupplementFailureReason(ctx context.Context, err error) string {
 	if err == nil {
 		return ""
 	}
+	if errors.Is(err, agent.ErrDshInboxUnconfirmed) {
+		return protocol.TaskSupplementFailureInboxUnconfirmed
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return protocol.TaskSupplementFailureTimeout
 	}
