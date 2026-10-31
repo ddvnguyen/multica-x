@@ -24,6 +24,10 @@ exec setpriv --reuid 1000 --regid 1000 --keep-groups \
   /bin/sh -c '
     set -eu
     cd "$INSTANCE_DIR"
+    if [ -f .runner ] && [ -n "$RUNNER_TOKEN" ]; then
+      RUNNER_TOKEN="$RUNNER_TOKEN" ./config.sh remove --token "$RUNNER_TOKEN" >/dev/null 2>&1 || true
+      rm -f .runner .credentials .credentials_rsaparams
+    fi
     if [ -n "$RUNNER_TOKEN" ]; then
       RUNNER_TOKEN="$RUNNER_TOKEN" ./config.sh --ephemeral --unattended --replace \
         --url "$RUNNER_URL" --token "$RUNNER_TOKEN" \
