@@ -158,6 +158,16 @@ type dshSessionSummaryRecord struct {
 // own store directory — beside the session, never inside its event log.
 const dshSummarySidecarName = "summary.json"
 
+// dshSessionInitPrefixSidecarName stores the session's init-prefix size (the
+// first run's FirstPromptTokens) beside the session, so a later resumed run
+// can measure growth above the init prefix instead of only its own run.
+const dshSessionInitPrefixSidecarName = "init_prefix.json"
+
+type dshSessionInitPrefixRecord struct {
+	Tokens int64     `json:"tokens"`
+	MadeAt time.Time `json:"made_at,omitempty"`
+}
+
 // writeDshSummarySidecar stores record at
 // <storeRoot>/<projectKey(cwd)>/<sessionID>/summary.json — the dsh session
 // store layout pkg/dshsession mirrors. The write is temp-file + rename so a
@@ -187,6 +197,69 @@ func writeDshSummarySidecar(storeRoot, cwd, sessionID string, record dshSessionS
 		return fmt.Errorf("publish dsh summary: %w", err)
 	}
 	return nil
+}
+
+// writeDshSessionInitPrefix stores tokens at
+// <storeRoot>/<projectKey(cwd)>/<sessionID>/init_prefix.json, only when no
+// value is already recorded — the first run that creates the session owns
+// the init prefix and later (resumed) runs must not overwrite it.
+func writeDshSessionInitPrefix(storeRoot, cwd, sessionID string, tokens int64) error {
+	if strings.TrimSpace(storeRoot) == "" {
+		return errors.New("dsh init prefix store root is empty")
+	}
+	if !dshsession.ValidateSessionID(sessionID) {
+		return fmt.Errorf("dsh init prefix: session id %q cannot name a store directory", sessionID)
+	}
+	if tokens <= 0 {
+		return errors.New("dsh init prefix: tokens must be positive")
+	}
+	dir := filepath.Join(storeRoot, dshsession.ProjectKey(cwd), sessionID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create dsh init prefix dir: %w", err)
+	}
+	final := filepath.Join(dir, dshSessionInitPrefixSidecarName)
+	if _, err := os.Stat(final); err == nil {
+		return nil // already recorded; keep the first run's value
+	}
+	record := dshSessionInitPrefixRecord{Tokens: tokens, MadeAt: time.Now()}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode dsh init prefix: %w", err)
+	}
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write dsh init prefix: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("publish dsh init prefix: %w", err)
+	}
+	return nil
+}
+
+// readDshSessionInitPrefix reads the persisted init-prefix size. Returns an
+// error when no value is recorded (older sessions), so callers can fall back
+// to the run's own FirstPromptTokens.
+func readDshSessionInitPrefix(storeRoot, cwd, sessionID string) (int64, error) {
+	if strings.TrimSpace(storeRoot) == "" {
+		return 0, errors.New("dsh init prefix store root is empty")
+	}
+	if !dshsession.ValidateSessionID(sessionID) {
+		return 0, fmt.Errorf("dsh init prefix: session id %q cannot name a store directory", sessionID)
+	}
+	path := filepath.Join(storeRoot, dshsession.ProjectKey(cwd), sessionID, dshSessionInitPrefixSidecarName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var record dshSessionInitPrefixRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return 0, err
+	}
+	if record.Tokens <= 0 {
+		return 0, errors.New("dsh init prefix: zero tokens")
+	}
+	return record.Tokens, nil
 }
 
 // estimateDshSummaryTokens is the rough tokens estimate (bytes/4) used when
@@ -231,6 +304,10 @@ type dshSummaryRequest struct {
 	Model             string
 	FirstPromptTokens int64 // prompt tokens of the run's first model request
 	LastPromptTokens  int64 // prompt tokens of the run's last model request
+	// PriorSessionID is non-empty when this run resumed an existing session;
+	// in that case the init prefix is owned by the session's first run and
+	// must not be (re)written here.
+	PriorSessionID string
 	Summarize         func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error)
 	RecordDecision    func(ctx context.Context, record dshSummaryRunRowRecord)
 }
@@ -296,6 +373,11 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 	if strings.TrimSpace(req.SessionID) == "" || req.Summarize == nil {
 		return
 	}
+	if req.PriorSessionID == "" && req.FirstPromptTokens > 0 && strings.TrimSpace(req.StoreRoot) != "" {
+		if _, err := readDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID); err != nil {
+			_ = writeDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID, req.FirstPromptTokens)
+		}
+	}
 	delay := c.cfg.ttlForModel(req.Model) - c.cfg.Margin
 	if delay <= 0 {
 		c.log.Warn("dsh summary clock not armed: margin is not shorter than the TTL",
@@ -346,10 +428,19 @@ func (c *dshSummaryClock) fire(req dshSummaryRequest, armedAt time.Time) {
 	if idle < 0 {
 		idle = 0
 	}
+	// Conversation growth above the init prefix. The init prefix is the
+	// session's first run's FirstPromptTokens, persisted beside the session;
+	// a resumed run's own FirstPromptTokens already carries the whole history,
+	// so it cannot be used. Fall back to the run's FirstPromptTokens when no
+	// persisted value exists (older sessions).
+	initPrefix := req.FirstPromptTokens
+	if persisted, err := readDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID); err == nil && persisted > 0 {
+		initPrefix = persisted
+	}
 	// Conversation growth above the init prefix, measured as the last model
-	// request's prompt size minus the first request's — context size, not
-	// billed volume, so a one-shot run can reach the trigger by itself.
-	tokensAboveInit := req.LastPromptTokens - req.FirstPromptTokens
+	// request's prompt size minus the init prefix — context size, not billed
+	// volume, so a one-shot run can reach the trigger by itself.
+	tokensAboveInit := req.LastPromptTokens - initPrefix
 	if tokensAboveInit < 0 {
 		tokensAboveInit = 0
 	}
@@ -487,8 +578,19 @@ func promptCacheFromEnv(name string) (map[string]DshPromptCacheConfig, error) {
 // default > env precedence. MULTICA_DSH_SUMMARY_ENABLED=0 is the kill
 // switch; everything else is a tuning knob.
 func dshSummaryConfigFromEnv() (DshSummaryConfig, error) {
+	enabled := true
+	if raw := strings.TrimSpace(os.Getenv("MULTICA_DSH_SUMMARY_ENABLED")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true", "1", "yes", "on":
+			enabled = true
+		case "false", "0", "no", "off":
+			enabled = false
+		default:
+			return DshSummaryConfig{}, fmt.Errorf("MULTICA_DSH_SUMMARY_ENABLED must be a boolean, got %q", raw)
+		}
+	}
 	cfg := DshSummaryConfig{
-		Enabled:         boolFromEnv("MULTICA_DSH_SUMMARY_ENABLED", true),
+		Enabled:         enabled,
 		SummaryTokens:   DefaultDshSummaryTokens,
 		SummaryTokenCap: DefaultDshSummaryTokenCap,
 		TriggerTokens:   DefaultDshSummaryTriggerTokens,
@@ -521,6 +623,27 @@ func dshSummaryConfigFromEnv() (DshSummaryConfig, error) {
 	}
 	if cfg.PromptCache, err = promptCacheFromEnv("MULTICA_DSH_PROMPT_CACHE"); err != nil {
 		return DshSummaryConfig{}, err
+	}
+	if cfg.TTL <= 0 {
+		return DshSummaryConfig{}, fmt.Errorf("MULTICA_DSH_SUMMARY_TTL must be positive, got %s", cfg.TTL)
+	}
+	if cfg.Margin < 0 {
+		return DshSummaryConfig{}, fmt.Errorf("MULTICA_DSH_SUMMARY_MARGIN must be non-negative, got %s", cfg.Margin)
+	}
+	if cfg.Margin >= cfg.TTL {
+		return DshSummaryConfig{}, fmt.Errorf("MULTICA_DSH_SUMMARY_MARGIN must be shorter than the TTL, got margin=%s ttl=%s", cfg.Margin, cfg.TTL)
+	}
+	for model, pc := range cfg.PromptCache {
+		ttl := pc.Long
+		if ttl <= 0 {
+			ttl = pc.Short
+		}
+		if ttl <= 0 {
+			continue
+		}
+		if cfg.Margin >= ttl {
+			return DshSummaryConfig{}, fmt.Errorf("MULTICA_DSH_SUMMARY_MARGIN must be shorter than the TTL for model %q, got margin=%s ttl=%s", model, cfg.Margin, ttl)
+		}
 	}
 	return cfg, nil
 }
@@ -560,6 +683,7 @@ func (d *Daemon) armDshSummaryClock(task Task, provider, model string, result ag
 		WorkDir:           workDir,
 		StoreRoot:         storeRoot,
 		Model:             model,
+		PriorSessionID:    task.PriorSessionID,
 		FirstPromptTokens: result.FirstPromptTokens,
 		LastPromptTokens:  result.LastPromptTokens,
 		Summarize: func(ctx context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {

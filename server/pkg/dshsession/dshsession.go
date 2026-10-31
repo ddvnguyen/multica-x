@@ -48,7 +48,7 @@ var ErrNoSession = errors.New("dsh session not found in store")
 // directory in this store and is rejected before it ever reaches a path.
 // This is the traversal guard: store roots and cwd are operator configuration,
 // but the session id can travel through untrusted surfaces.
-var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // ValidateSessionID reports whether id can name a session directory as-is.
 func ValidateSessionID(id string) bool {

@@ -441,3 +441,163 @@ func readSummarySidecar(t *testing.T, storeRoot, cwd, sessionID string) dshSessi
 	}
 	return record
 }
+
+// armDshRun arms the clock for one run of a session and returns the decision
+// the fired clock recorded.
+func armDshRun(t *testing.T, clock *dshSummaryClock, scheduler *fakeSummaryScheduler, now *time.Time, req dshSummaryRequest) dshSummaryRunRowRecord {
+	t.Helper()
+	var records []dshSummaryRunRowRecord
+	req.TaskID = "task-1"
+	req.Model = "deepseek/deepseek-v4-pro"
+	req.Summarize = func(_ context.Context, sessionID, model string) (*agent.DshSessionSummary, error) {
+		return &agent.DshSessionSummary{SessionID: sessionID, Summary: "summary", Tokens: 100, Model: model}, nil
+	}
+	req.RecordDecision = func(_ context.Context, r dshSummaryRunRowRecord) { records = append(records, r) }
+	fireIndex := len(scheduler.fires)
+	clock.Arm(req)
+	*now = now.Add(90 * time.Second)
+	scheduler.fire(t, fireIndex)
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one decision, got %#v", records)
+	}
+	return records[0]
+}
+
+func readInitPrefixFile(t *testing.T, storeRoot, workDir, sessionID string) (dshSessionInitPrefixRecord, bool) {
+	t.Helper()
+	path := filepath.Join(storeRoot, dshsession.ProjectKey(workDir), sessionID, dshSessionInitPrefixSidecarName)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return dshSessionInitPrefixRecord{}, false
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var record dshSessionInitPrefixRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	return record, true
+}
+
+// TestDshSummaryClockResumedRunMeasuresGrowthAboveFirstRunInitPrefix: the init
+// prefix belongs to the session's first run. A resumed run's own first
+// request already carries the whole history, so growth must be measured
+// against the persisted prefix, not the resumed run's FirstPromptTokens.
+func TestDshSummaryClockResumedRunMeasuresGrowthAboveFirstRunInitPrefix(t *testing.T) {
+	storeRoot := t.TempDir()
+	workDir := t.TempDir()
+	cfg := testSummarySettings()
+	cfg.TriggerTokens = 20000
+	clock, scheduler, now := newTestSummaryClock(t, cfg)
+
+	// Run 1: fresh session. Growth 18000-10000 = 8000 stays under the trigger.
+	first := armDshRun(t, clock, scheduler, now, dshSummaryRequest{
+		SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		FirstPromptTokens: 10000, LastPromptTokens: 18000,
+	})
+	if first.Decision != dshSummaryReasonBelow || first.TokensAboveInit != 8000 {
+		t.Fatalf("run 1 decision = %#v, want below-trigger with 8000 tokens above init", first)
+	}
+	prefix, ok := readInitPrefixFile(t, storeRoot, workDir, "session-1")
+	if !ok || prefix.Tokens != 10000 {
+		t.Fatalf("init_prefix.json after run 1 = %#v (exists=%v), want 10000", prefix, ok)
+	}
+
+	// Run 2: resumed. Measured against its own first request the growth would
+	// be 32000-18000 = 14000 (skip); against the persisted prefix it is 22000.
+	second := armDshRun(t, clock, scheduler, now, dshSummaryRequest{
+		SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		PriorSessionID:    "session-1",
+		FirstPromptTokens: 18000, LastPromptTokens: 32000,
+	})
+	if second.Decision != dshSummaryReasonProceed {
+		t.Fatalf("run 2 decision = %q, want %q", second.Decision, dshSummaryReasonProceed)
+	}
+	if second.TokensAboveInit != 22000 {
+		t.Fatalf("run 2 tokens above init = %d, want 22000 (32000 − persisted 10000)", second.TokensAboveInit)
+	}
+	if prefix, _ := readInitPrefixFile(t, storeRoot, workDir, "session-1"); prefix.Tokens != 10000 {
+		t.Fatalf("resumed run overwrote the init prefix: %d, want 10000", prefix.Tokens)
+	}
+}
+
+// TestDshSummaryClockResumedRunDoesNotCreateInitPrefix: only a session's first
+// run may record the init prefix; a resumed run of a session with no record
+// (older session) must not invent one from its history-laden first request.
+func TestDshSummaryClockResumedRunDoesNotCreateInitPrefix(t *testing.T) {
+	storeRoot := t.TempDir()
+	workDir := t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+
+	armDshRun(t, clock, scheduler, now, dshSummaryRequest{
+		SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		PriorSessionID:    "session-1",
+		FirstPromptTokens: 18000, LastPromptTokens: 32000,
+	})
+	if _, ok := readInitPrefixFile(t, storeRoot, workDir, "session-1"); ok {
+		t.Fatal("a resumed run created init_prefix.json")
+	}
+}
+
+// TestDshSummaryConfigFromEnvValidation: unusable timing or enabled settings
+// fail loudly at load time instead of silently disarming the clock.
+func TestDshSummaryConfigFromEnvValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantErr string // substring; empty means no error expected
+	}{
+		{"negative margin", map[string]string{"MULTICA_DSH_SUMMARY_MARGIN": "-1m"}, "MULTICA_DSH_SUMMARY_MARGIN"},
+		{"margin equals ttl", map[string]string{"MULTICA_DSH_SUMMARY_TTL": "1h", "MULTICA_DSH_SUMMARY_MARGIN": "1h"}, "shorter than the TTL"},
+		{"margin exceeds ttl", map[string]string{"MULTICA_DSH_SUMMARY_TTL": "1h", "MULTICA_DSH_SUMMARY_MARGIN": "2h"}, "shorter than the TTL"},
+		{
+			"margin not shorter than a model ttl",
+			map[string]string{
+				"MULTICA_DSH_SUMMARY_TTL":    "1h",
+				"MULTICA_DSH_SUMMARY_MARGIN": "15m",
+				"MULTICA_DSH_PROMPT_CACHE":   `{"deepseek/short-model": {"short": "10m"}}`,
+			},
+			"deepseek/short-model",
+		},
+		{
+			"valid per-model ttl",
+			map[string]string{
+				"MULTICA_DSH_SUMMARY_TTL":    "1h",
+				"MULTICA_DSH_SUMMARY_MARGIN": "15m",
+				"MULTICA_DSH_PROMPT_CACHE":   `{"deepseek/long-model": {"short": "30m", "long": "12h"}}`,
+			},
+			"",
+		},
+		{"enabled maybe", map[string]string{"MULTICA_DSH_SUMMARY_ENABLED": "maybe"}, "MULTICA_DSH_SUMMARY_ENABLED"},
+		{"enabled off", map[string]string{"MULTICA_DSH_SUMMARY_ENABLED": "off"}, ""},
+		{"enabled 0", map[string]string{"MULTICA_DSH_SUMMARY_ENABLED": "0"}, ""},
+		{"enabled true", map[string]string{"MULTICA_DSH_SUMMARY_ENABLED": "true"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range os.Environ() {
+				if strings.HasPrefix(key, "MULTICA_DSH_") {
+					name, _, _ := strings.Cut(key, "=")
+					t.Setenv(name, "")
+				}
+			}
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			_, err := dshSummaryConfigFromEnv()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got none", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
