@@ -11,3 +11,5 @@ export const HTML_LANG: Record<SupportedLocale, string> = {
   ja: "ja-JP",
   fr: "fr-FR",
 };
+
+// M-161 CI measurement marker fe-2 (scratch, do not merge).
