@@ -586,6 +586,34 @@ printf '%s\n' '{"v":1,"type":"result","request_id":"task-c","status":"completed"
 	}
 }
 
+// The bridge locates the session store through the backend's env overlay
+// (MULTICA_DSH_SESSION_ROOT); a summarize child without it looks elsewhere.
+func TestDshSummarizeSessionInheritsBackendEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"summarize":true}}'
+IFS= read -r summarize
+printf '{"v":1,"type":"summary","request_id":"task-e","session_id":"session-1","summary":"%s","summary_tokens":1}\n' "${MULTICA_DSH_SESSION_ROOT:-unset}"
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-e","status":"completed","session_id":"session-1","output":"","resume_rejected":false}'
+`)
+	b, err := New("dsh", Config{
+		ExecutablePath: bin, TaskID: "task-e", Logger: slog.Default(),
+		Env: map[string]string{"MULTICA_DSH_SESSION_ROOT": "/test/dsh/session-root"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := b.(*dshBackend).SummarizeSession(context.Background(), "session-1", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary != "/test/dsh/session-root" {
+		t.Fatalf("bridge saw MULTICA_DSH_SESSION_ROOT=%q, want the backend env value", summary.Summary)
+	}
+}
+
 func TestDshSummarizeSessionOverCapResult(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
