@@ -24,6 +24,12 @@ const (
 	DshProtocolVersion = 1
 	dshCancelGrace     = 3 * time.Second
 	dshTerminateGrace  = 2 * time.Second
+	// dshForkReadyTimeout bounds how long a seeded run waits for the bridge's
+	// ready frame before falling back to a plain resume (S3-B2/M-138). A
+	// bridge emits ready before it reads anything, so the normal case is
+	// milliseconds; the bound only protects a hung or ancient binary from
+	// stalling the run.
+	dshForkReadyTimeout = 15 * time.Second
 )
 
 // dshBackend drives the Multica DSH bundle over its versioned JSONL
@@ -53,15 +59,28 @@ type dshMCPServer struct {
 }
 
 type dshExecuteCommand struct {
-	Version         int                `json:"v"`
-	Type            string             `json:"type"`
-	RequestID       string             `json:"request_id"`
-	Cwd             string             `json:"cwd"`
-	Prompt          string             `json:"prompt"`
-	ResumeSessionID string             `json:"resume_session_id,omitempty"`
+	Version         int    `json:"v"`
+	Type            string `json:"type"`
+	RequestID       string `json:"request_id"`
+	Cwd             string `json:"cwd"`
+	Prompt          string `json:"prompt"`
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	// ForkParent and Seed are the S3-B2 seeded start. Both are additive at
+	// protocol v1 and sent only after the bridge advertises `fork` on its ready
+	// frame; a bridge that does not gets the plain resume above instead.
+	ForkParent      string             `json:"fork_parent,omitempty"`
+	Seed            string             `json:"seed,omitempty"`
 	Model           *dshModelSelection `json:"model,omitempty"`
 	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
 	MCPServers      []dshMCPServer     `json:"mcp_servers"`
+}
+
+// dshDegradeForkToResume turns a seeded start into the plain resume every
+// pre-S3-B2 run sent: the parent becomes the session to continue and the seed
+// is dropped. Used wherever the fork cannot be gated on a ready frame.
+func dshDegradeForkToResume(command *dshExecuteCommand) {
+	command.ResumeSessionID = command.ForkParent
+	command.ForkParent, command.Seed = "", ""
 }
 
 type dshCancelCommand struct {
@@ -141,6 +160,9 @@ type dshCapabilitiesFrame struct {
 	Steer     bool `json:"steer,omitempty"`
 	Queue     bool `json:"queue,omitempty"`
 	Summarize bool `json:"summarize,omitempty"`
+	// Fork advertises execute.fork_parent + seed (S3-B2/M-138). Absent on
+	// every bridge that predates it, which keeps the daemon on the resume path.
+	Fork bool `json:"fork,omitempty"`
 }
 
 // dshAnswerItem is one question's answer in an outbound `answer` command.
@@ -338,11 +360,22 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	if requestID == "" {
 		requestID = "multica-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	}
-	state := dshRunState{usage: make(map[string]TokenUsage), requestID: requestID, inboxStateCh: make(chan dshInboxState, 1)}
+	state := dshRunState{usage: make(map[string]TokenUsage), requestID: requestID, inboxStateCh: make(chan dshInboxState, 1), readyCh: make(chan struct{})}
 	command := dshExecuteCommand{
 		Version: DshProtocolVersion, Type: "execute", RequestID: requestID,
 		Cwd: opts.Cwd, Prompt: prompt, ResumeSessionID: opts.ResumeSessionID,
+		ForkParent: opts.ForkParent, Seed: opts.Seed,
 		Model: model, ReasoningEffort: opts.ThinkingLevel, MCPServers: mcpServers,
+	}
+	if command.ForkParent != "" && detached != nil {
+		// A detached run's command is written before the process starts (its
+		// stdin is a file, not a pipe), so the ready frame cannot gate it. Fall
+		// back to the resume the fork would have replaced: S3-C's detached mode
+		// and S3-B2's seeded start do not combine, and a resume is what every
+		// pre-S3-B2 run got anyway.
+		b.cfg.Logger.Info("dsh detached run cannot gate a fork on the ready frame; resuming the candidate session",
+			"session_id", command.ForkParent)
+		dshDegradeForkToResume(&command)
 	}
 
 	var (
@@ -420,12 +453,16 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			defer writeMu.Unlock()
 			return encoder.Encode(value)
 		}
-		if err := writeFrame(command); err != nil {
-			signalProcessGroup(cmd, syscall.SIGKILL)
-			_ = cmd.Wait()
-			releaseProcessGroup(cmd)
-			cancel()
-			return nil, fmt.Errorf("send dsh execute command: %w", err)
+		// A fork command is deliberately NOT written here: it waits for the
+		// ready frame below so a bridge without the capability never sees it.
+		if command.ForkParent == "" {
+			if err := writeFrame(command); err != nil {
+				signalProcessGroup(cmd, syscall.SIGKILL)
+				_ = cmd.Wait()
+				releaseProcessGroup(cmd)
+				cancel()
+				return nil, fmt.Errorf("send dsh execute command: %w", err)
+			}
 		}
 	}
 	state.writeAnswer = func(command dshAnswerCommand) error { return writeFrame(command) }
@@ -493,6 +530,13 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 				continue
 			}
 			state.frameCount++
+			if frame.Type == "session" && frame.Resumed && state.forkUsed.Swap(false) {
+				// S3-B2: the bridge refused the seed and resumed the parent. The
+				// result must not claim a fork, or the run row would say "seeded"
+				// for a conversation that was never seeded.
+				b.cfg.Logger.Info("dsh bridge resumed the candidate session instead of forking it",
+					"session_id", frame.SessionID)
+			}
 			handleDshFrame(frame, requestID, msgCh, &state)
 		}
 		scanErr := scanner.Err()
@@ -534,12 +578,43 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		if result.Error != "" {
 			result.Error = withAgentStderr(result.Error, "dsh", stderrTail())
 		}
+		result.DshForkUsed = state.forkUsed.Load()
 		result.DurationMs = time.Since(started).Milliseconds()
 		b.cfg.Logger.Info("dsh finished", "pid", cmd.Process.Pid, "status", result.Status,
 			"duration", time.Since(started).Round(time.Millisecond).String(), "frames", state.frameCount,
 			"invalid_frames", state.invalidFrames)
 		resCh <- *result
 	}()
+
+	// S3-B2 (M-138): the seeded start is capability-gated on the ready frame.
+	// Waiting here rather than before the reader started is what lets an old
+	// bridge keep working: it answers ready without `fork`, and the command
+	// that goes out is the plain resume every pre-S3-B2 run sent.
+	if command.ForkParent != "" {
+		select {
+		case <-state.readyCh:
+		case <-time.After(dshForkReadyTimeout):
+			b.cfg.Logger.Warn("dsh ready frame did not arrive before the fork gate timed out; resuming instead",
+				"session_id", command.ForkParent, "timeout", dshForkReadyTimeout.String())
+		case <-runCtx.Done():
+		}
+		if state.forkAdvertised() {
+			state.forkUsed.Store(true)
+			b.cfg.Logger.Info("dsh forking a seeded session",
+				"parent_session", command.ForkParent, "seed_bytes", len(command.Seed))
+		} else {
+			b.cfg.Logger.Info("dsh bridge does not advertise fork; resuming the candidate session instead",
+				"session_id", command.ForkParent)
+			dshDegradeForkToResume(&command)
+		}
+		if err := writeFrame(command); err != nil {
+			// The reader goroutine owns Wait from here on; kill the group and
+			// let it observe the exit so the process is still reaped.
+			signalProcessGroup(cmd, syscall.SIGKILL)
+			cancel()
+			return nil, fmt.Errorf("send dsh execute command: %w", err)
+		}
+	}
 
 	return &Session{
 		Messages: msgCh,
@@ -592,6 +667,22 @@ type dshRunState struct {
 	inboxStateCh   chan dshInboxState
 	pendingInbox   string
 	inboxStartedAt time.Time
+
+	// S3-B2 (M-138): the ready frame gates the seeded start. readyCh is closed
+	// the first time `ready` arrives so Execute can send a fork command only
+	// after the capability is known; forkCapable carries that capability and
+	// forkUsed records that the fork command actually went out.
+	readyCh     chan struct{}
+	readyClosed bool
+	forkCapable bool
+	forkUsed    atomic.Bool
+}
+
+// forkAdvertised reports whether the ready frame advertised execute.fork_parent.
+func (s *dshRunState) forkAdvertised() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.forkCapable
 }
 
 type dshInboxState struct {
@@ -616,10 +707,16 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 			state.questionsCapable = frame.Capabilities.Questions
 			state.steerCapable = frame.Capabilities.Steer
 			state.queueCapable = frame.Capabilities.Queue
+			state.forkCapable = frame.Capabilities.Fork
 		} else {
 			state.questionsCapable = false
 			state.steerCapable = false
 			state.queueCapable = false
+			state.forkCapable = false
+		}
+		if state.readyCh != nil && !state.readyClosed {
+			state.readyClosed = true
+			close(state.readyCh)
 		}
 		state.mu.Unlock()
 	case "inbox_state":
@@ -637,6 +734,12 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 	case "session":
 		state.sessionID = frame.SessionID
 		state.live.Store(true)
+		// S3-B2: the bridge can refuse a seed it cannot validate and resume the
+		// parent instead. It reports that as `resumed: true`, so the run row
+		// says "resumed warm" rather than claiming a seed that never landed.
+		if frame.Resumed {
+			state.forkUsed.Store(false)
+		}
 		trySend(ch, Message{Type: MessageStatus, Status: "running", SessionID: frame.SessionID})
 	case "text":
 		if frame.Content != "" {

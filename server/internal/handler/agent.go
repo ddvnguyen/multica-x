@@ -464,6 +464,20 @@ type AgentTaskResponse struct {
 	ProjectResources   []ProjectResourceData    `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt          string                   `json:"created_at"`
 	PriorSessionID     string                   `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	// PriorSessionEndedAt is when that session's run reached a terminal state
+	// (RFC3339, S3-B2/M-138). The daemon's seeded-session decision measures the
+	// cache's warmth from this instead of guessing from the trigger time.
+	// Empty on a cold start and on rows that recorded no timestamp.
+	PriorSessionEndedAt string `json:"prior_session_ended_at,omitempty"`
+	// LinkedPriorSession* carry the newest terminal dsh session on an issue
+	// explicitly linked to this one (its parent or a child), with the same
+	// resume guards GetLastTaskSession applies (S3-B2/M-138). Deterministic
+	// relevance v1 — the link is the whole rule. Sent only to dsh tasks; empty
+	// everywhere else and on servers predating the fields.
+	LinkedPriorSessionID      string `json:"linked_prior_session_id,omitempty"`
+	LinkedPriorSessionIssueID string `json:"linked_prior_session_issue_id,omitempty"`
+	LinkedPriorSessionEndedAt string `json:"linked_prior_session_ended_at,omitempty"`
+	LinkedPriorSessionWorkDir string `json:"linked_prior_session_work_dir,omitempty"`
 	// DshSessionURL is set only on dsh-runtime tasks whose transcript is owned
 	// by the dsh session store (M-102): it links to the dsh web app whose
 	// sidebar lists the run's session. Empty everywhere else — the run row's

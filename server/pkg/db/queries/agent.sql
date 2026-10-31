@@ -1155,7 +1155,10 @@ WITH retired_sessions AS (
 -- and retired sessions, so it can legitimately return an OLDER run than the
 -- newest one. Measuring against the newest one would then tell an agent whose
 -- resumed memory predates an edit that the issue is unchanged.
-SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot FROM latest_per_session
+-- terminal_at rides along for S3-B2 (M-138): the seeded-session decision needs
+-- to know how long the session has been idle (cache warm vs cold) and whether
+-- a summary beside the session is younger than the run that ended it.
+SELECT session_id, work_dir, runtime_id, status, started_at, issue_snapshot, terminal_at FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -1197,6 +1200,17 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   )
 ORDER BY terminal_at DESC
 LIMIT 1;
+
+-- name: ListLinkedIssueIDs :many
+-- S3-B2 (M-138): the issues one session may legitimately continue into — the
+-- issue's parent and its children, nothing else. Deterministic relevance v1:
+-- an explicit parent/child link IS the whole rule, no model judge, and never a
+-- sibling or an arbitrary workspace issue. The daemon still runs the resume
+-- guards per linked issue (GetLastTaskSession), so a poisoned or retired
+-- session can never enter the candidate set.
+SELECT i.id FROM issue i WHERE i.parent_issue_id = sqlc.arg(issue_id)
+UNION
+SELECT p.id FROM issue p JOIN issue c ON c.parent_issue_id = p.id WHERE c.id = sqlc.arg(issue_id);
 
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
