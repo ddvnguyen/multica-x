@@ -45,6 +45,15 @@ VER="$(node -p "require('$SRC/packages/dsh-plugin/package.json').version")"
 if [ -n "${2:-}" ]; then VER="$2"; fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
+# Absolute from here on. The lane host passes DSH_Z_PLUGIN_BUNDLE, an absolute
+# path; CI passes a staging directory relative to the checkout (dist/dsh-plugin,
+# M-151). The two checks below hand the bundle path to `node -e 'require(...)'`,
+# and Node reads a bare relative path as a package name, not as a file — so a
+# relative $OUT failed every push with "Cannot find module
+# dist/dsh-plugin/node_modules/ws/package.json" while the same script kept
+# working on the lane. Normalising once here fixes both checks and makes the
+# ESM load check's pathToFileURL unambiguous.
+OUT="$(cd "$OUT" && pwd)"
 
 cp -a "$SRC/packages/dsh-plugin/lib" "$OUT/lib"
 cp "$SRC/packages/dsh-plugin/cordis.patch.yml" \
