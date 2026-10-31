@@ -30,7 +30,17 @@ const (
 	// milliseconds; the bound only protects a hung or ancient binary from
 	// stalling the run.
 	dshForkReadyTimeout = 15 * time.Second
+	// dshInboxAckTimeout bounds how long a steer/queue waits for the bridge's
+	// inbox_state answer. The bridge answers synchronously while dispatching
+	// the command, so silence past this bound means it never took the message.
+	dshInboxAckTimeout = 2 * time.Second
 )
+
+// ErrDshInboxUnconfirmed reports a steer/queue the bridge never answered with
+// an inbox_state frame. The message may or may not have reached the agent, so
+// the daemon settles it as failed (inbox_unconfirmed) and leaves the retry to
+// the human rather than claiming a delivery nobody confirmed.
+var ErrDshInboxUnconfirmed = errors.New("dsh bridge did not confirm the message with inbox_state")
 
 // dshBackend drives the Multica DSH bundle over its versioned JSONL
 // stdio protocol. The adapter is intentionally independent of ACP: DSH owns
@@ -377,6 +387,9 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			"session_id", command.ForkParent)
 		dshDegradeForkToResume(&command)
 	}
+	// Read by the frame reader to tell the forked child's session frame from
+	// the parent's; written once, before the reader goroutine starts.
+	state.forkParent = command.ForkParent
 
 	var (
 		cmd        *exec.Cmd
@@ -530,7 +543,7 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 				continue
 			}
 			state.frameCount++
-			if frame.Type == "session" && frame.Resumed && state.forkUsed.Swap(false) {
+			if frame.Type == "session" && frame.Resumed && state.forkRequested.Load() {
 				// S3-B2: the bridge refused the seed and resumed the parent. The
 				// result must not claim a fork, or the run row would say "seeded"
 				// for a conversation that was never seeded.
@@ -599,7 +612,8 @@ func (b *dshBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		case <-runCtx.Done():
 		}
 		if state.forkAdvertised() {
-			state.forkUsed.Store(true)
+			// Only the request: forkUsed waits for the child's session frame.
+			state.forkRequested.Store(true)
 			b.cfg.Logger.Info("dsh forking a seeded session",
 				"parent_session", command.ForkParent, "seed_bytes", len(command.Seed))
 		} else {
@@ -670,12 +684,17 @@ type dshRunState struct {
 
 	// S3-B2 (M-138): the ready frame gates the seeded start. readyCh is closed
 	// the first time `ready` arrives so Execute can send a fork command only
-	// after the capability is known; forkCapable carries that capability and
-	// forkUsed records that the fork command actually went out.
-	readyCh     chan struct{}
-	readyClosed bool
-	forkCapable bool
-	forkUsed    atomic.Bool
+	// after the capability is known; forkCapable carries that capability.
+	// forkRequested records that the fork command went out; forkUsed is set
+	// only once the bridge reports a session other than forkParent, so a fork
+	// that fails before any session frame never claims a seed.
+	readyCh       chan struct{}
+	readyClosed   bool
+	forkCapable   bool
+	forkParent    string
+	forkRequested atomic.Bool
+	forkSettled   bool
+	forkUsed      atomic.Bool
 }
 
 // forkAdvertised reports whether the ready frame advertised execute.fork_parent.
@@ -734,11 +753,13 @@ func handleDshFrame(frame dshFrame, requestID string, ch chan<- Message, state *
 	case "session":
 		state.sessionID = frame.SessionID
 		state.live.Store(true)
-		// S3-B2: the bridge can refuse a seed it cannot validate and resume the
-		// parent instead. It reports that as `resumed: true`, so the run row
-		// says "resumed warm" rather than claiming a seed that never landed.
-		if frame.Resumed {
-			state.forkUsed.Store(false)
+		// S3-B2: the first session frame after a fork request settles it. A
+		// new id that is not the parent's is the forked child; `resumed: true`
+		// or the parent's own id means the bridge refused the seed and resumed
+		// the parent, so the run row says "resumed warm", never "seeded".
+		if state.forkRequested.Load() && !state.forkSettled {
+			state.forkSettled = true
+			state.forkUsed.Store(!frame.Resumed && frame.SessionID != "" && frame.SessionID != state.forkParent)
 		}
 		trySend(ch, Message{Type: MessageStatus, Status: "running", SessionID: frame.SessionID})
 	case "text":
@@ -934,13 +955,8 @@ func dshSupplement(state *dshRunState, instruction, mode string, ctx context.Con
 	}
 	if !capable {
 		questionsCapable := state.questionsCapable
-		steerCapable := state.steerCapable
-		queueCapable := state.queueCapable
 		state.mu.Unlock()
-		if !questionsCapable && !steerCapable && !queueCapable {
-			return errors.New("dsh runtime bridge predates question answers (no `questions` capability in its ready frame)")
-		}
-		return errors.New("no question is pending on this dsh run")
+		return dshSupplementUnsupported(mode, questionsCapable)
 	}
 	state.inboxStartedAt = time.Now()
 	// Drain stale frames from any previous command.
@@ -976,14 +992,28 @@ func dshSupplement(state *dshRunState, instruction, mode string, ctx context.Con
 	return err
 }
 
+// dshSupplementUnsupported names the capability the bridge is missing for a
+// steer/queue that found no parked question to answer instead.
+func dshSupplementUnsupported(mode string, questionsCapable bool) error {
+	if !questionsCapable {
+		return fmt.Errorf("dsh runtime bridge cannot take a %s: its ready frame advertises neither `%s` nor `questions`", mode, mode)
+	}
+	return fmt.Errorf("dsh runtime bridge cannot take a %s: its ready frame does not advertise `%s`, and no question is pending to answer instead", mode, mode)
+}
+
+// waitForDshInboxState waits for the bridge's answer to one steer/queue.
+// `accepted` (or `applied`, if it arrives first) means the bridge took the
+// message: delivered. `rejected` is a failure carrying the bridge's reason.
+// No answer within dshInboxAckTimeout is ErrDshInboxUnconfirmed, never a
+// silent success; `applied` is not awaited.
 func waitForDshInboxState(state *dshRunState, command string, ctx context.Context) error {
 	state.mu.Lock()
 	ch := state.inboxStateCh
 	state.mu.Unlock()
 	if ch == nil {
-		return nil
+		return ErrDshInboxUnconfirmed
 	}
-	timer := time.NewTimer(2 * time.Second)
+	timer := time.NewTimer(dshInboxAckTimeout)
 	defer timer.Stop()
 	for {
 		select {
@@ -994,16 +1024,20 @@ func waitForDshInboxState(state *dshRunState, command string, ctx context.Contex
 				continue
 			}
 			switch is.State {
+			case "accepted", "applied":
+				return nil
 			case "rejected":
 				if strings.TrimSpace(is.Reason) != "" {
 					return errors.New(strings.TrimSpace(is.Reason))
 				}
 				return errors.New("dsh rejected the supplement")
 			default:
-				return nil
+				// A state this daemon does not know confirms nothing; keep
+				// waiting for one it does, up to the same deadline.
+				continue
 			}
 		case <-timer.C:
-			return nil
+			return ErrDshInboxUnconfirmed
 		}
 	}
 }

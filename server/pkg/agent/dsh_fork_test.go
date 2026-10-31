@@ -134,33 +134,79 @@ func TestDshForkFallsBackToResumeWithoutTheCapability(t *testing.T) {
 	}
 }
 
-// The bridge's own seed validation can reject the synthetic seed and resume
-// the parent instead. It reports that on the session frame, and the run row
-// must follow the report rather than the plan: "resumed warm", never "seeded".
-func TestDshResumedSessionFrameDropsTheForkClaim(t *testing.T) {
+// The first session frame after a fork request settles DshForkUsed (S3-fix A,
+// M-180, F18): only a new id that is not the parent's is the forked child. The
+// bridge's seed validation can reject the seed and resume the parent instead,
+// and the run row must follow that report: "resumed warm", never "seeded".
+func TestDshSessionFrameSettlesTheForkClaim(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		resumed bool
-		want    bool
+		name      string
+		requested bool
+		sessionID string
+		resumed   bool
+		want      bool
 	}{
-		{name: "bridge resumed the parent", resumed: true, want: false},
-		{name: "bridge forked", resumed: false, want: true},
+		{name: "bridge forked a child", requested: true, sessionID: "session-child", want: true},
+		{name: "bridge resumed the parent", requested: true, sessionID: "session-parent", resumed: true, want: false},
+		{name: "parent id without resumed flag", requested: true, sessionID: "session-parent", want: false},
+		{name: "no fork requested", sessionID: "session-child", want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state := &dshRunState{requestID: "task-fork"}
-			state.forkUsed.Store(true)
+			state := &dshRunState{requestID: "task-fork", forkParent: "session-parent"}
+			state.forkRequested.Store(tc.requested)
 			ch := make(chan Message, 4)
-			handleDshFrame(dshFrame{
+			frame := dshFrame{
 				Version:   DshProtocolVersion,
 				Type:      "session",
 				RequestID: "task-fork",
-				SessionID: "session-parent",
+				SessionID: tc.sessionID,
 				Resumed:   tc.resumed,
-			}, "task-fork", ch, state)
+			}
+			handleDshFrame(frame, "task-fork", ch, state)
 			if got := state.forkUsed.Load(); got != tc.want {
 				t.Fatalf("forkUsed = %v, want %v", got, tc.want)
 			}
+			// Only the first session frame settles the claim.
+			frame.SessionID, frame.Resumed = "session-other", false
+			handleDshFrame(frame, "task-fork", ch, state)
+			if got := state.forkUsed.Load(); got != tc.want {
+				t.Fatalf("forkUsed changed on a later session frame: %v, want %v", got, tc.want)
+			}
 		})
+	}
+}
+
+// A fork the bridge fails before reporting any session must not claim a seed:
+// the fork command went out, but no forked child ever existed.
+func TestDshForkFailingBeforeSessionFrameClaimsNoFork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := writeDshFixture(t, `
+printf '%s\n' '{"v":1,"type":"ready","runtime":"dsh","plugin_version":"test","capabilities":{"fork":true}}'
+IFS= read -r command
+printf '%s\n' "$command" | grep -q '"fork_parent":"session-parent"' || exit 7
+printf '%s\n' '{"v":1,"type":"result","request_id":"task-fork","status":"failed","output":"","resume_rejected":false,"error":{"code":"DSH_EXECUTION_FAILED","message":"mcp startup failed"}}'
+`)
+	b, err := New("dsh", Config{ExecutablePath: bin, TaskID: "task-fork", Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := b.Execute(context.Background(), "carry on", ExecOptions{
+		Cwd: t.TempDir(), Timeout: 10 * time.Second,
+		ForkParent: "session-parent", Seed: "summary of the parent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "failed" {
+		t.Fatalf("fixture should report the failed fork (exit 7 means fork_parent never went out): %#v", result)
+	}
+	if result.DshForkUsed {
+		t.Fatal("DshForkUsed true for a fork that failed before any session frame")
 	}
 }
 
