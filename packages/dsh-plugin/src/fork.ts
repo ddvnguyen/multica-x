@@ -80,10 +80,18 @@ export { Switch } from "@multica/ui/components/ui/switch";
 export {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@multica/ui/components/ui/select";
+
+// The header's project picker (M-173): the workspace's projects as the fork
+// already loads them, and the one page-scope hook every MMX view narrows by.
+export { usePageScope } from "@multica/views/layout";
+export type { PageScope } from "@multica/views/layout";
+export { projectListOptions } from "@multica/core/projects/queries";
+export type { Project } from "@multica/core/types/project";
 
 // Locale resolution. The island has no cookie and must not write one on dsh's
 // origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and

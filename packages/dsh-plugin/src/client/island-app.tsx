@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import {
   ISLAND_API_BASE,
@@ -18,6 +19,8 @@ import {
 import { createIslandStorage } from "./storage";
 import { createTabsStore } from "./tabs";
 import { TabBar } from "./tab-bar";
+import { ProjectPicker } from "./project-picker";
+import { readProjectScope, writeProjectScope } from "./project-scope";
 import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
 import { PanelZoomRow } from "./zoom-row";
 import { useZoom } from "./zoom-store";
@@ -40,6 +43,7 @@ import {
   PageChromeProvider,
   NavigationProvider,
   PortalContainerProvider,
+  projectListOptions,
   RESOURCES,
   setCurrentWorkspace,
   SettingsPage,
@@ -213,6 +217,11 @@ function detectOs(): string {
  * chosen before either page mounts. `setCurrentWorkspace` is the same
  * platform-owned pointer the web layout maintains, and it is what puts
  * `X-Workspace-Slug` on the proxied requests.
+ *
+ * This deployment has exactly one workspace (M-173): the host's
+ * `workspaceSlug` is the only source, and a slug it cannot read is an error
+ * the reader has to fix — never a reason to quietly open a different
+ * workspace's data under the same header.
  */
 function WorkspaceGate({
   preferredSlug,
@@ -228,10 +237,8 @@ function WorkspaceGate({
   const { workspaces, ready } = useWorkspaceList();
   const workspace = useMemo(() => {
     const preferred = preferredSlug?.trim();
-    if (preferred) {
-      return workspaces.find((entry) => entry.slug === preferred) ?? null;
-    }
-    return workspaces[0] ?? null;
+    if (!preferred) return null;
+    return workspaces.find((entry) => entry.slug === preferred) ?? null;
   }, [preferredSlug, workspaces]);
 
   const slug = workspace?.slug;
@@ -248,9 +255,9 @@ function WorkspaceGate({
       <IslandMessage
         title="No Multica workspace"
         body={
-          preferredSlug
+          preferredSlug?.trim()
             ? `The configured workspace "${preferredSlug}" is not readable with this token.`
-            : "This token cannot read any workspace on the configured Multica server."
+            : "This deployment has no Multica workspace configured."
         }
       />
     );
@@ -332,7 +339,26 @@ export function IslandPages({
   route?: IslandRoute;
 }) {
   const storage = useMemo(() => createIslandStorage(), []);
+  // One workspace, one tab set (M-173): the persisted key no longer varies by
+  // slug, so switching the host's slug can never strand a second history.
   const tabsStore = useMemo(() => createTabsStore(storage, slug), [storage, slug]);
+
+  // The global project filter: the header picker's selection, read back from
+  // storage on mount and reconciled against the live list below. The fork's
+  // own project query is shared with the pages, so the picker costs no request
+  // of its own once a page has loaded the list.
+  const { data: projects } = useQuery(projectListOptions(workspaceId));
+  const [projectId, setProjectId] = useState<string | null>(() =>
+    readProjectScope(storage, undefined),
+  );
+  useEffect(() => {
+    const resolved = readProjectScope(storage, projects);
+    if (resolved !== projectId) setProjectId(resolved);
+  }, [projectId, projects, storage]);
+  function selectProject(next: string | null) {
+    setProjectId(next);
+    writeProjectScope(storage, next);
+  }
 
   const [entry, setEntry] = useState<string | null>(null);
 
@@ -397,8 +423,18 @@ export function IslandPages({
   return (
     <ViewStoreProvider store={viewStore}>
       <NavigationProvider value={navigation}>
-        <PageChromeProvider titleInHostChrome>
-          <TabBar tabsStore={tabsStore} navigation={navigation} />
+        <PageChromeProvider titleInHostChrome projectId={projectId}>
+          <TabBar
+            tabsStore={tabsStore}
+            navigation={navigation}
+            projectPicker={
+              <ProjectPicker
+                projects={projects ?? []}
+                projectId={projectId}
+                onSelect={selectProject}
+              />
+            }
+          />
           <ErrorBoundary
             resetKeys={[tabsState.activeId ?? "none", islandRouteKey(route)]}
           >

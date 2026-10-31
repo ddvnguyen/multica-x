@@ -87,6 +87,7 @@ function routeFromUrl(url: string): IslandRoute | null {
 
 export interface CreateTabsStoreOptions {
   storage: IslandStorage;
+  /** Workspace whose paths this store builds; not part of the persist key (M-173). */
   slug: string;
 }
 
@@ -103,7 +104,9 @@ export function createTabsStore(
       ? (storageOrOptions as CreateTabsStoreOptions).slug
       : (slugArg as string);
 
-  const persistKey = `tabs.v1.${slug}`;
+  // One workspace, one tab set (M-173): the key dropped its per-slug suffix,
+  // so a second history can never be stranded behind a slug change.
+  const persistKey = "tabs.v1";
 
   const slice = (
     set: (partial: Partial<TabsGroup> | ((s: TabsGroup) => Partial<TabsGroup>)) => void,

@@ -80,8 +80,17 @@ export function buildIssueSurfaceQueryPlan(
         createDefaults: { project_id: scope.projectId },
       };
     }
-    case "my":
-      return buildMyRelationPlan(scope, scopeKey);
+    case "my": {
+      const plan = buildMyRelationPlan(scope, scopeKey);
+      // A host-owned project narrowing rides the list filter the relation
+      // already sets; absent, the plan is exactly the relation's own.
+      if (scope.projectId === undefined) return plan;
+      return {
+        scopeKey,
+        queryFilter: { ...plan.queryFilter, project_id: scope.projectId },
+        createDefaults: { ...plan.createDefaults, project_id: scope.projectId },
+      };
+    }
     case "actor":
       return {
         scopeKey,

@@ -1865,6 +1865,43 @@ describe("useIssueSurfaceController", () => {
     expect(result.current.workingAgents).toEqual([]);
   });
 
+  // M-173: the island's header picker narrows a my-surface without giving up
+  // the relation, so the project has to travel as a server filter — otherwise
+  // the picker would look selected while every project's rows stayed on screen.
+  it("narrows a my-scope to a host-owned project through the table filter", async () => {
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: {
+            type: "my",
+            userId: "user-1",
+            relation: "assigned",
+            projectId: "p1",
+          },
+          modes: ["board", "list"],
+        }),
+      { wrapper: makeWrapper(qc, "my:user-1:assigned:project:p1") },
+    );
+
+    await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
+
+    expect(result.current.scopeKey).toBe("my:user-1:assigned:project:p1");
+    expect(result.current.tableQuerySpec).toEqual(
+      expect.objectContaining({
+        scope: { kind: "my", relation: "assigned" },
+        filters: expect.objectContaining({ project_ids: ["p1"] }),
+      }),
+    );
+    expect(listIssueTableRows).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({
+          scope: { kind: "my", relation: "assigned" },
+          filters: expect.objectContaining({ project_ids: ["p1"] }),
+        }),
+      }),
+    );
+  });
+
   it("widens the gantt working scope when show-completed is turned on", async () => {
     mockGanttIssues(ganttFixture);
     mockWorkingAgents([
