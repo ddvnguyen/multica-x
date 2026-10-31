@@ -1127,10 +1127,11 @@ const dshSummarizeTimeout = 15 * time.Minute
 // command is written.
 //
 // cwd is the directory the bridge process runs in: the bridge keys sessions by
-// cwd, so a summarize from another directory would not find the session. A
-// positive maxTokens is forwarded only to a bridge that advertised
-// `summarize_max_tokens`; an older bridge gets the command without it and the
-// caller must enforce the budget on the returned summary.
+// cwd, so a summarize from another directory would not find the session. The
+// bridge also needs the backend's env (e.g. MULTICA_DSH_SESSION_ROOT) to find
+// the session store. A positive maxTokens is forwarded only to a bridge that
+// advertised `summarize_max_tokens`; an older bridge gets the command without
+// it and the caller must enforce the budget on the returned summary.
 func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model, cwd string, maxTokens int64) (*DshSessionSummary, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("dsh summarize: session id is empty")
@@ -1156,6 +1157,7 @@ func (b *dshBackend) SummarizeSession(ctx context.Context, sessionID, model, cwd
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+	cmd.Env = buildEnv(b.cfg.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
