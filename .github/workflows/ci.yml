@@ -139,6 +139,15 @@ jobs:
             exit 1
           fi
           echo "host loopback not reachable from container (rc=$rc)"
+      - name: Container cannot reach host loopback over IPv6
+        run: |
+          rc=0
+          curl -6 --max-time 3 "http://[::1]:${CANARY_PORT:-39180}/" -o /dev/null 2>/dev/null || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::host IPv6 loopback reachable from container - isolation broken"
+            exit 1
+          fi
+          echo "host IPv6 loopback not reachable from container (rc=$rc)"
       - name: Container cannot reach host services via gateway
         run: |
           gw="${HOST_GATEWAY:-host.containers.internal}"
