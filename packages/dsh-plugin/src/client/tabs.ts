@@ -27,7 +27,7 @@ export interface TabsGroup {
 
 export type TabsState = TabsGroup & {
   // tab lifecycle
-  openTab: (url: string, options?: { activate?: boolean; insertAfterActive?: boolean }) => string;
+  openTab: (url: string, options?: { activate?: boolean; insertAfterActive?: boolean; pinned?: boolean }) => string;
   open: (url: string, options?: { activate?: boolean; insertAfterActive?: boolean }) => string;
   focusTab: (id: string) => void;
   focus: (id: string) => void;
