@@ -51,7 +51,7 @@ export function WorkspaceAccountsCard({
         : 30000,
   });
   const accounts = workspaceAccounts.filter(
-    (account) => !account.runtime_id || account.runtime_id === runtime.id,
+    (account) => !account.runtimeId || account.runtimeId === runtime.id,
   );
   const create = useCreateWorkspaceAccount(wsId);
   const update = useUpdateWorkspaceAccount(wsId);
@@ -123,12 +123,12 @@ export function WorkspaceAccountsCard({
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-body font-medium">
-                    {account.label || account.daemon_account_id || account.id}
+                    {account.label || account.daemonAccountId || account.id}
                   </div>
                   <div className="truncate text-caption text-muted-foreground">
                     {account.endpoint || t(($) => $.accounts.no_endpoint)}
-                    {account.credential_ref ? ` · ${account.credential_ref}` : ""}
-                    {account.runtime_id && account.state ? ` · ${account.state}` : ""}
+                    {account.credentialRef ? ` · ${account.credentialRef}` : ""}
+                    {account.runtimeId && account.state ? ` · ${account.state}` : ""}
                   </div>
                   {account.error ? (
                     <div className="text-caption text-destructive">{account.error}</div>
@@ -165,17 +165,17 @@ export function WorkspaceAccountsCard({
                   </Button>
                 )}
               </div>
-              {account.state === "awaiting_login" && account.login_url ? (
+              {account.state === "awaiting_login" && account.loginUrl ? (
                 <div className="flex items-stretch gap-1.5">
                   <input
                     readOnly
-                    value={account.login_url}
+                    value={account.loginUrl}
                     className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-1.5 text-caption"
                   />
-                  <Button size="sm" variant="outline" onClick={() => handleCopy(account.id, account.login_url!)}>
+                  <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.copy_login_url_aria)} onClick={() => handleCopy(account.id, account.loginUrl!)}>
                     {copied === account.id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => openExternal(account.login_url!, { webTarget: "new-tab" })}>
+                  <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.open_login_url_aria)} onClick={() => openExternal(account.loginUrl!, { webTarget: "new-tab" })}>
                     <ExternalLink className="h-3.5 w-3.5" />
                   </Button>
                 </div>

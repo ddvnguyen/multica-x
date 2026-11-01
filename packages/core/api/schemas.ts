@@ -3988,7 +3988,30 @@ export const WorkspaceAccountSchema = z.object({
   runtime_id: z.string().optional(),
   created_at: z.string().catch(""),
   updated_at: z.string().catch(""),
-}).passthrough();
+}).passthrough().transform((account) => {
+  const {
+    workspace_id,
+    credential_ref,
+    login_url,
+    expires_at,
+    daemon_account_id,
+    runtime_id,
+    created_at,
+    updated_at,
+    ...rest
+  } = account;
+  return {
+    ...rest,
+    workspaceId: workspace_id,
+    credentialRef: credential_ref,
+    loginUrl: login_url,
+    expiresAt: expires_at,
+    daemonAccountId: daemon_account_id,
+    runtimeId: runtime_id,
+    createdAt: created_at,
+    updatedAt: updated_at,
+  };
+});
 export const WorkspaceAccountListSchema = z.object({
   accounts: z.array(WorkspaceAccountSchema).catch([]),
 }).passthrough();

@@ -51,7 +51,7 @@ type WorkspaceAccountResponse struct {
 	UpdatedAt       string          `json:"updated_at"`
 }
 
-func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool) WorkspaceAccountResponse {
+func workspaceAccountToResponse(a db.WorkspaceAccount, includeAdminDetails bool) WorkspaceAccountResponse {
 	resp := WorkspaceAccountResponse{
 		ID:          uuidToString(a.ID),
 		WorkspaceID: uuidToString(a.WorkspaceID),
@@ -65,22 +65,22 @@ func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool
 	if a.Endpoint.Valid {
 		resp.Endpoint = a.Endpoint.String
 	}
-	if includeCredentialRef && a.CredentialRef.Valid {
+	if includeAdminDetails && a.CredentialRef.Valid {
 		resp.CredentialRef = a.CredentialRef.String
 	}
-	if includeCredentialRef && a.LoginUrl.Valid {
+	if includeAdminDetails && a.LoginUrl.Valid {
 		resp.LoginURL = a.LoginUrl.String
 	}
-	if includeCredentialRef && a.ExpiresAt.Valid {
+	if includeAdminDetails && a.ExpiresAt.Valid {
 		resp.ExpiresAt = a.ExpiresAt.Time.UTC().Format(time.RFC3339)
 	}
-	if includeCredentialRef && a.Error.Valid {
+	if includeAdminDetails && a.Error.Valid {
 		resp.Error = a.Error.String
 	}
-	if includeCredentialRef && len(a.Status) > 0 {
+	if includeAdminDetails && len(a.Status) > 0 {
 		resp.Status = json.RawMessage(a.Status)
 	}
-	if includeCredentialRef && a.DaemonAccountID.Valid {
+	if includeAdminDetails && a.DaemonAccountID.Valid {
 		resp.DaemonAccountID = a.DaemonAccountID.String
 	}
 	if a.RuntimeID.Valid {
@@ -192,13 +192,17 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "runtime is not an online freebuff-desktop runtime in this workspace")
 			return
 		}
+		daemonAccountID := newFreebuffAccountID()
 		label := strings.TrimSpace(req.Label)
 		if label == "" {
-			label = "Pending sign-in"
+			label = "Pending sign-in (" + daemonAccountID + ")"
 		}
-		daemonAccountID := newFreebuffAccountID()
 		created, err := h.insertManagedWorkspaceAccount(r, wsUUID, label, daemonAccountID, userID, rid)
 		if err != nil {
+			if isAccountLabelConflict(err) {
+				writeError(w, http.StatusConflict, "an account with this label already exists")
+				return
+			}
 			slog.Warn("managed account create failed", "workspace_id", wsID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to create account")
 			return
@@ -501,6 +505,21 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 			// ID-only entries are presence snapshots, not lifecycle reports.
 			continue
 		}
+		label := in.Label
+		if label != "" {
+			var conflict bool
+			if err := h.DB.QueryRow(r.Context(), `SELECT EXISTS(
+				SELECT 1 FROM workspace_account
+				WHERE workspace_id=$1 AND provider=$2 AND label=$3
+				  AND NOT (runtime_id=$4 AND daemon_account_id=$5)
+			)`, rt.WorkspaceID, accountProviderFreebuffDesktop, label, rt.ID, in.ID).Scan(&conflict); err != nil {
+				hasErr = true
+				continue
+			}
+			if conflict {
+				label += " (" + in.ID + ")"
+			}
+		}
 		tag, err := h.DB.Exec(r.Context(), `
 			UPDATE workspace_account SET
 				label = CASE WHEN $3 <> '' THEN $3 ELSE label END,
@@ -513,7 +532,7 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 				status = $10,
 				updated_at = now()
 			WHERE runtime_id = $1 AND daemon_account_id = $2 AND provider = $11 AND state <> 'removing'`,
-			rt.ID, in.ID, in.Label, in.Endpoint, optionalText(in.CredentialRef), in.State,
+			rt.ID, in.ID, label, in.Endpoint, optionalText(in.CredentialRef), in.State,
 			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status), accountProviderFreebuffDesktop)
 		if err == nil && tag.RowsAffected() == 0 {
 			var removing bool

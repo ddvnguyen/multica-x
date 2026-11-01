@@ -89,8 +89,9 @@ describe("WorkspaceAccountSchema", () => {
       runtime_id: "runtime-1",
       state: "connected",
     });
-    expect(account.runtime_id).toBe("runtime-1");
-    expect(account.created_at).toBe("");
+    expect(account.runtimeId).toBe("runtime-1");
+    expect(account.createdAt).toBe("");
+    expect(account).not.toHaveProperty("runtime_id");
   });
 
   it("falls back to an empty account list when the response is malformed", () => {

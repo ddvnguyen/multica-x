@@ -515,12 +515,12 @@ import {
 
 const EMPTY_WORKSPACE_ACCOUNT: WorkspaceAccount = {
   id: "",
-  workspace_id: "",
+  workspaceId: "",
   provider: "freebuff-desktop",
   label: "",
   enabled: false,
-  created_at: "",
-  updated_at: "",
+  createdAt: "",
+  updatedAt: "",
 };
 
 /** Identifies the calling client to the server.

@@ -1440,21 +1440,21 @@ export type AgentAccountMode = "default" | "specific" | "any";
 
 export interface WorkspaceAccount {
   id: string;
-  workspace_id: string;
+  workspaceId: string;
   provider: string;
   label: string;
   endpoint?: string;
   enabled: boolean;
-  credential_ref?: string;
+  credentialRef?: string;
   state?: string;
-  login_url?: string;
-  expires_at?: string;
+  loginUrl?: string;
+  expiresAt?: string;
   error?: string;
   status?: unknown;
-  daemon_account_id?: string;
-  runtime_id?: string;
-  created_at: string;
-  updated_at: string;
+  daemonAccountId?: string;
+  runtimeId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateWorkspaceAccountRequest {

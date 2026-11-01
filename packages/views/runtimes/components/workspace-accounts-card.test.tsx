@@ -37,14 +37,14 @@ const runtime = { id: "rt-1", provider: "codebuddy", profile_id: "profile-1" } a
 
 const account = (over: Partial<WorkspaceAccount> = {}): WorkspaceAccount => ({
   id: "acc-1",
-  workspace_id: "ws-1",
+  workspaceId: "ws-1",
   provider: "freebuff-desktop",
   label: "Team A",
   endpoint: "http://a.test:4320",
   enabled: true,
-  credential_ref: "ref-a",
-  created_at: "",
-  updated_at: "",
+  credentialRef: "ref-a",
+  createdAt: "",
+  updatedAt: "",
   ...over,
 });
 
@@ -84,7 +84,7 @@ describe("WorkspaceAccountsCard", () => {
   it("shows only accounts owned by the selected runtime", async () => {
     api.listWorkspaceAccounts.mockResolvedValue([
       account(),
-      account({ id: "acc-other", label: "Other runtime", runtime_id: "rt-2" }),
+      account({ id: "acc-other", label: "Other runtime", runtimeId: "rt-2" }),
     ]);
     renderCard(false);
     expect(await screen.findByText("Team A")).toBeTruthy();
@@ -143,10 +143,12 @@ describe("WorkspaceAccountsCard", () => {
 
   it("shows the browser login URL while sign-in is waiting", async () => {
     api.listWorkspaceAccounts.mockResolvedValue([
-      account({ runtime_id: "rt-1", state: "awaiting_login", login_url: "https://freebuff.example/login" }),
+      account({ runtimeId: "rt-1", state: "awaiting_login", loginUrl: "https://freebuff.example/login" }),
     ]);
     renderCard(true);
     expect(await screen.findByDisplayValue("https://freebuff.example/login")).toBeTruthy();
     expect(screen.getByText(/awaiting_login/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy sign-in link" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open sign-in link" })).toBeTruthy();
   });
 });

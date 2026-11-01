@@ -569,6 +569,8 @@
     "add": "添加账户",
     "retry": "重试",
     "advanced": "高级",
+    "copy_login_url_aria": "复制登录链接",
+    "open_login_url_aria": "打开登录链接",
     "toast_failed": "无法更新账户"
   },
   "qoder": {
