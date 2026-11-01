@@ -121,6 +121,9 @@ func (h *Handler) validateAgentAccount(ctx context.Context, workspaceID pgtype.U
 	if !acc.Enabled {
 		return http.StatusBadRequest, "account is disabled"
 	}
+	if acc.DaemonAccountID.Valid && acc.State != "connected" {
+		return http.StatusBadRequest, "managed account is not connected"
+	}
 	return 0, ""
 }
 

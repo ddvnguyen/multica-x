@@ -100,6 +100,8 @@ func (f *fakeAccount) ModelCatalog(context.Context) (freebuffrt.ModelCatalog, er
 	return cat, nil
 }
 
+func (f *fakeAccount) BaseURL() string { return "http://127.0.0.1:4320" }
+
 func (f *fakeAccount) CancelLogin(context.Context) error {
 	f.mu.Lock()
 	f.canceled = true

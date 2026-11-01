@@ -195,6 +195,9 @@ const (
 	// PendingWorkKindFreebuff asks the daemon to start a browser login for
 	// the runtime's Freebuff account.
 	PendingWorkKindFreebuff = "freebuff"
+	// PendingWorkKindFreebuffDesktop asks the daemon to drive a browser login
+	// for a workspace's daemon-managed freebuff-desktop account.
+	PendingWorkKindFreebuffDesktop = "freebuff-desktop"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a

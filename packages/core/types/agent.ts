@@ -1446,15 +1446,23 @@ export interface WorkspaceAccount {
   endpoint?: string;
   enabled: boolean;
   credential_ref?: string;
+  state?: string;
+  login_url?: string;
+  expires_at?: string;
+  error?: string;
+  status?: unknown;
+  daemon_account_id?: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateWorkspaceAccountRequest {
-  label: string;
+  label?: string;
   endpoint?: string;
   credential_ref?: string;
   enabled?: boolean;
+  managed?: boolean;
+  runtime_id?: string;
 }
 
 export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;

@@ -81,18 +81,35 @@ describe("WorkspaceAccountsCard", () => {
     expect(screen.queryByRole("button", { name: "Delete Team A" })).toBeNull();
   });
 
-  it("lets an admin add an account", async () => {
+  it("lets an admin add an account (manual, advanced)", async () => {
     const user = userEvent.setup();
     renderCard(true);
     await screen.findByText("Team A");
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
     await user.type(screen.getByLabelText("Label"), "Team B");
     await user.type(screen.getByLabelText("Credential reference"), "ref-b");
-    await user.click(screen.getByRole("button", { name: "Add account" }));
+    const buttons = screen.getAllByRole("button", { name: "Add account" });
+    await user.click(buttons[buttons.length - 1]);
     await waitFor(() =>
       expect(api.createWorkspaceAccount).toHaveBeenCalledWith("ws-1", {
         label: "Team B",
         endpoint: undefined,
         credential_ref: "ref-b",
+      }),
+    );
+  });
+
+  it("lets an admin add a managed account", async () => {
+    const user = userEvent.setup();
+    renderCard(true);
+    await screen.findByText("Team A");
+    await user.type(screen.getByLabelText("Label"), "Team B");
+    await user.click(screen.getAllByRole("button", { name: "Add account" })[0]);
+    await waitFor(() =>
+      expect(api.createWorkspaceAccount).toHaveBeenCalledWith("ws-1", {
+        label: "Team B",
+        managed: true,
+        runtime_id: "rt-1",
       }),
     );
   });

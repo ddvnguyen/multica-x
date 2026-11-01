@@ -3,14 +3,17 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Workspace accounts (M-153).
@@ -27,16 +30,22 @@ import (
 
 // WorkspaceAccountResponse is the wire shape of an account.
 type WorkspaceAccountResponse struct {
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
-	Provider    string `json:"provider"`
-	Label       string `json:"label"`
-	Endpoint    string `json:"endpoint,omitempty"`
-	Enabled     bool   `json:"enabled"`
-	// CredentialRef is present for owner/admin readers only.
-	CredentialRef string `json:"credential_ref,omitempty"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID              string          `json:"id"`
+	WorkspaceID     string          `json:"workspace_id"`
+	Provider        string          `json:"provider"`
+	Label           string          `json:"label"`
+	Endpoint        string          `json:"endpoint,omitempty"`
+	Enabled         bool            `json:"enabled"`
+	CredentialRef   string          `json:"credential_ref,omitempty"`
+	State           string          `json:"state,omitempty"`
+	LoginURL        string          `json:"login_url,omitempty"`
+	ExpiresAt       string          `json:"expires_at,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Status          json.RawMessage `json:"status,omitempty"`
+	DaemonAccountID string          `json:"daemon_account_id,omitempty"`
+	RuntimeID       string          `json:"runtime_id,omitempty"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
 }
 
 func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool) WorkspaceAccountResponse {
@@ -46,6 +55,7 @@ func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool
 		Provider:    a.Provider,
 		Label:       a.Label,
 		Enabled:     a.Enabled,
+		State:       a.State,
 		CreatedAt:   timestampToString(a.CreatedAt),
 		UpdatedAt:   timestampToString(a.UpdatedAt),
 	}
@@ -54,6 +64,24 @@ func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool
 	}
 	if includeCredentialRef && a.CredentialRef.Valid {
 		resp.CredentialRef = a.CredentialRef.String
+	}
+	if a.LoginUrl.Valid {
+		resp.LoginURL = a.LoginUrl.String
+	}
+	if a.ExpiresAt.Valid {
+		resp.ExpiresAt = a.ExpiresAt.Time.UTC().Format(time.RFC3339)
+	}
+	if a.Error.Valid {
+		resp.Error = a.Error.String
+	}
+	if len(a.Status) > 0 {
+		resp.Status = json.RawMessage(a.Status)
+	}
+	if a.DaemonAccountID.Valid {
+		resp.DaemonAccountID = a.DaemonAccountID.String
+	}
+	if a.RuntimeID.Valid {
+		resp.RuntimeID = uuidToString(a.RuntimeID)
 	}
 	return resp
 }
@@ -115,12 +143,18 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Provider      string `json:"provider"`
 		Label         string `json:"label"`
 		Endpoint      string `json:"endpoint"`
 		CredentialRef string `json:"credential_ref"`
 		Enabled       *bool  `json:"enabled"`
+		Managed       bool   `json:"managed"`
+		RuntimeID     string `json:"runtime_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -134,6 +168,40 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "unsupported account provider")
 		return
 	}
+
+	if req.Managed {
+		rid := strings.TrimSpace(req.RuntimeID)
+		if rid == "" {
+			writeError(w, http.StatusBadRequest, "runtime_id is required for managed accounts")
+			return
+		}
+		rtUUID := parseUUID(rid)
+		// validate runtime belongs to workspace and is a freebuff-desktop (codebuddy) runtime
+		var rtProvider, rtStatus string
+		var rtWorkspace pgtype.UUID
+		err := h.DB.QueryRow(r.Context(), `SELECT workspace_id, provider, status FROM agent_runtime WHERE id = $1`, rtUUID).Scan(&rtWorkspace, &rtProvider, &rtStatus)
+		if err != nil || uuidToString(rtWorkspace) != wsID || rtProvider != accountRuntimeProvider || rtStatus != "online" {
+			writeError(w, http.StatusBadRequest, "runtime is not an online freebuff-desktop runtime in this workspace")
+			return
+		}
+		label := strings.TrimSpace(req.Label)
+		if label == "" {
+			label = "Pending sign-in"
+		}
+		daemonAccountID := newFreebuffAccountID()
+		created, err := h.insertManagedWorkspaceAccount(r, wsUUID, label, daemonAccountID, userID, rid)
+		if err != nil {
+			slog.Warn("managed account create failed", "workspace_id", wsID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to create account")
+			return
+		}
+		if rid := strings.TrimSpace(req.RuntimeID); rid != "" {
+			h.requestDaemonPendingWork(rid, protocol.PendingWorkKindFreebuffDesktop)
+		}
+		writeJSON(w, http.StatusAccepted, workspaceAccountToResponse(created, true))
+		return
+	}
+
 	label := strings.TrimSpace(req.Label)
 	if label == "" {
 		writeError(w, http.StatusBadRequest, "label is required")
@@ -154,10 +222,6 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
-	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
 	}
 	created, err := h.Queries.CreateWorkspaceAccount(r.Context(), db.CreateWorkspaceAccountParams{
 		WorkspaceID:   wsUUID,
@@ -295,4 +359,177 @@ func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// insertManagedWorkspaceAccount creates a daemon-managed account row in the
+// "requested" state.
+func (h *Handler) insertManagedWorkspaceAccount(r *http.Request, wsUUID pgtype.UUID, label, daemonAccountID, userID, runtimeID string) (db.WorkspaceAccount, error) {
+	ctx := r.Context()
+	rtUUID := parseUUID(runtimeID)
+	var acc db.WorkspaceAccount
+	err := h.DB.QueryRow(ctx, `
+		INSERT INTO workspace_account (
+			workspace_id, provider, label, enabled, created_by, state, daemon_account_id, runtime_id
+		) VALUES ($1, $2, $3, FALSE, $4, 'requested', $5, $6)
+		RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id`,
+		wsUUID, accountProviderFreebuffDesktop, label, parseUUID(userID), daemonAccountID, rtUUID,
+	).Scan(
+		&acc.ID, &acc.WorkspaceID, &acc.Provider, &acc.Label, &acc.Endpoint, &acc.CredentialRef,
+		&acc.Enabled, &acc.CreatedBy, &acc.CreatedAt, &acc.UpdatedAt, &acc.State, &acc.LoginUrl,
+		&acc.ExpiresAt, &acc.Error, &acc.Status, &acc.DaemonAccountID, &acc.RuntimeID,
+	)
+	return acc, err
+}
+
+// GetFreebuffDesktopPending answers the daemon's question for daemon-managed
+// freebuff-desktop accounts. Daemon-authenticated.
+func (h *Handler) GetFreebuffDesktopPending(w http.ResponseWriter, r *http.Request) {
+	rt, ok := h.requireDaemonRuntimeAccess(w, r, chi.URLParam(r, "runtimeId"))
+	if !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `
+		SELECT daemon_account_id, state FROM workspace_account
+		WHERE runtime_id = $1 AND provider = $2 AND daemon_account_id IS NOT NULL
+		  AND state IN ('requested','awaiting_login','removing')`,
+		rt.ID, accountProviderFreebuffDesktop)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load pending accounts")
+		return
+	}
+	defer rows.Close()
+	pending := make([]map[string]string, 0)
+	for rows.Next() {
+		var id pgtype.Text
+		var state string
+		if err := rows.Scan(&id, &state); err != nil {
+			continue
+		}
+		if !id.Valid {
+			continue
+		}
+		pending = append(pending, map[string]string{"id": id.String, "state": state})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": pending})
+}
+
+// ReportFreebuffDesktopAccount is the daemon's report. Daemon-authenticated.
+func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Request) {
+	rt, ok := h.requireDaemonRuntimeAccess(w, r, chi.URLParam(r, "runtimeId"))
+	if !ok {
+		return
+	}
+	var report struct {
+		Accounts []struct {
+			ID            string          `json:"id"`
+			State         string          `json:"state"`
+			Label         string          `json:"label"`
+			LoginURL      string          `json:"login_url"`
+			ExpiresAt     json.RawMessage `json:"expires_at"`
+			Error         string          `json:"error"`
+			Status        json.RawMessage `json:"status"`
+			Endpoint      string          `json:"endpoint"`
+			CredentialRef string          `json:"credential_ref"`
+		} `json:"accounts"`
+		Complete bool `json:"complete"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	hasErr := false
+	for _, in := range report.Accounts {
+		if in.ID == "" {
+			continue
+		}
+		var existingID pgtype.UUID
+		err := h.DB.QueryRow(r.Context(), `SELECT id FROM workspace_account WHERE runtime_id=$1 AND daemon_account_id=$2`,
+			rt.ID, in.ID).Scan(&existingID)
+		if err != nil {
+			label := in.Label
+			if label == "" {
+				label = "Pending sign-in"
+			}
+			cred := in.CredentialRef
+			if cred == "" {
+				cred = in.ID
+			}
+			_, _ = h.DB.Exec(r.Context(), `
+				INSERT INTO workspace_account (workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, state, daemon_account_id, login_url, error, status, expires_at, runtime_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+				rt.WorkspaceID, accountProviderFreebuffDesktop, label, optionalText(in.Endpoint), optionalText(cred),
+				in.State == "connected", pgtype.UUID{}, in.State, in.ID, optionalText(in.LoginURL),
+				optionalText(in.Error), optionalJSON(in.Status), parseExpiresAt(in.ExpiresAt), rt.ID)
+			if err != nil { hasErr = true; slog.Warn("managed account insert failed", "error", err) }
+			continue
+		}
+		enabled := in.State == "connected"
+		cred := in.CredentialRef
+		if cred == "" {
+			cred = in.ID
+		}
+		if _, err := h.DB.Exec(r.Context(), `
+			UPDATE workspace_account SET
+				label = CASE WHEN $2 <> '' THEN $2 ELSE label END,
+				endpoint = CASE WHEN $3 <> '' THEN $3 ELSE endpoint END,
+				credential_ref = CASE WHEN $4 <> '' THEN $4 ELSE credential_ref END,
+				enabled = $5,
+				state = $6,
+				login_url = $7,
+				expires_at = $8,
+				error = $9,
+				status = $10,
+				updated_at = now()
+			WHERE id = $1`,
+			existingID, in.Label, in.Endpoint, cred, enabled, in.State,
+			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status)); err != nil {
+			hasErr = true
+			slog.Warn("managed account update failed", "error", err)
+		}
+	}
+	if report.Complete {
+		ids := make([]string, 0, len(report.Accounts))
+		for _, in := range report.Accounts {
+			if in.ID != "" {
+				ids = append(ids, in.ID)
+			}
+		}
+		if len(ids) == 0 {
+			ids = []string{""}
+		}
+		_, _ = h.DB.Exec(r.Context(), `
+			DELETE FROM workspace_account
+			WHERE runtime_id = $1 AND provider = $2 AND daemon_account_id IS NOT NULL
+			  AND NOT (daemon_account_id = ANY($3)) AND state <> 'requested'`,
+			rt.ID, accountProviderFreebuffDesktop, ids)
+	}
+	if hasErr {
+		writeError(w, http.StatusInternalServerError, "failed to store some accounts")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func optionalJSON(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
+func parseExpiresAt(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if t, err := time.Parse(time.RFC3339, text); err == nil {
+			return t.UTC()
+		}
+	}
+	var millis int64
+	if err := json.Unmarshal(raw, &millis); err == nil && millis > 0 {
+		return time.UnixMilli(millis).UTC()
+	}
+	return nil
 }

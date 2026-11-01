@@ -45,7 +45,7 @@ INSERT INTO workspace_account (
     workspace_id, provider, label, endpoint, credential_ref, enabled, created_by
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
-) RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at
+) RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id
 `
 
 type CreateWorkspaceAccountParams struct {
@@ -80,6 +80,13 @@ func (q *Queries) CreateWorkspaceAccount(ctx context.Context, arg CreateWorkspac
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.State,
+		&i.LoginUrl,
+		&i.ExpiresAt,
+		&i.Error,
+		&i.Status,
+		&i.DaemonAccountID,
+		&i.RuntimeID,
 	)
 	return i, err
 }
@@ -105,7 +112,7 @@ func (q *Queries) DemoteAgentsOnAccountDelete(ctx context.Context, accountID pgt
 }
 
 const getWorkspaceAccount = `-- name: GetWorkspaceAccount :one
-SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at FROM workspace_account
+SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id FROM workspace_account
 WHERE id = $1
 `
 
@@ -123,12 +130,19 @@ func (q *Queries) GetWorkspaceAccount(ctx context.Context, id pgtype.UUID) (Work
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.State,
+		&i.LoginUrl,
+		&i.ExpiresAt,
+		&i.Error,
+		&i.Status,
+		&i.DaemonAccountID,
+		&i.RuntimeID,
 	)
 	return i, err
 }
 
 const getWorkspaceAccountInWorkspace = `-- name: GetWorkspaceAccountInWorkspace :one
-SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at FROM workspace_account
+SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id FROM workspace_account
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -151,6 +165,13 @@ func (q *Queries) GetWorkspaceAccountInWorkspace(ctx context.Context, arg GetWor
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.State,
+		&i.LoginUrl,
+		&i.ExpiresAt,
+		&i.Error,
+		&i.Status,
+		&i.DaemonAccountID,
+		&i.RuntimeID,
 	)
 	return i, err
 }
@@ -214,7 +235,7 @@ func (q *Queries) ListAccountsForDispatch(ctx context.Context, arg ListAccountsF
 }
 
 const listWorkspaceAccounts = `-- name: ListWorkspaceAccounts :many
-SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at FROM workspace_account
+SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id FROM workspace_account
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -239,6 +260,13 @@ func (q *Queries) ListWorkspaceAccounts(ctx context.Context, workspaceID pgtype.
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.State,
+			&i.LoginUrl,
+			&i.ExpiresAt,
+			&i.Error,
+			&i.Status,
+			&i.DaemonAccountID,
+			&i.RuntimeID,
 		); err != nil {
 			return nil, err
 		}
@@ -251,7 +279,7 @@ func (q *Queries) ListWorkspaceAccounts(ctx context.Context, workspaceID pgtype.
 }
 
 const listWorkspaceAccountsByProvider = `-- name: ListWorkspaceAccountsByProvider :many
-SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at FROM workspace_account
+SELECT id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id FROM workspace_account
 WHERE workspace_id = $1 AND provider = $2 AND enabled = TRUE
 ORDER BY created_at ASC
 `
@@ -281,6 +309,13 @@ func (q *Queries) ListWorkspaceAccountsByProvider(ctx context.Context, arg ListW
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.State,
+			&i.LoginUrl,
+			&i.ExpiresAt,
+			&i.Error,
+			&i.Status,
+			&i.DaemonAccountID,
+			&i.RuntimeID,
 		); err != nil {
 			return nil, err
 		}
@@ -300,7 +335,7 @@ SET label = $2,
     enabled = $5,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at
+RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id
 `
 
 type UpdateWorkspaceAccountParams struct {
@@ -331,6 +366,13 @@ func (q *Queries) UpdateWorkspaceAccount(ctx context.Context, arg UpdateWorkspac
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.State,
+		&i.LoginUrl,
+		&i.ExpiresAt,
+		&i.Error,
+		&i.Status,
+		&i.DaemonAccountID,
+		&i.RuntimeID,
 	)
 	return i, err
 }

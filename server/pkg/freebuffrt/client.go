@@ -36,6 +36,9 @@ func NewClient(ready Ready, launchID string) *Client {
 }
 
 // NewClientForURL is NewClient for an explicit base URL (tests).
+// BaseURL returns the orchestrator's base URL (http://host:port).
+func (c *Client) BaseURL() string { return c.base }
+
 func NewClientForURL(base, launchID string) *Client {
 	return &Client{base: strings.TrimRight(base, "/"), launchID: launchID, http: &http.Client{Timeout: 30 * time.Second}}
 }

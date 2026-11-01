@@ -2195,6 +2195,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	// Keep the Freebuff account state fresh (session slot, prices, credit)
 	// and start a browser login when the user asks for one from the web UI.
 	go d.freebuffLoop(ctx)
+	go d.freebuffDesktopLoop(ctx)
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
@@ -8920,7 +8921,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		if v := strings.TrimSpace(task.Agent.AccountCredentialRef); v != "" {
 			if _, ok := agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"]; !ok {
-				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = v
+				ref := v
+				if _, err := os.Stat(ref); err != nil {
+					if dir, err := agent.FreebuffAccountDir(agent.Config{RuntimeID: task.RuntimeID}, v); err == nil {
+						ref = dir
+					}
+				}
+				agentCustomEnv["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = ref
 			}
 		}
 	}
