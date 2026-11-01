@@ -11,6 +11,15 @@ import (
 
 const freebuffDesktopConnectPollInterval = 5 * time.Second
 const freebuffDesktopStatusInterval = 5 * time.Minute
+const freebuffDesktopLaunchIDEnv = "FREEBUFF_DESKTOP_LAUNCH_ID"
+
+// Managed credentials must be paired with their local endpoint and account
+// directory, regardless of user-supplied environment overrides.
+func applyManagedFreebuffDesktopEnv(env map[string]string, endpoint, dir, launchID string) {
+	env["FREEBUFF_DESKTOP_URL"] = endpoint
+	env["FREEBUFF_DESKTOP_CREDENTIAL_REF"] = dir
+	env[freebuffDesktopLaunchIDEnv] = launchID
+}
 
 type freebuffDesktopInstance struct {
 	client freebuffAccount
@@ -314,22 +323,18 @@ func (d *Daemon) reportFreebuffDesktopAccounts(ctx context.Context, rt Runtime) 
 		if _, loggingIn := d.freebuffDesktopLogins.Load(key); loggingIn {
 			continue
 		}
-		var client freebuffAccount
-		if existing, ok := d.freebuffDesktopInstances.Load(key); ok {
-			client = existing.(*freebuffDesktopInstance).client
-		} else {
-			var err error
-			client, err = d.ensureFreebuffDesktopInstance(ctx, rt, id)
-			if err != nil {
-				d.logger.Debug("freebuff-desktop instance start failed", "runtime_id", rt.ID, "account_id", id, "error", err)
-				continue
-			}
+		client, err := d.ensureFreebuffDesktopInstance(ctx, rt, id)
+		if err != nil {
+			d.logger.Debug("freebuff-desktop instance unavailable", "runtime_id", rt.ID, "account_id", id, "error", err)
+			entries[len(entries)-1] = map[string]any{"id": id, "state": "failed", "error": "Freebuff Desktop instance unavailable"}
+			continue
 		}
 		statusCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		st, err := client.AuthStatus(statusCtx)
 		cancel()
 		if err != nil {
 			d.logger.Debug("freebuff-desktop auth status failed", "runtime_id", rt.ID, "account_id", id, "error", err)
+			entries[len(entries)-1] = map[string]any{"id": id, "state": "failed", "error": "Freebuff Desktop instance unavailable"}
 			continue
 		}
 		dir, err := freebuffDesktopAccountDir(rt, id)

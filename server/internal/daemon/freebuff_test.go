@@ -62,7 +62,9 @@ func (fx *freebuffFixture) snapshot() []map[string]any {
 // fakeAccount is an orchestrator stand-in for the account flow.
 type fakeAccount struct {
 	mu         sync.Mutex
-	statuses   []freebuffrt.AuthStatus   // returned in order; the last repeats
+	statuses   []freebuffrt.AuthStatus // returned in order; the last repeats
+	authErr    error
+	launchID   string
 	catalogs   []freebuffrt.ModelCatalog // returned in order; the last repeats
 	catalogErr error
 	login      freebuffrt.LoginStart
@@ -73,11 +75,28 @@ type fakeAccount struct {
 func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.authErr != nil {
+		return freebuffrt.AuthStatus{}, f.authErr
+	}
 	st := f.statuses[0]
 	if len(f.statuses) > 1 {
 		f.statuses = f.statuses[1:]
 	}
 	return st, nil
+}
+
+func (f *fakeAccount) LaunchID() string { return f.launchID }
+
+func TestManagedFreebuffDesktopEnvOverridesUserValues(t *testing.T) {
+	env := map[string]string{
+		"FREEBUFF_DESKTOP_URL":            "https://untrusted.example",
+		"FREEBUFF_DESKTOP_CREDENTIAL_REF": "/wrong-account",
+		freebuffDesktopLaunchIDEnv:        "stale",
+	}
+	applyManagedFreebuffDesktopEnv(env, "http://127.0.0.1:4321", "/account", "fresh-launch")
+	if env["FREEBUFF_DESKTOP_URL"] != "http://127.0.0.1:4321" || env["FREEBUFF_DESKTOP_CREDENTIAL_REF"] != "/account" || env[freebuffDesktopLaunchIDEnv] != "fresh-launch" {
+		t.Fatalf("managed endpoint, directory, and launch credential must stay paired: %#v", env)
+	}
 }
 
 func (f *fakeAccount) StartLogin(context.Context) (freebuffrt.LoginStart, error) {
@@ -387,6 +406,50 @@ func TestReportFreebuffDesktopAccountsRestartsOwnedInstance(t *testing.T) {
 		t.Fatal("startup did not retain the rehydrated account instance")
 	}
 	fx.daemon.stopFreebuffDesktopInstances()
+}
+
+func TestFreebuffDesktopStatusRestartsCrashedInstanceWithFreshLaunchID(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useProfiles(t)
+	rt := Runtime{ID: "rt-managed", Provider: "codebuddy", Status: "online"}
+	if _, err := agent.EnsureFreebuffAccountDir(agent.Config{RuntimeID: rt.ID}, "a1"); err != nil {
+		t.Fatal(err)
+	}
+	dead := &fakeAccount{authErr: errors.New("connection refused"), launchID: "old-launch"}
+	live := &fakeAccount{statuses: []freebuffrt.AuthStatus{signedIn("owner@example.com")}, launchID: "new-launch"}
+	starts := 0
+	stops := 0
+	prev := startFreebuffAccount
+	startFreebuffAccount = func(context.Context, string, string) (freebuffAccount, func(), error) {
+		starts++
+		if starts == 1 {
+			return dead, func() { stops++ }, nil
+		}
+		return live, func() {}, nil
+	}
+	t.Cleanup(func() { startFreebuffAccount = prev })
+
+	fx.daemon.reportFreebuffDesktopAccounts(context.Background(), rt)
+	first := fx.snapshot()
+	firstAccounts := first[0]["accounts"].([]any)
+	if firstAccounts[0].(map[string]any)["state"] != "failed" {
+		t.Fatalf("dead instance was reported ready: %#v", firstAccounts[0])
+	}
+
+	client, err := fx.daemon.ensureFreebuffDesktopInstance(context.Background(), rt, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != 2 || stops != 1 || client.LaunchID() != "new-launch" {
+		t.Fatalf("recovery starts=%d stops=%d launch_id=%q", starts, stops, client.LaunchID())
+	}
+	fx.daemon.reportFreebuffDesktopAccounts(context.Background(), rt)
+	reports := fx.snapshot()
+	last := reports[len(reports)-2]
+	lastAccounts := last["accounts"].([]any)
+	if lastAccounts[0].(map[string]any)["state"] != "connected" {
+		t.Fatalf("recovered instance status = %#v", lastAccounts[0])
+	}
 }
 
 func TestHandleFreebuffLogin_FailuresAreReported(t *testing.T) {

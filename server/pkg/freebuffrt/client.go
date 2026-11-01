@@ -43,6 +43,10 @@ func NewClientForURL(base, launchID string) *Client {
 	return &Client{base: strings.TrimRight(base, "/"), launchID: launchID, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// LaunchID returns the process-local credential the bridge must send when it
+// calls this orchestrator. Callers must keep it in memory and task-local env.
+func (c *Client) LaunchID() string { return c.launchID }
+
 // APIError is a non-2xx answer from the orchestrator.
 type APIError struct {
 	Status  int

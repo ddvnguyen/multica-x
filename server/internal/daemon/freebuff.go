@@ -70,6 +70,7 @@ type freebuffAccount interface {
 	StartLogin(ctx context.Context) (freebuffrt.LoginStart, error)
 	CancelLogin(ctx context.Context) error
 	BaseURL() string
+	LaunchID() string
 }
 
 // startFreebuffAccount launches the orchestrator for one account of a runtime

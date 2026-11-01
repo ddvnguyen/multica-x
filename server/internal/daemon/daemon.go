@@ -4713,6 +4713,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 // usable; only the second one tells the user why it is empty.
 func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string, accounts []protocol.DaemonModelAccount) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
+	accounts = d.prepareManagedFreebuffDesktopAccounts(ctx, rt, accounts)
 
 	// Freebuff discovery (M-165) precedes the CLI-command resolution below:
 	// there is no CLI to enumerate — the catalog is the account picker of a
@@ -8909,6 +8910,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Critical internal variables are blocklisted to prevent accidental or
 	// malicious override of daemon-set values.
 	var agentCustomEnv map[string]string
+	var managedFreebuffLaunchID string
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
 	}
@@ -8934,6 +8936,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		task.Agent.AccountEndpoint = client.BaseURL()
 		task.Agent.AccountCredentialRef = dir
+		managedFreebuffLaunchID = client.LaunchID()
+		if managedFreebuffLaunchID == "" {
+			return TaskResult{}, errors.New("managed Freebuff Desktop launch credential unavailable")
+		}
 	}
 
 	// freebuff-desktop account injection (M-153): resolved account is layered
@@ -8974,6 +8980,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if managedFreebuffLaunchID != "" {
+		applyManagedFreebuffDesktopEnv(agentEnv, task.Agent.AccountEndpoint, task.Agent.AccountCredentialRef, managedFreebuffLaunchID)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -11077,7 +11086,7 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS", freebuffDesktopLaunchIDEnv:
 		return true
 	}
 	return false

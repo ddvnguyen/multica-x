@@ -413,7 +413,7 @@ func (h *Handler) insertManagedWorkspaceAccount(r *http.Request, wsUUID pgtype.U
 	err := h.DB.QueryRow(ctx, `
 		INSERT INTO workspace_account (
 			workspace_id, provider, label, enabled, created_by, state, daemon_account_id, runtime_id
-		) VALUES ($1, $2, $3, FALSE, $4, 'requested', $5, $6)
+		) VALUES ($1, $2, $3, TRUE, $4, 'requested', $5, $6)
 		RETURNING id, workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, created_at, updated_at, state, login_url, expires_at, error, status, daemon_account_id, runtime_id`,
 		wsUUID, accountProviderFreebuffDesktop, label, parseUUID(userID), daemonAccountID, rtUUID,
 	).Scan(

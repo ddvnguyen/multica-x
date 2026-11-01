@@ -305,7 +305,7 @@ func TestCreateManagedAccountsUseUniqueLabelsAndHideLocalDetails(t *testing.T) {
 	if first.ID == second.ID || first.Label == second.Label || first.State != "requested" || second.State != "requested" {
 		t.Fatalf("managed accounts are not independently provisioned: first=%+v second=%+v", first, second)
 	}
-	if first.RuntimeID != env.codebuddyRuntime || second.RuntimeID != env.codebuddyRuntime || first.Enabled || second.Enabled {
+	if first.RuntimeID != env.codebuddyRuntime || second.RuntimeID != env.codebuddyRuntime || !first.Enabled || !second.Enabled {
 		t.Fatalf("managed account ownership or initial enablement is wrong: first=%+v second=%+v", first, second)
 	}
 	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET login_url='https://freebuff.example/login', credential_ref='/local/path' WHERE id=$1`, parseUUID(first.ID)); err != nil {
@@ -338,7 +338,7 @@ func TestManagedAccountRetryAndRemovalTransitions(t *testing.T) {
 	}
 	var account WorkspaceAccountResponse
 	decodeJSON(t, rec, &account)
-	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET state='failed', error='expired', login_url='https://old.example' WHERE id=$1`, parseUUID(account.ID)); err != nil {
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET state='failed', enabled=FALSE, error='expired', login_url='https://old.example' WHERE id=$1`, parseUUID(account.ID)); err != nil {
 		t.Fatal(err)
 	}
 	retry := testutil.Call(t, testHandler.UpdateWorkspaceAccount, withURLParams(
@@ -347,6 +347,20 @@ func TestManagedAccountRetryAndRemovalTransitions(t *testing.T) {
 	retry.Want(http.StatusAccepted).JSON(&account)
 	if account.State != "requested" || account.LoginURL != "" || account.Error != "" || account.Enabled {
 		t.Fatalf("retry response did not reset sign-in state while preserving disabled choice: %+v", account)
+	}
+	report := testutil.Call(t, testHandler.ReportFreebuffDesktopAccount, withURLParam(
+		newOwnerDaemonRequest(http.MethodPost, "/x", map[string]any{"accounts": []map[string]any{{
+			"id": account.DaemonAccountID, "state": "connected", "endpoint": "http://127.0.0.1:4320",
+		}}}), "runtimeId", env.codebuddyRuntime,
+	))
+	report.Want(http.StatusOK)
+	var connectedEnabled bool
+	var connectedState string
+	if err := testPool.QueryRow(context.Background(), `SELECT state, enabled FROM workspace_account WHERE id=$1`, parseUUID(account.ID)).Scan(&connectedState, &connectedEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if connectedState != "connected" || connectedEnabled {
+		t.Fatalf("status refresh changed disabled preference: state=%q enabled=%v", connectedState, connectedEnabled)
 	}
 	remove := testutil.Call(t, testHandler.DeleteWorkspaceAccount, withURLParams(
 		newRequest(http.MethodDelete, "/x", nil), "id", testWorkspaceID, "accountId", account.ID,

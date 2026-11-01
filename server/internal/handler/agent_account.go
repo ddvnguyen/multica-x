@@ -215,10 +215,11 @@ func resolveModelAccounts(ctx context.Context, q *db.Queries, runtimeID, account
 	}
 	toWire := func(a db.WorkspaceAccount) protocol.DaemonModelAccount {
 		return protocol.DaemonModelAccount{
-			ID:            uuidToString(a.ID),
-			Label:         a.Label,
-			Endpoint:      a.Endpoint.String,
-			CredentialRef: a.CredentialRef.String,
+			ID:              uuidToString(a.ID),
+			Label:           a.Label,
+			Endpoint:        a.Endpoint.String,
+			CredentialRef:   a.CredentialRef.String,
+			DaemonAccountID: a.DaemonAccountID.String,
 		}
 	}
 	if account == modelAccountAll {
