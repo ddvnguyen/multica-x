@@ -8939,10 +8939,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
-	// freebuff-desktop (M-199): keep the task-scoped Multica identity so the
-	// agent can query Multica via the bridge's shim. Policy safety is handled
-	// by neutral wording in the transform layer (codebuddy backend) rather than
-	// by stripping identity. Account env is preserved.
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {

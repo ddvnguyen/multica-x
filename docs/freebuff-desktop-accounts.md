@@ -83,15 +83,14 @@ wins on collision).
   the model itself, so the list is the single entry `freebuff-desktop`.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
-- **Policy safety (M-199):** the transform layer rewords the injected
-  context neutrally ("here is the work item; answer in your final message") and
-  the Multica identity stays available through the bridge's shim so the agent
-  can query Multica. The `CODEBUDDY.md` runtime brief is prepended to the prompt.
-- **Session rotation (M-199):** a reused thread older than 4 hours (configurable
-  via `FREEBUFF_DESKTOP_SESSION_MAX_AGE`, seconds) is abandoned and a fresh one
-  created in the bridge (thread age stored in `state.json`). Multica passes
-  `PriorSessionID` through; the bridge is the source of truth and rejects stale
-  threads. State writes are atomic (`renameSync`).
+- **Task context (M-199):** the bridge prepends `CODEBUDDY.md` only when it
+  creates a thread, including after an expired or invalid resume. The bridge's
+  per-run shim keeps the task-scoped Multica identity available to the agent.
+- **Session rotation (M-199):** a known or resumed thread is reused only when
+  the desktop API reports its creation time as less than four hours ago. A
+  stale thread or one with an unknown creation time is abandoned. The bridge
+  does not scan project threads for idle conversations. It stores the thread
+  ID in account-local `state.json`; state writes are atomic (`renameSync`).
 - **System instruction (M-199):** references `CODEBUDDY.md` only, never
   `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
@@ -124,8 +123,10 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
    Bun: `FREEBUFF_WEB_SERVER=1 FREEBUFF_WEB_HOST=127.0.0.1 FREEBUFF_WEB_NO_AUTH=1
    bun orchestrator.js`. The Electron binary is ARM64; the orchestrator is
    plain Bun JS and runs on x86_64.
-4. Sync the bridge to `a10f3aa47` (commits #3, #4) on the installed
-   `freebuff-desktop` path.
+4. Install the reviewed bridge source from
+   https://github.com/ddvnguyen/freebuff/pull/5 on the configured
+   `freebuff-desktop` path; record the source commit and verify
+   `--list-models --json` before deployment.
 5. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
 6. Smoke test: add two accounts on the runtime page, bind one agent to each
    and one to `any`; check the model picker per account and one run per agent;
