@@ -1452,6 +1452,7 @@ export interface WorkspaceAccount {
   error?: string;
   status?: unknown;
   daemon_account_id?: string;
+  runtime_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -1465,4 +1466,4 @@ export interface CreateWorkspaceAccountRequest {
   runtime_id?: string;
 }
 
-export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;
+export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest> & { retry?: boolean };

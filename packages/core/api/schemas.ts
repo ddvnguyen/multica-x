@@ -3970,3 +3970,25 @@ export const RuntimeProfileSchema = z
     runtime_type: profile.runtime_type || profile.protocol_family,
   }));
 export const RuntimeProfileListSchema = z.array(RuntimeProfileSchema);
+
+export const WorkspaceAccountSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  provider: z.string().catch("freebuff-desktop"),
+  label: z.string().catch(""),
+  endpoint: z.string().optional(),
+  enabled: z.boolean().catch(false),
+  credential_ref: z.string().optional(),
+  state: z.string().optional(),
+  login_url: z.string().optional(),
+  expires_at: z.string().optional(),
+  error: z.string().optional(),
+  status: z.unknown().optional(),
+  daemon_account_id: z.string().optional(),
+  runtime_id: z.string().optional(),
+  created_at: z.string().catch(""),
+  updated_at: z.string().catch(""),
+}).passthrough();
+export const WorkspaceAccountListSchema = z.object({
+  accounts: z.array(WorkspaceAccountSchema).catch([]),
+}).passthrough();

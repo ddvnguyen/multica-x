@@ -61,13 +61,13 @@ func (fx *freebuffFixture) snapshot() []map[string]any {
 
 // fakeAccount is an orchestrator stand-in for the account flow.
 type fakeAccount struct {
-	mu       sync.Mutex
-	statuses []freebuffrt.AuthStatus // returned in order; the last repeats
-	catalogs []freebuffrt.ModelCatalog // returned in order; the last repeats
+	mu         sync.Mutex
+	statuses   []freebuffrt.AuthStatus   // returned in order; the last repeats
+	catalogs   []freebuffrt.ModelCatalog // returned in order; the last repeats
 	catalogErr error
-	login    freebuffrt.LoginStart
-	loginErr error
-	canceled bool
+	login      freebuffrt.LoginStart
+	loginErr   error
+	canceled   bool
 }
 
 func (f *fakeAccount) AuthStatus(context.Context) (freebuffrt.AuthStatus, error) {
@@ -216,6 +216,32 @@ func TestHandleFreebuffLogin_AlreadySignedIn(t *testing.T) {
 	reports := fx.accountReports()
 	if len(reports) != 1 || reports[0]["state"] != "connected" {
 		t.Fatalf("reports = %#v", reports)
+	}
+}
+
+func TestHandleFreebuffDesktopLogin_KeepsInstanceUntilDaemonShutdown(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	fastLogin(t)
+	useProfiles(t)
+	account := &fakeAccount{statuses: []freebuffrt.AuthStatus{{}, signedIn("owner@example.com")}, login: freebuffrt.LoginStart{RemoteURL: "https://freebuff.example/login"}}
+	stopped := false
+	prev := startFreebuffAccount
+	startFreebuffAccount = func(context.Context, string, string) (freebuffAccount, func(), error) {
+		return account, func() { stopped = true }, nil
+	}
+	t.Cleanup(func() { startFreebuffAccount = prev })
+
+	rt := Runtime{ID: "rt-managed", Provider: "codebuddy", Status: "online"}
+	fx.daemon.handleFreebuffDesktopLogin(context.Background(), rt, "a1")
+	if stopped {
+		t.Fatal("desktop instance stopped when the browser-login request returned")
+	}
+	if _, ok := fx.daemon.freebuffDesktopInstances.Load(freebuffDesktopLoginKey(rt.ID, "a1")); !ok {
+		t.Fatal("desktop instance was not retained by the daemon")
+	}
+	fx.daemon.stopFreebuffDesktopInstances()
+	if !stopped {
+		t.Fatal("daemon shutdown did not stop the retained desktop instance")
 	}
 }
 

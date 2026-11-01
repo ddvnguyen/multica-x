@@ -867,8 +867,9 @@ func (c *Client) GetFreebuffPending(ctx context.Context, runtimeID string) (Free
 // workspace's daemon-managed freebuff-desktop accounts.
 type FreebuffDesktopPending struct {
 	Accounts []struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
+		ID     string `json:"id"`
+		State  string `json:"state"`
+		Active bool   `json:"active"`
 	} `json:"accounts"`
 }
 

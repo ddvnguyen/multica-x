@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -65,19 +68,19 @@ func workspaceAccountToResponse(a db.WorkspaceAccount, includeCredentialRef bool
 	if includeCredentialRef && a.CredentialRef.Valid {
 		resp.CredentialRef = a.CredentialRef.String
 	}
-	if a.LoginUrl.Valid {
+	if includeCredentialRef && a.LoginUrl.Valid {
 		resp.LoginURL = a.LoginUrl.String
 	}
-	if a.ExpiresAt.Valid {
+	if includeCredentialRef && a.ExpiresAt.Valid {
 		resp.ExpiresAt = a.ExpiresAt.Time.UTC().Format(time.RFC3339)
 	}
-	if a.Error.Valid {
+	if includeCredentialRef && a.Error.Valid {
 		resp.Error = a.Error.String
 	}
-	if len(a.Status) > 0 {
+	if includeCredentialRef && len(a.Status) > 0 {
 		resp.Status = json.RawMessage(a.Status)
 	}
-	if a.DaemonAccountID.Valid {
+	if includeCredentialRef && a.DaemonAccountID.Valid {
 		resp.DaemonAccountID = a.DaemonAccountID.String
 	}
 	if a.RuntimeID.Valid {
@@ -175,12 +178,17 @@ func (h *Handler) CreateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, "runtime_id is required for managed accounts")
 			return
 		}
-		rtUUID := parseUUID(rid)
+		rtUUID, ok := parseUUIDOrBadRequest(w, rid, "runtime id")
+		if !ok {
+			return
+		}
 		// validate runtime belongs to workspace and is a freebuff-desktop (codebuddy) runtime
-		var rtProvider, rtStatus string
+		var rtProvider, rtStatus, rtCommand string
 		var rtWorkspace pgtype.UUID
-		err := h.DB.QueryRow(r.Context(), `SELECT workspace_id, provider, status FROM agent_runtime WHERE id = $1`, rtUUID).Scan(&rtWorkspace, &rtProvider, &rtStatus)
-		if err != nil || uuidToString(rtWorkspace) != wsID || rtProvider != accountRuntimeProvider || rtStatus != "online" {
+		err := h.DB.QueryRow(r.Context(), `SELECT rt.workspace_id, rt.provider, rt.status, p.command_name
+			FROM agent_runtime rt JOIN runtime_profile p ON p.id=rt.profile_id AND p.workspace_id=rt.workspace_id
+			WHERE rt.id=$1`, rtUUID).Scan(&rtWorkspace, &rtProvider, &rtStatus, &rtCommand)
+		if err != nil || uuidToString(rtWorkspace) != wsID || rtProvider != accountRuntimeProvider || rtStatus != "online" || !strings.HasPrefix(strings.ToLower(rtCommand), "freebuff-desktop") {
 			writeError(w, http.StatusBadRequest, "runtime is not an online freebuff-desktop runtime in this workspace")
 			return
 		}
@@ -270,9 +278,26 @@ func (h *Handler) UpdateWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		Endpoint      *string `json:"endpoint"`
 		CredentialRef *string `json:"credential_ref"`
 		Enabled       *bool   `json:"enabled"`
+		Retry         bool    `json:"retry"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Retry {
+		if !existing.DaemonAccountID.Valid || !existing.RuntimeID.Valid || (existing.State != "failed" && existing.State != "signed_out") {
+			writeError(w, http.StatusBadRequest, "account cannot be retried in its current state")
+			return
+		}
+		retried, err := h.Queries.RetryManagedWorkspaceAccount(r.Context(), db.RetryManagedWorkspaceAccountParams{
+			ID: existing.ID, RuntimeID: existing.RuntimeID,
+		})
+		if err != nil {
+			writeError(w, http.StatusConflict, "account cannot be retried in its current state")
+			return
+		}
+		h.requestDaemonPendingWork(uuidToString(existing.RuntimeID), protocol.PendingWorkKindFreebuffDesktop)
+		writeJSON(w, http.StatusAccepted, workspaceAccountToResponse(retried, true))
 		return
 	}
 	params := db.UpdateWorkspaceAccountParams{
@@ -333,10 +358,24 @@ func (h *Handler) DeleteWorkspaceAccount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Ownership first: nothing below may touch another workspace's rows.
-	if _, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
+	existing, err := h.Queries.GetWorkspaceAccountInWorkspace(r.Context(), db.GetWorkspaceAccountInWorkspaceParams{
 		ID: accUUID, WorkspaceID: wsUUID,
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if existing.DaemonAccountID.Valid && existing.RuntimeID.Valid {
+		tag, err := h.DB.Exec(r.Context(), `UPDATE workspace_account
+			SET state='removing', enabled=FALSE, login_url=NULL, error=NULL, updated_at=now()
+			WHERE id=$1 AND workspace_id=$2 AND runtime_id=$3 AND daemon_account_id=$4`,
+			existing.ID, wsUUID, existing.RuntimeID, existing.DaemonAccountID)
+		if err != nil || tag.RowsAffected() != 1 {
+			writeError(w, http.StatusInternalServerError, "failed to request account removal")
+			return
+		}
+		h.requestDaemonPendingWork(uuidToString(existing.RuntimeID), protocol.PendingWorkKindFreebuffDesktop)
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "removing"})
 		return
 	}
 	tx, err := h.TxStarter.Begin(r.Context())
@@ -389,7 +428,9 @@ func (h *Handler) GetFreebuffDesktopPending(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	rows, err := h.DB.Query(r.Context(), `
-		SELECT daemon_account_id, state FROM workspace_account
+		SELECT daemon_account_id, state, EXISTS (
+			SELECT 1 FROM agent_task_queue q WHERE q.account_id=workspace_account.id AND q.status IN ('dispatched','running')
+		) AS active FROM workspace_account
 		WHERE runtime_id = $1 AND provider = $2 AND daemon_account_id IS NOT NULL
 		  AND state IN ('requested','awaiting_login','removing')`,
 		rt.ID, accountProviderFreebuffDesktop)
@@ -398,17 +439,23 @@ func (h *Handler) GetFreebuffDesktopPending(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer rows.Close()
-	pending := make([]map[string]string, 0)
+	pending := make([]map[string]any, 0)
 	for rows.Next() {
 		var id pgtype.Text
 		var state string
-		if err := rows.Scan(&id, &state); err != nil {
-			continue
+		var active bool
+		if err := rows.Scan(&id, &state, &active); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read pending accounts")
+			return
 		}
 		if !id.Valid {
 			continue
 		}
-		pending = append(pending, map[string]string{"id": id.String, "state": state})
+		pending = append(pending, map[string]any{"id": id.String, "state": state, "active": active})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read pending accounts")
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": pending})
 }
@@ -431,7 +478,8 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 			Endpoint      string          `json:"endpoint"`
 			CredentialRef string          `json:"credential_ref"`
 		} `json:"accounts"`
-		Complete bool `json:"complete"`
+		Complete bool     `json:"complete"`
+		Removed  []string `json:"removed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -439,52 +487,44 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 	}
 	hasErr := false
 	for _, in := range report.Accounts {
-		if in.ID == "" {
+		if !agent.ValidFreebuffAccountID(in.ID) {
+			hasErr = true
 			continue
 		}
-		var existingID pgtype.UUID
-		err := h.DB.QueryRow(r.Context(), `SELECT id FROM workspace_account WHERE runtime_id=$1 AND daemon_account_id=$2`,
-			rt.ID, in.ID).Scan(&existingID)
-		if err != nil {
-			label := in.Label
-			if label == "" {
-				label = "Pending sign-in"
-			}
-			cred := in.CredentialRef
-			if cred == "" {
-				cred = in.ID
-			}
-			_, _ = h.DB.Exec(r.Context(), `
-				INSERT INTO workspace_account (workspace_id, provider, label, endpoint, credential_ref, enabled, created_by, state, daemon_account_id, login_url, error, status, expires_at, runtime_id)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-				rt.WorkspaceID, accountProviderFreebuffDesktop, label, optionalText(in.Endpoint), optionalText(cred),
-				in.State == "connected", pgtype.UUID{}, in.State, in.ID, optionalText(in.LoginURL),
-				optionalText(in.Error), optionalJSON(in.Status), parseExpiresAt(in.ExpiresAt), rt.ID)
-			if err != nil { hasErr = true; slog.Warn("managed account insert failed", "error", err) }
+		switch in.State {
+		case "", "requested", "awaiting_login", "connected", "signed_out", "failed", "removing":
+		default:
+			hasErr = true
 			continue
 		}
-		enabled := in.State == "connected"
-		cred := in.CredentialRef
-		if cred == "" {
-			cred = in.ID
+		if in.State == "" {
+			// ID-only entries are presence snapshots, not lifecycle reports.
+			continue
 		}
-		if _, err := h.DB.Exec(r.Context(), `
+		tag, err := h.DB.Exec(r.Context(), `
 			UPDATE workspace_account SET
-				label = CASE WHEN $2 <> '' THEN $2 ELSE label END,
-				endpoint = CASE WHEN $3 <> '' THEN $3 ELSE endpoint END,
-				credential_ref = CASE WHEN $4 <> '' THEN $4 ELSE credential_ref END,
-				enabled = $5,
+				label = CASE WHEN $3 <> '' THEN $3 ELSE label END,
+				endpoint = CASE WHEN $4 <> '' THEN $4 ELSE endpoint END,
+				credential_ref = CASE WHEN $5 <> '' THEN $5 ELSE credential_ref END,
 				state = $6,
 				login_url = $7,
 				expires_at = $8,
 				error = $9,
 				status = $10,
 				updated_at = now()
-			WHERE id = $1`,
-			existingID, in.Label, in.Endpoint, cred, enabled, in.State,
-			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status)); err != nil {
+			WHERE runtime_id = $1 AND daemon_account_id = $2 AND provider = $11 AND state <> 'removing'`,
+			rt.ID, in.ID, in.Label, in.Endpoint, optionalText(in.CredentialRef), in.State,
+			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status), accountProviderFreebuffDesktop)
+		if err == nil && tag.RowsAffected() == 0 {
+			var removing bool
+			if lookupErr := h.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM workspace_account WHERE runtime_id=$1 AND daemon_account_id=$2 AND provider=$3 AND state='removing')`,
+				rt.ID, in.ID, accountProviderFreebuffDesktop).Scan(&removing); lookupErr == nil && removing {
+				continue
+			}
+		}
+		if err != nil || tag.RowsAffected() == 0 {
 			hasErr = true
-			slog.Warn("managed account update failed", "error", err)
+			slog.Warn("managed account update failed", "runtime_id", uuidToString(rt.ID), "daemon_account_id", in.ID, "error", err)
 		}
 	}
 	if report.Complete {
@@ -494,20 +534,68 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 				ids = append(ids, in.ID)
 			}
 		}
-		if len(ids) == 0 {
-			ids = []string{""}
+		rows, err := h.DB.Query(r.Context(), `
+			SELECT daemon_account_id FROM workspace_account
+			WHERE runtime_id=$1 AND provider=$2 AND daemon_account_id IS NOT NULL
+			  AND state NOT IN ('requested','awaiting_login','removing')
+			  AND NOT (daemon_account_id = ANY($3))`, rt.ID, accountProviderFreebuffDesktop, ids)
+		if err != nil {
+			hasErr = true
+		} else {
+			var stale []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					hasErr = true
+					break
+				}
+				stale = append(stale, id)
+			}
+			if err := rows.Err(); err != nil {
+				hasErr = true
+			}
+			rows.Close()
+			for _, id := range stale {
+				if err := h.deleteManagedWorkspaceAccount(r.Context(), rt.ID, id); err != nil {
+					hasErr = true
+				}
+			}
 		}
-		_, _ = h.DB.Exec(r.Context(), `
-			DELETE FROM workspace_account
-			WHERE runtime_id = $1 AND provider = $2 AND daemon_account_id IS NOT NULL
-			  AND NOT (daemon_account_id = ANY($3)) AND state <> 'requested'`,
-			rt.ID, accountProviderFreebuffDesktop, ids)
+	}
+	for _, id := range report.Removed {
+		if !agent.ValidFreebuffAccountID(id) || h.deleteManagedWorkspaceAccount(r.Context(), rt.ID, id) != nil {
+			hasErr = true
+		}
 	}
 	if hasErr {
 		writeError(w, http.StatusInternalServerError, "failed to store some accounts")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) deleteManagedWorkspaceAccount(ctx context.Context, runtimeID pgtype.UUID, daemonAccountID string) error {
+	var accountID pgtype.UUID
+	if err := h.DB.QueryRow(ctx, `SELECT id FROM workspace_account WHERE runtime_id=$1 AND provider=$2 AND daemon_account_id=$3`,
+		runtimeID, accountProviderFreebuffDesktop, daemonAccountID).Scan(&accountID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.DemoteAgentsOnAccountDelete(ctx, accountID); err != nil {
+		return err
+	}
+	if err := qtx.DeleteWorkspaceAccount(ctx, accountID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func optionalJSON(raw json.RawMessage) interface{} {

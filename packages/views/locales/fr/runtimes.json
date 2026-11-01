@@ -584,6 +584,8 @@
     "endpoint_placeholder": "Point d’accès (http://hôte:4320)",
     "credential_placeholder": "Référence d’identifiants",
     "add": "Ajouter un compte",
+    "retry": "Réessayer",
+    "advanced": "Avancé",
     "toast_failed": "Impossible de mettre à jour le compte"
   },
   "qoder": {

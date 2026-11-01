@@ -66,6 +66,8 @@ import {
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
+  WorkspaceAccountSchema,
+  WorkspaceAccountListSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -75,6 +77,28 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("WorkspaceAccountSchema", () => {
+  it("accepts older account responses and preserves managed runtime ownership", () => {
+    const account = WorkspaceAccountSchema.parse({
+      id: "account-1",
+      workspace_id: "workspace-1",
+      provider: "freebuff-desktop",
+      label: "Personal",
+      enabled: true,
+      runtime_id: "runtime-1",
+      state: "connected",
+    });
+    expect(account.runtime_id).toBe("runtime-1");
+    expect(account.created_at).toBe("");
+  });
+
+  it("falls back to an empty account list when the response is malformed", () => {
+    expect(parseWithFallback({ accounts: "bad" }, WorkspaceAccountListSchema, { accounts: [] }, {
+      endpoint: "listWorkspaceAccounts",
+    })).toEqual({ accounts: [] });
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",

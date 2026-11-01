@@ -7,14 +7,7 @@ ALTER TABLE workspace_account
     ADD COLUMN error TEXT,
     ADD COLUMN status JSONB,
     ADD COLUMN daemon_account_id TEXT,
-    ADD COLUMN runtime_id UUID REFERENCES agent_runtime(id) ON DELETE SET NULL;
-
-CREATE UNIQUE INDEX workspace_account_daemon_account_id_uq
-    ON workspace_account (workspace_id, daemon_account_id)
-    WHERE daemon_account_id IS NOT NULL;
-
-CREATE INDEX workspace_account_runtime_id_idx
-    ON workspace_account (runtime_id);
+    ADD COLUMN runtime_id UUID;
 
 ALTER TABLE workspace_account
     ADD CONSTRAINT workspace_account_state_check

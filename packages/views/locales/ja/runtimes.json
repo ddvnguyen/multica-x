@@ -567,6 +567,8 @@
     "endpoint_placeholder": "エンドポイント (http://host:4320)",
     "credential_placeholder": "資格情報の参照",
     "add": "アカウントを追加",
+    "retry": "再試行",
+    "advanced": "詳細設定",
     "toast_failed": "アカウントを更新できませんでした"
   },
   "qoder": {

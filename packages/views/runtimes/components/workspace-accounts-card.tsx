@@ -40,7 +40,7 @@ export function WorkspaceAccountsCard({
   const isFreebuffDesktop =
     profile?.command_name?.startsWith(FREEBUFF_DESKTOP_COMMAND_PREFIX) ?? false;
 
-  const { data: accounts = [] } = useQuery({
+  const { data: workspaceAccounts = [] } = useQuery({
     ...workspaceAccountListOptions(wsId),
     enabled: isFreebuffDesktop,
     refetchInterval: (query) =>
@@ -50,6 +50,9 @@ export function WorkspaceAccountsCard({
         ? 3000
         : 30000,
   });
+  const accounts = workspaceAccounts.filter(
+    (account) => !account.runtime_id || account.runtime_id === runtime.id,
+  );
   const create = useCreateWorkspaceAccount(wsId);
   const update = useUpdateWorkspaceAccount(wsId);
   const remove = useDeleteWorkspaceAccount(wsId);
@@ -125,11 +128,22 @@ export function WorkspaceAccountsCard({
                   <div className="truncate text-caption text-muted-foreground">
                     {account.endpoint || t(($) => $.accounts.no_endpoint)}
                     {account.credential_ref ? ` · ${account.credential_ref}` : ""}
-                    {account.state && account.state !== "connected" ? ` · ${account.state}` : ""}
+                    {account.runtime_id && account.state ? ` · ${account.state}` : ""}
                   </div>
                   {account.error ? (
                     <div className="text-caption text-destructive">{account.error}</div>
                   ) : null}
+              {canManage && (account.state === "failed" || account.state === "signed_out") ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="self-start"
+                  disabled={update.isPending}
+                  onClick={() => update.mutate({ accountId: account.id, patch: { retry: true } }, { onError: fail })}
+                >
+                  {t(($) => $.accounts.retry)}
+                </Button>
+              ) : null}
                 </div>
                 <Switch
                   checked={account.enabled}
@@ -190,7 +204,7 @@ export function WorkspaceAccountsCard({
               {t(($) => $.accounts.add)}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setAdvanced((v) => !v)}>
-              Advanced
+              {t(($) => $.accounts.advanced)}
             </Button>
           </div>
           {advanced && (

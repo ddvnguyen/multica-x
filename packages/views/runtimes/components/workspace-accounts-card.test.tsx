@@ -81,6 +81,16 @@ describe("WorkspaceAccountsCard", () => {
     expect(screen.queryByRole("button", { name: "Delete Team A" })).toBeNull();
   });
 
+  it("shows only accounts owned by the selected runtime", async () => {
+    api.listWorkspaceAccounts.mockResolvedValue([
+      account(),
+      account({ id: "acc-other", label: "Other runtime", runtime_id: "rt-2" }),
+    ]);
+    renderCard(false);
+    expect(await screen.findByText("Team A")).toBeTruthy();
+    expect(screen.queryByText("Other runtime")).toBeNull();
+  });
+
   it("lets an admin add an account (manual, advanced)", async () => {
     const user = userEvent.setup();
     renderCard(true);
@@ -89,7 +99,7 @@ describe("WorkspaceAccountsCard", () => {
     await user.type(screen.getByLabelText("Label"), "Team B");
     await user.type(screen.getByLabelText("Credential reference"), "ref-b");
     const buttons = screen.getAllByRole("button", { name: "Add account" });
-    await user.click(buttons[buttons.length - 1]);
+    await user.click(buttons.at(-1)!);
     await waitFor(() =>
       expect(api.createWorkspaceAccount).toHaveBeenCalledWith("ws-1", {
         label: "Team B",
@@ -104,7 +114,7 @@ describe("WorkspaceAccountsCard", () => {
     renderCard(true);
     await screen.findByText("Team A");
     await user.type(screen.getByLabelText("Label"), "Team B");
-    await user.click(screen.getAllByRole("button", { name: "Add account" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Add account" })[0]!);
     await waitFor(() =>
       expect(api.createWorkspaceAccount).toHaveBeenCalledWith("ws-1", {
         label: "Team B",
@@ -119,5 +129,24 @@ describe("WorkspaceAccountsCard", () => {
     renderCard(true);
     await user.click(await screen.findByRole("button", { name: "Delete Team A" }));
     await waitFor(() => expect(api.deleteWorkspaceAccount).toHaveBeenCalledWith("ws-1", "acc-1"));
+  });
+
+  it("lets an admin retry a failed sign-in", async () => {
+    const user = userEvent.setup();
+    api.listWorkspaceAccounts.mockResolvedValue([account({ state: "failed", error: "expired" })]);
+    renderCard(true);
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(api.updateWorkspaceAccount).toHaveBeenCalledWith("ws-1", "acc-1", { retry: true }),
+    );
+  });
+
+  it("shows the browser login URL while sign-in is waiting", async () => {
+    api.listWorkspaceAccounts.mockResolvedValue([
+      account({ runtime_id: "rt-1", state: "awaiting_login", login_url: "https://freebuff.example/login" }),
+    ]);
+    renderCard(true);
+    expect(await screen.findByDisplayValue("https://freebuff.example/login")).toBeTruthy();
+    expect(screen.getByText(/awaiting_login/)).toBeTruthy();
   });
 });

@@ -481,6 +481,10 @@ type Daemon struct {
 	// break. Read it through daemonLifecycleCtx.
 	lifecycleCtx context.Context
 
+	freebuffDesktopLogins     sync.Map // runtime/account key -> context.CancelFunc
+	freebuffDesktopInstances  sync.Map // runtime/account key -> *freebuffDesktopInstance
+	freebuffDesktopInstanceMu sync.Mutex
+
 	// dshInstallInFlight is true while an automatic DSH profile install is
 	// running. Read when a verdict becomes an offline reason, so the server can
 	// tell "wait, this resolves itself" from "a human has to act".
@@ -8908,6 +8912,30 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
 	}
+	// A managed Freebuff Desktop account is daemon-owned. Re-ensure its
+	// orchestrator before handing the endpoint and state directory to a task;
+	// this also repairs endpoint changes after a daemon or provider restart.
+	if task.Agent != nil && task.Agent.AccountDaemonID != "" {
+		d.mu.Lock()
+		rt, ok := d.runtimeIndex[task.RuntimeID]
+		d.mu.Unlock()
+		if !ok {
+			return TaskResult{}, errors.New("managed Freebuff Desktop runtime is unavailable")
+		}
+		accountCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		client, err := d.ensureFreebuffDesktopInstance(accountCtx, rt, task.Agent.AccountDaemonID)
+		cancel()
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("start managed Freebuff Desktop account: %w", err)
+		}
+		dir, err := freebuffDesktopAccountDir(rt, task.Agent.AccountDaemonID)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("resolve managed Freebuff Desktop account state: %w", err)
+		}
+		task.Agent.AccountEndpoint = client.BaseURL()
+		task.Agent.AccountCredentialRef = dir
+	}
+
 	// freebuff-desktop account injection (M-153): resolved account is layered
 	// UNDER the agent's custom_env so custom_env wins.
 	if task.Agent != nil && task.Agent.AccountMode != "default" && task.Agent.AccountMode != "" {

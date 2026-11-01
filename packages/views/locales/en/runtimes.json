@@ -584,6 +584,8 @@
     "endpoint_placeholder": "Endpoint (http://host:4320)",
     "credential_placeholder": "Credential reference",
     "add": "Add account",
+    "retry": "Retry",
+    "advanced": "Advanced",
     "toast_failed": "Could not update the account"
   },
   "qoder": {
