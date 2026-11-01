@@ -8939,29 +8939,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
-	// freebuff-desktop policy safety (M-199): never declare Freebuff a worker.
-	// Drop the task-scoped Multica identity so the bridge takes its
-	// non-worker branch ("final answer is the deliverable"). Context is
-	// injected into the prompt instead (codebuddy transform layer). Account
-	// env (FREEBUFF_DESKTOP_URL / CREDENTIAL_REF) is preserved.
-	isFreebuffDesktop := false
-	if v, ok := agentCustomEnv["FREEBUFF_DESKTOP_URL"]; ok && strings.TrimSpace(v) != "" {
-		isFreebuffDesktop = true
-	}
-	if !isFreebuffDesktop {
-		base := strings.ToLower(filepath.Base(entry.Path))
-		if strings.HasPrefix(base, "freebuff-desktop") {
-			isFreebuffDesktop = true
-		}
-	}
-	if isFreebuffDesktop {
-		for _, k := range []string{
-			"MULTICA_TOKEN", "MULTICA_SERVER_URL", "MULTICA_AGENT_ID",
-			"MULTICA_TASK_ID", "MULTICA_TASK_CONFIG_ROOT", "MULTICA_AGENT_NAME",
-		} {
-			delete(agentEnv, k)
-		}
-	}
+	// freebuff-desktop (M-199): keep the task-scoped Multica identity so the
+	// agent can query Multica via the bridge's shim. Policy safety is handled
+	// by neutral wording in the transform layer (codebuddy backend) rather than
+	// by stripping identity. Account env is preserved.
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {

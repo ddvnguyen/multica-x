@@ -940,29 +940,20 @@ func TestTransformFreebuffDesktopPrompt(t *testing.T) {
 		t.Fatalf("no-context prompt changed: %q", got)
 	}
 	// with CODEBUDDY.md: prefixed
-	if err := writeFile(filepath.Join(dir, "CODEBUDDY.md"), []byte("CONTEXT"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "CODEBUDDY.md"), []byte("CONTEXT"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := transformFreebuffDesktopPrompt("hello", cfg, ExecOptions{Cwd: dir})
-	if !strings.HasPrefix(got, "CONTEXT") || !strings.Contains(got, "hello") {
+	if !strings.Contains(got, "CONTEXT") || !strings.Contains(got, "hello") {
 		t.Fatalf("context not prepended: %q", got)
 	}
 	// idempotent: already contains context -> unchanged
 	if got2 := transformFreebuffDesktopPrompt(got, cfg, ExecOptions{Cwd: dir}); got2 != got {
 		t.Fatalf("not idempotent: %q vs %q", got2, got)
 	}
+	// resumed session: no injection
+	if got3 := transformFreebuffDesktopPrompt("hello", cfg, ExecOptions{Cwd: dir, ResumeSessionID: "ses-1"}); got3 != "hello" {
+		t.Fatalf("resume injected context: %q", got3)
+	}
 }
 
-func writeFile(path string, data []byte, mode os.FileMode) error {
-	// helper shim to avoid import churn
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
-	return os.Chmod(path, mode)
-}

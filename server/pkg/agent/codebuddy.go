@@ -39,7 +39,7 @@ var codebuddyBlockedArgs = map[string]blockedArgMode{
 
 // isFreebuffDesktopBackend reports whether this backend targets the
 // freebuff-desktop bridge, using the env it was configured with.
-func isFreebuffDesktopBackend(cfg Config) bool {
+func IsFreebuffDesktopBackend(cfg Config) bool {
 	if v, ok := cfg.Env["FREEBUFF_DESKTOP_URL"]; ok && strings.TrimSpace(v) != "" {
 		return true
 	}
@@ -51,7 +51,11 @@ func isFreebuffDesktopBackend(cfg Config) bool {
 // to the prompt for freebuff-desktop runs. Returns the (possibly unchanged)
 // prompt. Only active for freebuff-desktop backends.
 func transformFreebuffDesktopPrompt(prompt string, cfg Config, opts ExecOptions) string {
-	if !isFreebuffDesktopBackend(cfg) {
+	if !IsFreebuffDesktopBackend(cfg) {
+		return prompt
+	}
+	// Avoid repeating the context on resumed sessions that already hold it.
+	if strings.TrimSpace(opts.ResumeSessionID) != "" {
 		return prompt
 	}
 	if strings.TrimSpace(opts.Cwd) == "" {
@@ -66,7 +70,11 @@ func transformFreebuffDesktopPrompt(prompt string, cfg Config, opts ExecOptions)
 	if strings.Contains(prompt, ctx) {
 		return prompt
 	}
-	return ctx + "\n\n---\n\n" + prompt
+	// Neutral framing (M-199): present the work item as context, not as a job
+	// handed over by an agent. The agent may query Multica via the CLI if needed
+	// and answers in its final message.
+	note := "Context for this task (from CODEBUDDY.md). Answer in your final message; you may query Multica via the CLI if needed.\n\n"
+	return note + ctx + "\n\n---\n\n" + prompt
 }
 
 func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {

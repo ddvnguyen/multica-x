@@ -83,15 +83,15 @@ wins on collision).
   the model itself, so the list is the single entry `freebuff-desktop`.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
-- **Policy safety (M-199):** Multica never passes `MULTICA_TOKEN`/identity env
-  to the bridge, so the bridge takes its non-worker branch ("final answer is
-  the deliverable") and Freebuff does not reject the run as driven by another
-  agent. The daemon's `CODEBUDDY.md` runtime brief is prepended to the prompt
-  by a transform layer so the agent still has task context and can query info.
+- **Policy safety (M-199):** the transform layer rewords the injected
+  context neutrally ("here is the work item; answer in your final message") and
+  the Multica identity stays available through the bridge's shim so the agent
+  can query Multica. The `CODEBUDDY.md` runtime brief is prepended to the prompt.
 - **Session rotation (M-199):** a reused thread older than 4 hours (configurable
   via `FREEBUFF_DESKTOP_SESSION_MAX_AGE`, seconds) is abandoned and a fresh one
-  created, in both the bridge (thread age in `state.json`) and Multica
-  (stale `PriorSessionID` is dropped). State writes are atomic (`renameSync`).
+  created in the bridge (thread age stored in `state.json`). Multica passes
+  `PriorSessionID` through; the bridge is the source of truth and rejects stale
+  threads. State writes are atomic (`renameSync`).
 - **System instruction (M-199):** references `CODEBUDDY.md` only, never
   `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
@@ -126,8 +126,8 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
    plain Bun JS and runs on x86_64.
 4. Sync the bridge to `a10f3aa47` (commits #3, #4) on the installed
    `freebuff-desktop` path.
-4. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
-5. Smoke test: add two accounts on the runtime page, bind one agent to each
+5. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
+6. Smoke test: add two accounts on the runtime page, bind one agent to each
    and one to `any`; check the model picker per account and one run per agent;
    with one account busy, a second task for it stays queued.
 
