@@ -80,10 +80,12 @@ SELECT CASE
     WHEN ag.account_mode = 'any' THEN
         EXISTS (SELECT 1 FROM workspace_account a
                 WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled
-                  AND (a.daemon_account_id IS NULL OR a.state = 'connected'))
+                  AND (a.daemon_account_id IS NULL OR a.state = 'connected')
+                  AND (a.runtime_id IS NULL OR a.runtime_id = sqlc.arg(runtime_id)))
         AND NOT EXISTS (SELECT 1 FROM workspace_account a
                 WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled
                   AND (a.daemon_account_id IS NULL OR a.state = 'connected')
+                  AND (a.runtime_id IS NULL OR a.runtime_id = sqlc.arg(runtime_id))
                   AND NOT EXISTS (SELECT 1 FROM agent_task_queue t
                                   WHERE t.account_id = a.id AND t.status IN ('dispatched', 'running')))
     ELSE FALSE

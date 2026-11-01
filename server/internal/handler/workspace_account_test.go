@@ -550,7 +550,7 @@ func TestAccountLeaseBlocksAndBalances(t *testing.T) {
 	}
 	onA, onB, onAny := mkAgent("specific", a.ID), mkAgent("specific", b.ID), mkAgent("any", "")
 	blocked := func(agentID string) bool {
-		got, err := testHandler.Queries.AgentAccountBlocked(ctx, parseUUID(agentID))
+		got, err := testHandler.Queries.AgentAccountBlocked(ctx, db.AgentAccountBlockedParams{ID: parseUUID(agentID), RuntimeID: parseUUID(env.codebuddyRuntime)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -615,5 +615,72 @@ func TestResolveModelAccountsScopesToTheWorkspace(t *testing.T) {
 	}
 	if got := resolveModelAccounts(ctx, q, env.codebuddyRuntime, env.foreignAccountID); len(got) != 0 {
 		t.Fatalf("another workspace's account must not be enumerated: %+v", got)
+	}
+}
+
+// Lease eligibility must match dispatch eligibility for the claiming runtime,
+// while manual accounts remain available to both runtimes.
+func TestAccountLeaseScopesManagedAccountsToClaimingRuntime(t *testing.T) {
+	env := newAccountTestEnv(t)
+	ctx := context.Background()
+	var otherRuntime string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id, profile_id)
+		VALUES ($1, 'lease-other-machine', 'lease-other', 'local', 'codebuddy', 'online', 'x', '{}'::jsonb, now(), 'public', $2, $3) RETURNING id`, testWorkspaceID, testUserID, env.codebuddyProfile).Scan(&otherRuntime); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id=$1`, otherRuntime) })
+	createManaged := func(runtimeID string) string {
+		t.Helper()
+		rec := createAccountAs(t, testUserID, map[string]any{"managed": true, "runtime_id": runtimeID})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("managed create: %d %s", rec.Code, rec.Body)
+		}
+		var acc WorkspaceAccountResponse
+		decodeJSON(t, rec, &acc)
+		if _, err := testPool.Exec(ctx, `UPDATE workspace_account SET state='connected' WHERE id=$1`, acc.ID); err != nil {
+			t.Fatal(err)
+		}
+		return acc.ID
+	}
+	a, b := createManaged(env.codebuddyRuntime), createManaged(otherRuntime)
+	rec := createAgentWithAccount(t, env.codebuddyRuntime, map[string]any{"account_mode": "any"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("agent create: %d %s", rec.Code, rec.Body)
+	}
+	var ag AgentResponse
+	decodeJSON(t, rec, &ag)
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id=$1`, ag.ID) })
+	blocked := func(runtimeID string) bool {
+		t.Helper()
+		got, err := testHandler.Queries.AgentAccountBlocked(ctx, db.AgentAccountBlockedParams{ID: parseUUID(ag.ID), RuntimeID: parseUUID(runtimeID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	insertAccountTask(t, ag.ID, env.codebuddyRuntime, parseUUID(a), "running")
+	if !blocked(env.codebuddyRuntime) || blocked(otherRuntime) {
+		t.Fatal("busy A must block A but not idle B")
+	}
+	insertAccountTask(t, ag.ID, otherRuntime, parseUUID(b), "dispatched")
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE account_id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
+	if blocked(env.codebuddyRuntime) || !blocked(otherRuntime) {
+		t.Fatal("idle A must not block A or unblock busy B")
+	}
+	manual := mustCreateAccount(t, "lease-shared")
+	if blocked(otherRuntime) {
+		t.Fatal("idle shared manual account must unblock B")
+	}
+	insertAccountTask(t, ag.ID, otherRuntime, parseUUID(manual.ID), "running")
+	if !blocked(otherRuntime) || blocked(env.codebuddyRuntime) {
+		t.Fatal("busy shared manual and B must block B, while idle A remains usable")
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE workspace_account SET state='signed_out' WHERE id=$1`, b); err != nil {
+		t.Fatal(err)
+	}
+	if !blocked(otherRuntime) {
+		t.Fatal("signed-out B must not unblock a busy shared account")
 	}
 }

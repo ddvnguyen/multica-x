@@ -19,10 +19,12 @@ SELECT CASE
     WHEN ag.account_mode = 'any' THEN
         EXISTS (SELECT 1 FROM workspace_account a
                 WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled
-                  AND (a.daemon_account_id IS NULL OR a.state = 'connected'))
+                  AND (a.daemon_account_id IS NULL OR a.state = 'connected')
+                  AND (a.runtime_id IS NULL OR a.runtime_id = $2))
         AND NOT EXISTS (SELECT 1 FROM workspace_account a
                 WHERE a.workspace_id = ag.workspace_id AND a.provider = 'freebuff-desktop' AND a.enabled
                   AND (a.daemon_account_id IS NULL OR a.state = 'connected')
+                  AND (a.runtime_id IS NULL OR a.runtime_id = $2)
                   AND NOT EXISTS (SELECT 1 FROM agent_task_queue t
                                   WHERE t.account_id = a.id AND t.status IN ('dispatched', 'running')))
     ELSE FALSE
@@ -31,12 +33,17 @@ FROM agent ag
 WHERE ag.id = $1
 `
 
+type AgentAccountBlockedParams struct {
+	ID        pgtype.UUID `json:"id"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+}
+
 // Whether the agent must wait for an account to free up before a task is
 // claimed. `specific` is blocked while its account holds a dispatched/running
 // task; `any` only when every enabled account does. An agent with no usable
 // account (`default`, or `any` with none configured) is never blocked.
-func (q *Queries) AgentAccountBlocked(ctx context.Context, id pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, agentAccountBlocked, id)
+func (q *Queries) AgentAccountBlocked(ctx context.Context, arg AgentAccountBlockedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, agentAccountBlocked, arg.ID, arg.RuntimeID)
 	var blocked bool
 	err := row.Scan(&blocked)
 	return blocked, err

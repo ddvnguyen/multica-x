@@ -153,7 +153,10 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 			}
 			d.freebuffDesktopInstanceMu.Unlock()
 			cfg := agent.Config{RuntimeID: rt.ID}
-			_ = agent.RemoveFreebuffAccount(cfg, acc.ID)
+			if err := agent.RemoveFreebuffAccount(cfg, acc.ID); err != nil {
+				d.logger.Warn("freebuff-desktop account removal failed; will retry", "runtime_id", rt.ID, "account_id", acc.ID, "error", err)
+				continue
+			}
 			d.reportFreebuffDesktopRemoved(ctx, rt, acc.ID)
 		}
 	}

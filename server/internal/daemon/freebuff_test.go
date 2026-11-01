@@ -616,3 +616,49 @@ func TestFreebuffRuntimes_SelectsByProvider(t *testing.T) {
 		t.Fatalf("freebuffRuntimes = %#v", got)
 	}
 }
+
+func TestFreebuffDesktopRemovalRetriesAfterFilesystemFailure(t *testing.T) {
+	fx := newFreebuffFixture(t)
+	useProfiles(t)
+	rt := Runtime{ID: "rt-managed", Provider: "codebuddy", Status: "online"}
+	cfg := agent.Config{RuntimeID: rt.ID}
+	dir, err := agent.EnsureFreebuffAccountDir(cfg, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(dir)
+	if err := os.Rename(parent, parent+"-preserved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parent, []byte("filesystem failure fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.RemoveFreebuffAccount(cfg, "a1"); err == nil {
+		t.Fatal("fixture must cause removal to fail")
+	}
+	fx.pending = `{"accounts":[{"id":"a1","state":"removing","active":false}]}`
+	fx.daemon.syncFreebuffDesktopRuntime(context.Background(), rt)
+	for _, report := range fx.snapshot() {
+		if report["removed"] != nil {
+			t.Fatalf("acknowledged failed removal: %#v", report)
+		}
+	}
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(parent+"-preserved", parent); err != nil {
+		t.Fatal(err)
+	}
+	fx.daemon.syncFreebuffDesktopRuntime(context.Background(), rt)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("account state still exists after retry: %v", err)
+	}
+	reports := fx.snapshot()
+	if len(reports) != 1 {
+		t.Fatalf("expected one successful removal acknowledgement, got %#v", reports)
+	}
+	removed, ok := reports[0]["removed"].([]any)
+	if !ok || len(removed) != 1 || removed[0] != "a1" {
+		t.Fatalf("unexpected acknowledgement: %#v", reports[0])
+	}
+}
