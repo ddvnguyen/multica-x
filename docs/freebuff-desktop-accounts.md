@@ -118,7 +118,7 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
 2. Open the stack PR `multica-moct → master`; the Owner approves it and the
    deploy.
 3. Update the deployed Freebuff Desktop to the slimmer Linux build
-   (commit `d12f0dd2304909325e61aec4fa73925342e70487`, ~125 MB RSS vs ~400 MB
+   (commit `7807c228ed488496a7bc468aace868368fd605fa` (v0.0.196), ~121 MB RSS vs ~400 MB
    for the previous build). It drops the cloud-account-management endpoints
    Multica never used and keeps everything the bridge needs. Run headless under
    Bun: `FREEBUFF_WEB_SERVER=1 FREEBUFF_WEB_HOST=127.0.0.1 FREEBUFF_WEB_NO_AUTH=1
