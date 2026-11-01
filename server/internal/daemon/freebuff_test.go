@@ -375,7 +375,7 @@ func TestReportFreebuffDesktopAccountsRestartsOwnedInstance(t *testing.T) {
 	rt := Runtime{ID: cfg.RuntimeID, Provider: "codebuddy", Status: "online"}
 	fx.daemon.reportFreebuffDesktopAccounts(context.Background(), rt)
 	reports := fx.snapshot()
-	if len(reports) != 1 || reports[0]["complete"] != true {
+	if len(reports) != 2 || reports[0]["snapshot"] != true || reports[1]["complete"] != true {
 		t.Fatalf("startup status report = %#v", reports)
 	}
 	entries := reports[0]["accounts"].([]any)
