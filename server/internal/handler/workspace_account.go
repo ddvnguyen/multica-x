@@ -483,6 +483,7 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 			CredentialRef string          `json:"credential_ref"`
 		} `json:"accounts"`
 		Complete bool     `json:"complete"`
+		Snapshot bool     `json:"snapshot"`
 		Removed  []string `json:"removed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
@@ -511,7 +512,7 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 			if err := h.DB.QueryRow(r.Context(), `SELECT EXISTS(
 				SELECT 1 FROM workspace_account
 				WHERE workspace_id=$1 AND provider=$2 AND label=$3
-				  AND NOT (runtime_id=$4 AND daemon_account_id=$5)
+				  AND NOT COALESCE((runtime_id=$4 AND daemon_account_id=$5), FALSE)
 			)`, rt.WorkspaceID, accountProviderFreebuffDesktop, label, rt.ID, in.ID).Scan(&conflict); err != nil {
 				hasErr = true
 				continue
@@ -525,15 +526,15 @@ func (h *Handler) ReportFreebuffDesktopAccount(w http.ResponseWriter, r *http.Re
 				label = CASE WHEN $3 <> '' THEN $3 ELSE label END,
 				endpoint = CASE WHEN $4 <> '' THEN $4 ELSE endpoint END,
 				credential_ref = CASE WHEN $5 <> '' THEN $5 ELSE credential_ref END,
-				state = $6,
-				login_url = $7,
-				expires_at = $8,
-				error = $9,
-				status = $10,
+				state = CASE WHEN $12 AND state IN ('requested','awaiting_login') THEN state ELSE $6 END,
+				login_url = CASE WHEN $12 AND state IN ('requested','awaiting_login') THEN login_url ELSE $7 END,
+				expires_at = CASE WHEN $12 AND state IN ('requested','awaiting_login') THEN expires_at ELSE $8 END,
+				error = CASE WHEN $12 AND state IN ('requested','awaiting_login') THEN error ELSE $9 END,
+				status = CASE WHEN $12 AND state IN ('requested','awaiting_login') THEN status ELSE $10 END,
 				updated_at = now()
 			WHERE runtime_id = $1 AND daemon_account_id = $2 AND provider = $11 AND state <> 'removing'`,
 			rt.ID, in.ID, label, in.Endpoint, optionalText(in.CredentialRef), in.State,
-			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status), accountProviderFreebuffDesktop)
+			optionalText(in.LoginURL), parseExpiresAt(in.ExpiresAt), optionalText(in.Error), optionalJSON(in.Status), accountProviderFreebuffDesktop, report.Snapshot)
 		if err == nil && tag.RowsAffected() == 0 {
 			var removing bool
 			if lookupErr := h.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM workspace_account WHERE runtime_id=$1 AND daemon_account_id=$2 AND provider=$3 AND state='removing')`,

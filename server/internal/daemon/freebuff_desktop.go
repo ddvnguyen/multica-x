@@ -278,6 +278,20 @@ func (d *Daemon) reportFreebuffDesktopEntries(ctx context.Context, rt Runtime, e
 	})
 }
 
+func (d *Daemon) reportFreebuffDesktopSnapshot(ctx context.Context, rt Runtime, entries []map[string]any) {
+	d.reportRuntimeResultWithRetry(ctx, "freebuff_desktop_account", rt.ID, "", func(ctx context.Context) error {
+		return d.client.ReportFreebuffDesktopAccount(ctx, rt.ID, map[string]any{"accounts": entries, "snapshot": true})
+	})
+}
+
+func (d *Daemon) reportFreebuffDesktopPresence(ctx context.Context, rt Runtime, ids []string) {
+	entries := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		entries = append(entries, map[string]any{"id": id})
+	}
+	d.reportFreebuffDesktopEntries(ctx, rt, entries, true)
+}
+
 func (d *Daemon) reportFreebuffDesktopRemoved(ctx context.Context, rt Runtime, id string) {
 	d.reportRuntimeResultWithRetry(ctx, "freebuff_desktop_account", rt.ID, "", func(ctx context.Context) error {
 		return d.client.ReportFreebuffDesktopAccount(ctx, rt.ID, map[string]any{"removed": []string{id}})
@@ -292,7 +306,9 @@ func (d *Daemon) reportFreebuffDesktopAccounts(ctx context.Context, rt Runtime) 
 		return
 	}
 	entries := make([]map[string]any, 0, len(ids))
+	presentIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
+		presentIDs = append(presentIDs, id)
 		entries = append(entries, map[string]any{"id": id})
 		key := freebuffDesktopLoginKey(rt.ID, id)
 		if _, loggingIn := d.freebuffDesktopLogins.Load(key); loggingIn {
@@ -327,5 +343,6 @@ func (d *Daemon) reportFreebuffDesktopAccounts(ctx context.Context, rt Runtime) 
 		}
 		entries[len(entries)-1] = entry
 	}
-	d.reportFreebuffDesktopEntries(ctx, rt, entries, true)
+	d.reportFreebuffDesktopSnapshot(ctx, rt, entries)
+	d.reportFreebuffDesktopPresence(ctx, rt, presentIDs)
 }
