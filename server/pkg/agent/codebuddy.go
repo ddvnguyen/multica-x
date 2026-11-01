@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,38 @@ var codebuddyBlockedArgs = map[string]blockedArgMode{
 	// `--effort` is owned by the per-agent thinking_level picker so a
 	// user-supplied custom_arg cannot silently outvote it.
 	"--effort": blockedWithValue,
+}
+
+// isFreebuffDesktopBackend reports whether this backend targets the
+// freebuff-desktop bridge, using the env it was configured with.
+func isFreebuffDesktopBackend(cfg Config) bool {
+	if v, ok := cfg.Env["FREEBUFF_DESKTOP_URL"]; ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(cfg.ExecutablePath))
+	return strings.HasPrefix(base, "freebuff-desktop")
+}
+
+// transformFreebuffDesktopPrompt prepends the task context file (CODEBUDDY.md)
+// to the prompt for freebuff-desktop runs. Returns the (possibly unchanged)
+// prompt. Only active for freebuff-desktop backends.
+func transformFreebuffDesktopPrompt(prompt string, cfg Config, opts ExecOptions) string {
+	if !isFreebuffDesktopBackend(cfg) {
+		return prompt
+	}
+	if strings.TrimSpace(opts.Cwd) == "" {
+		return prompt
+	}
+	data, err := os.ReadFile(filepath.Join(opts.Cwd, "CODEBUDDY.md"))
+	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+		return prompt
+	}
+	ctx := strings.TrimSpace(string(data))
+	// Avoid duplicating if the prompt already carries the context.
+	if strings.Contains(prompt, ctx) {
+		return prompt
+	}
+	return ctx + "\n\n---\n\n" + prompt
 }
 
 func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {
@@ -104,6 +138,12 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
+
+	// freebuff-desktop transform layer (M-199): inject the current task context
+	// (CODEBUDDY.md) into the prompt so the agent has the issue/task info
+	// without being declared a worker. Runs before args are built so the prompt
+	// variable carries the prefix.
+	prompt = transformFreebuffDesktopPrompt(prompt, b.cfg, opts)
 
 	args := buildCodebuddyArgs(opts, b.cfg.Logger)
 

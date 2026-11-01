@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -924,4 +925,44 @@ func TestBuildCodebuddyEnvForcesRandomInternalPortAndBashBackground(t *testing.T
 			t.Fatalf("forced %s entry must be last exact key for Windows dedup, got last=%q (env=%v)", key, lastExact, env)
 		}
 	}
+}
+
+func TestTransformFreebuffDesktopPrompt(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{ExecutablePath: "/usr/local/bin/freebuff-desktop-bridge.mjs", Env: map[string]string{"FREEBUFF_DESKTOP_URL": "http://localhost:4320"}}
+	// non-freebuff backend: unchanged
+	cfg2 := Config{ExecutablePath: "codebuddy"}
+	if got := transformFreebuffDesktopPrompt("hello", cfg2, ExecOptions{Cwd: dir}); got != "hello" {
+		t.Fatalf("non-fb prompt changed: %q", got)
+	}
+	// no CODEBUDDY.md: unchanged
+	if got := transformFreebuffDesktopPrompt("hello", cfg, ExecOptions{Cwd: dir}); got != "hello" {
+		t.Fatalf("no-context prompt changed: %q", got)
+	}
+	// with CODEBUDDY.md: prefixed
+	if err := writeFile(filepath.Join(dir, "CODEBUDDY.md"), []byte("CONTEXT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := transformFreebuffDesktopPrompt("hello", cfg, ExecOptions{Cwd: dir})
+	if !strings.HasPrefix(got, "CONTEXT") || !strings.Contains(got, "hello") {
+		t.Fatalf("context not prepended: %q", got)
+	}
+	// idempotent: already contains context -> unchanged
+	if got2 := transformFreebuffDesktopPrompt(got, cfg, ExecOptions{Cwd: dir}); got2 != got {
+		t.Fatalf("not idempotent: %q vs %q", got2, got)
+	}
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	// helper shim to avoid import churn
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+	return os.Chmod(path, mode)
 }

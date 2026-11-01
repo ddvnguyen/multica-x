@@ -83,6 +83,17 @@ wins on collision).
   the model itself, so the list is the single entry `freebuff-desktop`.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
+- **Policy safety (M-199):** Multica never passes `MULTICA_TOKEN`/identity env
+  to the bridge, so the bridge takes its non-worker branch ("final answer is
+  the deliverable") and Freebuff does not reject the run as driven by another
+  agent. The daemon's `CODEBUDDY.md` runtime brief is prepended to the prompt
+  by a transform layer so the agent still has task context and can query info.
+- **Session rotation (M-199):** a reused thread older than 4 hours (configurable
+  via `FREEBUFF_DESKTOP_SESSION_MAX_AGE`, seconds) is abandoned and a fresh one
+  created, in both the bridge (thread age in `state.json`) and Multica
+  (stale `PriorSessionID` is dropped). State writes are atomic (`renameSync`).
+- **System instruction (M-199):** references `CODEBUDDY.md` only, never
+  `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
   in it are the upstream sync that main was behind on, not bridge changes).
 
@@ -106,8 +117,15 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
 1. Merge the PR into `multica-moct` (Claude Architect approval + CI green).
 2. Open the stack PR `multica-moct → master`; the Owner approves it and the
    deploy.
-3. Update the deployed Freebuff Desktop to the latest upstream (recorded:
-   `9cd09bacf`, previously `3fc5979f3`), with the bridge from the fork PR.
+3. Update the deployed Freebuff Desktop to the slimmer Linux build
+   (commit `d12f0dd2304909325e61aec4fa73925342e70487`, ~125 MB RSS vs ~400 MB
+   for the previous build). It drops the cloud-account-management endpoints
+   Multica never used and keeps everything the bridge needs. Run headless under
+   Bun: `FREEBUFF_WEB_SERVER=1 FREEBUFF_WEB_HOST=127.0.0.1 FREEBUFF_WEB_NO_AUTH=1
+   bun orchestrator.js`. The Electron binary is ARM64; the orchestrator is
+   plain Bun JS and runs on x86_64.
+4. Sync the bridge to `a10f3aa47` (commits #3, #4) on the installed
+   `freebuff-desktop` path.
 4. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
 5. Smoke test: add two accounts on the runtime page, bind one agent to each
    and one to `any`; check the model picker per account and one run per agent;
@@ -121,3 +139,7 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
   idle account in the same instant can both pass it. The bridge's own
   single-run handling is the backstop.
 - DB-backed handler tests (CRUD authz, validation, lease) run in CI only.
+- Memory: each account needs its own orchestrator process. Budget ~0.5 GB per
+  account on the daemon host with the previous build, ~0.15 GB with the slimmer
+  build. Remove idle accounts to free their process; `any`-mode agents do not
+  need every account live.
