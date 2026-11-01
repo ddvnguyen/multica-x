@@ -16,6 +16,7 @@ export interface IslandTab {
   id: string;
   url: string;
   history: { stack: string[]; index: number };
+  pinned: boolean;
 }
 
 export interface TabsGroup {
@@ -32,6 +33,7 @@ export type TabsState = TabsGroup & {
   focus: (id: string) => void;
   closeTab: (id: string) => void;
   close: (id: string) => void;
+  togglePin: (id: string) => void;
   // rail entry handling
   railEntry: (entry: IslandRoute | string) => void;
   onRailEntry: (entry: IslandRoute | string) => void;
@@ -80,6 +82,19 @@ export function familyOfUrl(url: string): string | null {
   if (route === null) return null;
   return familyOfRoute(route);
 }
+
+/** Dedup identity of a tab URL: its pathname (search/hash are view state). */
+export function resourceKeyForUrl(url: string): string {
+  const hash = url.indexOf("#");
+  const query = url.indexOf("?");
+  let cut = -1;
+  if (query !== -1 && (hash === -1 || query < hash)) cut = query;
+  else if (hash !== -1) cut = hash;
+  return cut === -1 ? url : url.slice(0, cut);
+}
+
+export const resourceKeyOfUrl = resourceKeyForUrl;
+export const resourceKey = resourceKeyForUrl;
 
 function routeFromUrl(url: string): IslandRoute | null {
   return parseIslandRoute(url);
@@ -134,15 +149,16 @@ export function createTabsStore(
       let victim: string | null = null;
       for (const id of candidates) {
         if (id === s.activeId) continue;
-        if (s.tabs.some((t) => t.id === id)) {
+        const tab = s.tabs.find((t) => t.id === id);
+        if (tab && !tab.pinned) {
           victim = id;
           break;
         }
       }
       if (victim === null) {
-        // fall back to oldest tab not active
+        // fall back to oldest unpinned tab not active
         for (const t of s.tabs) {
-          if (t.id !== s.activeId) {
+          if (t.id !== s.activeId && !t.pinned) {
             victim = t.id;
             break;
           }
@@ -156,11 +172,18 @@ export function createTabsStore(
       };
     };
 
-    const openTab = (url: string, options?: { activate?: boolean; insertAfterActive?: boolean }) => {
+    const openTab = (url: string, options?: { activate?: boolean; insertAfterActive?: boolean; pinned?: boolean }) => {
       const activate = options?.activate !== false;
       const insertAfterActive = options?.insertAfterActive !== false;
+      const pinned = options?.pinned === true;
+      // Reuse an existing tab for the same resource (pathname), like upstream.
+      const existing = get().tabs.find((t) => resourceKeyForUrl(t.url) === resourceKeyForUrl(url));
+      if (existing) {
+        if (activate) focusId(existing.id);
+        return existing.id;
+      }
       const id = newId();
-      const tab: IslandTab = { id, url, history: { stack: [url], index: 0 } };
+      const tab: IslandTab = { id, url, history: { stack: [url], index: 0 }, pinned };
       update((s) => {
         const next = evictIfNeeded(s);
         const activeIndex = next.tabs.findIndex((t) => t.id === next.activeId);
@@ -194,7 +217,7 @@ export function createTabsStore(
             const rootRoute = Object.entries(FAMILY_ROOTS).find(([f]) => f === fam)?.[1] as IslandRoute | undefined;
             if (rootRoute) rootUrl = islandPath(slug, rootRoute);
           }
-          const newTab: IslandTab = { id: newId(), url: rootUrl, history: { stack: [rootUrl], index: 0 } };
+          const newTab: IslandTab = { id: newId(), url: rootUrl, history: { stack: [rootUrl], index: 0 }, pinned: false };
           tabs.push(newTab);
           activeId = newTab.id;
           mru.unshift(newTab.id);
@@ -204,7 +227,7 @@ export function createTabsStore(
     };
 
     const openOrFocus = (url: string) => {
-      const existing = get().tabs.find((t) => t.url === url);
+      const existing = get().tabs.find((t) => resourceKeyForUrl(t.url) === resourceKeyForUrl(url));
       if (existing) {
         focusId(existing.id);
         return existing.id;
@@ -213,6 +236,7 @@ export function createTabsStore(
     };
 
     const railEntry = (entry: IslandRoute | string) => {
+      console.log("RAIL ENTRY called", entry);
       const route: IslandRoute | null =
         typeof entry === "string" ? parseIslandRoute(entry) : entry;
       if (route === null) return;
@@ -239,7 +263,7 @@ export function createTabsStore(
           // simple: reuse evictIfNeeded by reconstructing
         }
         const id = newId();
-        const tab: IslandTab = { id, url: entryUrl, history: { stack: [entryUrl], index: 0 } };
+        const tab: IslandTab = { id, url: entryUrl, history: { stack: [entryUrl], index: 0 }, pinned: false };
         // evict if needed
         let tabs = next.tabs;
         let activeId = next.activeId;
@@ -359,6 +383,14 @@ export function createTabsStore(
     const activeTab = () => get().tabs.find((t) => t.id === get().activeId) ?? null;
     const activeUrl = () => activeTab()?.url ?? null;
 
+
+    const togglePin = (id: string) => {
+      update((st) => ({
+        ...st,
+        tabs: st.tabs.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)),
+      }));
+    };
+
     const actions = {
       openTab,
       open: openTab,
@@ -366,6 +398,7 @@ export function createTabsStore(
       focus: focusId,
       closeTab,
       close: closeTab,
+      togglePin,
       railEntry,
       onRailEntry: railEntry,
       openOrFocus,

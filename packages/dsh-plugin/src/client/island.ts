@@ -307,6 +307,11 @@ export function unmountIsland(host: HTMLElement): void {
 export function resetIsland(): void {
   if (keepAlive !== null) unmountIsland(keepAlive);
   keepAlive = null;
+  try {
+    window.localStorage.removeItem("multica.dsh.tabs.v1");
+  } catch {
+    // ignore
+  }
 }
 
 /** True while an island is mounted on this element. For tests and diagnostics. */
