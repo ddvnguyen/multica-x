@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -50,31 +49,11 @@ func IsFreebuffDesktopBackend(cfg Config) bool {
 // transformFreebuffDesktopPrompt prepends the task context file (CODEBUDDY.md)
 // to the prompt for freebuff-desktop runs. Returns the (possibly unchanged)
 // prompt. Only active for freebuff-desktop backends.
+// transformFreebuffDesktopPrompt is a pass-through: the desktop agent reads
+// CODEBUDDY.md from its workdir natively (codebuddy protocol), so prepending
+// it here only bloats the prompt. Kept as a hook for future use.
 func transformFreebuffDesktopPrompt(prompt string, cfg Config, opts ExecOptions) string {
-	if !IsFreebuffDesktopBackend(cfg) {
-		return prompt
-	}
-	// Avoid repeating the context on resumed sessions that already hold it.
-	if strings.TrimSpace(opts.ResumeSessionID) != "" {
-		return prompt
-	}
-	if strings.TrimSpace(opts.Cwd) == "" {
-		return prompt
-	}
-	data, err := os.ReadFile(filepath.Join(opts.Cwd, "CODEBUDDY.md"))
-	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
-		return prompt
-	}
-	ctx := strings.TrimSpace(string(data))
-	// Avoid duplicating if the prompt already carries the context.
-	if strings.Contains(prompt, ctx) {
-		return prompt
-	}
-	// Neutral framing (M-199): present the work item as context, not as a job
-	// handed over by an agent. The agent may query Multica via the CLI if needed
-	// and answers in its final message.
-	note := "Context for this task (from CODEBUDDY.md). Answer in your final message; you may query Multica via the CLI if needed.\n\n"
-	return note + ctx + "\n\n---\n\n" + prompt
+	return prompt
 }
 
 func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {

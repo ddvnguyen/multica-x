@@ -944,8 +944,8 @@ func TestTransformFreebuffDesktopPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := transformFreebuffDesktopPrompt("hello", cfg, ExecOptions{Cwd: dir})
-	if !strings.Contains(got, "CONTEXT") || !strings.Contains(got, "hello") {
-		t.Fatalf("context not prepended: %q", got)
+	if got != "hello" {
+		t.Fatalf("prompt changed (should be unchanged): %q", got)
 	}
 	// idempotent: already contains context -> unchanged
 	if got2 := transformFreebuffDesktopPrompt(got, cfg, ExecOptions{Cwd: dir}); got2 != got {
