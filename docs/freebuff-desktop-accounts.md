@@ -54,14 +54,24 @@ runtime and scope (bare `runtimeID` for default, `runtimeID:<scope>` otherwise).
 The server sends the daemon the account list (id, label, endpoint,
 credential_ref) with the model-list request. The daemon runs discovery once per
 account with that account's env (`FREEBUFF_DESKTOP_URL`,
-`FREEBUFF_DESKTOP_CREDENTIAL_REF`) set on the subprocess only, via
-`agent.Command.Env`; it never mutates its own process env. For a freebuff-desktop
-command (binary name starting `freebuff-desktop`, or `FREEBUFF_DESKTOP_URL` in
-the env) discovery runs `<bridge> --list-models --json` instead of ACP.
+`FREEBUFF_DESKTOP_CREDENTIAL_REF`, `FREEBUFF_DESKTOP_LAUNCH_ID`) set on the
+subprocess only, via `agent.Command.Env`; it never mutates its own process env.
+For a freebuff-desktop command (binary name starting `freebuff-desktop`, or
+`FREEBUFF_DESKTOP_URL` in the env) discovery runs `<bridge> --list-models
+--json` instead of ACP.
 
 Each model in the union carries `account_ids` / `account_labels`; the picker
 shows models for the selected scope. One account failing does not hide the
 others; only when every account fails is an error returned, naming them.
+
+A daemon-managed instance only answers `/api/*` with the launch id the daemon
+chose for it, so the bridge MUST send `x-freebuff-launch-id` on every request,
+including the discovery ones. A bridge that omits it is rejected with 401, and
+every account scoped to a managed instance reports as failed — which the picker
+shows as "no models" with nothing naming the real cause. When auditing a
+picker that lists nothing, run `<bridge> --list-models --json` with the
+account's `FREEBUFF_DESKTOP_URL` and `FREEBUFF_DESKTOP_LAUNCH_ID` before
+touching the server side.
 
 ## Run-time env contract
 
@@ -79,8 +89,14 @@ wins on collision).
 - `--list-models --json` prints `{models, supported}` after checking
   `GET /api/auth/status` on that account's endpoint. An unreachable or
   signed-out account exits non-zero with a reason, so it shows up as a failed
-  account instead of advertising a model it cannot run. Freebuff Desktop picks
-  the model itself, so the list is the single entry `freebuff-desktop`.
+  account instead of advertising a model it cannot run. A 401/403 is reported
+  as a rejected launch credential, not as "not signed in".
+- The catalog is the desktop's own model picker: the first `state` event of
+  `GET /api/events` carries it (`snapshot.freebuff.models`), and each entry is
+  emitted as `{id, name, provider, description?, default?}` with the
+  recommended model tagged `default`. Opaque ids (`m-096e75164d`) are why the
+  UI must render `name`, not the id. Without a published catalog the single
+  entry `freebuff-desktop` stands in.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
 - **Task context (M-199):** the bridge prepends `CODEBUDDY.md` only when it
