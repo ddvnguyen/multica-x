@@ -10,7 +10,7 @@ import (
 func TestFreebuffDesktopUsesAndRestoresProjectInstructions(t *testing.T) {
 	dir := t.TempDir()
 	project := filepath.Join(dir, "AGENTS.md")
-	const existing = "# Project guidance\nKeep these exact words.\n"
+	const existing = "# Project guidance\nKeep agent and worker identifiers exactly: `multica agent list`.\n"
 	if err := os.WriteFile(project, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
