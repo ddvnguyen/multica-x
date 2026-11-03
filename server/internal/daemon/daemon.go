@@ -8996,6 +8996,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if isFreebuffDesktopRuntime(entry.Path, task) {
+		// Set after custom environment layering so callers cannot select a
+		// different task's conversation scope.
+		agentEnv["FREEBUFF_DESKTOP_SCOPE"] = freebuffDesktopScope(task)
+	}
 	if managedFreebuffLaunchID != "" {
 		applyManagedFreebuffDesktopEnv(agentEnv, task.Agent.AccountEndpoint, task.Agent.AccountCredentialRef, managedFreebuffLaunchID)
 	}

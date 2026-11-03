@@ -11,6 +11,39 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
+func TestFreebuffDesktopScopeIsolation(t *testing.T) {
+	base := Task{ID: "run-1", WorkspaceID: "ws", AgentID: "a", RuntimeID: "r", InitiatorType: "member", InitiatorID: "u", ChatSessionID: "chat"}
+	original := freebuffDesktopScope(base)
+	next := base
+	next.ID = "run-2"
+	if got := freebuffDesktopScope(next); got != original {
+		t.Fatal("same chat did not retain scope")
+	}
+	variants := []Task{}
+	change := func(f func(*Task)) { v := base; f(&v); variants = append(variants, v) }
+	change(func(t *Task) { t.ChatSessionID = ""; t.IssueID = "chat" })
+	change(func(t *Task) { t.InitiatorID = "other" })
+	change(func(t *Task) { t.WorkspaceID = "other" })
+	change(func(t *Task) { t.AgentID = "other" })
+	change(func(t *Task) { t.RuntimeID = "other" })
+	change(func(t *Task) { t.Agent = &AgentData{AccountID: "other"} })
+	for _, v := range variants {
+		if freebuffDesktopScope(v) == original {
+			t.Fatal("distinct context shared scope")
+		}
+	}
+	base.InitiatorID = ""
+	next = base
+	next.ID = "run-2"
+	if freebuffDesktopScope(base) == freebuffDesktopScope(next) {
+		t.Fatal("unknown initiator reused scope")
+	}
+	base.ID = ""
+	if freebuffDesktopScope(base) != "" {
+		t.Fatal("missing task ID should fail closed")
+	}
+}
+
 func TestDesktopGeneratedQuickCreateAndCommentCopy(t *testing.T) {
 	const userText = "The agent and worker must keep this exact text."
 	cases := map[string]Task{

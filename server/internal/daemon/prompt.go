@@ -1,12 +1,37 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+// freebuffDesktopScope is an opaque reuse key; incomplete identity fails
+// closed to one task. Account and model separation is also enforced by the
+// bridge's account state directory and selected model.
+func freebuffDesktopScope(task Task) string {
+	surface, id := "task", task.ID
+	if task.InitiatorID != "" && task.WorkspaceID != "" && task.AgentID != "" {
+		if task.ChatSessionID != "" {
+			surface, id = "chat", task.ChatSessionID
+		} else if task.IssueID != "" {
+			surface, id = "issue", task.IssueID
+		}
+	}
+	if id == "" {
+		return ""
+	}
+	account := ""
+	if task.Agent != nil {
+		account = task.Agent.AccountID
+	}
+	raw, _ := json.Marshal([]string{task.WorkspaceID, task.AgentID, task.RuntimeID, account, task.InitiatorType, task.InitiatorID, surface, id})
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
 
 func isFreebuffDesktopRuntime(path string, task Task) bool {
 	if strings.HasPrefix(strings.ToLower(filepath.Base(path)), "freebuff-desktop") {
