@@ -5,7 +5,12 @@ import type { IslandRoute } from "./navigation";
 import { FAMILY_ROOTS } from "./navigation";
 import { bindShell, startBoundSidebarAutoCollapse } from "./shell";
 import { configureHostShell } from "./shell-runtime";
-import type { SidebarRightLike, WorkspacesLike, SessionsLike } from "./shell-link";
+import type {
+  SessionNavigationLike,
+  SessionsLike,
+  SidebarRightLike,
+  WorkspacesLike,
+} from "./shell-link";
 import { familyOfRoute } from "./tabs";
 import {
   createRailIcon,
@@ -113,12 +118,26 @@ const FIRST_ORDER = 30;
  * `ctx.layout` exists when `apply` binds it (M-197) instead of depending on
  * which plugin was applied first.
  *
- * `sidebarRight`, `workspaces` and `sessions` are the Files/Terminal bridge's
+ * `sidebarRight`, `workspaces` and `sessions` are the side-panel bridge's
  * sources (M-159). Injecting them documents the edge the loader reads for
  * ordering; the apply body still reads each one tolerantly, so a host built
  * without the right sidebar keeps the rail rows anyway.
+ *
+ * `uiWorkspace` is the same kind of edge one step further out: the service the
+ * shell's own session lists call to put a Session on screen. It has to be
+ * declared here because `ctx.get()` only answers for injected services — an
+ * undeclared read is `undefined` even on a host that provides it, which turned
+ * the toggle's "no Session on screen" fallback into "this dsh build cannot
+ * select a session" on lane z (M-159).
  */
-export const inject = ["slots", "layout", "sidebarRight", "workspaces", "sessions"];
+export const inject = [
+  "slots",
+  "layout",
+  "sidebarRight",
+  "workspaces",
+  "sessions",
+  "uiWorkspace",
+];
 
 let hostCreateElement: HostCreateElement | null = null;
 
@@ -146,25 +165,34 @@ export function configureHostRuntime(createElement: HostCreateElement | null): v
 }
 
 export function apply(ctx: DshClientContext): void {
-  // The Files/Terminal bridge (M-159): the sidebar faces, read tolerantly so a
-  // host without the right sidebar still reaches the rail registration below.
+  // The side-panel bridge (M-159): the sidebar faces, read tolerantly so a host
+  // without the right sidebar still reaches the rail registration below.
   const sidebarRight = (face(ctx, "sidebarRight") ?? null) as SidebarRightLike | null;
   const workspaces = (face(ctx, "workspaces") ?? null) as WorkspacesLike | null;
   const sessions = (face(ctx, "sessions") ?? null) as SessionsLike | null;
+  // Session selection is the shell's navigation (`uiWorkspace`), not a
+  // controller method; read tolerantly like the other faces so a host without
+  // that UI still keeps the rail rows. Not injected: injecting a service the
+  // host may not provide would park this plugin's apply.
+  const sessionNavigation = (face(ctx, "uiWorkspace") ?? null) as SessionNavigationLike | null;
+  const layoutFace = ctx.layout ?? null;
   configureHostShell({
     sidebarRight,
     workspaces,
     sessions,
     daemonId: "",
-    selectPanel: ctx.layout?.selectPanel ?? null,
+    selectSession:
+      typeof sessionNavigation?.openSession === "function"
+        ? (sessionId) => sessionNavigation.openSession(sessionId)
+        : null,
   });
 
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
   // panel. Register every MMX panel id inside `ctx.effect` — the disposer is
-  // the plugin's teardown — so an MMX view keeps the sidebar next to it. A
-  // face without `hostPanel` is the fallback: the buttons drop the main panel
-  // (`layout.selectPanel(null)`) before `openTab`, and the island's tabs
-  // survive through keep-alive.
+  // the plugin's teardown — so an MMX view keeps the side panel next to it.
+  // A face without `hostPanel` has to put a Session on screen instead: the
+  // toggle's `reveal` plan does that, and the island's tabs survive leaving
+  // MMX through keep-alive.
   if (sidebarRight !== null && typeof sidebarRight.hostPanel === "function") {
     ctx.effect?.(() => {
       const disposers = MULTICA_ENTRIES.map((entry) =>
@@ -187,7 +215,7 @@ export function apply(ctx: DshClientContext): void {
   // (M-197): the rail row that must mark the active tab's family, and the
   // sidebar that collapses while an MMX view is showing. One binding, read by
   // the island and by the auto-collapse subscription below.
-  const layout = ctx.layout ?? null;
+  const layout = layoutFace;
   if (layout !== null) {
     bindShell({
       layout,
