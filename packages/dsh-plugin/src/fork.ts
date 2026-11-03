@@ -133,11 +133,17 @@ export { RESOURCES } from "@multica/views/locales";
 export { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 export { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
 
-// The runtimes surface (M-174): the same page the desktop and web apps render,
+// The runtimes surface (M-174): the same pages the desktop and web apps render,
 // so the island's Settings can manage what the workspace actually runs on
-// instead of only what it stores. The desktop's own wrapper adds daemon state
-// its shell owns; a dsh panel has no local daemon, so the props stay unset.
-export { RuntimesPage } from "@multica/views/runtimes";
+// instead of only what it stores — and so a machine or runtime row opens the
+// page it links to instead of being refused by the island's router. The
+// desktop's own wrapper adds daemon state its shell owns; a dsh panel has no
+// local daemon, so those props stay unset.
+export {
+  RuntimesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
+} from "@multica/views/runtimes";
 
 // The stamped build identity (M-155): one string for one build, injected by
 // this package's vite config, so the island's badge, the Settings row and the

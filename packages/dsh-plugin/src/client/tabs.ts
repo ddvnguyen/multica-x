@@ -276,6 +276,13 @@ export function familyOfRoute(route: IslandRoute): string {
       return "chat";
     case "settings":
       return "settings";
+    // The runtimes pages are one family even though only Settings has a rail
+    // row (M-174): a machine and a runtime under it belong together in the
+    // strip, and closing the last of them falls back to the list.
+    case "runtimes":
+    case "runtime":
+    case "runtimeSettings":
+      return "runtimes";
   }
 }
 

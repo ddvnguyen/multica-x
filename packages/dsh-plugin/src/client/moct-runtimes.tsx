@@ -13,6 +13,12 @@ import { RuntimesPage, Server } from "../fork";
  * The desktop's own wrapper forwards daemon state its main process owns
  * (`localDaemonId`, `bootstrapping`); a panel has no local daemon, so those
  * props stay unset and the page reads what the workspace actually reports.
+ *
+ * This tab is the door, not the only surface: every machine and runtime row the
+ * shared page draws links to its own address (`/w/runtimes/<machine>` and its
+ * `/runtime/<id>` depth), and the island renders those as tabs
+ * (`island-app.tsx`). A machine clicked here therefore opens the page holding
+ * every runtime that machine reports, exactly as it does on the desktop.
  */
 export const runtimesDeviceTab = {
   value: "runtimes",

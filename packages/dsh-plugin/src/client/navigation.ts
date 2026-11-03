@@ -34,6 +34,11 @@ export const ISLAND_FAMILIES = [
   "inbox",
   "chat",
   "settings",
+  // Runtimes has no rail row (Settings → Runtimes is how a reader gets there,
+  // M-174) but it does have pages: the shared runtimes list links every machine
+  // and every runtime to its own address, and without this family those links
+  // were refused, so a machine row in the panel did nothing at all.
+  "runtimes",
 ] as const;
 
 export type IslandFamily = (typeof ISLAND_FAMILIES)[number];
@@ -57,7 +62,10 @@ export type IslandRoute =
   | WithQuery<{ view: "skill"; skillId: string }>
   | WithQuery<{ view: "inbox" }>
   | WithQuery<{ view: "chat" }>
-  | WithQuery<{ view: "settings" }>;
+  | WithQuery<{ view: "settings" }>
+  | WithQuery<{ view: "runtimes" }>
+  | WithQuery<{ view: "runtime"; machineId: string }>
+  | WithQuery<{ view: "runtimeSettings"; machineId: string; runtimeId: string }>;
 
 export const BOARD_ROUTE: IslandRoute = { view: "board" };
 
@@ -69,6 +77,7 @@ export const FAMILY_ROOTS: Record<IslandFamily, IslandRoute> = {
   inbox: { view: "inbox" },
   chat: { view: "chat" },
   settings: { view: "settings" },
+  runtimes: { view: "runtimes" },
 };
 
 function isFamily(segment: string): segment is IslandFamily {
@@ -109,6 +118,7 @@ function parseFamilyPath(
   family: IslandFamily,
   rest: string[],
 ): IslandRoute | null {
+  if (family === "runtimes") return parseRuntimesPath(rest);
   if (rest.length > 1) return null;
   const id = rest[0];
   switch (family) {
@@ -134,6 +144,33 @@ function parseFamilyPath(
   }
 }
 
+/**
+ * The runtimes depth: the list, one machine, and one runtime under it.
+ *
+ * `/w/runtimes` is the collection, `/w/runtimes/<machineId>` the machine — the
+ * page that holds every runtime that machine reports — and
+ * `/w/runtimes/<machineId>/runtime/<runtimeId>` that runtime's settings. It is
+ * the fork's own shape (`paths.runtimeDetail`, `paths.runtimeSettings`), so the
+ * shared page's links mean the same thing here as on the desktop and the web.
+ */
+function parseRuntimesPath(rest: string[]): IslandRoute | null {
+  if (rest.length === 0) return { view: "runtimes" };
+  const [machineId, ...tail] = rest;
+  if (machineId === undefined) return { view: "runtimes" };
+  if (tail.length === 0) {
+    return { view: "runtime", machineId: decodeURIComponent(machineId) };
+  }
+  const [runtimeSegment, runtimeId, ...extra] = tail;
+  if (runtimeSegment !== "runtime" || runtimeId === undefined || extra.length > 0) {
+    return null;
+  }
+  return {
+    view: "runtimeSettings",
+    machineId: decodeURIComponent(machineId),
+    runtimeId: decodeURIComponent(runtimeId),
+  };
+}
+
 /** The path an island route renders as, without its query. */
 export function islandPathname(slug: string, route: IslandRoute): string {
   const base = `/${slug}`;
@@ -156,6 +193,12 @@ export function islandPathname(slug: string, route: IslandRoute): string {
       return `${base}/chat`;
     case "settings":
       return `${base}/settings`;
+    case "runtimes":
+      return `${base}/runtimes`;
+    case "runtime":
+      return `${base}/runtimes/${encodeURIComponent(route.machineId)}`;
+    case "runtimeSettings":
+      return `${base}/runtimes/${encodeURIComponent(route.machineId)}/runtime/${encodeURIComponent(route.runtimeId)}`;
   }
 }
 
@@ -183,6 +226,10 @@ export function islandParent(route: IslandRoute): IslandRoute | null {
       return FAMILY_ROOTS.agents;
     case "skill":
       return FAMILY_ROOTS.skills;
+    case "runtime":
+      return FAMILY_ROOTS.runtimes;
+    case "runtimeSettings":
+      return { view: "runtime", machineId: route.machineId };
     default:
       return null;
   }
@@ -197,6 +244,10 @@ export function islandRouteKey(route: IslandRoute): string {
       return `agent:${route.agentId}`;
     case "skill":
       return `skill:${route.skillId}`;
+    case "runtime":
+      return `runtime:${route.machineId}`;
+    case "runtimeSettings":
+      return `runtime-settings:${route.machineId}:${route.runtimeId}`;
     default:
       return route.view;
   }

@@ -178,6 +178,43 @@ describe("tab strip appearance (M-174)", () => {
     expect(inactivePill?.classList.contains("group-hover/tab:bg-page-canvas/80")).toBe(true);
   });
 
+  it("sizes each tab to its own title instead of a fixed width", async () => {
+    await attachTwoTabs();
+
+    for (const frame of frames()) {
+      // The pill hugs its label: width comes from the content and is only
+      // capped, so "Issues" is a narrow tab rather than a padded 160px box.
+      expect(frame.classList.contains("w-fit")).toBe(true);
+      expect(frame.classList.contains("max-w-56")).toBe(true);
+      expect(frame.classList.contains("shrink-0")).toBe(true);
+      expect(frame.classList.contains("w-40")).toBe(false);
+
+      const label = frame.querySelector<HTMLElement>("button span.min-w-0");
+      expect(label).not.toBeNull();
+      // A growing label would take the frame's own width back and re-pin every
+      // tab to the cap; at the cap it shrinks and ellipsises instead.
+      expect((label as HTMLElement).classList.contains("flex-1")).toBe(false);
+      // The desktop's edge fade dims the last glyph of a tab that is exactly
+      // as wide as its label, which is every tab now.
+      expect((label as HTMLElement).classList.contains("text-ellipsis")).toBe(true);
+      expect((label as HTMLElement).getAttribute("style")).toBeNull();
+    }
+
+    // The pin and close knobs hold their slots while hidden, so revealing them
+    // on hover cannot widen a title-sized tab and shift the strip sideways.
+    const knobs = [
+      ...(frames()[0] as HTMLElement).querySelectorAll<HTMLElement>(
+        "span[role='button']",
+      ),
+    ];
+    expect(knobs).toHaveLength(2);
+    for (const knob of knobs) {
+      expect(knob.classList.contains("invisible")).toBe(true);
+      expect(knob.classList.contains("hidden")).toBe(false);
+      expect(knob.classList.contains("group-hover/tab:visible")).toBe(true);
+    }
+  });
+
   it("marks the pinned zone and refuses Close on a pinned tab", async () => {
     await attachTwoTabs();
     expect(shadow().querySelector("[data-tab-zone-divider]")).toBeNull();

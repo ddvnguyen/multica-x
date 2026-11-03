@@ -12,7 +12,7 @@ import {
   parseIslandRoute,
 } from "../src/client/navigation";
 import { createIslandStorage } from "../src/client/storage";
-import { createTabsStore } from "../src/client/tabs";
+import { createTabsStore, familyOfRoute } from "../src/client/tabs";
 
 describe("parseIslandRoute", () => {
   it("reads the board", () => {
@@ -109,6 +109,94 @@ describe("islandPath", () => {
     expect(islandPathname("demo", FAMILY_ROOTS.inbox)).toBe("/demo/inbox");
     expect(islandPathname("demo", FAMILY_ROOTS.chat)).toBe("/demo/chat");
     expect(islandPathname("demo", FAMILY_ROOTS.settings)).toBe("/demo/settings");
+  });
+});
+
+describe("the runtimes pages (M-174)", () => {
+  it("reads the list, one machine, and one runtime under it", () => {
+    expect(parseIslandRoute("/demo/runtimes")).toEqual({ view: "runtimes" });
+    expect(parseIslandRoute("/demo/runtimes/machine-1")).toEqual({
+      view: "runtime",
+      machineId: "machine-1",
+    });
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime/rt-9")).toEqual({
+      view: "runtimeSettings",
+      machineId: "machine-1",
+      runtimeId: "rt-9",
+    });
+  });
+
+  it("addresses the depth the shared runtimes page links to", () => {
+    // `paths.runtimeDetail` and `paths.runtimeSettings` are what every row of
+    // the shared page points at; these are the same shapes.
+    const routes = [
+      { view: "runtimes" as const },
+      { view: "runtime" as const, machineId: "machine-1" },
+      { view: "runtimeSettings" as const, machineId: "machine-1", runtimeId: "rt-9" },
+    ];
+    for (const route of routes) {
+      expect(parseIslandRoute(islandPath("demo", route))).toEqual(route);
+    }
+    expect(islandPathname("demo", { view: "runtime", machineId: "machine-1" })).toBe(
+      "/demo/runtimes/machine-1",
+    );
+    expect(
+      islandPathname("demo", { view: "runtimeSettings", machineId: "machine-1", runtimeId: "rt-9" }),
+    ).toBe("/demo/runtimes/machine-1/runtime/rt-9");
+  });
+
+  it("refuses runtimes paths that name no page", () => {
+    expect(parseIslandRoute("/demo/runtimes/machine-1/extra")).toBeNull();
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime")).toBeNull();
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime/rt-9/extra")).toBeNull();
+  });
+
+  it("walks back up from a runtime to its machine to the list", () => {
+    expect(
+      islandParent({ view: "runtimeSettings", machineId: "machine-1", runtimeId: "rt-9" }),
+    ).toEqual({ view: "runtime", machineId: "machine-1" });
+    expect(islandParent({ view: "runtime", machineId: "machine-1" })).toEqual(
+      FAMILY_ROOTS.runtimes,
+    );
+    expect(islandParent(FAMILY_ROOTS.runtimes)).toBeNull();
+  });
+
+  it("keeps the three depths apart and in one family", () => {
+    const keys = [
+      islandRouteKey({ view: "runtimes" }),
+      islandRouteKey({ view: "runtime", machineId: "machine-1" }),
+      islandRouteKey({ view: "runtimeSettings", machineId: "machine-1", runtimeId: "rt-9" }),
+    ];
+    expect(new Set(keys).size).toBe(3);
+    for (const route of [
+      { view: "runtimes" as const },
+      { view: "runtime" as const, machineId: "machine-1" },
+      { view: "runtimeSettings" as const, machineId: "machine-1", runtimeId: "rt-9" },
+    ]) {
+      expect(familyOfRoute(route)).toBe("runtimes");
+    }
+  });
+
+  it("is accepted by the island's navigation instead of refused", () => {
+    // The bug this covers: a machine row in Settings → Runtimes pushes its own
+    // address, and a refused push is a row that does nothing under the pointer.
+    const onChange = vi.fn();
+    const onRefused = vi.fn();
+    const navigation = createIslandNavigation({
+      slug: "demo",
+      route: BOARD_ROUTE,
+      onChange,
+      onRefused,
+    });
+    navigation.push("/demo/runtimes/machine-1");
+    expect(onChange).toHaveBeenCalledWith({ view: "runtime", machineId: "machine-1" });
+    navigation.push("/demo/runtimes/machine-1/runtime/rt-9");
+    expect(onChange).toHaveBeenLastCalledWith({
+      view: "runtimeSettings",
+      machineId: "machine-1",
+      runtimeId: "rt-9",
+    });
+    expect(onRefused).not.toHaveBeenCalled();
   });
 });
 
