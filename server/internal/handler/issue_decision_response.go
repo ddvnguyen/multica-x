@@ -175,7 +175,8 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 			uuidToString(existing.ActorID) != authorID ||
 			existing.Decision != req.Decision ||
 			existing.Rationale != req.Rationale ||
-			existing.NextStatus != req.NextStatus {
+			existing.NextStatus != req.NextStatus ||
+			existing.SourceRevision != *req.ExpectedIssueRevision {
 			writeError(w, http.StatusConflict, "client_request_id is already in use")
 			return
 		}
@@ -238,9 +239,17 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify prepared handoff still matches the transaction-resolved target.
+	// Only agent/squad destinations require a durable task; member and other
+	// human destinations commit receipt/comment/status without one.
+	requiresTask := handoff != nil && params.AssigneeType.Valid &&
+		(params.AssigneeType.String == "agent" || params.AssigneeType.String == "squad")
 	var task db.AgentTaskQueue
 	hasTask := false
-	if hasPrepared {
+	if requiresTask {
+		if !hasPrepared {
+			writeError(w, http.StatusConflict, "handoff target changed during transaction")
+			return
+		}
 		if handoff == nil {
 			writeError(w, http.StatusConflict, "handoff target changed during transaction")
 			return
@@ -257,14 +266,14 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	} else if handoff != nil {
+	} else if hasPrepared {
 		writeError(w, http.StatusConflict, "handoff target changed during transaction")
 		return
 	}
 
 	// Transaction-scoped authorization + update before enqueue so the queued
 	// task is stamped with the destination workflow step.
-	if handoff != nil && hasPrepared {
+	if requiresTask {
 		switch preparedKind {
 		case "agent":
 			agent, err := qtx.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: prepared.HandoffAgent().ID, WorkspaceID: workspaceID})
@@ -301,7 +310,7 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if handoff != nil && hasPrepared {
+	if requiresTask {
 		t, err := h.TaskService.EnqueuePreparedIssueHandoffInTx(ctx, qtx, updatedIssue, preparedSquadID, prepared)
 		if err != nil {
 			if errors.Is(err, service.ErrDuplicatePendingTask) {
