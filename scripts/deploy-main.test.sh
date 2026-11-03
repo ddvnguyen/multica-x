@@ -26,7 +26,13 @@ EOF
 cat > "$STUB_BIN/podman" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
-  'image exists') [[ "${FAIL_IMAGE:-}" != "$3" ]] ;;
+  'image exists')
+    if [[ "${IMAGE_EXISTS_MODE:-all}" == "only-match" ]]; then
+      [[ "${EXISTING_IMAGE:-}" == "$3" ]]
+    else
+      [[ "${FAIL_IMAGE:-}" != "$3" ]]
+    fi
+    ;;
   'image inspect')
     case "$4" in
       *revision*) printf '%s\n' "$EXPECTED_COMMIT" ;;
@@ -34,6 +40,7 @@ case "$1 $2" in
       *) exit 2 ;;
     esac
     ;;
+  'build '*) printf 'podman build %s\n' "$*" >> "$STUB_LOG" ;;
   'compose ps') printf 'compose ps:%s\n' "$PWD" >> "$STUB_LOG"; printf 'db-id\n' ;;
   'compose up') printf 'compose up\n' >> "$STUB_LOG" ;;
   'exec db-id') printf 'database dump bytes\n' ;;
@@ -45,15 +52,30 @@ cat > "$STUB_BIN/multica" <<'EOF'
 #!/usr/bin/env bash
 version="$IMAGE_TAG"
 if [[ "${FAIL_DAEMON_VERSION:-0}" == "1" ]]; then version=wrong-version; fi
+status=running
+if [[ -f "$DAEMON_STATUS_FILE" ]]; then
+  count="$(cat "$DAEMON_STATUS_FILE")"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$DAEMON_STATUS_FILE"
+  if [[ "${DAEMON_STATUS_MODE:-}" == "starting" ]] || \
+     (( count <= ${DAEMON_STARTING_POLLS:-0} )); then
+    status=starting
+  fi
+fi
+printf 'daemon status=%s version=%s\n' "$status" "$version" >> "$STUB_LOG"
 if [[ "${ACTIVE_TASK_COUNT:-0}" == "1" ]]; then
-  printf '{"active_task_count":1,"cli_version":"%s"}\n' "$version"
+  printf '{"active_task_count":1,"status":"%s","cli_version":"%s"}\n' "$status" "$version"
 else
-  printf '{"active_task_count":0,"cli_version":"%s"}\n' "$version"
+  printf '{"active_task_count":0,"status":"%s","cli_version":"%s"}\n' "$status" "$version"
 fi
 EOF
 cat > "$STUB_BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
+case "$*" in
+  *'stop multica-daemon.service') rm -f "$DAEMON_STATUS_FILE" ;;
+  *'start multica-daemon.service') printf '0\n' > "$DAEMON_STATUS_FILE" ;;
+esac
 EOF
 cat > "$STUB_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -87,17 +109,44 @@ export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
 export STUB_LOG="$SANDBOX/commands.log"
+: > "$STUB_LOG"
+export DAEMON_STATUS_FILE="$SANDBOX/daemon-status-count"
 export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567
 
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
 run() { bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 1 "$@"; }
+build_images() {
+  bash "$REPO_ROOT/scripts/deploy-main-build.sh" "$1" "$EXPECTED_COMMIT" \
+    ghcr.io/multica-ai/multica-backend ghcr.io/multica-ai/multica-web "$STACK_DIR/.env"
+}
 
 # Dry-run performs read-only preflight and does not make temporary or backup dirs.
 output="$(run --dry-run)"
 [[ "$output" == *"dry-run complete"* ]]
 assert test ! -e "$MULTICA_MAIN_TMPDIR"
 assert test ! -e "$MULTICA_MAIN_BACKUP_ROOT"
+
+# Active and existing tags are rejected before image builds or stack changes.
+if build_images old-tag >/dev/null 2>&1; then
+  echo "expected same-tag build rejection" >&2; exit 1
+fi
+if IMAGE_TAG=old-tag run --dry-run >/dev/null 2>&1; then
+  echo "expected same-tag deploy rejection" >&2; exit 1
+fi
+if grep -q '^podman build ' "$STUB_LOG"; then
+  echo "same-tag rejection unexpectedly built an image" >&2; exit 1
+fi
+if IMAGE_EXISTS_MODE=only-match \
+   EXISTING_IMAGE="ghcr.io/multica-ai/multica-web:unused-tag" \
+   build_images unused-tag >/dev/null 2>&1; then
+  echo "expected existing web tag rejection" >&2; exit 1
+fi
+if grep -q '^podman build ' "$STUB_LOG"; then
+  echo "existing-tag rejection unexpectedly built an image" >&2; exit 1
+fi
+IMAGE_EXISTS_MODE=only-match build_images fresh-tag
+assert test "$(grep -c '^podman build ' "$STUB_LOG")" -eq 2
 
 # Missing staged image fails during preflight, before any state changes.
 if FAIL_IMAGE="ghcr.io/multica-ai/multica-web:$IMAGE_TAG" run --dry-run >/dev/null 2>&1; then
@@ -144,5 +193,21 @@ assert grep -q 'curl http://127.0.0.1:4802/healthz' "$STUB_LOG"
 assert grep -q 'curl http://127.0.0.1:4180/' "$STUB_LOG"
 after_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")"
 assert test "$after_stops" -gt "$before_stops"
+
+# A daemon stuck in starting must time out and roll back the stack and binary.
+before_stops="$after_stops"
+if DAEMON_STATUS_MODE=starting run >/dev/null 2>&1; then
+  echo "expected daemon readiness failure" >&2; exit 1
+fi
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
+after_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")"
+assert test "$after_stops" -gt "$before_stops"
+
+# A slow daemon succeeds only after its status changes from starting to running.
+DAEMON_STARTING_POLLS=2 run >/dev/null
+assert grep -q '^MULTICA_IMAGE_TAG=test-deploy$' "$STACK_DIR/.env"
+assert grep -q 'daemon status=starting version=test-deploy' "$STUB_LOG"
+assert grep -q 'daemon status=running version=test-deploy' "$STUB_LOG"
 
 printf 'deploy-main stub tests passed\n'

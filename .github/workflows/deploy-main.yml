@@ -144,16 +144,9 @@ jobs:
           WEB_REPO: ${{ steps.buildmeta.outputs.web }}
         run: |
           set -euo pipefail
-          podman build -f Dockerfile \
-            --build-arg VERSION="$IMAGE_TAG" --build-arg COMMIT="$COMMIT" \
-            --label "org.opencontainers.image.revision=$COMMIT" \
-            --label "org.opencontainers.image.version=$IMAGE_TAG" \
-            -t "$BACKEND_REPO:$IMAGE_TAG" .
-          podman build -f Dockerfile.web \
-            --build-arg NEXT_PUBLIC_APP_VERSION="$IMAGE_TAG" \
-            --label "org.opencontainers.image.revision=$COMMIT" \
-            --label "org.opencontainers.image.version=$IMAGE_TAG" \
-            -t "$WEB_REPO:$IMAGE_TAG" .
+          bash scripts/deploy-main-build.sh \
+            "$IMAGE_TAG" "$COMMIT" "$BACKEND_REPO" "$WEB_REPO" \
+            "$HOME/.local/share/multica/.env"
 
       - name: Confirm staged images
         if: ${{ inputs.image_source == 'staged' || inputs.dry_run }}
