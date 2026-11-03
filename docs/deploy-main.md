@@ -85,7 +85,8 @@ Go to **Actions → Deploy main Multica → Run workflow**. Choose a dispatch re
 of `multica-moct` or a single-component tag and set:
 
 - **image_tag**: a unique immutable tag; it becomes both the image tag and the
-  backend/daemon version.
+  backend/daemon version. Build mode refuses the active tag and any tag that
+  already exists locally, preserving the images needed for rollback.
 - **source_ref**: `multica-moct` or `refs/tags/<tag>` with no slash in the tag
   name; the workflow records its full commit SHA and builds both images from it.
 - **drain_timeout_seconds**: maximum wait for zero active daemon tasks.
@@ -102,7 +103,8 @@ of `multica-moct` or a single-component tag and set:
 The default path aborts on a drain timeout without making changes. The script
 also refuses to run when its process ancestry or cgroup identifies
 `multica-daemon.service`. On success it checks backend commit/version, migration
-readiness at `/healthz`, web HTTP 200, and daemon CLI version. Rollback restores
+readiness at `/healthz`, web HTTP 200, and a running daemon with the expected CLI
+version. Rollback restores
 the previous `.env` and daemon binary and brings the stack back up. It retains
 the `pg_dump -Fc` backup for an operator and never restores the database
 automatically.

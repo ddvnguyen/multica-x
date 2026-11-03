@@ -59,6 +59,7 @@
     ".github/ci-paths.json"
   ],
   "scripts": [
+    "scripts/deploy-main-build.sh",
     "scripts/deploy-main.sh",
     "scripts/deploy-main.test.sh",
     "scripts/generate-attachment-text-preview.mjs",
