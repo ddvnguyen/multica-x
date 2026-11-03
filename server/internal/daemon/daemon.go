@@ -7975,6 +7975,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
 		IsSquadLeader:                    taskIsSquadLeader(task),
+		IsFreebuffDesktop:                 strings.HasPrefix(strings.ToLower(filepath.Base(entry.Path)), "freebuff-desktop"),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
 		InitiatorType:                    task.InitiatorType,

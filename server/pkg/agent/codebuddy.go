@@ -46,12 +46,9 @@ func IsFreebuffDesktopBackend(cfg Config) bool {
 	return strings.HasPrefix(base, "freebuff-desktop")
 }
 
-// transformFreebuffDesktopPrompt prepends the task context file (CODEBUDDY.md)
-// to the prompt for freebuff-desktop runs. Returns the (possibly unchanged)
-// prompt. Only active for freebuff-desktop backends.
 // transformFreebuffDesktopPrompt is a pass-through: the desktop agent reads
-// CODEBUDDY.md from its workdir natively (codebuddy protocol), so prepending
-// it here only bloats the prompt. Kept as a hook for future use.
+// AGENTS.md from its workdir (project standard), so prepending it here only
+// bloats the prompt. Kept as a hook for future use.
 func transformFreebuffDesktopPrompt(prompt string, cfg Config, opts ExecOptions) string {
 	return prompt
 }

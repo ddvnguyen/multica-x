@@ -86,14 +86,13 @@ wins on collision).
 - **Policy safety (M-199):** the transform layer rewords the injected
   context neutrally ("here is the work item; answer in your final message") and
   the Multica identity stays available through the bridge's shim so the agent
-  can query Multica. The `CODEBUDDY.md` runtime brief is prepended to the prompt.
+  can query Multica. The `AGENTS.md` runtime brief is written to the workdir.
 - **Session rotation (M-199):** a reused thread older than 4 hours (configurable
   via `FREEBUFF_DESKTOP_SESSION_MAX_AGE`, seconds) is abandoned and a fresh one
   created in the bridge (thread age stored in `state.json`). Multica passes
   `PriorSessionID` through; the bridge is the source of truth and rejects stale
   threads. State writes are atomic (`renameSync`).
-- **System instruction (M-199):** references `CODEBUDDY.md` only, never
-  `AGENTS.md`.
+- **System instruction (M-199):** references `AGENTS.md` (the project standard).
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
   in it are the upstream sync that main was behind on, not bridge changes).
 

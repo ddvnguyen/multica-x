@@ -216,6 +216,11 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (Runti
 		},
 	}
 	path := runtimeConfigPath(workDir, provider)
+	// freebuff-desktop (M-199): use AGENTS.md (the project standard) instead of
+	// CODEBUDDY.md, per owner direction.
+	if ctx.IsFreebuffDesktop && path != "" && strings.HasSuffix(path, "CODEBUDDY.md") {
+		path = filepath.Join(workDir, "AGENTS.md")
+	}
 	if path == "" {
 		// Unknown provider — skip config injection, prompt-only mode. The hash
 		// then fingerprints the text the backend receives inline, which is the
@@ -527,6 +532,14 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 // no-ops — Cleanup is safe to call defensively.
 func CleanupRuntimeConfig(workDir, provider string) error {
 	path := runtimeConfigPath(workDir, provider)
+	// freebuff-desktop (M-199): a codebuddy runtime may have written AGENTS.md
+	// instead of CODEBUDDY.md. Prefer AGENTS.md if it carries our marker block.
+	if provider == "codebuddy" {
+		ag := filepath.Join(workDir, "AGENTS.md")
+		if data, err := os.ReadFile(ag); err == nil && strings.Contains(string(data), runtimeMarkerBegin) {
+			path = ag
+		}
+	}
 	if path == "" {
 		return nil
 	}
