@@ -70,12 +70,18 @@ func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 // writeAgentIdentity emits the Agent Identity heading and (optionally) the
 // agent's instructions body.
 func writeAgentIdentity(b *strings.Builder, ctx TaskContextForEnv) {
-	if ctx.AgentName != "" || ctx.AgentID != "" {
-		if ctx.IsFreebuffDesktop {
+	writeHeading := func() {
+		if ctx.IsFreebuffDesktop && !strings.Contains(ctx.AgentInstructions, "Agent Identity") {
 			b.WriteString("## Task Identity\n\n")
+		} else if ctx.IsFreebuffDesktop {
+			// Preserve an explicit section reference in supplied instructions.
+			b.WriteString("## Agent Identity\n\nTask Identity refers to this section.\n\n")
 		} else {
 			b.WriteString("## Agent Identity\n\n")
 		}
+	}
+	if ctx.AgentName != "" || ctx.AgentID != "" {
+		writeHeading()
 		if ctx.AgentName != "" {
 			fmt.Fprintf(b, "**You are: %s**", ctx.AgentName)
 			if ctx.AgentID != "" {
@@ -90,11 +96,7 @@ func writeAgentIdentity(b *strings.Builder, ctx TaskContextForEnv) {
 		return
 	}
 	if ctx.AgentInstructions != "" {
-		if ctx.IsFreebuffDesktop {
-			b.WriteString("## Task Identity\n\n")
-		} else {
-			b.WriteString("## Agent Identity\n\n")
-		}
+		writeHeading()
 		b.WriteString(ctx.AgentInstructions)
 		b.WriteString("\n\n")
 	}

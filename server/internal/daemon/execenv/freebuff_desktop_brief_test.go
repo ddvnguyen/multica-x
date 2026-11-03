@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func TestDesktopPreservesIdentitySectionReference(t *testing.T) {
+	const supplied = "Follow the Agent Identity section and preserve this text."
+	var b strings.Builder
+	writeAgentIdentity(&b, TaskContextForEnv{IsFreebuffDesktop: true, AgentInstructions: supplied})
+	if !strings.Contains(b.String(), "## Agent Identity\n") || !strings.Contains(b.String(), supplied) || !strings.Contains(b.String(), "Task Identity refers to this section") {
+		t.Fatalf("identity reference or alias lost: %s", b.String())
+	}
+}
+
 func TestFreebuffDesktopUsesAndRestoresProjectInstructions(t *testing.T) {
 	dir := t.TempDir()
 	project := filepath.Join(dir, "AGENTS.md")

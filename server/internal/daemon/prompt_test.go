@@ -3,12 +3,42 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/service"
 )
+
+func TestDesktopGeneratedQuickCreateAndCommentCopy(t *testing.T) {
+	const userText = "The agent and worker must keep this exact text."
+	cases := map[string]Task{
+		"quick-default":  {QuickCreatePrompt: userText},
+		"quick-id":       {QuickCreatePrompt: userText, Agent: &AgentData{ID: "agent-id"}},
+		"quick-name":     {QuickCreatePrompt: userText, Agent: &AgentData{Name: "Participant"}},
+		"quick-squad":    {QuickCreatePrompt: userText, SquadID: "squad-id", SquadName: "Team"},
+		"comment":        {IssueID: "i", TriggerCommentID: "c", TriggerCommentContent: userText, TriggerAuthorType: "agent", TriggerAuthorName: "Person"},
+		"comment-folded": {IssueID: "i", TriggerCommentID: "c", TriggerCommentContent: userText, TriggerAuthorType: "agent", CoalescedComments: []CoalescedCommentData{{ID: "c2", AuthorType: "agent", Content: "Earlier comment"}}},
+	}
+	for name, task := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
+			if !strings.Contains(out, userText) {
+				t.Fatal("user text changed")
+			}
+			prose := strings.ReplaceAll(out, userText, "")
+			prose = strings.ReplaceAll(prose, "agent-id", "identity")
+			prose = regexp.MustCompile("`[^`]*`").ReplaceAllString(prose, "")
+			if line := regexp.MustCompile(`(?im)^.*\b(agent|worker)s?\b.*$`).FindString(prose); line != "" {
+				t.Fatalf("unexpected wording: %.300s", line)
+			}
+			if name == "quick-id" && !strings.Contains(out, "agent-id") {
+				t.Fatal("identity changed")
+			}
+		})
+	}
+}
 
 func TestFreebuffDesktopPromptIntroduction(t *testing.T) {
 	const original = "You are running as a local coding agent for a Multica workspace."
