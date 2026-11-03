@@ -42,7 +42,11 @@ import (
 // below.
 
 // writeHeader emits the brief's leading title and one-line elevator pitch.
-func writeHeader(b *strings.Builder) {
+func writeHeader(b *strings.Builder, desktop bool) {
+	if desktop {
+		b.WriteString("# Multica Workspace\n\nWe are working with Multica workspace. Use the `multica` CLI to read and update the work.\n\n")
+		return
+	}
 	b.WriteString("# Multica Agent Runtime\n\n")
 	b.WriteString("You are a coding agent in the Multica platform. Use the `multica` CLI to interact with the platform.\n\n")
 }
@@ -1070,7 +1074,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) (string, 
 	// emitting them into this file broke prompt-cache prefix stability on
 	// every resume; they now travel in the per-turn user message
 	// (daemon.BuildPrompt) instead. See MUL-5377.
-	writeHeader(&b)
+	writeHeader(&b, ctx.IsFreebuffDesktop)
 	writeBackgroundTaskSafetySlim(&b)
 	writeAgentIdentity(&b, ctx)
 	writeRequestingUser(&b, ctx)

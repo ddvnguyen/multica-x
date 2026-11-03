@@ -10,6 +10,64 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
+func TestFreebuffDesktopPromptIntroduction(t *testing.T) {
+	const original = "You are running as a local coding agent for a Multica workspace."
+	cases := []struct {
+		name string
+		task Task
+	}{
+		{"assignment", Task{IssueID: "issue-1"}},
+		{"comment", Task{IssueID: "issue-1", TriggerCommentID: "comment-1", TriggerCommentContent: original}},
+		{"wakeup", Task{IssueID: "issue-1", WakeupID: "wake-1", HandoffNote: original}},
+		{"resume", Task{IssueID: "issue-1", TriggerEvidenceKind: "question_answer", HandoffNote: original}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ordinary := BuildPrompt(tc.task, "codebuddy")
+			desktop := BuildPrompt(tc.task, "codebuddy", WithFreebuffDesktop())
+			if !strings.HasPrefix(ordinary, original+"\n\n") {
+				t.Fatal("ordinary runtime introduction changed")
+			}
+			want := "We are working with Multica workspace\n\n" + strings.TrimPrefix(ordinary, original+"\n\n")
+			if desktop != want {
+				t.Fatalf("desktop prompt changed content beyond the introduction:\n%s", desktop)
+			}
+		})
+	}
+}
+
+func TestFreebuffDesktopRuntimeDetection(t *testing.T) {
+	cases := []struct {
+		path string
+		task Task
+		want bool
+	}{
+		{"/opt/FREEBUFF-DESKTOP-custom", Task{}, true},
+		{"/opt/custom-wrapper", Task{Agent: &AgentData{CustomEnv: map[string]string{"FREEBUFF_DESKTOP_URL": "http://localhost"}}}, true},
+		{"/opt/codebuddy", Task{}, false},
+		{"/opt/codebuddy", Task{Agent: &AgentData{CustomEnv: map[string]string{"OTHER": "value"}}}, false},
+	}
+	for _, tc := range cases {
+		if got := isFreebuffDesktopRuntime(tc.path, tc.task); got != tc.want {
+			t.Errorf("isFreebuffDesktopRuntime(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestFreebuffDesktopPromptDoesNotDescribeTaskIdentityAsOwner(t *testing.T) {
+	task := Task{IssueID: "issue-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"}
+	desktop := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
+	if strings.Contains(desktop, "owner@example.test") || strings.Contains(desktop, "You are acting on behalf of") {
+		t.Fatalf("desktop prompt included the on-behalf block: %s", desktop)
+	}
+	if !strings.Contains(desktop, "Verify their identity and permissions") {
+		t.Fatal("requester privacy and access boundary missing")
+	}
+	if ordinary := BuildPrompt(task, "codebuddy"); !strings.Contains(ordinary, "owner@example.test") {
+		t.Fatal("ordinary runtime lost its requester information")
+	}
+}
+
 // TestBuildQuickCreatePromptRules locks in the rules that govern how the
 // quick-create agent is allowed to translate raw user input into the issue
 // description body. Each substring corresponds to a concrete failure mode

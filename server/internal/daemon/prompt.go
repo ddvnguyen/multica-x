@@ -2,10 +2,22 @@ package daemon
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+func isFreebuffDesktopRuntime(path string, task Task) bool {
+	if strings.HasPrefix(strings.ToLower(filepath.Base(path)), "freebuff-desktop") {
+		return true
+	}
+	if task.Agent != nil {
+		_, ok := task.Agent.CustomEnv["FREEBUFF_DESKTOP_URL"]
+		return ok
+	}
+	return false
+}
 
 // sessionContinuityNoticeFor picks the notice matching what this surface
 // actually lost. See the constants in execenv for the full reasoning; the
@@ -68,7 +80,11 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
-	b.WriteString(execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail))
+	if opts.freebuffDesktop && strings.TrimSpace(task.InitiatorName) != "" {
+		b.WriteString("Respect the requester's privacy and access rules. Verify their identity and permissions when needed; do not assume they can access everything your task credentials can.\n\n")
+	} else if !opts.freebuffDesktop {
+		b.WriteString(execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail))
+	}
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
@@ -107,11 +123,18 @@ func buildJoinedWakeupsBlock(notes string) string {
 // daemon's own execution context can answer. Kept behind PromptOption so the
 // common BuildPrompt(task, provider) call sites stay unchanged.
 type promptOpts struct {
+	freebuffDesktop         bool
 	sharedLocalDirectory    bool
 	worktreeReplayConflicts []string
 	moctInject              string
 	worktreeBranch          string
 	worktreeBase            string
+}
+
+// WithFreebuffDesktop selects the Desktop-specific introduction without
+// changing task content, identifiers, or prompts for other runtimes.
+func WithFreebuffDesktop() PromptOption {
+	return func(opts *promptOpts) { opts.freebuffDesktop = true }
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
@@ -284,6 +307,12 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	if opts.freebuffDesktop {
+		const oldIntro = "You are running as a local coding agent for a Multica workspace.\n\n"
+		if rest, ok := strings.CutPrefix(body, oldIntro); ok {
+			body = "We are working with Multica workspace\n\n" + rest
+		}
+	}
 	// The MOCT memory block is the one run-scoped block that goes in FRONT of
 	// the task instruction, per the seam contract (docs/moct-seam.md). The
 	// rule below still holds for everything else — and for the block itself
