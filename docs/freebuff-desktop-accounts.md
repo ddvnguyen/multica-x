@@ -101,14 +101,19 @@ server's existing profile. Switching affects this browser session, not the
 account leased for Multica tasks. Existing sockets and event streams close when
 the user switches, and the UI reloads for the selected account.
 
-The daemon writes a mode-0600 registry under its profiles root. The web service
-must run as the same OS user and use that path in `FREEBUFF_WEB_REGISTRY` if it
-differs from `/mnt/workspace/freebuff-profiles/registry.json`. Use one daemon
-per profiles directory: each replaces the directory's registry. Entries can lag
-daemon state; the proxy verifies the launch ID, PID and port against the live
-orchestrator before routing and reports stale entries offline. A missing
-registry leaves the default profile available. `FREEBUFF_WEB_REGISTRY=off`
-restores the single-profile proxy. Never share the registry or its launch IDs.
+The daemon writes a mode-0600 registry under its profiles root, and the web
+service resolves that root the same way (`FREEBUFF_PROFILES_DIR` when set, else
+`~/.config/multica/freebuff`); set `FREEBUFF_WEB_REGISTRY` to an absolute path
+when the two disagree. The web service must run as the same OS user. Use one
+daemon per profiles directory: each replaces the directory's registry. Entries
+are a hint and can lag daemon state: the proxy asks the live orchestrator's
+`/healthz` for its launch ID and only routes when it matches, so a stale entry
+reads as offline instead of being guessed at. `/healthz` also reports PID and
+port, which are corroborated when present but not required — the launch ID is
+random per launch and already rules out reuse. A malformed entry is skipped
+rather than hiding the healthy ones. A missing registry leaves the default
+profile available, and `FREEBUFF_WEB_REGISTRY=off` restores the single-profile
+proxy. Never share the registry or its launch IDs.
 
 - Runtime page, for a freebuff-desktop runtime: an **Accounts** card lists the
   workspace's accounts (everyone) and lets owners/admins add, enable/disable
