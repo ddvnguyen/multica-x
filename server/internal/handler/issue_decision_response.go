@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -317,7 +318,8 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "duplicate pending task")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			slog.ErrorContext(ctx, "decision response: enqueue handoff failed", "issue_id", uuidToString(issue.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to enqueue handoff")
 			return
 		}
 		task = t

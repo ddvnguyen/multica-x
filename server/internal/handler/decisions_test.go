@@ -274,3 +274,29 @@ func TestStatusDecisionReceiptHistory(t *testing.T) {
 		t.Fatalf("receipt detail: %+v", detail)
 	}
 }
+
+func TestDeleteIssueRemovesOnlyItsDecisionReceipts(t *testing.T) {
+	issue := dbfx.Issue(t, "decision receipt deletion")
+	other := dbfx.Issue(t, "another decision")
+	insert := func(issueID string) string {
+		return dbfx.Insert(t, "issue_decision_response", testutil.Cols{
+			"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID,
+			"issue_id": issueID, "actor_id": testUserID, "client_request_id": testutil.Raw("gen_random_uuid()"),
+			"source_revision": 1, "decision": "Approve", "rationale": "", "next_status": "in_progress",
+			"comment_id": testutil.Raw("gen_random_uuid()"),
+		})
+	}
+	receipt, otherReceipt := insert(issue), insert(other)
+	if err := testHandler.Queries.DeleteIssue(t.Context(), db.DeleteIssueParams{ID: parseUUID(issue), WorkspaceID: parseUUID(other)}); err != nil {
+		t.Fatal(err)
+	}
+	if !rowExists(t, "issue_decision_response", receipt) {
+		t.Fatal("foreign workspace deletion removed the receipt")
+	}
+	if err := testHandler.Queries.DeleteIssue(t.Context(), db.DeleteIssueParams{ID: parseUUID(issue), WorkspaceID: parseUUID(testWorkspaceID)}); err != nil {
+		t.Fatal(err)
+	}
+	if rowExists(t, "issue_decision_response", receipt) || !rowExists(t, "issue_decision_response", otherReceipt) {
+		t.Fatal("issue deletion did not remove only the target's receipt")
+	}
+}
