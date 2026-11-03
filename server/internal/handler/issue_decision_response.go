@@ -68,6 +68,28 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Matching retry must return the original receipt before any mutable
+	// workflow/agent preparation or authorization changes.
+	if existing, err := h.Queries.GetIssueDecisionResponseByRequest(ctx, db.GetIssueDecisionResponseByRequestParams{
+		WorkspaceID:     workspaceID,
+		ClientRequestID: clientRequestID,
+	}); err == nil {
+		if uuidToString(existing.IssueID) != uuidToString(issue.ID) ||
+			uuidToString(existing.ActorID) != authorID ||
+			existing.Decision != req.Decision ||
+			existing.Rationale != req.Rationale ||
+			existing.NextStatus != req.NextStatus ||
+			existing.SourceRevision != *req.ExpectedIssueRevision {
+			writeError(w, http.StatusConflict, "client_request_id is already in use")
+			return
+		}
+		writeDecisionResponseReceipt(w, existing)
+		return
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to check existing response")
+		return
+	}
+
 	def, project, err := issueworkflow.ForProject(ctx, h.Queries, workspaceID, issue.ProjectID)
 	if err != nil || def == nil {
 		writeError(w, http.StatusInternalServerError, "failed to load workflow")
@@ -176,6 +198,14 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Transaction-scoped membership check.
+	if _, err := qtx.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		WorkspaceID: workspaceID, UserID: authorUUID,
+	}); err != nil {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
+
 	// Revalidate workflow under the transaction.
 	defTx, _, err := issueworkflow.ForProject(ctx, qtx, workspaceID, lockedIssue.ProjectID)
 	if err != nil || defTx == nil {
@@ -207,9 +237,33 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authorization + handoff enqueue under the transaction.
+	// Verify prepared handoff still matches the transaction-resolved target.
 	var task db.AgentTaskQueue
 	hasTask := false
+	if hasPrepared {
+		if handoff == nil {
+			writeError(w, http.StatusConflict, "handoff target changed during transaction")
+			return
+		}
+		switch preparedKind {
+		case "agent":
+			if params.AssigneeType.String != "agent" || !params.AssigneeID.Valid || params.AssigneeID != prepared.HandoffAgent().ID {
+				writeError(w, http.StatusConflict, "handoff target changed during transaction")
+				return
+			}
+		case "squad":
+			if params.AssigneeType.String != "squad" || !params.AssigneeID.Valid || params.AssigneeID != preparedSquadID {
+				writeError(w, http.StatusConflict, "handoff target changed during transaction")
+				return
+			}
+		}
+	} else if handoff != nil {
+		writeError(w, http.StatusConflict, "handoff target changed during transaction")
+		return
+	}
+
+	// Transaction-scoped authorization + update before enqueue so the queued
+	// task is stamped with the destination workflow step.
 	if handoff != nil && hasPrepared {
 		switch preparedKind {
 		case "agent":
@@ -228,17 +282,27 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, "invalid handoff squad")
 				return
 			}
-			leader, err := qtx.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: prepared.HandoffAgent().ID, WorkspaceID: workspaceID})
+			leader, err := qtx.GetAgent(ctx, prepared.HandoffAgent().ID)
 			if err != nil || leader.ArchivedAt.Valid || !leader.RuntimeID.Valid || leader.ID != squad.LeaderID {
 				writeError(w, http.StatusConflict, "handoff agent changed during preparation")
 				return
 			}
-			if !h.canEnqueueSquadLeader(ctx, prepared.HandoffAgent().ID, authorType, authorID, authorID, uuidToString(workspaceID)) {
+			if !h.canInvokeAgent(ctx, leader, authorType, authorID, authorID, uuidToString(workspaceID)) {
 				writeError(w, http.StatusForbidden, "invocation_not_allowed")
 				return
 			}
 		}
-		t, err := h.TaskService.EnqueuePreparedIssueHandoffInTx(ctx, qtx, lockedIssue, preparedSquadID, prepared)
+	}
+
+	// Update issue status/assignee first so task workflow_step is destination.
+	updatedIssue, cancelled, err := updateIssueStoppingWakeups(ctx, qtx, params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return
+	}
+
+	if handoff != nil && hasPrepared {
+		t, err := h.TaskService.EnqueuePreparedIssueHandoffInTx(ctx, qtx, updatedIssue, preparedSquadID, prepared)
 		if err != nil {
 			if errors.Is(err, service.ErrDuplicatePendingTask) {
 				writeError(w, http.StatusConflict, "duplicate pending task")
@@ -249,13 +313,6 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		}
 		task = t
 		hasTask = true
-	}
-
-	// Update issue status/assignee.
-	updatedIssue, cancelled, err := updateIssueStoppingWakeups(ctx, qtx, params)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update issue")
-		return
 	}
 
 	// Ordinary timeline comment.
