@@ -9,11 +9,15 @@ inside a Multica daemon task.
 
 1. In `ddvnguyen/multica-x`, open **Settings → Environments → New environment**
    and create `main-prod`.
-2. Add the Owner as the only required reviewer. Enable **Prevent self-review**
-   and disable administrator bypass so approval cannot be skipped. The
-   environment gate protects the entire self-hosted job, including checkout
-   and image builds.
-3. Under **Settings → Actions → Runners**, create a repository-level Linux
+2. Add the Owner as the only required reviewer and disable administrator
+   bypass. This allows the Owner to approve a deployment they dispatched while
+   preventing an administrator from bypassing the approval gate.
+3. Under **Deployment branches and tags**, select **Selected branches and
+   tags**. Add a branch rule for `multica-moct` and a tag rule for `*`. This
+   environment policy independently restricts which workflow refs may deploy.
+   The environment gate protects the entire self-hosted job, including
+   checkout and image builds.
+4. Under **Settings → Actions → Runners**, create a repository-level Linux
    x64 runner named `ddv-server-main` with the additional label `multica-main`.
    Install its files in `/mnt/workspace/runners/multica-main`, and configure its
    work directory as `/mnt/workspace/runners/multica-main/_work`. Keep runner
@@ -78,12 +82,12 @@ backups must remain on `/mnt/workspace`.
 ## Dispatch
 
 Go to **Actions → Deploy main Multica → Run workflow**. Choose a dispatch ref
-of `multica-moct` or a tag and set:
+of `multica-moct` or a single-component tag and set:
 
 - **image_tag**: a unique immutable tag; it becomes both the image tag and the
   backend/daemon version.
-- **source_ref**: `multica-moct` or `refs/tags/<tag>`; the workflow records its
-  full commit SHA and builds both images from it.
+- **source_ref**: `multica-moct` or `refs/tags/<tag>` with no slash in the tag
+  name; the workflow records its full commit SHA and builds both images from it.
 - **drain_timeout_seconds**: maximum wait for zero active daemon tasks.
 - **image_source**: `build` (default) builds locally after environment approval;
   `staged` uses local images that already carry matching OCI revision and
@@ -102,6 +106,12 @@ readiness at `/healthz`, web HTTP 200, and daemon CLI version. Rollback restores
 the previous `.env` and daemon binary and brings the stack back up. It retains
 the `pg_dump -Fc` backup for an operator and never restores the database
 automatically.
+
+The script reads `BACKEND_PORT` and `FRONTEND_PORT` from the stack `.env`,
+defaulting to `3702` and `3180`. A task can arrive after the last zero-task
+poll and before the daemon service stops; the script stops the daemon directly
+after draining to keep that interval small, but it cannot make the poll and
+service stop atomic.
 
 ## Dry run and rollback
 

@@ -3,14 +3,15 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/deploy-main.sh"
-mkdir -p /mnt/workspace/tmp
-SANDBOX="$(mktemp -d /mnt/workspace/tmp/deploy-main-test.XXXXXX)"
+SANDBOX="$(mktemp -d "$REPO_ROOT/.deploy-main-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 STUB_BIN="$SANDBOX/bin"
 HOME_DIR="$SANDBOX/home"
 STACK_DIR="$HOME_DIR/.local/share/multica"
-mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$STACK_DIR"
-printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\n' > "$STACK_DIR/.env"
+WORKSPACE_ROOT="$SANDBOX/workspace"
+CONTAINERS_ROOT="$SANDBOX/containers"
+mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$STACK_DIR" "$WORKSPACE_ROOT" "$CONTAINERS_ROOT"
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 printf 'old daemon binary\n' > "$HOME_DIR/.local/bin/multica"
 chmod 755 "$HOME_DIR/.local/bin/multica"
 
@@ -57,6 +58,7 @@ EOF
 cat > "$STUB_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 url="${*: -1}"
+printf 'curl %s\n' "$url" >> "$STUB_LOG"
 case "$url" in
   */health)
     if [[ "${FAIL_HEALTH:-0}" == "1" ]]; then
@@ -79,8 +81,10 @@ for command in ps df podman multica systemctl curl sleep; do chmod 755 "$STUB_BI
 export PATH="$STUB_BIN:$PATH"
 export HOME="$HOME_DIR"
 export MULTICA_MAIN_STACK_DIR="$STACK_DIR"
-export MULTICA_MAIN_BACKUP_ROOT="$SANDBOX/backups"
-export MULTICA_MAIN_TMPDIR="$SANDBOX/tmp"
+export MULTICA_MAIN_WORKSPACE_ROOT="$WORKSPACE_ROOT"
+export MULTICA_MAIN_CONTAINERS_ROOT="$CONTAINERS_ROOT"
+export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
+export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
 export STUB_LOG="$SANDBOX/commands.log"
 export IMAGE_TAG=test-deploy
@@ -135,6 +139,9 @@ if FAIL_DAEMON_VERSION=1 run >/dev/null 2>&1; then
 fi
 assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
 assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
+assert grep -q 'curl http://127.0.0.1:4802/health' "$STUB_LOG"
+assert grep -q 'curl http://127.0.0.1:4802/healthz' "$STUB_LOG"
+assert grep -q 'curl http://127.0.0.1:4180/' "$STUB_LOG"
 after_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")"
 assert test "$after_stops" -gt "$before_stops"
 

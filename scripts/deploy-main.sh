@@ -36,8 +36,13 @@ done
 
 STACK_DIR="${MULTICA_MAIN_STACK_DIR:-$HOME/.local/share/multica}"
 ENV_FILE="$STACK_DIR/.env"
-BACKUP_ROOT="${MULTICA_MAIN_BACKUP_ROOT:-/mnt/workspace/multica-main-backups}"
+WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
+CONTAINERS_ROOT="${MULTICA_MAIN_CONTAINERS_ROOT:-/mnt/containers}"
+BACKUP_ROOT="${MULTICA_MAIN_BACKUP_ROOT:-$WORKSPACE_ROOT/multica-main-backups}"
 PROC_ROOT="${MULTICA_MAIN_PROC_ROOT:-/proc}"
+BACKEND_PORT=""
+FRONTEND_PORT=""
+ENV_TMP=""
 MIN_FREE_KB=$((10 * 1024 * 1024))
 BACKEND_IMAGE=""
 WEB_IMAGE=""
@@ -47,7 +52,7 @@ SWITCH_STARTED=0
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
 
-for cmd in awk cat chmod cp date df grep install jq mkdir mktemp multica mv podman ps seq sleep systemctl; do
+for cmd in awk cat chmod cp date df grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 command -v curl >/dev/null 2>&1 || die "required command not found: curl"
@@ -105,8 +110,15 @@ BACKEND_REPO="${BACKEND_REPO:-ghcr.io/multica-ai/multica-backend}"
 WEB_REPO="${WEB_REPO:-ghcr.io/multica-ai/multica-web}"
 BACKEND_IMAGE="$BACKEND_REPO:$IMAGE_TAG"
 WEB_IMAGE="$WEB_REPO:$IMAGE_TAG"
+BACKEND_PORT="$(read_env_value BACKEND_PORT || true)"
+FRONTEND_PORT="$(read_env_value FRONTEND_PORT || true)"
+BACKEND_PORT="${BACKEND_PORT:-3702}"
+FRONTEND_PORT="${FRONTEND_PORT:-3180}"
+valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 > 0 && 10#$1 <= 65535 )); }
+valid_port "$BACKEND_PORT" || die "invalid BACKEND_PORT in $ENV_FILE"
+valid_port "$FRONTEND_PORT" || die "invalid FRONTEND_PORT in $ENV_FILE"
 
-for path in /mnt/containers /mnt/workspace; do
+for path in "$CONTAINERS_ROOT" "$WORKSPACE_ROOT"; do
   [ -d "$path" ] || die "required mount is missing: $path"
   available="$(free_kb "$path")"
   [[ "$available" =~ ^[0-9]+$ ]] || die "could not read free space for $path"
@@ -121,9 +133,9 @@ for image in "$BACKEND_IMAGE" "$WEB_IMAGE"; do
   [ "$image_tag" = "$IMAGE_TAG" ] || die "$image has version label '$image_tag', expected $IMAGE_TAG"
 done
 
-export TMPDIR="${MULTICA_MAIN_TMPDIR:-/mnt/workspace/tmp/multica-main-deploy}"
-case "$TMPDIR" in /mnt/workspace/*) ;; *) die "TMPDIR must be under /mnt/workspace" ;; esac
-case "$BACKUP_ROOT" in /mnt/workspace/*) ;; *) die "backup directory must be under /mnt/workspace" ;; esac
+export TMPDIR="${MULTICA_MAIN_TMPDIR:-$WORKSPACE_ROOT/tmp/multica-main-deploy}"
+case "$TMPDIR" in "$WORKSPACE_ROOT"/*) ;; *) die "TMPDIR must be under $WORKSPACE_ROOT" ;; esac
+case "$BACKUP_ROOT" in "$WORKSPACE_ROOT"/*) ;; *) die "backup directory must be under $WORKSPACE_ROOT" ;; esac
 
 printf 'Main Multica deployment plan\n'
 printf '  image tag:       %s\n' "$IMAGE_TAG"
@@ -133,6 +145,8 @@ printf '  max drain wait:  %ss\n' "$MAX_DRAIN_SECONDS"
 printf '  force:           %s\n' "$([ "$FORCE" = 1 ] && printf true || printf false)"
 printf '  backend image:   %s\n' "$BACKEND_IMAGE"
 printf '  web image:       %s\n' "$WEB_IMAGE"
+printf '  backend port:    %s\n' "$BACKEND_PORT"
+printf '  frontend port:   %s\n' "$FRONTEND_PORT"
 printf '  backups:         %s\n' "$BACKUP_ROOT"
 printf '  switch: stop daemon, update .env, podman compose up -d, verify health/migrations/web, install daemon binary, start daemon\n'
 printf '  rollback: restore .env and old daemon binary, podman compose up -d, start daemon; database dump is retained, never restored automatically\n'
@@ -167,6 +181,7 @@ rollback() {
   local rc=$?
   trap - EXIT
   set +e
+  [ -z "$ENV_TMP" ] || rm -f "$ENV_TMP"
   if [ "$SWITCH_STARTED" = 1 ] && [ "$ROLLBACK_ACTIVE" = 0 ]; then
     ROLLBACK_ACTIVE=1
     local rollback_failed=0
@@ -200,19 +215,21 @@ podman exec "$db_container" sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB
 chmod 600 "$BACKUP_DIR/.env" "$BACKUP_DIR/multica" "$BACKUP_DIR/database.dump"
 log "backup complete: $BACKUP_DIR (database dump will not be restored automatically)"
 SWITCH_STARTED=1
+ENV_TMP="$ENV_FILE.tmp.$$"
 awk -F= -v tag="$IMAGE_TAG" '
   BEGIN {updated=0}
   $1 == "MULTICA_IMAGE_TAG" {print "MULTICA_IMAGE_TAG=" tag; updated++; next}
   {print}
   END {if (updated != 1) exit 2}
-' "$ENV_FILE" > "$TMPDIR/env.new" || die "could not update MULTICA_IMAGE_TAG"
-chmod --reference="$ENV_FILE" "$TMPDIR/env.new"
-mv "$TMPDIR/env.new" "$ENV_FILE"
+' "$ENV_FILE" > "$ENV_TMP" || die "could not update MULTICA_IMAGE_TAG"
+chmod --reference="$ENV_FILE" "$ENV_TMP"
+mv "$ENV_TMP" "$ENV_FILE"
+ENV_TMP=""
 (cd "$STACK_DIR" && podman compose up -d)
 
 health_ok=0
 for _ in $(seq 1 60); do
-  health="$(curl -fsS --max-time 3 http://127.0.0.1:3702/health 2>/dev/null || true)"
+  health="$(curl -fsS --max-time 3 "http://127.0.0.1:$BACKEND_PORT/health" 2>/dev/null || true)"
   commit="$(jq -r '.commit // empty' <<<"$health" 2>/dev/null || true)"
   version="$(jq -r '.version // empty' <<<"$health" 2>/dev/null || true)"
   if [ "$commit" = "$EXPECTED_COMMIT" ] && [ "$version" = "$IMAGE_TAG" ]; then health_ok=1; break; fi
@@ -222,7 +239,7 @@ done
 
 ready_ok=0
 for _ in $(seq 1 60); do
-  ready="$(curl -fsS --max-time 3 http://127.0.0.1:3702/healthz 2>/dev/null || true)"
+  ready="$(curl -fsS --max-time 3 "http://127.0.0.1:$BACKEND_PORT/healthz" 2>/dev/null || true)"
   ready_status="$(jq -r '.status // empty' <<<"$ready" 2>/dev/null || true)"
   migrations="$(jq -r '.checks.migrations // empty' <<<"$ready" 2>/dev/null || true)"
   if [ "$ready_status" = "ok" ] && [ "$migrations" = "ok" ]; then ready_ok=1; break; fi
@@ -232,7 +249,7 @@ done
 
 web_ok=0
 for _ in $(seq 1 30); do
-  if curl -fsS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:3180/ | grep -qx 200; then web_ok=1; break; fi
+  if curl -fsS --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$FRONTEND_PORT/" | grep -qx 200; then web_ok=1; break; fi
   sleep 2
 done
 [ "$web_ok" = 1 ] || die "web did not return HTTP 200"
