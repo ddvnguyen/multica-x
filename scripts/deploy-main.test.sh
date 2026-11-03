@@ -26,7 +26,7 @@ EOF
 cat > "$STUB_BIN/podman" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
-  'image exists') [[ "${FAIL_IMAGE:-}" != "$3" ]] ;;
+  'image exists') [[ "${NO_IMAGES:-0}" != 1 && "${FAIL_IMAGE:-}" != "$3" ]] ;;
   'image inspect')
     case "$4" in
       *revision*) printf '%s\n' "$EXPECTED_COMMIT" ;;
@@ -45,10 +45,19 @@ cat > "$STUB_BIN/multica" <<'EOF'
 #!/usr/bin/env bash
 version="$IMAGE_TAG"
 if [[ "${FAIL_DAEMON_VERSION:-0}" == "1" ]]; then version=wrong-version; fi
+status="${DAEMON_STATUS:-running}"
+if [[ "$status" == starting-then-running ]]; then
+  count="$(cat "$STATUS_COUNTER" 2>/dev/null || true)"
+  count="${count:-0}"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$STATUS_COUNTER"
+  if (( count <= 2 )); then status=starting; else status=running; fi
+fi
+printf 'daemon status=%s\n' "$status" >> "$STUB_LOG"
 if [[ "${ACTIVE_TASK_COUNT:-0}" == "1" ]]; then
-  printf '{"active_task_count":1,"cli_version":"%s"}\n' "$version"
+  printf '{"active_task_count":1,"cli_version":"%s","status":"%s"}\n' "$version" "$status"
 else
-  printf '{"active_task_count":0,"cli_version":"%s"}\n' "$version"
+  printf '{"active_task_count":0,"cli_version":"%s","status":"%s"}\n' "$version" "$status"
 fi
 EOF
 cat > "$STUB_BIN/systemctl" <<'EOF'
@@ -87,11 +96,27 @@ export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
 export STUB_LOG="$SANDBOX/commands.log"
+export STATUS_COUNTER="$SANDBOX/status-count"
 export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567
 
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
 run() { bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 1 "$@"; }
+
+# Reject current-tag deploys before any backup or switch, including dry runs.
+if bash "$SCRIPT" old-tag "$EXPECTED_COMMIT" 1 --dry-run >/dev/null 2>&1; then
+  echo "expected same-tag rejection" >&2; exit 1
+fi
+# The workflow uses this guard before its first image build.
+guard="$REPO_ROOT/scripts/deploy-main-image-guard.sh"
+if bash "$guard" old-tag old-tag build backend web >/dev/null 2>&1; then
+  echo "expected build guard to reject current tag" >&2; exit 1
+fi
+if bash "$guard" new-tag old-tag build backend web >/dev/null 2>&1; then
+  echo "expected build guard to reject an existing tag" >&2; exit 1
+fi
+assert env NO_IMAGES=1 bash "$guard" new-tag old-tag build backend web
+assert bash "$guard" new-tag old-tag staged backend web
 
 # Dry-run performs read-only preflight and does not make temporary or backup dirs.
 output="$(run --dry-run)"
@@ -144,5 +169,17 @@ assert grep -q 'curl http://127.0.0.1:4802/healthz' "$STUB_LOG"
 assert grep -q 'curl http://127.0.0.1:4180/' "$STUB_LOG"
 after_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")"
 assert test "$after_stops" -gt "$before_stops"
+
+# A correct version while permanently starting must time out and roll back.
+if DAEMON_STATUS=starting run >/dev/null 2>&1; then
+  echo "expected starting daemon to fail readiness verification" >&2; exit 1
+fi
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
+
+# Accept only after startup transitions to running with the expected version.
+DAEMON_STATUS=starting-then-running run >/dev/null
+assert test "$(cat "$STATUS_COUNTER")" -ge 3
+assert grep -q '^MULTICA_IMAGE_TAG=test-deploy$' "$STACK_DIR/.env"
 
 printf 'deploy-main stub tests passed\n'

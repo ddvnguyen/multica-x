@@ -104,6 +104,7 @@ free_kb() { df -Pk "$1" | awk 'NR==2 {print $4}'; }
 grep -q '^MULTICA_IMAGE_TAG=' "$ENV_FILE" || die "MULTICA_IMAGE_TAG is missing from $ENV_FILE"
 OLD_TAG="$(read_env_value MULTICA_IMAGE_TAG)" || die "could not read current image tag"
 [ -n "$OLD_TAG" ] || die "current MULTICA_IMAGE_TAG is empty"
+[ "$IMAGE_TAG" != "$OLD_TAG" ] || die "target image tag must differ from the current release tag"
 BACKEND_REPO="$(read_env_value MULTICA_BACKEND_IMAGE || true)"
 WEB_REPO="$(read_env_value MULTICA_WEB_IMAGE || true)"
 BACKEND_REPO="${BACKEND_REPO:-ghcr.io/multica-ai/multica-backend}"
@@ -267,10 +268,11 @@ daemon_ok=0
 for _ in $(seq 1 30); do
   daemon_json="$(multica daemon status --output json 2>/dev/null || true)"
   daemon_version="$(jq -r '.cli_version // empty' <<<"$daemon_json" 2>/dev/null || true)"
-  if [ "$daemon_version" = "$IMAGE_TAG" ]; then daemon_ok=1; break; fi
+  daemon_status="$(jq -r '.status // empty' <<<"$daemon_json" 2>/dev/null || true)"
+  if [ "$daemon_status" = running ] && [ "$daemon_version" = "$IMAGE_TAG" ]; then daemon_ok=1; break; fi
   sleep 2
 done
-[ "$daemon_ok" = 1 ] || die "daemon status did not report version $IMAGE_TAG"
+[ "$daemon_ok" = 1 ] || die "daemon did not reach running status with version $IMAGE_TAG"
 
 trap - EXIT
 log "deployment verified: commit=$EXPECTED_COMMIT version=$IMAGE_TAG; backup=$BACKUP_DIR"
