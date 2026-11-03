@@ -24,6 +24,7 @@ import {
 } from "@multica/core/workspace/queries";
 import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { runtimeDisplayName } from "@multica/core/runtimes";
+import { machineTitleForId } from "../runtimes/components/runtime-machines";
 import { chatSessionsOptions } from "@multica/core/chat/queries";
 import {
   inboxListOptions,
@@ -74,6 +75,15 @@ const PENDING_RESOURCE_KEYS: ReadonlySet<TabLabelKey> = new Set<TabLabelKey>([
   "machine",
   "runtime",
 ]);
+
+/** A route segment read back as the id the URL encoded. */
+function decodeRouteSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 /** Gather cached entity data for a subject. All reads are cache-only. */
 function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
@@ -185,12 +195,23 @@ function useTabEntityData(subject: TabSubject, wsId: string): TabEntityData {
       break;
     }
     case "machine": {
-      const rt = runtimes?.find((r) => r.id === subject.machineId);
-      if (rt) data.machine = { name: runtimeDisplayName(rt) };
+      // A machine address carries the machine id (`local:<daemon>`), not a
+      // runtime id, so this resolves through the same machine rules the
+      // runtimes page titles its rows with (custom name, host name, daemon).
+      // The `:` in that id is percent-encoded on the way into the URL, and the
+      // page decodes it back — the lookup has to do the same or every machine
+      // tab falls back to the bare type label.
+      const name = machineTitleForId(
+        runtimes ?? [],
+        decodeRouteSegment(subject.machineId),
+      );
+      if (name) data.machine = { name };
       break;
     }
     case "runtime": {
-      const rt = runtimes?.find((r) => r.id === subject.runtimeId);
+      const rt = runtimes?.find(
+        (r) => r.id === decodeRouteSegment(subject.runtimeId),
+      );
       if (rt) data.runtime = { name: runtimeDisplayName(rt) };
       break;
     }

@@ -96,6 +96,13 @@ function seed(qc: QueryClient) {
   ] as never);
   qc.setQueryData(runtimeListOptions("ws1").queryKey, [
     { id: "rt1", name: "Claude (host)", custom_name: "Prod Box", status: "online" },
+    // One daemon reporting two CLIs: the machine's title is the host both
+    // names carry, not either runtime's provider (M-174).
+    { id: "rt2", name: "Claude (ddv-server)", custom_name: null, daemon_id: "d1", runtime_mode: "local", status: "online" },
+    { id: "rt3", name: "Codex (ddv-server)", custom_name: null, daemon_id: "d1", runtime_mode: "local", status: "online" },
+    // A machine-level rename stamps the same custom_name on every runtime.
+    { id: "rt4", name: "Claude (10.0.0.9)", custom_name: "Build Box", daemon_id: "d2", runtime_mode: "local", status: "online" },
+    { id: "rt5", name: "Codex (10.0.0.9)", custom_name: "Build Box", daemon_id: "d2", runtime_mode: "local", status: "online" },
   ] as never);
 }
 
@@ -171,6 +178,24 @@ describe("useTabPresentation — live from cache", () => {
       visual: { kind: "icon", icon: "Monitor" },
       title: "Prod Box",
     });
+  });
+
+  it("machine tab addressed by machine id resolves the host name", () => {
+    // `/runtimes/<machineId>` carries `local:<daemon>`, not a runtime id — the
+    // shape every row of the runtimes page links with (M-174). The `:` is
+    // percent-encoded on the way in, exactly as `paths.runtimeDetail` writes it.
+    expect(presentationOf("/acme/runtimes/local%3Ad1")).toEqual({
+      visual: { kind: "icon", icon: "Monitor" },
+      title: "ddv-server",
+    });
+  });
+
+  it("machine tab prefers the name every runtime on the daemon shares", () => {
+    expect(presentationOf("/acme/runtimes/local:d2").title).toBe("Build Box");
+  });
+
+  it("machine tab of an unknown machine keeps the type label", () => {
+    expect(presentationOf("/acme/runtimes/local:nope").title).toBe("Machine");
   });
 
   it("chat container: MessageSquare icon + session title", () => {

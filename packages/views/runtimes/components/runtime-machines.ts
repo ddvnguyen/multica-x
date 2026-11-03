@@ -290,6 +290,27 @@ function runtimeDeviceName(runtime: AgentRuntime): string | null {
   return raw.split(" · ")[0]?.trim() || null;
 }
 
+/**
+ * The title of the machine an address names (M-174).
+ *
+ * `/w/runtimes/<machineId>` carries the machine id `runtimeMachineId`
+ * derives — `local:<daemon>` — not a runtime id, so resolving a title by
+ * `runtime.id` misses every link the runtimes page actually renders and the
+ * tab falls back to the bare type label ("Machine"). Addresses written before
+ * the machine route existed still carry a runtime id; those resolve here too.
+ */
+export function machineTitleForId(
+  runtimes: AgentRuntime[],
+  machineId: string,
+): string | null {
+  const onMachine = runtimes.filter(
+    (runtime) =>
+      runtime.id === machineId || runtimeMachineId(runtime) === machineId,
+  );
+  if (onMachine.length === 0) return null;
+  return machineTitle(onMachine, { isCurrent: false });
+}
+
 // The custom name shared by every runtime on a machine (MUL-4217). A
 // machine-level rename writes the same custom_name to all runtimes on the
 // daemon, so a name shared by all of them is the machine's label. A one-off
