@@ -640,7 +640,10 @@ func (h *Handler) PromoteTaskSupplement(w http.ResponseWriter, r *http.Request) 
 			writeErrorCode(w, http.StatusNotFound, "task_supplement_not_found", "this message is not bound to the run")
 			return
 		case existing.Status == "pending" && existing.Mode == "steer":
-			row = existing
+			// The UPDATE matched nothing because the flip already happened;
+			// clearing err keeps this a success instead of falling through to
+			// the 500 below with the retry's ErrNoRows still in hand.
+			row, err = existing, nil
 		default:
 			writeErrorCode(w, http.StatusConflict, "task_supplement_taken", "this message is no longer waiting")
 			return

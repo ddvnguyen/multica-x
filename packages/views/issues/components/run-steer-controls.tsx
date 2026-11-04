@@ -48,6 +48,26 @@ export function RunSteerControls({
   issueId: string;
   className?: string;
 }) {
+  // Every hook below needs the workspace route and a React Query client, and a
+  // finished run can never be steered. Deciding that here keeps a completed
+  // row — the common case in the runs list — from subscribing to anything.
+  const steerable =
+    task.status === "running" &&
+    task.supplement_capability === TASK_SUPPLEMENT_CAPABILITY &&
+    task.can_supplement === true;
+  if (!steerable) return null;
+  return <SteerableRun task={task} issueId={issueId} className={className} />;
+}
+
+function SteerableRun({
+  task,
+  issueId,
+  className,
+}: {
+  task: AgentTask;
+  issueId: string;
+  className?: string;
+}) {
   const { t } = useT("issues");
   const workspaceId = useWorkspaceId();
   const [open, setOpen] = useState(false);
@@ -55,20 +75,10 @@ export function RunSteerControls({
   const [sending, setSending] = useState<"steer" | "queue" | null>(null);
   const createSupplement = useCreateTaskSupplement(issueId);
 
-  const canSupplement =
-    task.status === "running" &&
-    task.supplement_capability === TASK_SUPPLEMENT_CAPABILITY &&
-    task.can_supplement === true;
-
-  const { data: runtimes = [] } = useQuery({
-    ...runtimeListOptions(workspaceId),
-    enabled: canSupplement,
-  });
+  const { data: runtimes = [] } = useQuery(runtimeListOptions(workspaceId));
   const provider = runtimes.find((runtime) => runtime.id === task.runtime_id)?.provider;
   const queueSupported = provider === "dsh";
   const defaultMode: "steer" | "queue" = queueSupported ? "queue" : "steer";
-
-  if (!canSupplement) return null;
 
   const submit = async (mode: "steer" | "queue") => {
     const content = draft.trim();
