@@ -819,12 +819,18 @@ func Brief(in BriefInput) string {
 		}
 		if span.deliver != "" {
 			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, span.deliver, handsOffTo(span.deliver))
+			if target, ok := in.Workflow.Step(span.deliver); ok && isOwnerHandoff(target) {
+				fmt.Fprintf(&b, "   (move to `%s` only if you really need an owner decision; otherwise keep the issue at its current step for normal follow by the agent team)\n", span.deliver)
+			}
 		} else {
 			fmt.Fprintf(&b, "Step done      → leave the issue at `%s`; `done` is set by a human\n", in.StatusKey)
 		}
 	default:
 		if next := in.Workflow.NextStatus(in.StatusKey); next != "" {
 			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, next, handsOffTo(next))
+			if target, ok := in.Workflow.Step(next); ok && isOwnerHandoff(target) {
+				fmt.Fprintf(&b, "   (move to `%s` only if you really need an owner decision; otherwise keep the issue at its current step for normal follow by the agent team)\n", next)
+			}
 		}
 	}
 	if step.BackStatusKey != "" {
@@ -850,6 +856,23 @@ func Brief(in BriefInput) string {
 	b.WriteString("When the issue enters a step you handle, you get a run automatically — do not add a wakeup for that. Wakeups for anything else (a time, a PR, another issue, a step someone else handles) are fine.\n")
 	return b.String()
 }
+
+
+// isOwnerHandoff reports whether a step hands an issue off to a human owner
+// (a member, the creator, or the project lead) rather than to an agent or
+// squad. Such handoffs are "Wait for decision" style moves: they should only
+// happen when an owner decision is genuinely needed.
+func isOwnerHandoff(s Step) bool {
+	switch s.Handler.Type {
+	case HandlerMember, HandlerCreator:
+		return true
+	case HandlerProjectLead:
+		// Project leads may be agents; treat as owner-facing by default.
+		return true
+	}
+	return false
+}
+
 
 // briefLine keeps a user-authored name on one line of a brief: line breaks
 // and tabs become single spaces and other control characters are dropped.
