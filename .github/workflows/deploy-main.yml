@@ -128,6 +128,8 @@ jobs:
           web="${web:-ghcr.io/multica-ai/multica-web}"
           [[ "$backend" =~ ^[A-Za-z0-9./:_-]+$ ]] || { echo "::error::invalid backend image repository"; exit 1; }
           [[ "$web" =~ ^[A-Za-z0-9./:_-]+$ ]] || { echo "::error::invalid web image repository"; exit 1; }
+          bash scripts/deploy-main-image-guard.sh \
+            "$IMAGE_TAG" "$(read_value MULTICA_IMAGE_TAG)" "$IMAGE_SOURCE" "$backend" "$web"
           printf 'commit=%s\nbackend=%s\nweb=%s\n' "$commit" "$backend" "$web" >> "$GITHUB_OUTPUT"
           {
             printf '### Main deployment approval summary\n\n'
