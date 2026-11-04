@@ -117,17 +117,20 @@ func TestFreebuffDesktopRuntimeDetection(t *testing.T) {
 	}
 }
 
-func TestFreebuffDesktopPromptDoesNotDescribeTaskIdentityAsOwner(t *testing.T) {
-	task := Task{IssueID: "issue-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"}
-	desktop := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
-	if strings.Contains(desktop, "owner@example.test") || strings.Contains(desktop, "You are acting on behalf of") {
-		t.Fatalf("desktop prompt included the on-behalf block: %s", desktop)
+func TestFreebuffDesktopPromptRequesterIdentity(t *testing.T) {
+	for _, task := range []Task{
+		{IssueID: "issue-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"},
+		{IssueID: "issue-1", WakeupID: "wake-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"},
+	} {
+		desktop := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
+		for _, want := range []string{"We are working on behalf of **Owner** (owner@example.test)", "person-specific privacy or access rules", "do not assume this person can access everything you can"} {
+			if !strings.Contains(desktop, want) {
+				t.Errorf("desktop prompt missing %q: %s", want, desktop)
+			}
+		}
 	}
-	if !strings.Contains(desktop, "Verify their identity and permissions") {
-		t.Fatal("requester privacy and access boundary missing")
-	}
-	if ordinary := BuildPrompt(task, "codebuddy"); !strings.Contains(ordinary, "owner@example.test") {
-		t.Fatal("ordinary runtime lost its requester information")
+	if got := BuildPrompt(Task{IssueID: "issue-1"}, "codebuddy", WithFreebuffDesktop()); strings.Contains(got, "## On Behalf Of") {
+		t.Fatal("empty requester should not create an identity block")
 	}
 }
 
@@ -233,7 +236,7 @@ func TestBuildQuickCreatePromptLargestAcceptedSourceContextFitsBudget(t *testing
 
 func TestIssuePromptsKeepSourceContextRuleOutOfPerTurnMessage(t *testing.T) {
 	const rule = "If the issue JSON contains `source_context`"
-	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude")
+	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude", false)
 	comment := buildCommentPrompt(Task{IssueID: "issue-1", TriggerCommentID: "comment-1"}, "claude")
 	if strings.Contains(assignment, rule) || strings.Contains(comment, rule) {
 		t.Fatal("source-context precedence rule must live in the cache-stable runtime brief, not per-turn prompts")

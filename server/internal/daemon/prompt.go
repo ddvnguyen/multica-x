@@ -105,11 +105,11 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
-	if opts.freebuffDesktop && strings.TrimSpace(task.InitiatorName) != "" {
-		b.WriteString("Respect the requester's privacy and access rules. Verify their identity and permissions when needed; do not assume they can access everything your task credentials can.\n\n")
-	} else if !opts.freebuffDesktop {
-		b.WriteString(execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail))
+	identity := execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail)
+	if opts.freebuffDesktop {
+		identity = strings.Replace(identity, "You are acting on behalf of", "We are working on behalf of", 1)
 	}
+	b.WriteString(identity)
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
@@ -357,11 +357,15 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 	return body
 }
 
-func buildPromptBody(task Task, provider string, desktop ...bool) string {
-	isDesktop := len(desktop) > 0 && desktop[0]
+func buildPromptBody(task Task, provider string, isDesktop bool) string {
 	if task.WakeupID != "" {
 		var b strings.Builder
-		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
+		if isDesktop {
+			b.WriteString("We are working with Multica workspace\n\n")
+		} else {
+			b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
+		}
+		fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
 		fmt.Fprintf(&b, "Start by running `multica issue get %s --output json`, then read current run/comment state. Decide whether the instruction's goal is met; the trigger reports a fact, not business completion. This is an ordinary run with normal result delivery, except where the [WAKEUP] block offers a check-in.\n", task.IssueID)
 		fmt.Fprintf(&b, "Scan comment threads with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand relevant threads with `--thread <id> --tail 30`.\n", task.IssueID)
 		if task.WakeupSystemRule != "" {
