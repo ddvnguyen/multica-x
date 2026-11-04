@@ -247,18 +247,23 @@ func TestDecisionHandlers(t *testing.T) {
 
 func TestStatusDecisionReceiptHistory(t *testing.T) {
 	issue := dbfx.Issue(t, "answered decision")
+	requestedAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	receipt := dbfx.Insert(t, "issue_decision_response", testutil.Cols{
 		"id":           testutil.Raw("gen_random_uuid()"),
 		"workspace_id": testWorkspaceID, "issue_id": issue, "actor_id": testUserID,
 		"client_request_id": testutil.Raw("gen_random_uuid()"), "source_revision": 1,
 		"decision": "Approve", "rationale": "Reviewed", "next_status": "in_progress",
-		"comment_id": testutil.Raw("gen_random_uuid()"),
+		"comment_id":   testutil.Raw("gen_random_uuid()"),
+		"requested_at": requestedAt,
 	})
 	req := withURLParam(newRequest("GET", "/decisions?state=answered", nil), "id", testWorkspaceID)
 	var page decisionsResult
 	testutil.Call(t, testHandler.ListDecisions, req).Want(200).JSON(&page)
 	if len(page.Items) != 1 || page.Items[0].SourceID != issue+":"+receipt || page.Items[0].ResponseID == nil || *page.Items[0].ResponseID != receipt {
 		t.Fatalf("receipt history: %+v", page)
+	}
+	if !page.Items[0].RequestedAt.Equal(requestedAt) {
+		t.Fatalf("requested_at = %v, want %v", page.Items[0].RequestedAt, requestedAt)
 	}
 	req = withURLParam(newRequest("GET", "/decisions/status/"+issue+":"+receipt, nil), "id", testWorkspaceID)
 	chi.RouteContext(req.Context()).URLParams.Add("kind", "status")

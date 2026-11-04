@@ -15,7 +15,6 @@ import (
 // caller locks the issue. Its target must still be validated in the transaction.
 type PreparedIssueHandoff struct {
 	agent   db.Agent
-	actor   pgtype.UUID
 	attr    attribution.Result
 	overlay runtimeMCPOverlayData
 	head    pgtype.Text
@@ -38,7 +37,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 		return PreparedIssueHandoff{}, err
 	}
 	return PreparedIssueHandoff{
-		agent: agent, actor: actorID, attr: attr,
+		agent: agent, attr: attr,
 		overlay: s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
 		head:    headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 	}, nil

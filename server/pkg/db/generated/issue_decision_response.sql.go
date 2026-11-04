@@ -14,23 +14,24 @@ import (
 const createIssueDecisionResponse = `-- name: CreateIssueDecisionResponse :one
 INSERT INTO issue_decision_response (
     id, workspace_id, issue_id, client_request_id, actor_id, source_revision,
-    decision, rationale, next_status, comment_id, task_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, workspace_id, issue_id, client_request_id, actor_id, source_revision, decision, rationale, next_status, comment_id, task_id, created_at
+    decision, rationale, next_status, comment_id, task_id, requested_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, workspace_id, issue_id, client_request_id, actor_id, source_revision, decision, rationale, next_status, comment_id, task_id, requested_at, created_at
 `
 
 type CreateIssueDecisionResponseParams struct {
-	ID              pgtype.UUID `json:"id"`
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	IssueID         pgtype.UUID `json:"issue_id"`
-	ClientRequestID pgtype.UUID `json:"client_request_id"`
-	ActorID         pgtype.UUID `json:"actor_id"`
-	SourceRevision  int64       `json:"source_revision"`
-	Decision        string      `json:"decision"`
-	Rationale       string      `json:"rationale"`
-	NextStatus      string      `json:"next_status"`
-	CommentID       pgtype.UUID `json:"comment_id"`
-	TaskID          pgtype.UUID `json:"task_id"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	ClientRequestID pgtype.UUID        `json:"client_request_id"`
+	ActorID         pgtype.UUID        `json:"actor_id"`
+	SourceRevision  int64              `json:"source_revision"`
+	Decision        string             `json:"decision"`
+	Rationale       string             `json:"rationale"`
+	NextStatus      string             `json:"next_status"`
+	CommentID       pgtype.UUID        `json:"comment_id"`
+	TaskID          pgtype.UUID        `json:"task_id"`
+	RequestedAt     pgtype.Timestamptz `json:"requested_at"`
 }
 
 func (q *Queries) CreateIssueDecisionResponse(ctx context.Context, arg CreateIssueDecisionResponseParams) (IssueDecisionResponse, error) {
@@ -46,6 +47,7 @@ func (q *Queries) CreateIssueDecisionResponse(ctx context.Context, arg CreateIss
 		arg.NextStatus,
 		arg.CommentID,
 		arg.TaskID,
+		arg.RequestedAt,
 	)
 	var i IssueDecisionResponse
 	err := row.Scan(
@@ -60,13 +62,14 @@ func (q *Queries) CreateIssueDecisionResponse(ctx context.Context, arg CreateIss
 		&i.NextStatus,
 		&i.CommentID,
 		&i.TaskID,
+		&i.RequestedAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getIssueDecisionResponseByRequest = `-- name: GetIssueDecisionResponseByRequest :one
-SELECT id, workspace_id, issue_id, client_request_id, actor_id, source_revision, decision, rationale, next_status, comment_id, task_id, created_at FROM issue_decision_response
+SELECT id, workspace_id, issue_id, client_request_id, actor_id, source_revision, decision, rationale, next_status, comment_id, task_id, requested_at, created_at FROM issue_decision_response
 WHERE workspace_id = $1 AND client_request_id = $2
 `
 
@@ -90,6 +93,7 @@ func (q *Queries) GetIssueDecisionResponseByRequest(ctx context.Context, arg Get
 		&i.NextStatus,
 		&i.CommentID,
 		&i.TaskID,
+		&i.RequestedAt,
 		&i.CreatedAt,
 	)
 	return i, err

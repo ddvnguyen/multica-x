@@ -125,7 +125,7 @@ WITH scoped_issues AS MATERIALIZED (
 ), history AS (
     SELECT 'status'::text AS kind, d.issue_id::text || ':' || d.id::text AS source_id, d.issue_id, NULL::uuid AS agent_id,
            d.created_at AS sort_at, d.task_id, NULL::integer AS question_seq, 'answered'::text AS status,
-           d.id AS response_id, d.actor_id, d.created_at AS requested_at
+           d.id AS response_id, d.actor_id, d.requested_at, NULL::text AS receipt_reason
     FROM issue_decision_response d JOIN scoped_issues i ON i.id = d.issue_id
     WHERE d.workspace_id = i.workspace_id
     UNION ALL

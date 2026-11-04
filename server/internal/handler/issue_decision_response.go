@@ -9,7 +9,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -24,6 +26,13 @@ type decisionResponseRequest struct {
 	Decision              string `json:"decision"`
 	Rationale             string `json:"rationale"`
 	NextStatus            string `json:"next_status"`
+}
+
+func decisionResponseMatches(receipt db.IssueDecisionResponse, issueID, actorID pgtype.UUID, req decisionResponseRequest) bool {
+	return receipt.IssueID == issueID && receipt.ActorID == actorID &&
+		receipt.Decision == req.Decision && receipt.Rationale == req.Rationale &&
+		receipt.NextStatus == req.NextStatus && req.ExpectedIssueRevision != nil &&
+		receipt.SourceRevision == *req.ExpectedIssueRevision
 }
 
 func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
@@ -75,12 +84,7 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID:     workspaceID,
 		ClientRequestID: clientRequestID,
 	}); err == nil {
-		if uuidToString(existing.IssueID) != uuidToString(issue.ID) ||
-			uuidToString(existing.ActorID) != authorID ||
-			existing.Decision != req.Decision ||
-			existing.Rationale != req.Rationale ||
-			existing.NextStatus != req.NextStatus ||
-			existing.SourceRevision != *req.ExpectedIssueRevision {
+		if !decisionResponseMatches(existing, issue.ID, authorUUID, req) {
 			writeError(w, http.StatusConflict, "client_request_id is already in use")
 			return
 		}
@@ -90,58 +94,69 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to check existing response")
 		return
 	}
-
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, workspaceID, issue.ProjectID)
-	if err != nil || def == nil {
-		writeError(w, http.StatusInternalServerError, "failed to load workflow")
-		return
-	}
-	if err := issueworkflow.CheckStatus(def, req.NextStatus); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid next_status")
-		return
-	}
-
 	// Prepare network-dependent handoff data before locking. The target is
-	// revalidated in the transaction.
+	// revalidated in the transaction. Defer preparation errors until after the
+	// locked receipt lookup: a concurrent matching request may have committed.
 	var prepared service.PreparedIssueHandoff
 	hasPrepared := false
 	var preparedSquadID pgtype.UUID
 	var preparedKind string // "agent" or "squad"
-	step, hasStep := def.Step(req.NextStatus)
-	if hasStep && step.HandsOff() {
-		assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID)
-		if ok {
-			switch assigneeType {
-			case "agent":
-				p, err := h.TaskService.PrepareIssueHandoff(ctx, issue, assigneeID, authorUUID)
-				if err != nil {
-					writeError(w, http.StatusBadRequest, err.Error())
-					return
+	statusKey := req.NextStatus
+	preflightStatus, preflightError := 0, ""
+	statusEntry, statusErr := issuestatus.Resolve(ctx, h.Queries, workspaceID, req.NextStatus)
+	if statusErr != nil {
+		if errors.Is(statusErr, issuestatus.ErrUnknownStatus) {
+			preflightStatus, preflightError = http.StatusBadRequest, "invalid next_status"
+		} else {
+			preflightStatus, preflightError = http.StatusInternalServerError, "failed to validate status"
+		}
+	} else if statusEntry.Key != req.NextStatus {
+		preflightStatus, preflightError = http.StatusBadRequest, "next_status must be a canonical status key"
+	}
+	def, project, workflowErr := issueworkflow.ForProject(ctx, h.Queries, workspaceID, issue.ProjectID)
+	if preflightStatus == 0 && workflowErr != nil {
+		preflightStatus, preflightError = http.StatusInternalServerError, "failed to load workflow"
+	}
+	if preflightStatus == 0 && def != nil && issueworkflow.CheckStatus(def, req.NextStatus) != nil {
+		preflightStatus, preflightError = http.StatusBadRequest, "invalid next_status"
+	}
+	if preflightStatus == 0 && def != nil {
+		step, hasStep := def.Step(req.NextStatus)
+		if hasStep && step.HandsOff() {
+			assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, issue.CreatorType, issue.CreatorID)
+			if ok {
+				switch assigneeType {
+				case "agent":
+					p, err := h.TaskService.PrepareIssueHandoff(ctx, issue, assigneeID, authorUUID)
+					if err != nil {
+						preflightStatus, preflightError = http.StatusBadRequest, "cannot prepare handoff agent"
+						break
+					}
+					prepared = p
+					hasPrepared = true
+					preparedKind = "agent"
+				case "squad":
+					squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: assigneeID, WorkspaceID: workspaceID})
+					if err != nil {
+						preflightStatus, preflightError = http.StatusBadRequest, "invalid handoff squad"
+						break
+					}
+					p, err := h.TaskService.PrepareIssueHandoff(ctx, issue, squad.LeaderID, authorUUID)
+					if err != nil {
+						preflightStatus, preflightError = http.StatusBadRequest, "cannot prepare handoff agent"
+						break
+					}
+					prepared = p
+					hasPrepared = true
+					preparedKind = "squad"
+					preparedSquadID = assigneeID
+				case "project_lead", "creator":
+					// May resolve to an agent-type principal handled above via its
+					// type; if the resolved type is agent/squad it would already
+					// have matched. Member/creator-human destinations need no task.
 				}
-				prepared = p
-				hasPrepared = true
-				preparedKind = "agent"
-			case "squad":
-				squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: assigneeID, WorkspaceID: workspaceID})
-				if err != nil {
-					writeError(w, http.StatusBadRequest, "invalid handoff squad")
-					return
-				}
-				p, err := h.TaskService.PrepareIssueHandoff(ctx, issue, squad.LeaderID, authorUUID)
-				if err != nil {
-					writeError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-				prepared = p
-				hasPrepared = true
-				preparedKind = "squad"
-				preparedSquadID = assigneeID
-			case "project_lead", "creator":
-				// May resolve to an agent-type principal handled above via its
-				// type; if the resolved type is agent/squad it would already
-				// have matched. Member/creator-human destinations need no task.
+				_ = assigneeID
 			}
-			_ = assigneeID
 		}
 	}
 
@@ -157,6 +172,12 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	qtx := h.Queries.WithTx(tx)
+	if !issuestatus.IsBuiltIn(statusKey) {
+		if err := qtx.LockIssueStatusCatalogShared(ctx, workspaceID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock status catalog")
+			return
+		}
+	}
 
 	lockedIssue, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
 		ID:          issue.ID,
@@ -172,12 +193,7 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID:     workspaceID,
 		ClientRequestID: clientRequestID,
 	}); err == nil {
-		if uuidToString(existing.IssueID) != uuidToString(lockedIssue.ID) ||
-			uuidToString(existing.ActorID) != authorID ||
-			existing.Decision != req.Decision ||
-			existing.Rationale != req.Rationale ||
-			existing.NextStatus != req.NextStatus ||
-			existing.SourceRevision != *req.ExpectedIssueRevision {
+		if !decisionResponseMatches(existing, lockedIssue.ID, authorUUID, req) {
 			writeError(w, http.StatusConflict, "client_request_id is already in use")
 			return
 		}
@@ -189,6 +205,17 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to check existing response")
 		return
 	}
+	if preflightStatus != 0 {
+		writeError(w, preflightStatus, preflightError)
+		return
+	}
+	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
+		if writeIssueStatusRaceError(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to validate status")
+		return
+	}
 
 	// Expected revision fence.
 	if lockedIssue.Revision != *req.ExpectedIssueRevision {
@@ -197,6 +224,10 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	if lockedIssue.Status != "wait_for_decision" {
 		writeError(w, http.StatusConflict, "issue is not waiting for a decision")
+		return
+	}
+	if req.NextStatus == lockedIssue.Status {
+		writeError(w, http.StatusBadRequest, "next_status must leave the waiting step")
 		return
 	}
 
@@ -210,11 +241,11 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 
 	// Revalidate workflow under the transaction.
 	defTx, _, err := issueworkflow.ForProject(ctx, qtx, workspaceID, lockedIssue.ProjectID)
-	if err != nil || defTx == nil {
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load workflow")
 		return
 	}
-	if err := issueworkflow.CheckStatus(defTx, req.NextStatus); err != nil {
+	if defTx != nil && issueworkflow.CheckStatus(defTx, req.NextStatus) != nil {
 		writeError(w, http.StatusBadRequest, "invalid next_status")
 		return
 	}
@@ -282,25 +313,31 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "handoff agent changed during preparation")
 				return
 			}
-			if !h.canInvokeAgent(ctx, agent, authorType, authorID, authorID, uuidToString(workspaceID)) {
+			if !h.canInvokeAgentWithQueries(ctx, qtx, agent, authorType, authorID, authorID, uuidToString(workspaceID)) {
 				writeError(w, http.StatusForbidden, "invocation_not_allowed")
 				return
 			}
 		case "squad":
 			squad, err := qtx.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: preparedSquadID, WorkspaceID: workspaceID})
-			if err != nil {
+			if err != nil || squad.ArchivedAt.Valid {
 				writeError(w, http.StatusForbidden, "invalid handoff squad")
 				return
 			}
-			leader, err := qtx.GetAgent(ctx, prepared.HandoffAgent().ID)
+			leader, err := qtx.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: prepared.HandoffAgent().ID, WorkspaceID: workspaceID})
 			if err != nil || leader.ArchivedAt.Valid || !leader.RuntimeID.Valid || leader.ID != squad.LeaderID {
 				writeError(w, http.StatusConflict, "handoff agent changed during preparation")
 				return
 			}
-			if !h.canInvokeAgent(ctx, leader, authorType, authorID, authorID, uuidToString(workspaceID)) {
+			if !h.canInvokeAgentWithQueries(ctx, qtx, leader, authorType, authorID, authorID, uuidToString(workspaceID)) {
 				writeError(w, http.StatusForbidden, "invocation_not_allowed")
 				return
 			}
+		}
+		// The status/assignee event belongs to this handoff and must not also
+		// fire the same agent's issue wakeup.
+		if _, err := tx.Exec(ctx, `SELECT set_config('multica.handed_to_agent',$1,true), set_config('multica.decision_response_handoff','true',true)`, uuidToString(prepared.HandoffAgent().ID)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to configure handoff")
+			return
 		}
 	}
 
@@ -362,8 +399,14 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		NextStatus:      req.NextStatus,
 		CommentID:       commentRow.ID,
 		TaskID:          taskID,
+		RequestedAt:     lockedIssue.UpdatedAt,
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "issue_decision_response_request_idx" {
+			writeError(w, http.StatusConflict, "client_request_id is already in use")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create receipt")
 		return
 	}
@@ -406,9 +449,10 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeDecisionResponseReceipt(w http.ResponseWriter, receipt db.IssueDecisionResponse) {
-	taskID := ""
+	var taskID *string
 	if receipt.TaskID.Valid {
-		taskID = uuidToString(receipt.TaskID)
+		id := uuidToString(receipt.TaskID)
+		taskID = &id
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                uuidToString(receipt.ID),

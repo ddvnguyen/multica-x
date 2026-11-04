@@ -939,6 +939,7 @@ type IssueDecisionResponse struct {
 	NextStatus      string             `json:"next_status"`
 	CommentID       pgtype.UUID        `json:"comment_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
+	RequestedAt     pgtype.Timestamptz `json:"requested_at"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 

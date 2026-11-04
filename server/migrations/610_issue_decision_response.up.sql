@@ -10,5 +10,6 @@ CREATE TABLE issue_decision_response (
     next_status text NOT NULL,
     comment_id uuid NOT NULL,
     task_id uuid,
+    requested_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now()
 );
