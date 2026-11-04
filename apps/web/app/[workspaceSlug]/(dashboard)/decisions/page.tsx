@@ -1,1 +1,5 @@
-export { DecisionsPage as default } from "@multica/views/decisions";
+import { DecisionsPage } from "@multica/views/decisions";
+
+export default function DecisionsRoute() {
+  return <DecisionsPage />;
+}
