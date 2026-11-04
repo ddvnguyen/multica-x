@@ -22,16 +22,16 @@ func (f m209Wakeup) NotifyTaskAvailable(runtimeID, taskID string) { f(runtimeID,
 func m209ObservedHandler(t *testing.T, issue string) (*Handler, *int, *int) {
 	t.Helper()
 	h := *testHandler
-	serviceCopy := *testHandler.TaskService
 	bus := events.New()
-	h.Bus, serviceCopy.Bus = bus, bus
-	h.TaskService = &serviceCopy
+	taskService := service.NewTaskService(testHandler.TaskService.Queries, testHandler.TaskService.TxStarter, testHandler.TaskService.Hub, bus)
+	h.Bus = bus
+	h.TaskService = taskService
 	observedEvents, observedHints := 0, 0
 	checkCommitted := func() { assertM209Rows(t, issue, "in_progress", 1, 1, 1) }
 	for _, kind := range []string{protocol.EventTaskQueued, protocol.EventIssueUpdated, protocol.EventCommentCreated} {
 		bus.Subscribe(kind, func(events.Event) { checkCommitted(); observedEvents++ })
 	}
-	serviceCopy.Wakeup = m209Wakeup(func(_, _ string) { checkCommitted(); observedHints++ })
+	taskService.Wakeup = m209Wakeup(func(_, _ string) { checkCommitted(); observedHints++ })
 	return &h, &observedEvents, &observedHints
 }
 
