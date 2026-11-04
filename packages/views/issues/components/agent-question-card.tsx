@@ -9,7 +9,7 @@ import {
   type AgentAnswerDraft,
   type AgentQuestion,
 } from "@multica/core/issues/agent-question";
-import { useCreateTaskSupplement } from "@multica/core/issues/mutations";
+import { useAnswerNativeQuestion, useCreateTaskSupplement } from "@multica/core/issues/mutations";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
@@ -36,27 +36,36 @@ import { useT } from "../../i18n";
  * words, which is why the pick is sent as the option's label rather than a
  * separate field.
  *
- * Two transports, one form. Without `submit` this is the transcript card: the
- * answer goes to the named turn as a supplement. With it (the S1-A1 card,
- * M-120) the same drafts go to `/question-cards/{id}/answer`. The form, its
- * readiness rule and its pending/sent/error lifecycle are identical either
- * way, which is the point of the seam — the card has no idea which one it is.
+ * Three transports, one form. With `submit` (the S1-A1 card, M-120) the same
+ * drafts go to `/question-cards/{id}/answer`. Without it, the answer goes to
+ * the named turn: with `questionSeq` it names the question too, so the server
+ * can refuse a stale tab or a second window (M-210), and without it the answer
+ * is an ordinary supplement. The form, its readiness rule and its
+ * pending/sent/error lifecycle are identical either way, which is the point of
+ * the seam — the card has no idea which one it is.
  */
 export function AgentQuestionCard({
   issueId,
   taskId,
+  questionSeq,
   questions,
   submit,
 }: {
   issueId: string;
   /** The running turn this answer is delivered to. */
   taskId: string;
+  /**
+   * The transcript sequence this ask was asked at. When present the answer is
+   * fenced to it, so it cannot land on a question the run already left.
+   */
+  questionSeq?: number;
   questions: readonly AgentQuestion[];
   /** Deliver the form's drafts somewhere other than the run's supplement path. */
   submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>;
 }) {
   const { t } = useT("issues");
   const supplement = useCreateTaskSupplement(issueId);
+  const fenced = useAnswerNativeQuestion(issueId);
   const [drafts, setDrafts] = useState<readonly AgentAnswerDraft[]>(() =>
     questions.map(() => ({ selected: [], text: "" })),
   );
@@ -110,10 +119,22 @@ export function AgentQuestionCard({
     }
   };
 
-  /** The plan review's two verdicts — always the transcript's supplement. */
+  /**
+   * The one delivery path for text: the caller's transport when there is one,
+   * else the answer fenced to this question when the card knows its sequence,
+   * else an ordinary supplement.
+   */
+  const deliver = (content: string): Promise<unknown> =>
+    submit !== undefined
+      ? submit(drafts)
+      : questionSeq !== undefined
+        ? fenced.mutateAsync({ taskId, questionSeq, content })
+        : supplement.mutateAsync({ taskId, content });
+
+  /** The plan review's two verdicts — the same transcript transport. */
   const send = (content: string): void => {
     if (content === "" || pending) return;
-    void run(() => supplement.mutateAsync({ taskId, content }));
+    void run(() => deliver(content));
   };
 
   /**
@@ -124,11 +145,7 @@ export function AgentQuestionCard({
   const answerForm = (): void => {
     const content = agentAnswerText(questions, drafts);
     if (content === "" || pending) return;
-    void run(
-      submit !== undefined
-        ? () => submit(drafts)
-        : () => supplement.mutateAsync({ taskId, content }),
-    );
+    void run(() => deliver(content));
   };
 
   // A plan review's two verdicts are buttons, not options: "request changes"
