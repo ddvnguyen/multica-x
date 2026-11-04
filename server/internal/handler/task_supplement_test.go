@@ -194,6 +194,43 @@ func TestTaskSupplementPromoteQueuedMessage(t *testing.T) {
 	}
 }
 
+// TestAgentTaskSnapshotCarriesSupplementMetadata pins the contract the dsh
+// composer takeover reads. Ownership is decided off the workspace snapshot, not
+// off the issue's task list, so the snapshot has to answer all three questions
+// the takeover asks: did this run negotiate steering, may this caller use it,
+// and which session does the run write to. Without the hydration the map is
+// empty on a live server and the chat silently keeps its read-only composer,
+// which is exactly what the hand-built e2e fixture used to hide.
+func TestAgentTaskSnapshotCarriesSupplementMetadata(t *testing.T) {
+	f := newSupplementFixture(t, "dsh", "running", true)
+	const sessionID = "0199a4e8-22ce-7b01-bba5-888888888888"
+	dbfx.Exec(t, `UPDATE agent_task_queue SET session_id=$2 WHERE id=$1`, f.taskID, sessionID)
+
+	req := newRequest(http.MethodGet, "/api/agent-task-snapshot", nil)
+	var tasks []AgentTaskResponse
+	testutil.Call(t, testHandler.ListWorkspaceAgentTaskSnapshot, req).Want(http.StatusOK).JSON(&tasks)
+
+	var got *AgentTaskResponse
+	for i := range tasks {
+		if tasks[i].ID == f.taskID {
+			got = &tasks[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("snapshot omitted the running task %s", f.taskID)
+	}
+	if got.SupplementCapability != protocol.DaemonCapabilityTaskSupplementV1 {
+		t.Fatalf("supplement_capability = %q, want %q", got.SupplementCapability, protocol.DaemonCapabilityTaskSupplementV1)
+	}
+	if !got.CanSupplement {
+		t.Fatal("can_supplement = false for the agent's owner")
+	}
+	if got.SessionID != sessionID {
+		t.Fatalf("session_id = %q, want %q", got.SessionID, sessionID)
+	}
+}
+
 // TestTaskSupplementQueueModeIsDshOnly keeps the queue/steer distinction
 // meaningful: a runtime without a step boundary cannot hold a message back.
 func TestTaskSupplementQueueModeIsDshOnly(t *testing.T) {

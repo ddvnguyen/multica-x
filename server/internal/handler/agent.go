@@ -3437,6 +3437,11 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
 		return
 	}
+	// The dsh composer takeover reads ownership from THIS snapshot, so it needs
+	// the same supplement metadata the task lists carry: without the negotiated
+	// capability and the caller's permission the map stays empty and the chat
+	// keeps its read-only composer (M-136). Fail-closed like every other caller.
+	h.hydrateTaskSupplementMetadata(r.Context(), r, parseUUID(workspaceID), kept, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
