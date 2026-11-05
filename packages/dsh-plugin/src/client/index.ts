@@ -171,9 +171,10 @@ export function apply(ctx: DshClientContext): void {
   const workspaces = (face(ctx, "workspaces") ?? null) as WorkspacesLike | null;
   const sessions = (face(ctx, "sessions") ?? null) as SessionsLike | null;
   // Session selection is the shell's navigation (`uiWorkspace`), not a
-  // controller method; read tolerantly like the other faces so a host without
-  // that UI still keeps the rail rows. Not injected: injecting a service the
-  // host may not provide would park this plugin's apply.
+  // controller method. It is injected like the shell's own sidebar plugin
+  // injects it; the read stays tolerant so a host whose face lacks
+  // `openSession` still keeps the rail rows and only the reveal fallback
+  // reports the missing navigation.
   const sessionNavigation = (face(ctx, "uiWorkspace") ?? null) as SessionNavigationLike | null;
   const layoutFace = ctx.layout ?? null;
   configureHostShell({
