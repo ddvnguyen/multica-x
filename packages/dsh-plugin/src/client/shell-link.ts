@@ -238,33 +238,48 @@ export function boundSessionId(
  *
  * `toggle` flips the Sidebar that is already on screen — the same call dsh's
  * own header control makes, so the reader gets the column, its tabs and its
- * Start guide exactly as dsh draws them. `reveal` is the case the controller
+ * Start guide exactly as dsh draws them. `retarget` is the hosted case: the
+ * column is drawn beside MMX, and it has to be told which Session's folder it
+ * edits before it opens, or Files and Terminal would point at whichever
+ * Session the Conversation last had. `reveal` is the case the controller
  * cannot answer on its own: no Session is on screen (MMX owns the main column
- * and the host has no card C `hostPanel`), so the folder's Session has to be
- * put on screen before the column has anything to draw.
+ * and the host has neither `hostPanel` nor `selectHostedSession`), so the
+ * folder's Session has to be put on screen before the column has anything to
+ * draw.
  */
 export type ToggleIntent =
   | { kind: "toggle" }
+  | { kind: "retarget"; sessionId: string | null }
   | { kind: "reveal"; sessionId: string | null };
 
 /**
  * Plan the call one press makes.
  *
- * With card C the Sidebar also renders beside a hosted `main` panel and keeps
- * the Session the reader selected there, so a press never retargets: the
- * column opens and closes where it is. Without it the only surface is the
- * on-screen Session, and the press has to bring the folder's own Session on
- * screen first — otherwise the column opens on somebody else's workspace.
+ * The column always shows the Session bound to the project's folder. With card
+ * C it renders beside MMX, so the press names that Session
+ * (`selectHostedSession`) and flips the column, leaving the main column where it
+ * is. Without it the only surface is the on-screen Session, and the press has to
+ * bring the folder's own Session on screen first — otherwise the column opens
+ * on somebody else's workspace. A host that hosts the panel but cannot name a
+ * Session is left to toggle what it shows, since moving the column would mean
+ * leaving MMX.
  */
 export function planSidebarToggle(input: {
   hasHostPanel: boolean;
+  canNameSession: boolean;
   mountedSessionId: string | undefined;
   boundSessionId: string | null;
 }): ToggleIntent {
   const mounted = input.mountedSessionId?.trim();
-  if (mounted !== undefined && mounted !== "") {
-    if (input.hasHostPanel || input.boundSessionId === mounted) return { kind: "toggle" };
+  const onScreen = mounted !== undefined && mounted !== "";
+  // The column already edits the project's folder: flip it, nothing to move.
+  if (onScreen && input.boundSessionId === mounted) return { kind: "toggle" };
+  if (input.hasHostPanel && input.canNameSession) {
+    return { kind: "retarget", sessionId: input.boundSessionId };
   }
+  // A host that hosts the panel but cannot name the column's Session keeps the
+  // column on the Session it draws; moving it would mean leaving MMX.
+  if (onScreen && input.hasHostPanel) return { kind: "toggle" };
   return { kind: "reveal", sessionId: input.boundSessionId };
 }
 
@@ -352,6 +367,12 @@ export interface SidebarRightLike {
   };
   /** Card C's opt-in: the sidebar beside a hosted `main` panel. Optional face. */
   hostPanel?(panelId: string): () => void;
+  /**
+   * Card C's target for the hosted column; absent before it ships. Naming a
+   * Session is what makes Files and Terminal open on the project's folder
+   * while MMX keeps the main column.
+   */
+  selectHostedSession?(sessionId: string): () => void;
 }
 
 /** Structural subset of the dsh `workspaces` face the bridge uses. */

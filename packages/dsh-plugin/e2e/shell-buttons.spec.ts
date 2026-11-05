@@ -5,9 +5,10 @@ import { expect, test, type Page } from "@playwright/test";
  * behind it.
  *
  * jsdom can mount the button, but the press runs across a live sidebar face:
- * whether it flips the column in place (`toggleExpanded`) or has to reveal the
- * folder's Session first, and what the face rejects (`no session surface is
- * mounted`) are only observable in a real browser. The shell harness page
+ * whether it flips the column in place (`toggleExpanded`), names the project's
+ * Session for the column beside MMX first (`selectHostedSession`), or has to
+ * reveal the folder's Session, and what the face rejects (`no session surface
+ * is mounted`) are only observable in a real browser. The shell harness page
  * configures a stub bridge that records every face call and renders the shown
  * state, so the spec asserts behaviour through the record — the same
  * discipline the Comments bar and the tab strip specs use.
@@ -77,6 +78,36 @@ test("with card C, the toggle opens and closes the dsh side panel in place", asy
     timeout: 20_000,
   });
   expect((await stubCalls(page)).filter((call) => call.startsWith("selectSession"))).toEqual([]);
+
+  await expectNoPageErrors(page);
+});
+
+test("with card C, a press on another Workspace's Session retargets the column before opening", async ({
+  page,
+}) => {
+  // The Conversation last selected a Session from another Workspace, and MMX
+  // owns the main column: the column would open on that other folder unless the
+  // press names the project's Session first.
+  await openShell(page, "?hostPanel&otherSession");
+
+  await page.locator(toggle).click();
+  await expect(page.locator("[data-sidebar-expanded]")).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await expect(page.locator("[data-sidebar]")).toHaveAttribute("data-session", "s-1");
+  // The name lands first, then the flip — and nothing selects a Session, so MMX
+  // never leaves the main column.
+  expect(await stubCalls(page)).toEqual(["selectHostedSession s-1", "toggleExpanded"]);
+  expect((await stubCalls(page)).filter((call) => call.startsWith("selectSession"))).toEqual([]);
+
+  // Closing goes where the column is: the press is not a retarget.
+  await page.locator(toggle).click();
+  await expect(page.locator("[data-sidebar-expanded]")).toHaveCount(0, {
+    timeout: 20_000,
+  });
+  expect((await stubCalls(page)).filter((call) => call.startsWith("selectHostedSession"))).toEqual([
+    "selectHostedSession s-1",
+  ]);
 
   await expectNoPageErrors(page);
 });

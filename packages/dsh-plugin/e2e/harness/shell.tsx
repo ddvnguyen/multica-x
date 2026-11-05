@@ -33,11 +33,14 @@ import { installBackend } from "./backend";
  *   on-screen one and notifies the `mounted` subscribers, which is what a
  *   reveal waits on before it opens the column.
  *
- * `?hostPanel` puts card C's opt-in on the face, which is what lets a press
- * flip the column in place instead of revealing a Session. `?noSurface` starts
- * with no Session on screen, so a press has to bring the bound one up first;
- * `?noReveal` adds a shell whose navigation never draws it, which is the
- * timeout the press reports.
+ * `?hostPanel` puts card C on the face — the `hostPanel` opt-in and
+ * `selectHostedSession` — which is what lets a press name the project's Session
+ * and flip the column in place instead of revealing a Session. `?noName` leaves
+ * only `hostPanel` on the face, the card C build before naming shipped;
+ * `?otherSession` starts on a Session from another Workspace, so a press has to
+ * retarget before it opens. `?noSurface` starts with no Session on screen, so a
+ * press has to bring the bound one up first; `?noReveal` adds a shell whose
+ * navigation never draws it, which is the timeout the press reports.
  */
 
 declare global {
@@ -53,6 +56,8 @@ declare global {
 
 const params = new URLSearchParams(window.location.search);
 const withHostPanel = params.has("hostPanel");
+const withoutName = params.has("noName");
+const onAnotherWorkspace = params.has("otherSession");
 const withoutSurface = params.has("noSurface");
 const withoutFolder = params.has("noFolder");
 // A shell that records the navigation but never draws the Session it was asked
@@ -107,6 +112,16 @@ if (withHostPanel) {
     calls.push(`hostPanel ${panelId}`);
     return () => { calls.push(`hostPanel-release ${panelId}`); };
   };
+  if (!withoutName) {
+    // The hosted column is drawn for the named Session, exactly as the real
+    // controller names it: the stub moves its on-screen Session with the name.
+    sidebarRight.selectHostedSession = (sessionId: string): (() => void) => {
+      calls.push(`selectHostedSession ${sessionId}`);
+      if (!withoutReveal) window.__sessionSurfaceMounted = sessionId;
+      trigger();
+      return () => { calls.push(`selectHostedSession-release ${sessionId}`); };
+    };
+  }
 }
 
 const workspaces: WorkspacesLike = {
@@ -147,7 +162,11 @@ configureHostShell({
 
 // The session the sidebar's writes act on; a spec clears this to reproduce
 // the no-session state a host without `hostPanel` reaches.
-window.__sessionSurfaceMounted = withoutSurface ? "" : "s-1";
+window.__sessionSurfaceMounted = withoutSurface
+  ? ""
+  : onAnotherWorkspace
+    ? "s-9"
+    : "s-1";
 
 const style = document.createElement("style");
 style.textContent = `

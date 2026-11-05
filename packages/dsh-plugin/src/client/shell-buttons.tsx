@@ -12,6 +12,7 @@ import {
   noSessionSurfaceError,
   panelToggleTitle,
   planSidebarToggle,
+  sessionSurfaceMounted,
   waitForMountedSession,
   workspaceForFolder,
   type SidebarRightLike,
@@ -29,11 +30,12 @@ import {
  * hosts. No folder means the button is disabled with the copy that says what
  * is missing.
  *
- * A press either flips the column on screen (`toggle`) or, when no Session is
- * on screen to draw it for, brings the folder's Session on screen first
- * (`reveal`). Card C's `hostPanel` opt-in — installed in `apply` — is what
- * lets the first path keep MMX where it is; a host without it has to reveal
- * the Session, which is the only place its Sidebar can be drawn.
+ * A press either flips the column on screen (`toggle`), names the project's
+ * Session for the column that is drawn beside MMX (`retarget`), or, when no
+ * Session is on screen to draw it for, brings the folder's Session on screen
+ * first (`reveal`). Card C's `hostPanel` opt-in — installed in `apply` — is what
+ * lets the first two keep MMX where it is; a host without it has to reveal the
+ * Session, which is the only place its Sidebar can be drawn.
  *
  * The button renders only when `apply` installed a bridge — the one host fact
  * this island cannot know without the shell, so its absence is exactly the
@@ -60,6 +62,30 @@ export function ShellButtons({
     projectId={projectId}
     workspaceFolder={workspaceFolder}
   />;
+}
+
+/**
+ * The name last given to the hosted column, released when a press replaces it.
+ *
+ * Page-lifetime, like the rest of this bridge: one name is in force at a time,
+ * and a press on another project's folder must withdraw the old one rather
+ * than leave the column on the workspace it no longer edits.
+ */
+let releaseHostedSession: (() => void) | null = null;
+
+/**
+ * Tell the hosted column which Session's folder it edits.
+ *
+ * @param sidebarRight - the face that names the column's Session.
+ * @param sessionId - the Session bound to the project's folder.
+ */
+function nameHostedSession(sidebarRight: SidebarRightLike, sessionId: string): void {
+  const name = sidebarRight.selectHostedSession;
+  if (typeof name !== "function") {
+    throw new Error("this dsh build cannot retarget the side panel");
+  }
+  releaseHostedSession?.();
+  releaseHostedSession = name.call(sidebarRight, sessionId);
 }
 
 /** The Sidebar's shown state, read tolerantly: a face without it reads closed. */
@@ -120,6 +146,14 @@ function SidePanelToggle({
     if (sidebarRight === null) return;
     const folder = resolved.folder;
     if (folder === null || workspaces === null || sessions === null) return;
+    // A press on an open column closes it where it is. Retargeting first would
+    // swap the Session under a column the reader is closing.
+    if (readExpanded(sidebarRight)) {
+      sidebarRight.toggleExpanded();
+      setExpanded(false);
+      setNote(null);
+      return;
+    }
     setBusy(true);
     try {
       // Match or create (never delete): dsh Workspace registration is
@@ -130,6 +164,7 @@ function SidePanelToggle({
       }
       const intent = planSidebarToggle({
         hasHostPanel: typeof sidebarRight.hostPanel === "function",
+        canNameSession: typeof sidebarRight.selectHostedSession === "function",
         mountedSessionId: sidebarRight.mounted.getSnapshot(),
         boundSessionId: boundSessionId(sidebarRight.mounted.getSnapshot(), workspace),
       });
@@ -139,14 +174,25 @@ function SidePanelToggle({
         setNote(null);
         return;
       }
-      // No Session on screen to draw the column for: bind the folder's own and
-      // reveal it. Selecting is the shell's navigation, and it puts that
-      // Session's Conversation in the main column, which is where a host
-      // without card C draws the Sidebar.
       let sessionId = intent.sessionId;
       if (sessionId === null || sessionId === "") {
         sessionId = await sessions.create({ workspaceId: workspace.workspaceId });
       }
+      if (intent.kind === "retarget") {
+        // The column is drawn beside MMX: name the project's Session so Files
+        // and Terminal open on that folder, and flip the column in place. MMX
+        // keeps the main column, so the board never leaves the screen.
+        nameHostedSession(sidebarRight, sessionId);
+        if (!sessionSurfaceMounted(sidebarRight)) throw noSessionSurfaceError();
+        if (!readExpanded(sidebarRight)) sidebarRight.toggleExpanded();
+        setExpanded(readExpanded(sidebarRight));
+        setNote(null);
+        return;
+      }
+      // No Session on screen to draw the column for: bind the folder's own and
+      // reveal it. Selecting is the shell's navigation, and it puts that
+      // Session's Conversation in the main column, which is where a host
+      // without card C draws the Sidebar.
       if (shell.selectSession === null) {
         throw new Error(`this dsh build cannot select a session, so the side panel cannot open on ${folder}`);
       }

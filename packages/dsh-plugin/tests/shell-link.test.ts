@@ -132,33 +132,95 @@ describe("boundSessionId", () => {
 });
 
 describe("planSidebarToggle", () => {
-  it("flips the column on screen with card C deployed, whatever it is showing", () => {
+  it("retargets the hosted column when it draws another Workspace's Session", () => {
+    // MMX owns the main column, so nothing selects a Session: the press names
+    // the project's own Session and keeps the board where it is.
     expect(
-      planSidebarToggle({ hasHostPanel: true, mountedSessionId: "s-other", boundSessionId: "s-1" }),
+      planSidebarToggle({
+        hasHostPanel: true,
+        canNameSession: true,
+        mountedSessionId: "s-other",
+        boundSessionId: "s-1",
+      }),
+    ).toEqual({ kind: "retarget", sessionId: "s-1" });
+  });
+
+  it("flips the hosted column when it already draws the bound Session", () => {
+    expect(
+      planSidebarToggle({
+        hasHostPanel: true,
+        canNameSession: true,
+        mountedSessionId: "s-1",
+        boundSessionId: "s-1",
+      }),
+    ).toEqual({ kind: "toggle" });
+  });
+
+  it("retargets to a Session it will have to create when the Workspace has none", () => {
+    expect(
+      planSidebarToggle({
+        hasHostPanel: true,
+        canNameSession: true,
+        mountedSessionId: "s-other",
+        boundSessionId: null,
+      }),
+    ).toEqual({ kind: "retarget", sessionId: null });
+  });
+
+  it("flips a hosted column it cannot retarget, rather than leaving MMX", () => {
+    // A card C build before naming shipped: the column has no way to move, and
+    // revealing the Session would replace the board with a Conversation.
+    expect(
+      planSidebarToggle({
+        hasHostPanel: true,
+        canNameSession: false,
+        mountedSessionId: "s-other",
+        boundSessionId: "s-1",
+      }),
     ).toEqual({ kind: "toggle" });
   });
 
   it("flips it without card C when the bound Session is the on-screen one", () => {
     expect(
-      planSidebarToggle({ hasHostPanel: false, mountedSessionId: "s-1", boundSessionId: "s-1" }),
+      planSidebarToggle({
+        hasHostPanel: false,
+        canNameSession: false,
+        mountedSessionId: "s-1",
+        boundSessionId: "s-1",
+      }),
     ).toEqual({ kind: "toggle" });
   });
 
   it("reveals the folder's Session when no Session is on screen", () => {
     expect(
-      planSidebarToggle({ hasHostPanel: false, mountedSessionId: undefined, boundSessionId: "s-1" }),
+      planSidebarToggle({
+        hasHostPanel: false,
+        canNameSession: false,
+        mountedSessionId: undefined,
+        boundSessionId: "s-1",
+      }),
     ).toEqual({ kind: "reveal", sessionId: "s-1" });
   });
 
   it("reveals when the screen is showing another Workspace's Session", () => {
     expect(
-      planSidebarToggle({ hasHostPanel: false, mountedSessionId: "s-9", boundSessionId: "s-1" }),
+      planSidebarToggle({
+        hasHostPanel: false,
+        canNameSession: false,
+        mountedSessionId: "s-9",
+        boundSessionId: "s-1",
+      }),
     ).toEqual({ kind: "reveal", sessionId: "s-1" });
   });
 
-  it("asks for a Session to be created when the Workspace has none", () => {
+  it("asks for a Session to be created when the Workspace has none and nothing hosts it", () => {
     expect(
-      planSidebarToggle({ hasHostPanel: true, mountedSessionId: undefined, boundSessionId: null }),
+      planSidebarToggle({
+        hasHostPanel: false,
+        canNameSession: false,
+        mountedSessionId: undefined,
+        boundSessionId: null,
+      }),
     ).toEqual({ kind: "reveal", sessionId: null });
   });
 });

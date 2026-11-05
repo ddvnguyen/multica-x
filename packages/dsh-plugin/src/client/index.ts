@@ -190,9 +190,11 @@ export function apply(ctx: DshClientContext): void {
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
   // panel. Register every MMX panel id inside `ctx.effect` — the disposer is
   // the plugin's teardown — so an MMX view keeps the side panel next to it.
-  // A face without `hostPanel` has to put a Session on screen instead: the
-  // toggle's `reveal` plan does that, and the island's tabs survive leaving
-  // MMX through keep-alive.
+  // Hosting only keeps the column drawn: which Session's folder it edits is
+  // named per press by the toggle's `retarget` plan, because the project (and
+  // so the folder) changes while MMX stays in the main column. A face without
+  // `hostPanel` has to put a Session on screen instead — `reveal` — and the
+  // island's tabs survive leaving MMX through keep-alive.
   if (sidebarRight !== null && typeof sidebarRight.hostPanel === "function") {
     ctx.effect?.(() => {
       const disposers = MULTICA_ENTRIES.map((entry) =>
