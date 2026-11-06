@@ -52,7 +52,7 @@ back for review. Self-hostable, works with the agent CLIs you already use, no lo
 
 ## multica-moct-x
 
-> **This repository is a fork.** Everything below the next divider is upstream
+> **This repository is a fork.** Everything below the fork section is upstream
 > `multica-ai/multica` (`v0.6.5`; fork base `cbd75011`, recorded in
 > [`packages/dsh-plugin/FORK.md`](packages/dsh-plugin/FORK.md)). The section
 > describes the fork's own integration; upstream content starts at
@@ -97,9 +97,14 @@ flowchart LR
 **Build/run on a dsh lane:** provision the proving lane with
 `bash deploy/dsh-z/deploy.sh` (idempotent; loopback-only; see
 [deploy/dsh-z/README.md](deploy/dsh-z/README.md)). Develop the plugin with
-`pnpm --filter @multica/dsh-plugin build|test|lint` (see
+`pnpm --filter @multica/dsh-plugin build`, `pnpm --filter @multica/dsh-plugin test`, or `pnpm --filter @multica/dsh-plugin lint` (see
 [packages/dsh-plugin/README.md](packages/dsh-plugin/README.md)). Upstream
 build/self-host instructions below apply unchanged.
+
+Verified at `multica-moct` commit `ac8a04078`.
+
+**Unverified:** live lane behavior and external MOCT internals were not re-tested;
+see the Unverified sections in the linked documents.
 
 ---
 
