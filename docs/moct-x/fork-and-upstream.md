@@ -23,8 +23,8 @@ from (`v0.6.5`), and where the plugin's rendering was last known correct
 
 ## Where divergence is allowed
 
-The M-97 decisions name the sanctioned hot spots; the current head's actual
-divergence (`git diff cbd75011..HEAD`, 13 PRs) is:
+The M-97 decisions name the sanctioned hot spots. At the original documentation
+snapshot (base `4bd2bd26`, 10 PRs from `cbd75011`), divergence included:
 
 | Area | What diverges | Size |
 |---|---|---|
@@ -36,11 +36,13 @@ divergence (`git diff cbd75011..HEAD`, 13 PRs) is:
 | `packages/dsh-plugin/` | **new package** — the entire dsh UI integration | ~everything |
 | `packages/ui/` | `portal-container.tsx` (+test) and the overlay components routing through it, so portals render into the island's shadow root | ~300 lines total |
 | `packages/views/`, `scripts/`, `turbo.json`, `.github/workflows/ci.yml`, `.env.example` | export/wildcard checks, CI scope for `multica-moct`, small knobs | small |
-| `deploy/dsh-z/` | **new** — lane-z provisioner | 8 files |
+| `deploy/dsh-z/` | **new** — lane-z provisioner | 9 files |
+| `server/cmd/server/main.go` and its test | bind host configuration | 2 files |
+| `pnpm-lock.yaml` | dependency lockfile changes | 1 file |
 | `docs/moct-seam.md`, `docs/moct-x/` | **new** — seam contract + these docs | — |
 
-Everything else — the work-plane server, the client packages, the app shell —
-is byte-identical to upstream.
+This table summarizes the main divergence at the documented snapshot; use
+`git diff --stat cbd75011..HEAD` for the complete current list.
 
 The **handler** is deliberately *not* divergent: no file under
 `server/internal/handler/` references moct (repo-wide grep), and the

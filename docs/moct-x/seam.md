@@ -22,7 +22,7 @@ flowchart TD
 
 | Piece | Location | Role |
 |---|---|---|
-| HTTP client (the only one) | `server/internal/moct/client.go` | 4 endpoints under `/team/v1` (`server/internal/moct/client.go:37`); no auth headers (`server/internal/moct/client.go:236-240`); 1 MiB body cap, 10 s timeout (`server/internal/moct/client.go:32,35`) |
+| HTTP client (the only one) | `server/internal/moct/client.go` | 4 endpoints under `/team/v1` (`server/internal/moct/client.go:37`); no auth headers (`server/internal/moct/client.go:265-267`); 1 MiB body cap, 10 s timeout (`server/internal/moct/client.go:32,35`) |
 | Wire types | `server/internal/moct/types.go` | mirrors moct-be's team-memory JSON, schema v8 |
 | Ref builders | `server/internal/moct/refs.go:7-27` | the four `multica:*` prefixes, pure string concatenation |
 | Errors | `server/internal/moct/errors.go` | `ErrUnavailable` (transport) vs `APIError` (moct-be answered 4xx/5xx) |
@@ -90,11 +90,11 @@ default value.
 | unparseable base URL | warn, run without memory | `server/internal/daemon/moct_memory.go:52-59` |
 | moct-be down / timeout / 5xx | warn, run without memory | `server/internal/daemon/moct_memory.go:61-68` |
 | MCP merge failure | warn, run continues | `server/internal/daemon/daemon.go:7979-7980` |
-| tool call while moct-be down | `isError:true` result, process stays up | `server/internal/moctmcp/server.go:204-224` |
+| tool call while moct-be down | `isError:true` result, process stays up | `server/internal/moctmcp/server.go:237` |
 
 The stdio server must never exit: an ACP/dsh runtime fails a whole session
 when an MCP server exits, which would be exactly the "memory blocks a task"
-failure the contract forbids (`docs/moct-seam.md:126-132`). Worst case a slow
+failure the contract forbids (`docs/moct-seam.md:145-149`). Worst case a slow
 moct-be adds to a claim is the client's 10 s timeout (`server/internal/daemon/moct_memory.go:20-21`).
 
 ## Phase 2 additions (design, not built)

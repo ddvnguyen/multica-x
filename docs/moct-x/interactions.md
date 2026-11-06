@@ -13,8 +13,8 @@ Status of the M-115 scope items:
 | dsh stdio `question`/`answer` frames ↔ Multica question path | **delivered** (this page describes the code) |
 | `multica_ask` / `multica_plan` in a `@multica/dsh-tools` host plugin | **recorded then lost to history** — see [Unverified](#unverified) |
 | timeout | harness-side exists (`ASK_TIMED_OUT`); Multica-side escalation — **design** |
-| escalation to the project lead on timeout — **design** (not built) |
-| schema-driven interaction item (a first-class Multica entity) — **design** (not built) |
+| escalation to the project lead on timeout | **design** (not built) |
+| schema-driven interaction item (a first-class Multica entity) | **design** (not built) |
 
 ## The delivered flow (S1-A)
 
@@ -28,7 +28,7 @@ sequenceDiagram
 
   AG->>BR: ask_user_question / exit_plan_mode (plan review)
   BR-->>DA: ready frame: capabilities.questions = true
-  BR-->>DA: question frame (parked; run waits)
+  BR-->>DA: question frame (parked, run waits)
   DA->>MB: durable transcript line "question parked"
   HM->>MB: comment on the issue (steered reply)
   MB-->>DA: supplement loop delivers the comment

@@ -54,7 +54,7 @@ The cardinal rule of the design (Architect's rule 1, M-93 decision thread,
 |---|---|---|
 | issues, comments, tasks, agents, skills, board views | `multica-be` → Postgres | server pool opens `DATABASE_URL` (`server/cmd/server/main.go:395-398`); all work-plane SQL lives under `server/pkg/db/queries/` |
 | memory records (decisions, conventions, how-to-work, notes) | `moct-be` → Turso | `moct-be` runs as one process per Turso file (`deploy/dsh-z/units/moct-backend-z.service:7-9`, `deploy/dsh-z/README.md:116-118`) |
-| session store / transcript | dsh (the harness) | dsh owns the loop and the session store; the daemon drives it via stdio (`server/pkg/agent/dsh.go:28`) |
+| session store / transcript | dsh (the harness) | dsh owns the loop and the session store; the daemon drives it via stdio (`server/pkg/agent/dsh.go:29-34`) |
 
 There is no shared table and no foreign database handle: `server/` contains
 zero `turso`/`libsql` references, and the seam package is "a pure HTTP client,
@@ -113,7 +113,7 @@ queue or retry between the two backends**:
   timeout (`server/internal/moct/client.go:32,225-258`);
 - writes happen only when an agent calls `memory_note`; moct-be's own
   near-duplicate hold makes the agent the retry mechanism
-  (`server/internal/moct/client.go:222-227`).
+  (`server/internal/moct/client.go:231-235`).
 
 The invariant that makes this safe: **memory never blocks a run.** See
 [seam.md](seam.md#failure-mode) for the full degrade matrix.
@@ -122,7 +122,7 @@ The invariant that makes this safe: **memory never blocks a run.** See
 
 Divergence from upstream is deliberate and bounded. The full map and the
 merge discipline live in [fork-and-upstream.md](fork-and-upstream.md); the
-short version: 13 PRs from fork base `cbd75011` to the current head, touching
+short version: 10 PRs from fork base `cbd75011` to snapshot `4bd2bd26`, touching
 `server/internal/moct*`, two hooks in the daemon, the `dsh` runtime files, the
 new `packages/dsh-plugin`, a portal container in `packages/ui`, and
 `deploy/dsh-z/`.
