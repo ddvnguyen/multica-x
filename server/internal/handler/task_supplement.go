@@ -46,6 +46,11 @@ func (h *Handler) hydrateTaskSupplementMetadata(ctx context.Context, r *http.Req
 	// steer_queue_capable mirrors the bridge/runtime: only dsh providers can
 	// take a queued message, so the UI shows Steer/Queue only when this bit
 	// is present instead of guessing from the provider name.
+	// Named fallback (M-135 review): the server has no recorded per-task
+	// bridge capability (the ready frame's steer/queue flags live only in
+	// daemon-local dshRunState and are never persisted), so this bit is
+	// derived from the runtime provider being "dsh" behind the negotiated
+	// task-supplement-v1 row, not from the bridge itself.
 	runtimeProvider := make(map[string]string)
 	runtimeIDs := make([]pgtype.UUID, 0, len(tasks))
 	seenRuntime := make(map[string]bool)
