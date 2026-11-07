@@ -19,12 +19,13 @@ new_repo() { # $1 = dir, $2 = push (1) or keep local commits (0)
   local dir="$1" push="$2"
   mkdir -p "$dir/workdir/repo"
   git -C "$dir/workdir/repo" init -q
-  echo hello > "$dir/workdir/repo/file.txt"
+  echo "hello $(basename "$dir")" > "$dir/workdir/repo/file.txt"
   git -C "$dir/workdir/repo" add -A
   git -C "$dir/workdir/repo" commit -qm init
   if [ "$push" = 1 ]; then
     git -C "$dir/workdir/repo" remote add origin "$SANDBOX/origin.git"
-    git -C "$dir/workdir/repo" push -q origin HEAD
+    # Each repo pushes to its own branch: unrelated histories share origin.
+    git -C "$dir/workdir/repo" push -q origin "HEAD:refs/heads/$(basename "$dir")"
   fi
 }
 
@@ -70,25 +71,55 @@ meta "$PROJ/fresh" "$RECENT_TS"
 # 7. no .gc_meta.json must keep the dir.
 new_repo "$PROJ/no-meta" 1
 
+# 8. Linked worktrees (`.git` is a FILE pointing at a shared repo). The anchor
+# repo is kept fresh so it survives the whole test.
+new_repo "$PROJ/wt-anchor" 1
+meta "$PROJ/wt-anchor" "$RECENT_TS"
+ANCHOR="$PROJ/wt-anchor/workdir/repo"
+
+# 8a. clean worktree on a pushed branch: deleted.
+git -C "$ANCHOR" worktree add -q -b wtclean "$PROJ/wt-clean/workdir/wtree"
+git -C "$PROJ/wt-clean/workdir/wtree" push -q origin wtclean
+meta "$PROJ/wt-clean" "$PAST_TS"
+
+# 8b. dirty worktree (modified tracked file + untracked file): kept.
+git -C "$ANCHOR" worktree add -q -b wtdirty "$PROJ/wt-dirty/workdir/wtree"
+echo changed > "$PROJ/wt-dirty/workdir/wtree/file.txt"
+echo scratch > "$PROJ/wt-dirty/workdir/wtree/scratch.txt"
+meta "$PROJ/wt-dirty" "$PAST_TS"
+
+# 8c. worktree with an unpushed commit: kept.
+git -C "$ANCHOR" worktree add -q -b wtunpushed "$PROJ/wt-unpushed/workdir/wtree"
+echo more > "$PROJ/wt-unpushed/workdir/wtree/file.txt"
+git -C "$PROJ/wt-unpushed/workdir/wtree" commit -qam "unpushed worktree commit"
+meta "$PROJ/wt-unpushed" "$PAST_TS"
+
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
 
-# Dry-run: nothing deleted, the clean dir is the only deletion candidate.
+# Dry-run: nothing deleted, the clean dirs are the only deletion candidates.
 out="$(bash "$SCRIPT")"
 [[ "$out" == *"WOULD DELETE $PROJ/clean-old"* ]]
+[[ "$out" == *"WOULD DELETE $PROJ/wt-clean"* ]]
 [[ "$out" == *"KEEP $PROJ/dirty (dirty or untracked files"* ]]
 [[ "$out" == *"KEEP $PROJ/untracked (dirty or untracked files"* ]]
 [[ "$out" == *"KEEP $PROJ/unpushed (unpushed commits"* ]]
 [[ "$out" == *"KEEP $PROJ/locked (live .task_lock)"* ]]
 [[ "$out" == *"KEEP $PROJ/fresh (completed_at within 72h TTL)"* ]]
 [[ "$out" == *"KEEP $PROJ/no-meta (no .gc_meta.json)"* ]]
+[[ "$out" == *"KEEP $PROJ/wt-dirty (dirty or untracked files"* ]]
+[[ "$out" == *"KEEP $PROJ/wt-unpushed (unpushed commits"* ]]
+[[ "$out" == *"KEEP $PROJ/wt-anchor (completed_at within 72h TTL)"* ]]
 [[ "$out" == *"dry-run complete"* ]]
 assert test -d "$PROJ/clean-old"
+assert test -d "$PROJ/wt-clean"
 
-# Apply: only the clean old dir is removed.
+# Apply: only the clean old dirs are removed.
 out="$(bash "$SCRIPT" --apply)"
 [[ "$out" == *"DELETE $PROJ/clean-old"* ]]
+[[ "$out" == *"DELETE $PROJ/wt-clean"* ]]
 assert test ! -d "$PROJ/clean-old"
-for kept in dirty untracked unpushed locked fresh no-meta; do
+assert test ! -d "$PROJ/wt-clean"
+for kept in dirty untracked unpushed locked fresh no-meta wt-anchor wt-dirty wt-unpushed; do
   assert test -d "$PROJ/$kept"
 done
 

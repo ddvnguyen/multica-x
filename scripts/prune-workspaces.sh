@@ -69,7 +69,9 @@ audit_dir() {
     printf 'live .task_lock'
     return
   fi
-  repos="$(find "$dir" -type d -name .git -prune -print 2>/dev/null || true)"
+  # .git can be a directory (normal repo) or a file (linked worktree whose
+  # repository lives in the shared bare repo) — audit both.
+  repos="$(find "$dir" -name .git -prune -print 2>/dev/null || true)"
   while IFS= read -r gitdir; do
     [ -n "$gitdir" ] || continue
     repo="$(dirname "$gitdir")"
@@ -82,11 +84,18 @@ audit_dir() {
       printf 'dirty or untracked files: %s' "$repo"
       return
     fi
-    if ! git --no-optional-locks -C "$repo" log --branches --not --remotes --format=%H >/dev/null 2>&1; then
+    if [ -f "$gitdir" ]; then
+      # Linked worktree: the shared bare repo's branches belong to other run
+      # dirs too, so audit only what this worktree's HEAD adds.
+      unpushed="$(git --no-optional-locks -C "$repo" rev-list HEAD --not --remotes 2>/dev/null || printf 'GIT_FAIL')"
+    else
+      unpushed="$(git --no-optional-locks -C "$repo" log --branches --not --remotes --format=%H 2>/dev/null || printf 'GIT_FAIL')"
+    fi
+    if [ "$unpushed" = "GIT_FAIL" ]; then
       printf 'git audit failed: %s' "$repo"
       return
     fi
-    if [ -n "$(git --no-optional-locks -C "$repo" log --branches --not --remotes --format=%H 2>/dev/null)" ]; then
+    if [ -n "$unpushed" ]; then
       printf 'unpushed commits: %s' "$repo"
       return
     fi

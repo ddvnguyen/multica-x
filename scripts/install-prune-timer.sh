@@ -31,7 +31,7 @@ Description=Prune completed Multica run directories with a git audit
 
 [Service]
 Type=oneshot
-ExecStart=$BIN_DIR/multica-prune-workspaces.sh
+ExecStart=$BIN_DIR/multica-prune-workspaces.sh --apply
 EOF
 
 cat > "$UNIT_DIR/$TIMER" <<EOF
