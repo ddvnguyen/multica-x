@@ -58,6 +58,9 @@ import {
   ScrollRestorationProvider,
   projectListOptions,
   RESOURCES,
+  RuntimeDetailPage,
+  RuntimesPage,
+  RuntimeSettingsPage,
   setCurrentWorkspace,
   SettingsPage,
   SkillDetailPage,
@@ -379,6 +382,21 @@ function IslandPage({
       return <DecisionsPage projectId={projectId} />;
     case "chat":
       return <ChatPage />;
+    // Runtimes depth (M-174 review): the list links every machine and runtime
+    // to its own address, and a refused navigation made those rows dead under
+    // the pointer. The pages are the fork's, so the panel shows the same
+    // machine detail — every runtime the machine reports — as the desktop.
+    case "runtimes":
+      return <RuntimesPage />;
+    case "runtime":
+      return <RuntimeDetailPage runtimeId={route.machineId} />;
+    case "runtimeSettings":
+      return (
+        <RuntimeSettingsPage
+          machineId={route.machineId}
+          runtimeId={route.runtimeId}
+        />
+      );
   }
 }
 

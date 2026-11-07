@@ -129,6 +129,9 @@ const VIEW_FALLBACK_NAMES = {
   decisions: "Decisions",
   chat: "Chat",
   settings: "Settings",
+  runtimes: "Runtimes",
+  runtime: "Machine",
+  runtimeSettings: "Runtime",
 } as const;
 
 /** A history entry's label: live titles when resolvable, route names otherwise. */
@@ -311,9 +314,13 @@ function TabItem({
     <div
       data-tab-frame=""
       data-tab-id={tab.id}
-      className={cn("h-full w-40 min-w-32", isActive && "z-10")}
+      // The pill is as wide as its own title (M-174 review): a fixed width left
+      // short names padded and long ones truncated, so the strip read as a row
+      // of empty boxes. `w-fit` with a cap keeps every tab hugging its label;
+      // past the cap the label ellipsises instead of the tab growing unbounded.
+      className={cn("h-full w-fit max-w-56 shrink-0", isActive && "z-10")}
     >
-      <div className="group/tab relative size-full">
+      <div className="group/tab relative h-full">
         {/* Every tab is a pill on the strip (desktop main, `d24044c40`); the
             active one is made of the content surface so it reads as selected
             without having to join the page below it. The v0.7.2 merged cap
@@ -328,68 +335,66 @@ function TabItem({
             isDragging && "opacity-60",
           )}
         />
-      <button
-        ref={isActive ? activeRef : undefined}
-        type="button"
-        title={label.tooltip}
-        data-active={isActive || undefined}
-        data-dragging={isDragging || undefined}
-        onClick={() => tabsStore.getState().focusTab(tab.id)}
-        onAuxClick={(e) => {
-          if (e.button === 1 && showCloseButton) {
+        <button
+          ref={isActive ? activeRef : undefined}
+          type="button"
+          title={label.tooltip}
+          data-active={isActive || undefined}
+          data-dragging={isDragging || undefined}
+          onClick={() => tabsStore.getState().focusTab(tab.id)}
+          onAuxClick={(e) => {
+            if (e.button === 1 && showCloseButton) {
+              e.preventDefault();
+              tabsStore.getState().closeTab(tab.id);
+            }
+          }}
+          onContextMenu={(e) => {
             e.preventDefault();
-            tabsStore.getState().closeTab(tab.id);
-          }
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          openContextMenu({ x: e.clientX, y: e.clientY }, tab.id);
-        }}
-        className={cn(
-          "group relative flex size-full min-w-0 items-center gap-1.5 px-2.5 text-caption transition-colors select-none cursor-default",
-          isActive
-            ? "text-foreground"
-            : "text-muted-foreground hover:text-foreground",
-          isDragging && "opacity-60",
-        )}
-      >
-        <ResourceLeadingVisual visual={presentation.visual} />
-        <TruncatedTooltip content={tooltipContent}>
-          <span
-            className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
-            style={{
-              maskImage:
-                "linear-gradient(to right, black calc(100% - 12px), transparent)",
-              WebkitMaskImage:
-                "linear-gradient(to right, black calc(100% - 12px), transparent)",
-            }}
-          >
-            {label.name}
-          </span>
-        </TruncatedTooltip>
-        <span
-          onClick={handleTogglePin}
-          role="button"
-          aria-label={isPinned ? "Unpin" : "Pin"}
-          className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex hover:bg-muted-foreground/20 hover:text-foreground"
-        >
-          {isPinned ? (
-            <PinOff className="size-2.5" />
-          ) : (
-            <Pin className="size-2.5" />
+            openContextMenu({ x: e.clientX, y: e.clientY }, tab.id);
+          }}
+          className={cn(
+            "group relative flex h-full min-w-0 items-center gap-1.5 px-2.5 text-caption transition-colors select-none cursor-default",
+            isActive
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+            isDragging && "opacity-60",
           )}
-        </span>
-        {showCloseButton && (
+        >
+          <ResourceLeadingVisual visual={presentation.visual} />
+          <TruncatedTooltip content={tooltipContent}>
+            {/* An ellipsis, not the desktop's edge fade: the fade assumes a tab
+                wider than its label, and a title-sized tab would have its last
+                glyph dimmed on every tab. */}
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+              {label.name}
+            </span>
+          </TruncatedTooltip>
+          {/* The knobs keep their slot while hidden so a hover never widens the
+              pill — with a title-sized tab, a knob that appeared in flow would
+              nudge the whole strip sideways. */}
           <span
-            onClick={handleClose}
+            onClick={handleTogglePin}
             role="button"
-            aria-label="Close"
-            className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex hover:bg-muted-foreground/20 hover:text-foreground"
+            aria-label={isPinned ? "Unpin" : "Pin"}
+            className="invisible flex size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover/tab:visible hover:bg-muted-foreground/20 hover:text-foreground"
           >
-            <X className="size-2.5" />
+            {isPinned ? (
+              <PinOff className="size-2.5" />
+            ) : (
+              <Pin className="size-2.5" />
+            )}
           </span>
-        )}
-      </button>
+          {showCloseButton && (
+            <span
+              onClick={handleClose}
+              role="button"
+              aria-label="Close"
+              className="invisible flex size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover/tab:visible hover:bg-muted-foreground/20 hover:text-foreground"
+            >
+              <X className="size-2.5" />
+            </span>
+          )}
+        </button>
       </div>
     </div>
   );
