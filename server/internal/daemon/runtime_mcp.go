@@ -326,7 +326,7 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 			for name, entry := range configured {
 				// OpenCode 2.x uses disabled, but the task adapters only read
 				// enabled. Keep disabled entries in inventory, not in task config.
-				if server, ok := entry.(map[string]any); provider == "opencode" && ok && server["disabled"] == true {
+				if server, ok := entry.(map[string]any); (provider == "opencode" || provider == "opencode2") && ok && server["disabled"] == true {
 					continue
 				}
 				servers[name] = normalizeRuntimeMcpEntry(provider, entry)
@@ -562,7 +562,7 @@ func listClaudePluginMcpServers(home string) []runtimeLocalMcpServerSummary {
 // shapes depending on which version wrote the config file, so it gets a
 // dedicated resolver; every other provider uses the dotted-key lookup.
 func runtimeMcpServersForProvider(provider, key string, cfg map[string]any) (map[string]any, bool) {
-	if provider == "opencode" {
+	if provider == "opencode" || provider == "opencode2" {
 		return opencodeNativeMcpServers(cfg, key)
 	}
 	return nestedRuntimeMcpMap(cfg, key)
