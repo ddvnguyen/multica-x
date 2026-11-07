@@ -170,11 +170,12 @@ describe("decision detail readers", () => {
     ).toBeNull();
   });
 
-  it("answers the three shipped sources and leaves the handoff read-only", () => {
-    // The status answer operation is M-209; until it lands the page must not
-    // offer a form the server would 404.
-    expect(ANSWERABLE_DECISION_KINDS).toEqual(["question", "plan", "native"]);
-    expect(isDecisionAnswerable("status")).toBe(false);
+  it("answers every source it has an operation for, handoffs included", () => {
+    // The handoff's operation is the M-209 transaction, wired by the handoff
+    // form (M-274); a kind with no operation must stay out of this list so the
+    // page never offers a form that 404s.
+    expect(ANSWERABLE_DECISION_KINDS).toEqual(["question", "plan", "native", "status"]);
+    expect(isDecisionAnswerable("status")).toBe(true);
   });
 
   it("keys a request by kind and source", () => {

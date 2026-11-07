@@ -51,9 +51,23 @@
     "native_no_form_title": "구조화된 양식이 없습니다",
     "native_no_form_hint": "이 질문은 텍스트로만 기록되었으므로 이슈 화면에서 답변하세요.",
     "status_title": "워크플로 결정 대기",
-    "status_hint": "이 인계는 당분간 이슈 화면에서 답변합니다. 이 목록은 이슈 상태를 직접 읽습니다.",
     "unknown_title": "이 빌드에서는 답변할 수 없습니다",
     "unknown_hint": "여전히 대기 중입니다. 이슈를 열어 내용을 확인하세요.",
-    "answered_hint": "기록된 답변은 읽기 전용입니다. 새 요청은 별도 행으로 표시됩니다."
+    "answered_hint": "기록된 답변은 읽기 전용입니다. 새 요청은 별도 행으로 표시됩니다.",
+    "handoff": {
+      "answer_legend": "답변",
+      "write_own": "또는 직접 답변을 작성",
+      "destination": "이동 위치",
+      "destination_placeholder": "상태 선택",
+      "destination_required": "이 이슈가 다음에 갈 위치를 선택하세요.",
+      "submit": "결정 기록",
+      "stale_title": "답변하는 동안 이슈가 변경되었습니다",
+      "stale_hint": "다시 불러왔습니다. 확인한 뒤 결정을 다시 기록하세요.",
+      "failed": "결정이 기록되지 않았습니다.",
+      "receipt": "기록됨 {{decision}} → {{status}}",
+      "option_approve": "승인",
+      "option_request_changes": "변경 요청",
+      "option_custom": "기타"
+    }
   }
 }

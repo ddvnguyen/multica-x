@@ -51,6 +51,14 @@ exposes list and detail endpoints and a human-only status response
 entry (`packages/dsh-plugin/src/client/index.ts:87-92`). Native answers are
 associated with a specific question sequence (`server/pkg/db/queries/decisions.sql:21-34`).
 
+## Answering a handoff
+
+A `wait_for_decision` row is answered in place (M-274): the Decisions status
+form reads the agent's last comment for the question and an optional fenced
+`decision` block for its choices, and posts `decision`, `rationale` and the
+destination to the M-209 transaction. The block convention every handoff
+comment should carry is in [`docs/decision-blocks.md`](../decision-blocks.md).
+
 ## Unverified
 
 - The historical `@multica/dsh-tools` `multica_ask` and `multica_plan` host

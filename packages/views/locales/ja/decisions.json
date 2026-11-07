@@ -51,9 +51,23 @@
     "native_no_form_title": "構造化フォームがありません",
     "native_no_form_hint": "この質問はテキストとしてのみ記録されたため、課題画面で回答してください。",
     "status_title": "ワークフローの判断待ち",
-    "status_hint": "この引き継ぎは当面課題画面で回答します。この一覧は課題の状態を直接読み取ります。",
     "unknown_title": "このビルドでは回答できません",
     "unknown_hint": "待機したままです。課題を開いて内容を確認してください。",
-    "answered_hint": "記録済みの回答は読み取り専用です。新しいリクエストは別の行として表示されます。"
+    "answered_hint": "記録済みの回答は読み取り専用です。新しいリクエストは別の行として表示されます。",
+    "handoff": {
+      "answer_legend": "あなたの回答",
+      "write_own": "または自分で回答を入力",
+      "destination": "移動先",
+      "destination_placeholder": "ステータスを選択",
+      "destination_required": "この課題を次にどこへ移すか選択してください。",
+      "submit": "判断を記録",
+      "stale_title": "回答中に課題が更新されました",
+      "stale_hint": "再読み込みしました。内容を確認して、もう一度判断を記録してください。",
+      "failed": "判断は記録されませんでした。",
+      "receipt": "記録しました {{decision}} → {{status}}",
+      "option_approve": "承認",
+      "option_request_changes": "変更を依頼",
+      "option_custom": "その他"
+    }
   }
 }

@@ -26,13 +26,14 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Flag, Loader2, RefreshCw } from "@multica/ui/icons";
+import { Loader2, RefreshCw } from "@multica/ui/icons";
 import { ReadonlyContent } from "../editor";
 import { AgentQuestionCard } from "../issues/components/agent-question-card";
 import { PlanVerdictForm } from "../issues/components/ask-plan-panel";
 import { AppLink } from "../navigation";
 import { useTimeAgo, useT } from "../i18n";
 import { decisionKind, type DecisionState } from "./decision-presentation";
+import { HandoffForm } from "./handoff-form";
 
 /**
  * The selected request, read from its own source and answered where it lives.
@@ -41,8 +42,8 @@ import { decisionKind, type DecisionState } from "./decision-presentation";
  * show. That is the whole point of the Decisions read model: a question card and
  * a plan verdict keep their issued endpoints and release fences, a native ask
  * keeps the running turn's own question-answer route, fenced to the sequence it
- * was asked at, and only the status handoff has no operation yet — it is shown
- * with its context and a link, never a form that would 404.
+ * was asked at, and a status handoff answers through the `decision-response`
+ * transaction (M-209, wired here in M-274).
  *
  * Answered rows render the same bodies read-only: the stored answer, the
  * recorded verdict and its comments. That is response history, not a second
@@ -354,18 +355,7 @@ function SourceBody({
       }
       return (
         <div className="space-y-3">
-          <p className="flex items-center gap-1.5 text-caption font-medium text-foreground">
-            <Flag aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
-            {t(($) => $.detail.status_title)}
-          </p>
-          <p className="text-caption text-muted-foreground">
-            {t(($) => $.detail.status_hint)}
-          </p>
-          {parsed.description.trim() !== "" && (
-            <div className="rounded-md border px-3 py-2.5">
-              <ReadonlyContent content={parsed.description} />
-            </div>
-          )}
+          <HandoffForm decision={decision} detail={parsed} onChanged={onChanged} />
           {issueLink}
         </div>
       );

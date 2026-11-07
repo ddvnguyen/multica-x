@@ -20,6 +20,12 @@ import { DecisionsPage } from "./decisions-page";
 const apiMock = vi.hoisted(() => ({
   listDecisions: vi.fn(),
   getDecisionDetail: vi.fn(),
+  // The handoff form reads the issue's own timeline (the question is the
+  // agent's last comment) and the workspace workflow (the destinations).
+  listTimeline: vi.fn(),
+  listIssueStatuses: vi.fn(),
+  listIssueWorkflows: vi.fn(),
+  respondDecision: vi.fn(),
 }));
 
 const navigationMock = vi.hoisted(() => ({
@@ -218,6 +224,59 @@ const DECISIONS = [
   },
 ];
 
+const HANDOFF_COMMENT = `I can't pick the rollout path without you.
+
+\`\`\`decision
+question: Which way should the migration go?
+options:
+  - key: expand
+    label: Expand, then contract
+    detail: Two deploys, no downtime
+    next_status: in_progress
+  - key: bigbang
+    label: Big-bang cutover
+    detail: One deploy, some downtime
+    next_status: in_review
+default: expand
+\`\`\`
+
+Anything else and I stay parked.`;
+
+const WAITING_TIMELINE = [
+  {
+    type: "activity",
+    id: "activity-1",
+    actor_type: "agent",
+    actor_id: "agent-1",
+    created_at: "2026-11-03T09:30:00Z",
+    action: "status_changed",
+    details: { from: "in_progress", to: "wait_for_decision" },
+  },
+  {
+    type: "comment",
+    id: "comment-1",
+    actor_type: "agent",
+    actor_id: "agent-1",
+    created_at: "2026-11-03T10:00:00Z",
+    content: HANDOFF_COMMENT,
+  },
+];
+
+const RECEIPT = {
+  id: "receipt-1",
+  workspace_id: "ws1",
+  issue_id: "issue-2",
+  client_request_id: "request-1",
+  actor_id: "member-1",
+  source_revision: 12,
+  decision: "Expand, then contract",
+  rationale: "",
+  next_status: "in_progress",
+  comment_id: "comment-2",
+  task_id: null,
+  created_at: "2026-11-03T12:00:00Z",
+};
+
 const DETAILS: Record<string, Record<string, unknown>> = {
   "question:card-1": {
     id: "card-1",
@@ -286,6 +345,10 @@ beforeEach(() => {
   navigationMock.listeners.clear();
   apiMock.listDecisions.mockReset();
   apiMock.getDecisionDetail.mockReset();
+  apiMock.listTimeline.mockReset().mockResolvedValue(WAITING_TIMELINE);
+  apiMock.listIssueStatuses.mockReset().mockResolvedValue({ statuses: [] });
+  apiMock.listIssueWorkflows.mockReset().mockResolvedValue({ workflows: [] });
+  apiMock.respondDecision.mockReset().mockResolvedValue(RECEIPT);
   transports.answer.mockClear();
   transports.review.mockClear();
   transports.fenced.mockClear();
@@ -398,21 +461,194 @@ describe("DecisionsPage", () => {
     expect(variables.verdict.revision).toBe(2);
   });
 
-  it("shows a status handoff read-only, with the way to its issue", async () => {
-    const view = renderPage();
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
-    fireEvent.click(screen.getAllByRole("option")[2]!);
+  /** The queue rows, read from the listbox so the destination select's own
+   * options never count as rows. */
+  const rows = (): HTMLElement[] => within(screen.getByRole("listbox")).getAllByRole("option");
+
+  async function openHandoff(view: ReturnType<typeof renderPage>) {
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    fireEvent.click(rows()[2]!);
     await waitFor(() =>
-      expect(within(view.detail()).getByText("Waiting on a workflow decision")).toBeTruthy(),
+      expect(view.detail().querySelector("[data-handoff-form]")).not.toBeNull(),
     );
-    expect(
-      within(view.detail())
-        .getAllByRole("link", { name: "Open issue" })
-        .some((link) => link.getAttribute("href") === "/acme/issues/issue-2"),
-    ).toBe(true);
-    // No answer operation exists for this source yet: there is no form to press.
-    expect(within(view.detail()).queryByRole("button", { name: "Answer" })).toBeNull();
-    expect(within(view.detail()).queryByRole("button", { name: "Approve plan" })).toBeNull();
+    // The question comes from the issue timeline, so the form renders its
+    // fallback choices first; wait for the read that decides what is on offer.
+    await waitFor(() =>
+      expect(view.detail().querySelector("[data-readonly-content]")).not.toBeNull(),
+    );
+    return view;
+  }
+
+  describe("workflow handoff", () => {
+    it("answers a structured handoff where it is asked, with its options and free text", async () => {
+      const view = await openHandoff(renderPage());
+      const detail = within(view.detail());
+
+      // The question is the agent's comment, shown read-only. Its machine-readable
+      // block is not part of the prose the member reads.
+      await waitFor(() =>
+        expect(view.detail().querySelector("[data-readonly-content]")?.getAttribute("data-readonly-content"))
+          .toContain("I can't pick the rollout path without you."),
+      );
+      expect(
+        view.detail().querySelector("[data-readonly-content]")?.getAttribute("data-readonly-content"),
+      ).not.toContain("```decision");
+      expect(detail.getByText("Which way should the migration go?")).toBeTruthy();
+
+      // The block's options, with their details, as single choices.
+      expect(detail.getByRole("radio", { name: /Expand, then contract/ })).toBeTruthy();
+      expect(detail.getByRole("radio", { name: /Big-bang cutover/ })).toBeTruthy();
+      expect(detail.getByText("Two deploys, no downtime")).toBeTruthy();
+      // The recommended option is preselected, and its own destination with it.
+      expect((detail.getByRole("radio", { name: /Expand, then contract/ }) as HTMLInputElement).checked).toBe(true);
+      const destination = detail.getByRole("combobox", { name: "Move to" }) as HTMLSelectElement;
+      expect(destination.value).toBe("in_progress");
+      // The waiting step is never offered as a destination.
+      expect([...destination.options].map((option) => option.value)).not.toContain("wait_for_decision");
+
+      // A free-text box is always there, whether or not an option was picked.
+      expect(detail.getByLabelText("Or write your own answer")).toBeTruthy();
+
+      fireEvent.change(detail.getByLabelText("Or write your own answer"), {
+        target: { value: "Keep the rollback for a week" },
+      });
+      fireEvent.click(detail.getByRole("button", { name: "Record decision" }));
+
+      await waitFor(() => expect(apiMock.respondDecision).toHaveBeenCalledTimes(1));
+      const [issueId, body] = apiMock.respondDecision.mock.calls[0] as unknown as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(issueId).toBe("issue-2");
+      expect(body).toMatchObject({
+        // The fence is the row's revision, the answer is the option's label, the
+        // note is the rationale and the destination is the picked status.
+        expected_issue_revision: 12,
+        decision: "Expand, then contract",
+        rationale: "Keep the rollback for a week",
+        next_status: "in_progress",
+      });
+      expect(typeof body.client_request_id).toBe("string");
+      await waitFor(() =>
+        expect(detail.getByText(/Recorded Expand, then contract → In Progress/)).toBeTruthy(),
+      );
+    });
+
+    it("lets a choice's own destination be overridden, and sends the override", async () => {
+      const view = await openHandoff(renderPage());
+      const detail = within(view.detail());
+      fireEvent.click(detail.getByRole("radio", { name: /Big-bang cutover/ }));
+      const destination = detail.getByRole("combobox", { name: "Move to" }) as HTMLSelectElement;
+      await waitFor(() => expect(destination.value).toBe("in_review"));
+      fireEvent.change(destination, { target: { value: "todo" } });
+      fireEvent.click(detail.getByRole("button", { name: "Record decision" }));
+      await waitFor(() => expect(apiMock.respondDecision).toHaveBeenCalledTimes(1));
+      expect(
+        (apiMock.respondDecision.mock.calls[0] as unknown as [string, Record<string, unknown>])[1],
+      ).toMatchObject({ decision: "Big-bang cutover", next_status: "todo" });
+    });
+
+    it("answers a legacy handoff with the default choices and a written answer", async () => {
+      apiMock.listTimeline.mockResolvedValue([
+        WAITING_TIMELINE[0],
+        {
+          type: "comment",
+          id: "comment-9",
+          actor_type: "agent",
+          actor_id: "agent-1",
+          created_at: "2026-11-03T10:00:00Z",
+          content: "The plan is in the thread — say the word and I'll start.",
+        },
+      ]);
+      const view = await openHandoff(renderPage());
+      const detail = within(view.detail());
+
+      // No block: the comment is the question and the default choices are offered.
+      await waitFor(() =>
+        expect(detail.getByRole("radio", { name: "Approve" })).toBeTruthy(),
+      );
+      expect(detail.getByRole("radio", { name: "Request changes" })).toBeTruthy();
+      expect(detail.getByRole("radio", { name: "Other" })).toBeTruthy();
+      expect((detail.getByRole("combobox", { name: "Move to" }) as HTMLSelectElement).value).toBe(
+        "in_progress",
+      );
+
+      // Nothing picked and nothing written is not a submission.
+      const submit = detail.getByRole("button", { name: "Record decision" }) as HTMLButtonElement;
+      expect(submit.disabled).toBe(true);
+
+      // Free text alone is the answer: it goes as `custom`, the text as rationale.
+      fireEvent.change(detail.getByLabelText("Or write your own answer"), {
+        target: { value: "Not yet — wait for the freeze" },
+      });
+      await waitFor(() => expect(submit.disabled).toBe(false));
+      fireEvent.click(submit);
+      await waitFor(() => expect(apiMock.respondDecision).toHaveBeenCalledTimes(1));
+      expect(
+        (apiMock.respondDecision.mock.calls[0] as unknown as [string, Record<string, unknown>])[1],
+      ).toMatchObject({
+        decision: "custom",
+        rationale: "Not yet — wait for the freeze",
+        next_status: "in_progress",
+      });
+    });
+
+    it("re-reads the issue and says so when the handoff moved on under the form", async () => {
+      apiMock.respondDecision.mockRejectedValue(
+        Object.assign(new Error("issue is not waiting for a decision"), { status: 409 }),
+      );
+      const view = await openHandoff(renderPage());
+      const detail = within(view.detail());
+      const reads = apiMock.getDecisionDetail.mock.calls.length;
+      fireEvent.click(detail.getByRole("button", { name: "Record decision" }));
+      await waitFor(() =>
+        expect(detail.getByText("This issue changed while you were answering")).toBeTruthy(),
+      );
+      // A 409 means the row on screen is stale, so the page asks again.
+      await waitFor(() =>
+        expect(apiMock.getDecisionDetail.mock.calls.length).toBeGreaterThan(reads),
+      );
+    });
+
+    it("keeps a handoff read-only once it has been answered", async () => {
+      apiMock.listDecisions.mockImplementation(
+        async (_ws: string, params: { state?: string }) => ({
+          items:
+            params.state === "answered"
+              ? [
+                  {
+                    ...DECISIONS[1],
+                    source_id: "issue-2:receipt-1",
+                    status: "answered",
+                    response_id: "receipt-1",
+                    actor_id: "member-1",
+                  },
+                ]
+              : DECISIONS,
+          pending_count: 2,
+          next_cursor: null,
+        }),
+      );
+      apiMock.getDecisionDetail.mockResolvedValue({
+        id: "issue-2",
+        title: "Migrate the store",
+        description: "Waiting on the plan in the thread.",
+        revision: 13,
+        status: "in_progress",
+        response: {
+          ...RECEIPT,
+          decision: "Approve",
+          rationale: "Reviewed the plan",
+        },
+      });
+      const view = renderPage();
+      await waitFor(() => expect(rows()).toHaveLength(3));
+      fireEvent.click(screen.getByRole("tab", { name: /Answered/ }));
+      await waitFor(() => expect(rows()).toHaveLength(1));
+      await waitFor(() => expect(within(view.detail()).getByText("Verdict")).toBeTruthy());
+      expect(view.detail().querySelector("[data-handoff-form]")).toBeNull();
+      expect(within(view.detail()).queryByRole("button", { name: "Record decision" })).toBeNull();
+    });
   });
 
   it("shows recorded answers read-only on the Answered tab", async () => {

@@ -2,6 +2,7 @@ export { DecisionsPage } from "./decisions-page";
 export type { DecisionsPageProps } from "./decisions-page";
 export { DecisionList } from "./decision-list";
 export { DecisionDetail } from "./decision-detail";
+export { HandoffForm } from "./handoff-form";
 export { decisionKind, groupDecisionsByIssue } from "./decision-presentation";
 export type {
   DecisionIssueGroup,

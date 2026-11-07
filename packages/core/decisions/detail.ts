@@ -45,21 +45,20 @@ export function asDecisionKind(value: string): DecisionKind | null {
 }
 
 /**
- * Whether this client can answer the source yet.
+ * Whether this client can answer the source.
  *
  * Question and plan answers are the shipped endpoints the issue page already
- * uses, and native asks go through the running turn's supplement route — the
- * same one the transcript card uses. A status-only handoff needs the
- * `issue_decision_response` transaction (M-209), which is not on the server
- * this page ships against, so it is readable here and answerable on the issue
- * page until that card lands. Keeping the rule in one place is what makes the
- * page honest later: the day the operation merges, this list grows a kind and
- * the detail pane grows its form.
+ * uses, native asks go through the running turn's supplement route — the same
+ * one the transcript card uses — and a status-only handoff goes through the
+ * `issue_decision_response` transaction (M-209), which the handoff form wires
+ * (M-274). Keeping the rule in one place is what keeps the page honest: a kind
+ * that has no operation is read-only here rather than a form that would 404.
  */
 export const ANSWERABLE_DECISION_KINDS: readonly DecisionKind[] = [
   "question",
   "plan",
   "native",
+  "status",
 ];
 
 export function isDecisionAnswerable(kind: DecisionKind): boolean {

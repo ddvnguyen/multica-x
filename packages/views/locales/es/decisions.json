@@ -51,9 +51,23 @@
     "native_no_form_title": "Sin formulario estructurado",
     "native_no_form_hint": "Esta pregunta llegó a la transcripción solo como texto, así que se responde en la página de la tarea.",
     "status_title": "Esperando una decisión del flujo",
-    "status_hint": "Por ahora este traspaso se responde en la página de la tarea; esta lista lo lee desde la propia tarea.",
     "unknown_title": "Esta compilación no puede responder a esta solicitud",
     "unknown_hint": "Sigue en espera. Abre la tarea para leer su contexto.",
-    "answered_hint": "Las respuestas registradas son de solo lectura. Una nueva solicitud llega como su propia fila."
+    "answered_hint": "Las respuestas registradas son de solo lectura. Una nueva solicitud llega como su propia fila.",
+    "handoff": {
+      "answer_legend": "Tu respuesta",
+      "write_own": "O escribe tu propia respuesta",
+      "destination": "Mover a",
+      "destination_placeholder": "Elige un estado",
+      "destination_required": "Elige a dónde va la tarea a continuación.",
+      "submit": "Registrar decisión",
+      "stale_title": "La tarea cambió mientras respondías",
+      "stale_hint": "Se ha vuelto a cargar: revísala y registra la decisión de nuevo.",
+      "failed": "No se ha registrado la decisión.",
+      "receipt": "Registrado {{decision}} → {{status}}",
+      "option_approve": "Aprobar",
+      "option_request_changes": "Pedir cambios",
+      "option_custom": "Otra"
+    }
   }
 }

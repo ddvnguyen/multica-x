@@ -51,9 +51,23 @@
     "native_no_form_title": "No structured form",
     "native_no_form_hint": "This ask reached the transcript as text only, so it is answered on the issue page.",
     "status_title": "Waiting on a workflow decision",
-    "status_hint": "This handoff is answered on the issue page for now; this list reads it from the issue itself.",
     "unknown_title": "This build cannot answer this request",
     "unknown_hint": "It is still waiting. Open the issue to read its context.",
-    "answered_hint": "Recorded answers are read-only. A new request arrives as its own row."
+    "answered_hint": "Recorded answers are read-only. A new request arrives as its own row.",
+    "handoff": {
+      "answer_legend": "Your answer",
+      "write_own": "Or write your own answer",
+      "destination": "Move to",
+      "destination_placeholder": "Choose a status",
+      "destination_required": "Choose where this issue goes next.",
+      "submit": "Record decision",
+      "stale_title": "This issue changed while you were answering",
+      "stale_hint": "It has been reloaded — check it, then record the decision again.",
+      "failed": "The decision was not recorded.",
+      "receipt": "Recorded {{decision}} → {{status}}",
+      "option_approve": "Approve",
+      "option_request_changes": "Request changes",
+      "option_custom": "Other"
+    }
   }
 }

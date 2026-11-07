@@ -51,9 +51,23 @@
     "native_no_form_title": "Pas de formulaire structuré",
     "native_no_form_hint": "Cette demande n'est arrivée qu'en texte : répondez-y depuis le ticket.",
     "status_title": "En attente d'une décision de workflow",
-    "status_hint": "Cette passation se répond pour l'instant depuis le ticket ; cette liste lit l'état du ticket.",
     "unknown_title": "Cette version ne peut pas y répondre",
     "unknown_hint": "Elle attend toujours. Ouvrez le ticket pour en lire le contexte.",
-    "answered_hint": "Les réponses enregistrées sont en lecture seule. Une nouvelle demande arrive sur sa propre ligne."
+    "answered_hint": "Les réponses enregistrées sont en lecture seule. Une nouvelle demande arrive sur sa propre ligne.",
+    "handoff": {
+      "answer_legend": "Votre réponse",
+      "write_own": "Ou rédigez votre propre réponse",
+      "destination": "Déplacer vers",
+      "destination_placeholder": "Choisissez un statut",
+      "destination_required": "Choisissez la suite du ticket.",
+      "submit": "Enregistrer la décision",
+      "stale_title": "Le ticket a changé pendant votre réponse",
+      "stale_hint": "Il a été rechargé — vérifiez-le, puis enregistrez la décision à nouveau.",
+      "failed": "La décision n'a pas été enregistrée.",
+      "receipt": "Enregistré {{decision}} → {{status}}",
+      "option_approve": "Approuver",
+      "option_request_changes": "Demander des modifications",
+      "option_custom": "Autre"
+    }
   }
 }
