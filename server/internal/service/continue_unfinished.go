@@ -129,9 +129,28 @@ func (s *TaskService) continueUnfinishedInTx(ctx context.Context, qtx *db.Querie
 		// so a true here is always somebody else's pending run.
 		return "suppressed:pending_task", "", nil
 	}
-	if wks, err := qtx.ListWaitingWakeups(ctx, db.ListWaitingWakeupsParams{IssueID: issue.ID, AgentID: task.AgentID}); err != nil {
+	// Lock every waiting wakeup row FOR UPDATE before deciding — the same
+	// grade dispatch takes (LockIssueWakeup → check → enqueue). Two
+	// FOR NO KEY UPDATE issue locks do NOT conflict with each other, so the
+	// issue lock alone cannot serialize us against a concurrent dispatch; the
+	// wakeup-row lock can, because both sides take it on the same rows.
+	// SKIP LOCKED keeps us from wedging behind a dispatch: a wakeup another
+	// writer holds is somebody else's follow-up, so suppress.
+	wks, err := qtx.ListWaitingWakeups(ctx, db.ListWaitingWakeupsParams{IssueID: issue.ID, AgentID: task.AgentID})
+	if err != nil {
 		return "", "", fmt.Errorf("wakeup check: %w", err)
-	} else if len(wks) > 0 {
+	}
+	for _, wid := range wks {
+		if _, err := qtx.TryLockIssueWakeup(ctx, wid); err != nil {
+			if errorsIsNoRows(err) {
+				// SKIP LOCKED skipped a row a concurrent dispatch holds:
+				// somebody else's follow-up is already being decided.
+				return "suppressed:wakeup_race", "", nil
+			}
+			return "", "", fmt.Errorf("lock wakeup: %w", err)
+		}
+	}
+	if len(wks) > 0 {
 		return "suppressed:waiting_wakeup", "", nil
 	}
 	if ok, err := continueSwitchOn(ctx, qtx, issue); err != nil {
