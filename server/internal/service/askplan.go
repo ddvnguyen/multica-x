@@ -175,13 +175,14 @@ func SettleParkedAskPlanForTasks(ctx context.Context, q *db.Queries, tasks []db.
 // answering it then fails the CAS, which is honest).
 func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQueue, workspaceID pgtype.UUID, contextText string, questions json.RawMessage) (db.AgentQuestionCard, error) {
 	card, err := s.Queries.CreateAgentQuestionCard(ctx, db.CreateAgentQuestionCardParams{
-		ID:          dbid.NewV7(),
-		WorkspaceID: workspaceID,
-		IssueID:     task.IssueID,
-		TaskID:      task.ID,
-		AgentID:     task.AgentID,
-		Context:     pgtype.Text{String: contextText, Valid: contextText != ""},
-		Questions:   questions,
+		ID:                dbid.NewV7(),
+		WorkspaceID:       workspaceID,
+		IssueID:           task.IssueID,
+		TaskID:            task.ID,
+		AgentID:           task.AgentID,
+		Context:           pgtype.Text{String: contextText, Valid: contextText != ""},
+		Questions:         questions,
+		TriggerCommentID:  task.TriggerCommentID,
 	})
 	if err != nil {
 		return db.AgentQuestionCard{}, fmt.Errorf("create question card: %w", err)

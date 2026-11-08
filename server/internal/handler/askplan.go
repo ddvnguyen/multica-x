@@ -223,11 +223,12 @@ type cardQuestion struct {
 }
 
 type cardResponse struct {
-	ID        string          `json:"id"`
-	IssueID   string          `json:"issue_id"`
-	TaskID    string          `json:"task_id"`
-	AgentID   string          `json:"agent_id"`
-	Status    string          `json:"status"`
+	ID                string          `json:"id"`
+	IssueID           string          `json:"issue_id"`
+	TaskID            string          `json:"task_id"`
+	AgentID           string          `json:"agent_id"`
+	TriggerCommentID  *string         `json:"trigger_comment_id,omitempty"`
+	Status            string          `json:"status"`
 	Context   *string         `json:"context,omitempty"`
 	Questions json.RawMessage `json:"questions"`
 	Answers   json.RawMessage `json:"answers,omitempty"`
@@ -277,6 +278,10 @@ func cardToResponse(c db.AgentQuestionCard) cardResponse {
 		AgentID:   uuidToString(c.AgentID),
 		Status:    c.Status,
 		Questions: json.RawMessage(c.Questions),
+	}
+	if c.TriggerCommentID.Valid {
+		s := uuidToString(c.TriggerCommentID)
+		resp.TriggerCommentID = &s
 	}
 	if c.Context.Valid {
 		resp.Context = &c.Context.String

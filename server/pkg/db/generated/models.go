@@ -144,8 +144,9 @@ type AgentQuestionCard struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	TriggerCommentID  pgtype.UUID        `json:"trigger_comment_id"`
 	Status      string             `json:"status"`
 	Context     pgtype.Text        `json:"context"`
 	Questions   []byte             `json:"questions"`
@@ -1708,8 +1709,9 @@ type TaskSupplementCapability struct {
 type TaskToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	TokenHash   string             `json:"token_hash"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	TriggerCommentID  pgtype.UUID        `json:"trigger_comment_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	UserID      pgtype.UUID        `json:"user_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
