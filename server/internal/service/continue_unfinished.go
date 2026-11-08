@@ -50,6 +50,23 @@ func (s *TaskService) MaybeContinueUnfinishedStep(ctx context.Context, task db.A
 	// best-effort: look up project workflow
 	// (skipped if no project/workflow; defaults on)
 
+	// workflow switch (default on)
+	if issue.ProjectID.Valid {
+		if proj, err := s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID}); err == nil {
+			var wf db.IssueWorkflow
+			var werr error
+			if proj.WorkflowID.Valid {
+				wf, werr = s.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: proj.WorkflowID, WorkspaceID: issue.WorkspaceID})
+			} else {
+				wf, werr = s.Queries.GetDefaultIssueWorkflow(ctx, issue.WorkspaceID)
+			}
+			if werr == nil && !wf.ContinueUnfinished {
+				slog.Info("continue-unfinished: suppressed by workflow switch", "issue_id", util.UUIDToString(issue.ID))
+				return
+			}
+		}
+	}
+
 	fireAt := pgtype.Timestamptz{Time: time.Now().Add(2 * time.Minute), Valid: true}
 	handoff := "Your previous run ended without moving the issue or arming a wakeup. Continue the next unfinished part, then either move the issue with the step's command or arm a wakeup for what you wait on."
 	cont, err := s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, handoff, pgtype.UUID{}, task.ID, fireAt, OriginDerived)
@@ -64,5 +81,5 @@ func (s *TaskService) MaybeContinueUnfinishedStep(ctx context.Context, task db.A
 	}); err != nil {
 		slog.Warn("continue-unfinished: stamp workflow step", "error", err)
 	}
-	slog.Info("continue-unfinished: queued continuation", "task_id", util.UUIDToString(task.ID), "continuation", util.UUIDToString(cont.ID))
+	slog.Info("continue-unfinished: queued continuation", "task_id", util.UUIDToString(task.ID), "continuation", util.UUIDToString(cont.ID), "metric", "continuation_queued")
 }
