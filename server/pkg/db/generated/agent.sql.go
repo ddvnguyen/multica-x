@@ -9739,3 +9739,107 @@ func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTas
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
 }
+
+const setTaskTurnEndRouterContext = `UPDATE agent_task_queue
+SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object(
+    'turn_end_router', jsonb_build_object(
+        'origin', 'derived',
+        'reason', $2::text,
+        'baseline_status', $3::text,
+        'baseline_comment_count', $4::bigint,
+        'baseline_head_sha', $5::text
+    )
+)
+WHERE id = $1
+`
+
+type SetTaskTurnEndRouterContextParams struct {
+	ID                  pgtype.UUID `json:"id"`
+	Reason              string     `json:"reason"`
+	BaselineStatus      string     `json:"baseline_status"`
+	BaselineCommentCount int64     `json:"baseline_comment_count"`
+	BaselineHeadSha     string     `json:"baseline_head_sha"`
+}
+
+func (q *Queries) SetTaskTurnEndRouterContext(ctx context.Context, arg SetTaskTurnEndRouterContextParams) error {
+	_, err := q.db.Exec(ctx, setTaskTurnEndRouterContext, arg.ID, arg.Reason, arg.BaselineStatus, arg.BaselineCommentCount, arg.BaselineHeadSha)
+	return err
+}
+
+const setTaskTurnEndRouterProductive = `UPDATE agent_task_queue
+SET context = jsonb_set(
+    COALESCE(context, '{}'::jsonb),
+    '{turn_end_router,productive}',
+    to_jsonb($2::boolean),
+    true
+)
+WHERE id = $1
+  AND context -> 'turn_end_router' ->> 'origin' = 'derived'
+`
+
+type SetTaskTurnEndRouterProductiveParams struct {
+	ID         pgtype.UUID `json:"id"`
+	Productive bool        `json:"productive"`
+}
+
+func (q *Queries) SetTaskTurnEndRouterProductive(ctx context.Context, arg SetTaskTurnEndRouterProductiveParams) error {
+	_, err := q.db.Exec(ctx, setTaskTurnEndRouterProductive, arg.ID, arg.Productive)
+	return err
+}
+
+const countRecentTurnEndRouterRuns = `SELECT count(*)::bigint
+FROM agent_task_queue
+WHERE issue_id = $1
+  AND context -> 'turn_end_router' ->> 'origin' = 'derived'
+  AND created_at >= now() - interval '2 minutes'
+`
+
+func (q *Queries) CountRecentTurnEndRouterRuns(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentTurnEndRouterRuns, issueID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTurnEndRouterRunsSince = `SELECT count(*)::bigint,
+       count(*) FILTER (WHERE
+           (context -> 'turn_end_router' ->> 'productive')::boolean = true
+       )::bigint
+FROM agent_task_queue
+WHERE issue_id = $1
+  AND context -> 'turn_end_router' ->> 'origin' = 'derived'
+  AND created_at >= now() - interval '24 hours'
+`
+
+type CountTurnEndRouterRunsSinceRow struct {
+	Count      int64 `json:"count"`
+	Productive int64 `json:"productive"`
+}
+
+func (q *Queries) CountTurnEndRouterRunsSince(ctx context.Context, issueID pgtype.UUID) (CountTurnEndRouterRunsSinceRow, error) {
+	row := q.db.QueryRow(ctx, countTurnEndRouterRunsSince, issueID)
+	var result CountTurnEndRouterRunsSinceRow
+	err := row.Scan(&result.Count, &result.Productive)
+	return result, err
+}
+
+const countWorkspaceTurnEndRouterRunsSince = `SELECT count(*)::bigint,
+       count(*) FILTER (WHERE (task.context -> 'turn_end_router' ->> 'productive')::boolean = true)::bigint
+FROM agent_task_queue task
+JOIN issue i ON i.id = task.issue_id
+WHERE i.workspace_id = $1
+  AND task.context -> 'turn_end_router' ->> 'origin' = 'derived'
+  AND task.created_at >= now() - interval '24 hours'
+`
+
+type CountWorkspaceTurnEndRouterRunsSinceRow struct {
+	Count      int64 `json:"count"`
+	Productive int64 `json:"productive"`
+}
+
+func (q *Queries) CountWorkspaceTurnEndRouterRunsSince(ctx context.Context, workspaceID pgtype.UUID) (CountWorkspaceTurnEndRouterRunsSinceRow, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceTurnEndRouterRunsSince, workspaceID)
+	var result CountWorkspaceTurnEndRouterRunsSinceRow
+	err := row.Scan(&result.Count, &result.Productive)
+	return result, err
+}

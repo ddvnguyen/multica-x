@@ -141,6 +141,26 @@ func (q *Queries) GetLastIssueStatusChange(ctx context.Context, issueID pgtype.U
 	return i, err
 }
 
+const getIssueStatusEnteredAt = `SELECT created_at FROM activity_log
+WHERE issue_id = $1
+  AND action = 'status_changed'
+  AND details->>'to' = $2::text
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetIssueStatusEnteredAtParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Status  string      `json:"status"`
+}
+
+func (q *Queries) GetIssueStatusEnteredAt(ctx context.Context, arg GetIssueStatusEnteredAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getIssueStatusEnteredAt, arg.IssueID, arg.Status)
+	var enteredAt pgtype.Timestamptz
+	err := row.Scan(&enteredAt)
+	return enteredAt, err
+}
+
 const hasSquadLeaderNoActionEvaluationForTask = `-- name: HasSquadLeaderNoActionEvaluationForTask :one
 SELECT EXISTS (
   SELECT 1
