@@ -1213,8 +1213,9 @@ type IssueWorkflow struct {
 	Steps            []byte             `json:"steps"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	IsDefault        bool               `json:"is_default"`
-	OwnerID          pgtype.UUID        `json:"owner_id"`
+	IsDefault           bool               `json:"is_default"`
+	OwnerID             pgtype.UUID        `json:"owner_id"`
+	ContinueUnfinished   bool               `json:"continue_unfinished"`
 }
 
 type LarkBindingToken struct {
