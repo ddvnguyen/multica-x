@@ -147,7 +147,7 @@ type LoginState struct {
 // the probe; any other outcome (200 stream, 401 without a launch token, 403
 // forbidden origin) means the route exists.
 func (c *Client) ThreadProbe(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/projects", nil)
 	if err != nil {
 		return err
 	}
