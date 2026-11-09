@@ -267,7 +267,7 @@ func routerHandoffNote(destination, reason string, issue db.Issue, step string) 
 func (s *TaskService) recordTurnEndRouterAudit(ctx context.Context, q *db.Queries, issue db.Issue, step string, task db.AgentTaskQueue) error {
 	content := fmt.Sprintf("Turn-end router stopped after the Orchestrator and Leader made no observable progress at step %q (task %s). Further automatic runs were suppressed.", step, util.UUIDToString(task.ID))
 	if _, err := q.CreateComment(ctx, db.CreateCommentParams{
-		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", Content: content, Type: "system",
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
 	}); err != nil {
 		return fmt.Errorf("create router exhaustion audit comment: %w", err)
 	}

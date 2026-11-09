@@ -344,7 +344,8 @@ func TestShadowModeRecordsDecisionWithoutQueueing(t *testing.T) {
 func TestTurnEndRouterDedupesRecentRunAndDailyCap(t *testing.T) {
 	t.Run("recent run", func(t *testing.T) {
 		f, svc, issue, agent := continueFixture(t, "in_progress")
-		seedTurnEndRouterRun(t, f, issue, agent, "continuation", "seed")
+		seedID := seedTurnEndRouterRun(t, f, issue, agent, "continuation", "seed")
+		f.Exec(t, "UPDATE agent_task_queue SET created_at=now()-interval '1 minute' WHERE id=$1", seedID)
 		task := continueCompletedRun(t, f, issue, agent, "in_progress", pgtype.UUID{}, pgtype.UUID{})
 		if d := svc.DecideContinueUnfinishedStep(context.Background(), task); d.Outcome != "suppressed:dedupe_2m" {
 			t.Fatalf("recent duplicate outcome = %q", d.Outcome)
@@ -396,7 +397,7 @@ func TestGreenPullRequestRoutesArchitectOrArmsWakeup(t *testing.T) {
 	}
 }
 
-func seedTurnEndRouterRun(t *testing.T, f principalFixture, issue pgtype.UUID, agent, destination, stateHash string) {
+func seedTurnEndRouterRun(t *testing.T, f principalFixture, issue pgtype.UUID, agent, destination, stateHash string) string {
 	t.Helper()
 	id := f.Task(t, agent, testutil.Cols{
 		"issue_id":      util.UUIDToString(issue),
@@ -411,6 +412,7 @@ func seedTurnEndRouterRun(t *testing.T, f principalFixture, issue pgtype.UUID, a
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return id
 }
 
 func TestContinueUnfinishedRacesWakeupDispatch(t *testing.T) {
