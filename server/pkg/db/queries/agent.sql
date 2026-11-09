@@ -425,18 +425,18 @@ WHERE issue_id = sqlc.arg('issue_id')
   AND created_at >= now() - interval '2 minutes';
 
 -- name: CountTurnEndRouterRunsSince :one
-SELECT count(*)::bigint,
+SELECT count(*)::bigint AS run_count,
        count(*) FILTER (WHERE
            (context -> 'turn_end_router' ->> 'productive')::boolean = true
-       )::bigint
+       )::bigint AS productive_count
 FROM agent_task_queue
 WHERE issue_id = sqlc.arg('issue_id')
   AND context -> 'turn_end_router' ->> 'origin' = 'derived'
   AND created_at >= now() - interval '24 hours';
 
 -- name: CountWorkspaceTurnEndRouterRunsSince :one
-SELECT count(*)::bigint,
-       count(*) FILTER (WHERE (task.context -> 'turn_end_router' ->> 'productive')::boolean = true)::bigint
+SELECT count(*)::bigint AS run_count,
+       count(*) FILTER (WHERE (task.context -> 'turn_end_router' ->> 'productive')::boolean = true)::bigint AS productive_count
 FROM agent_task_queue task
 JOIN issue i ON i.id = task.issue_id
 WHERE i.workspace_id = sqlc.arg('workspace_id')

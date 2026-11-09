@@ -185,7 +185,7 @@ func (s *TaskService) continueUnfinishedInTx(ctx context.Context, qtx *db.Querie
 	if err != nil {
 		return "", "", fmt.Errorf("daily derived-run cap: %w", err)
 	}
-	if dayCount.Count >= maxContinuationsPerEpisode {
+	if dayCount.RunCount >= maxContinuationsPerEpisode {
 		return "suppressed:daily_cap", "", nil
 	}
 	if mode == "shadow" {

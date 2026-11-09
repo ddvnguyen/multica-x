@@ -158,10 +158,10 @@ func (h *Handler) GetTurnEndRouterSettings(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to load turn-end router metrics")
 		return
 	}
-	response.Runs24h = stats.Count
-	response.ProductiveRuns24h = stats.Productive
-	if stats.Count > 0 {
-		response.ProductiveRatio24h = float64(stats.Productive) / float64(stats.Count)
+	response.Runs24h = stats.RunCount
+	response.ProductiveRuns24h = stats.ProductiveCount
+	if stats.RunCount > 0 {
+		response.ProductiveRatio24h = float64(stats.ProductiveCount) / float64(stats.RunCount)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -194,12 +194,12 @@ func (h *Handler) UpdateTurnEndRouterSettings(w http.ResponseWriter, r *http.Req
 	}
 	h.publishWorkspaceSettingsChanged(r, updated)
 	ratio := float64(0)
-	if stats.Count > 0 {
-		ratio = float64(stats.Productive) / float64(stats.Count)
+	if stats.RunCount > 0 {
+		ratio = float64(stats.ProductiveCount) / float64(stats.RunCount)
 	}
 	writeJSON(w, http.StatusOK, TurnEndRouterSettingsResponse{
 		Mode: mode, ModeSet: true, Editable: true,
-		Runs24h: stats.Count, ProductiveRuns24h: stats.Productive, ProductiveRatio24h: ratio,
+		Runs24h: stats.RunCount, ProductiveRuns24h: stats.ProductiveCount, ProductiveRatio24h: ratio,
 	})
 }
 
