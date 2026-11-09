@@ -140,7 +140,7 @@ type LoginState struct {
 }
 
 // ThreadProbe verifies the orchestrator serves the local thread routes the
-// task bridge drives. GET /api/events answers 200 with the event stream on
+// task bridge drives. GET /api/projects answers 200 with the project list on
 // builds that serve threads, and 404 {"error":"not found"} on builds whose
 // router dropped those routes (e.g. a hosted-workspace-only build passes
 // /api/auth/status but 404s POST /api/threads on every run). Only 404 fails
