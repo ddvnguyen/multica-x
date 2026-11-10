@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func (h *Handler) ListWorkspaceWakeups(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +539,33 @@ func (h *Handler) CheckInIssue(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.DB.Exec(r.Context(), "UPDATE agent_task_queue SET context=COALESCE(context,'{}'::jsonb)||jsonb_build_object('checkin',$2::jsonb) WHERE id=$1", taskID, string(checkin)); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to check in")
 		return
+	}
+	// Mirror the wakeup recordWakeupActivities path: the check-in leaves a
+	// timeline entry ("silent check: <note>") so a silent run is still
+	// visible. Best-effort: the marker above already suppresses the fallback.
+	details, _ := json.Marshal(map[string]any{"note": note, "task_id": uuidToString(taskID)})
+	activity, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		ActorType:   pgtype.Text{String: "agent", Valid: true},
+		ActorID:     task.AgentID,
+		Action:      "wakeup_checkin",
+		Details:     details,
+	})
+	if err == nil {
+		h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), "agent", uuidToString(task.AgentID), map[string]any{
+			"issue_id": uuidToString(issue.ID),
+			"entry": map[string]any{
+				"type":       "activity",
+				"id":         uuidToString(activity.ID),
+				"actor_type": "agent",
+				"actor_id":   uuidToString(task.AgentID),
+				"action":     activity.Action,
+				"details":    json.RawMessage(details),
+				"created_at": timestampToString(activity.CreatedAt),
+			},
+		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

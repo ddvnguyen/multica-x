@@ -193,8 +193,8 @@ func (s *IssueWakeupService) CheckIn(ctx context.Context, issueID, id, taskID pg
 func HasWakeupCheckin(task db.AgentTaskQueue) bool {
 	var ctx struct {
 		WakeupID    string          `json:"wakeup_id"`
-		Checkin      json.RawMessage `json:"wakeup_checkin"`
-		TaskCheckin  json.RawMessage `json:"checkin"`
+		Checkin     json.RawMessage `json:"wakeup_checkin"`
+		TaskCheckin json.RawMessage `json:"checkin"`
 	}
 	if json.Unmarshal(task.Context, &ctx) != nil {
 		return false
