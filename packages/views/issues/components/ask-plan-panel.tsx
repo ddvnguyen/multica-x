@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAnswerQuestionCard } from "@multica/core/issues/mutations";
 import type { AgentAnswerDraft } from "@multica/core/issues/agent-question";
-import { issueAskPlanOptions } from "@multica/core/issues/queries";
+import { issueAskPlanOptions, issueTimelineOptions } from "@multica/core/issues/queries";
 import {
   cardQuestionsToAgentQuestions,
   draftsToCardAnswers,
@@ -33,13 +33,22 @@ export function AskPlanPanel({ issueId }: { issueId: string }) {
   const wsId = useWorkspaceId();
   const { data } = useQuery(issueAskPlanOptions(wsId, issueId));
   const answer = useAnswerQuestionCard(issueId);
+  const { data: timeline } = useQuery(issueTimelineOptions(issueId));
+  const threadIds = new Set((timeline ?? []).map((entry) => entry.id));
 
   // Reading `undefined` (still loading) and the empty state the same way keeps
   // the panel out of the DOM until there is something to act on.
   if (!hasAskPlanState(data)) return null;
 
-  const cards = data?.question_cards ?? [];
+  // A card parked by a run that answered a comment renders inside that
+  // comment's thread (ThreadAskCards); only the cards with no trigger comment,
+  // or whose comment is not on the timeline, stay here.
+  const cards = (data?.question_cards ?? []).filter(
+    (card) => !card.trigger_comment_id || !threadIds.has(card.trigger_comment_id),
+  );
   const plan = data?.plan ?? null;
+
+  if (cards.length === 0 && plan === null) return null;
 
   return (
     <div className="space-y-4" data-testid="ask-plan-panel">
@@ -51,6 +60,26 @@ export function AskPlanPanel({ issueId }: { issueId: string }) {
         />
       ))}
       {plan !== null && <PlanReviewPanel key={plan.id} plan={plan} issueId={issueId} />}
+    </div>
+  );
+}
+
+/**
+ * The open question cards whose run was triggered by `commentId`, rendered
+ * inside that comment's thread (M-285). Same form and same answer mutation as
+ * the panel, so answering here or from Decisions answers the one card.
+ */
+export function ThreadAskCards({ issueId, commentId }: { issueId: string; commentId: string }) {
+  const wsId = useWorkspaceId();
+  const { data } = useQuery(issueAskPlanOptions(wsId, issueId));
+  const answer = useAnswerQuestionCard(issueId);
+  const cards = (data?.question_cards ?? []).filter((card) => card.trigger_comment_id === commentId);
+  if (cards.length === 0) return null;
+  return (
+    <div className="space-y-4 py-2" data-testid="thread-ask-cards">
+      {cards.map((card) => (
+        <AskPlanQuestionForm key={card.id} card={card} onAnswer={(variables) => answer.mutateAsync(variables)} />
+      ))}
     </div>
   );
 }

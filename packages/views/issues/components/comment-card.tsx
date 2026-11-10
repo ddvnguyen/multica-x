@@ -55,6 +55,7 @@ import { useT } from "../../i18n";
 import { CommentsFoldBar } from "./resolved-thread-bar";
 import { deriveThreadResolution } from "./thread-utils";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
+import { ThreadAskCards } from "./ask-plan-panel";
 import { InlineCommentRun, PlacedInlineCommentRun, useInlineCommentRunState, type InlineCommentRunState } from "./inline-comment-run";
 import { EMPTY_COMMENT_RUNS, isRunFailureNotice, orderThreadWithRuns, type CommentRun, type ThreadRunSlot } from "./comment-runs";
 import { descriptionPreview } from "./description-preview";
@@ -1081,10 +1082,14 @@ function CommentCardImpl({
   // A failure notice heading a thread keeps the thread's header; its run line
   // below says how the run ended, so the raw body and its button are dropped.
   const noticeRun = runs.find((run) => run.hasReply && run.commentId === entry.id && isRunFailureNotice(entry, run.task));
-  const renderRuns = (commentId: string, presentation: "inline" | "header" = "inline") => runs.filter((run) => run.commentId === commentId && run.hasReply
+  const renderRuns = (commentId: string, presentation: "inline" | "header" = "inline") => [
+    ...runs.filter((run) => run.commentId === commentId && run.hasReply
     && (!run.anchorCommentId || run.anchorCommentId === commentId || replyFolded))
     .map((run) => <PlacedInlineCommentRun key={run.task.id} run={run} presentation={presentation}
-      viewState={run.commentId === entry.id ? runViewState : undefined} replacesFailureNotice={run === noticeRun} />);
+      viewState={run.commentId === entry.id ? runViewState : undefined} replacesFailureNotice={run === noticeRun} />),
+    // A parked ask whose run answered this comment sits in this thread (M-285).
+    ...(presentation === "inline" ? [<ThreadAskCards key="ask-cards" issueId={issueId} commentId={commentId} />] : []),
+  ];
 
   // A run slot renders the run's latest comment, or its activity until it
   // posts one.
