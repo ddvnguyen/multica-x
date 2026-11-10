@@ -5447,7 +5447,7 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// mention-after-work bullet is gone with the block (the discipline
 		// itself stays in `## Mentions`, pinned by the Mentions subtest).
 		for _, want := range []string{
-			"**Post your final results as a comment — this step is mandatory**",
+			"**Post your final results as a comment** when there is a real update",
 			"whose only possible reply is another courtesy",
 		} {
 			if !strings.Contains(s, want) {
@@ -5517,7 +5517,7 @@ func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 	}
 	// The unconditional ordinary-agent imperative must not coexist with the
 	// carve-out variant.
-	if strings.Contains(s, "**Post your final results as a comment — this step is mandatory**") {
+	if strings.Contains(s, "**Post your final results as a comment** when there is a real update") {
 		t.Errorf("squad leader CLAUDE.md still carries the unconditional delivery step")
 	}
 	// And neither site may restate the rule's mechanics — that is what drifted
