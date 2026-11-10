@@ -141,21 +141,21 @@ type AgentPlanSectionVersion struct {
 }
 
 type AgentQuestionCard struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID            pgtype.UUID        `json:"task_id"`
-	AgentID           pgtype.UUID        `json:"agent_id"`
-	TriggerCommentID  pgtype.UUID        `json:"trigger_comment_id"`
-	Status      string             `json:"status"`
-	Context     pgtype.Text        `json:"context"`
-	Questions   []byte             `json:"questions"`
-	Answers     []byte             `json:"answers"`
-	AnsweredBy  pgtype.UUID        `json:"answered_by"`
-	AnsweredAt  pgtype.Timestamptz `json:"answered_at"`
-	WithdrawnAt pgtype.Timestamptz `json:"withdrawn_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	TaskID           pgtype.UUID        `json:"task_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Status           string             `json:"status"`
+	Context          pgtype.Text        `json:"context"`
+	Questions        []byte             `json:"questions"`
+	Answers          []byte             `json:"answers"`
+	AnsweredBy       pgtype.UUID        `json:"answered_by"`
+	AnsweredAt       pgtype.Timestamptz `json:"answered_at"`
+	WithdrawnAt      pgtype.Timestamptz `json:"withdrawn_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
 }
 
 type AgentRuntime struct {
@@ -1709,9 +1709,8 @@ type TaskSupplementCapability struct {
 type TaskToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	TokenHash   string             `json:"token_hash"`
-	TaskID            pgtype.UUID        `json:"task_id"`
-	AgentID           pgtype.UUID        `json:"agent_id"`
-	TriggerCommentID  pgtype.UUID        `json:"trigger_comment_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	UserID      pgtype.UUID        `json:"user_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`

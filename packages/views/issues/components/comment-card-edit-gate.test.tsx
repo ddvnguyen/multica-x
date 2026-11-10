@@ -40,6 +40,11 @@ vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: () => "Ada" }),
 }));
 
+// The thread ask cards read a workspace-scoped query; these tests render no workspace.
+vi.mock("./ask-plan-panel", () => ({
+  ThreadAskCards: () => null,
+}));
+
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => null,
 }));
