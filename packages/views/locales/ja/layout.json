@@ -37,7 +37,8 @@
     "changelog": "変更ログ",
     "discord": "Discord",
     "feedback": "フィードバック",
-    "server_version": "サーバーバージョン {{version}}"
+    "server_version": "サーバーバージョン {{version}}",
+    "star_on_github": "GitHub でスターする"
   },
   "whats_new": {
     "trigger": "新機能",
@@ -149,7 +150,8 @@
       "view_remove": "サイドバーから削除",
       "view_rename": "名前を変更",
       "view_duplicate": "複製",
-      "view_delete": "ビューを削除"
+      "view_delete": "ビューを削除",
+      "view_edit": "ビューを編集"
     },
     "team": {
       "new_agent": "新規エージェント",
@@ -163,7 +165,9 @@
       "members_other": "メンバー {{count}} 人",
       "resources": "リソース",
       "runtimes_online_other": "{{count}} 台オンライン",
-      "invite_member": "メンバーを招待"
+      "invite_member": "メンバーを招待",
+      "show_more_agents": "さらに {{count}} 件を表示…",
+      "show_fewer_agents": "表示を減らす"
     },
     "autopilots": {
       "all": "すべてのオートパイロット",
@@ -215,5 +219,13 @@
     "go_to_slide": "{{index}} 枚目に移動",
     "previous": "前へ",
     "next": "次へ"
+  },
+  "star_prompt": {
+    "title_other": "{{agent}} がタスクを {{count}} 件完了しました",
+    "body": "Multica がお役に立っていたら、GitHub でスターをお願いします。ほかのチームが Multica を見つけやすくなります。",
+    "star": "Star",
+    "star_label": "GitHub で Multica にスターする",
+    "later": "あとで",
+    "close": "閉じる"
   }
 }

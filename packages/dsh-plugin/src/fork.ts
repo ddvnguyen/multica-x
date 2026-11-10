@@ -124,7 +124,11 @@ export type { Project } from "@multica/core/types/project";
 export type { ProjectResource } from "@multica/core/types/project";
 
 // Search: reuse the fork's command palette for results instead of a second search.
-export { SearchCommand, useSearchStore } from "@multica/views/search";
+// NB: v0.8.2 moved the palette's open/toggle store out of `views/search`
+// into core, so the island reads it from there and only takes the
+// component from the view package.
+export { SearchCommand } from "@multica/views/search";
+export { useSearchStore } from "@multica/core/command-bar";
 
 // Locale resolution. The island has no cookie and must not write one on dsh's
 // origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and

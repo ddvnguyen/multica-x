@@ -295,6 +295,46 @@ func (q *Queries) GetWorkspaceBySlug(ctx context.Context, slug string) (Workspac
 	return i, err
 }
 
+const healIssueCounter = `-- name: HealIssueCounter :one
+WITH target AS (
+    SELECT w.id, w.issue_counter,
+           (SELECT COALESCE(MAX(i.number), 0)::int FROM issue i WHERE i.workspace_id = w.id) AS max_number
+    FROM workspace w
+    WHERE w.id = $1
+)
+UPDATE workspace w SET issue_counter = t.max_number
+FROM target t
+WHERE w.id = t.id AND w.issue_counter < t.max_number
+RETURNING w.issue_counter AS issue_counter,
+          t.issue_counter AS previous_counter,
+          t.max_number AS max_number
+`
+
+type HealIssueCounterRow struct {
+	IssueCounter    int32 `json:"issue_counter"`
+	PreviousCounter int32 `json:"previous_counter"`
+	MaxNumber       int32 `json:"max_number"`
+}
+
+// Operator-shaped repair for a workspace whose issue_counter sits below
+// MAX(issue.number): something persisted a numbered issue row without this
+// counter ever being advanced for it. Deliberately a separate statement from
+// IncrementIssueCounter so a healthy create pays nothing for it, and scoped to
+// one workspace.
+//
+// The WHERE guard is what makes a retry meaningful: no row is updated, and sqlc
+// returns no row, unless the counter really is behind — so a collision caused by
+// anything else is never retried against the same taken number. It returns the
+// value it wrote, the value it replaced and the highest number the workspace
+// holds, so a repair can be logged with its before and after instead of leaving
+// no trace for whoever debugs the next occurrence.
+func (q *Queries) HealIssueCounter(ctx context.Context, id pgtype.UUID) (HealIssueCounterRow, error) {
+	row := q.db.QueryRow(ctx, healIssueCounter, id)
+	var i HealIssueCounterRow
+	err := row.Scan(&i.IssueCounter, &i.PreviousCounter, &i.MaxNumber)
+	return i, err
+}
+
 const incrementIssueCounter = `-- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1
@@ -451,43 +491,6 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
-const removeWorkspaceSetting = `-- name: RemoveWorkspaceSetting :one
-UPDATE workspace SET
-    settings = CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END
-               - $1::text,
-    updated_at = now()
-WHERE id = $2
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
-`
-
-type RemoveWorkspaceSettingParams struct {
-	Key string      `json:"key"`
-	ID  pgtype.UUID `json:"id"`
-}
-
-// The inverse of SetWorkspaceSetting: a cleared key falls back to the code's
-// default instead of pinning today's default value into the row.
-func (q *Queries) RemoveWorkspaceSetting(ctx context.Context, arg RemoveWorkspaceSettingParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, removeWorkspaceSetting, arg.Key, arg.ID)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Slug,
-		&i.Description,
-		&i.Settings,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Context,
-		&i.Repos,
-		&i.IssuePrefix,
-		&i.IssueCounter,
-		&i.AvatarUrl,
-		&i.AttributionFailClosed,
-	)
-	return i, err
-}
-
 const setWorkspacePinned = `-- name: SetWorkspacePinned :one
 UPDATE member
 SET pinned_at = CASE WHEN $1::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
@@ -506,51 +509,6 @@ func (q *Queries) SetWorkspacePinned(ctx context.Context, arg SetWorkspacePinned
 	var pinned_at pgtype.Timestamptz
 	err := row.Scan(&pinned_at)
 	return pinned_at, err
-}
-
-const setWorkspaceSetting = `-- name: SetWorkspaceSetting :one
-UPDATE workspace SET
-    settings = jsonb_set(
-        CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END,
-        ARRAY[$1::text],
-        $2::jsonb,
-        true
-    ),
-    updated_at = now()
-WHERE id = $3
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
-`
-
-type SetWorkspaceSettingParams struct {
-	Key   string      `json:"key"`
-	Value []byte      `json:"value"`
-	ID    pgtype.UUID `json:"id"`
-}
-
-// One key of settings, written in SQL rather than by round-tripping the whole
-// object through the handler: two admins editing different keys at the same
-// time must not overwrite each other. The jsonb_typeof guard matches the
-// migration-551 precedent — an old client could have stored a non-object, and
-// jsonb_set on an array is an error rather than a no-op.
-func (q *Queries) SetWorkspaceSetting(ctx context.Context, arg SetWorkspaceSettingParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, setWorkspaceSetting, arg.Key, arg.Value, arg.ID)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Slug,
-		&i.Description,
-		&i.Settings,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Context,
-		&i.Repos,
-		&i.IssuePrefix,
-		&i.IssueCounter,
-		&i.AvatarUrl,
-		&i.AttributionFailClosed,
-	)
-	return i, err
 }
 
 const updateWorkspace = `-- name: UpdateWorkspace :one

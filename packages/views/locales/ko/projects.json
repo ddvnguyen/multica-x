@@ -19,7 +19,8 @@
     "create_first": "첫 프로젝트 만들기",
     "search_placeholder": "프로젝트 검색...",
     "selected_other": "{{count}}개 선택됨",
-    "clear_selection": "선택 해제"
+    "clear_selection": "선택 해제",
+    "rename": "이름 변경"
   },
   "table": {
     "name": "이름",
@@ -85,7 +86,8 @@
     "no_issues_yet": "아직 태스크가 없습니다",
     "toast_link_copied": "링크를 복사했습니다",
     "toast_project_deleted": "프로젝트를 삭제했습니다",
-    "toast_move_issue_failed": "태스크를 이동하지 못했습니다"
+    "toast_move_issue_failed": "태스크를 이동하지 못했습니다",
+    "rename_action": "프로젝트 이름 변경"
   },
   "resources": {
     "section_header": "리소스",
@@ -218,5 +220,26 @@
       "issue_pricing": "요금제 비교표",
       "issue_blog": "블로그 목록 페이지네이션"
     }
+  },
+  "access": {
+    "label": "접근 권한",
+    "title": "{{title}} 접근 권한",
+    "description": "프로젝트와 해당 태스크, 댓글, 첨부 파일을 볼 수 있는 사람을 설정합니다.",
+    "workspace": "전체 워크스페이스",
+    "private": "프로젝트 멤버만",
+    "members_count": "프로젝트 멤버 · {{count}}",
+    "add": "워크스페이스 멤버 추가",
+    "search": "이름 또는 이메일로 검색...",
+    "no_members": "일치하는 멤버가 없습니다",
+    "no_selected": "프로젝트 멤버가 없습니다",
+    "admin_notice": "워크스페이스 owner와 admin은 항상 접근할 수 있습니다.",
+    "you": "나",
+    "remove": "{{name}} 제거",
+    "failed": "접근 권한을 저장할 수 없습니다.",
+    "load_failed": "멤버를 불러올 수 없습니다.",
+    "publish_title": "전체 워크스페이스에 공개할까요?",
+    "publish_description": "모든 워크스페이스 멤버가 프로젝트와 해당 태스크, 댓글, 첨부 파일을 볼 수 있게 됩니다.",
+    "done": "완료",
+    "retry": "다시 시도"
   }
 }

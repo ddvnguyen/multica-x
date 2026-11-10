@@ -140,7 +140,9 @@
     "parent": "{{identifier}} の配下",
     "pick_crumb": "選択",
     "pick_another": "別のエージェントやスクワッドに依頼...",
-    "detected": "指示として認識"
+    "detected": "指示として認識",
+    "row": "エージェントに依頼：「{{prompt}}」",
+    "hint": "クイック作成"
   },
   "best": {
     "assign": "{{subject}} を {{name}} に割り当て",

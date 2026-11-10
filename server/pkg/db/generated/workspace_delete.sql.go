@@ -313,14 +313,8 @@ deleted_task_tokens AS (
 deleted_orphan_task_supplements AS (
     DELETE FROM task_supplement WHERE workspace_id = $1
 ),
-deleted_issue_decision_responses AS (
-    DELETE FROM issue_decision_response WHERE workspace_id = $1
-),
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
-),
-deleted_native_question_answers AS (
-    DELETE FROM native_question_answer WHERE workspace_id = $1
 ),
 deleted_hourly_dirty AS (
     DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1
@@ -345,12 +339,6 @@ deleted_draft_restores AS (
 ),
 deleted_agent_builder_drafts AS (
     DELETE FROM agent_builder_draft WHERE workspace_id = $1
-),
-deleted_agent_plan_comments AS (
-    DELETE FROM agent_plan_comment WHERE workspace_id = $1
-),
-deleted_agent_plan_section_versions AS (
-    DELETE FROM agent_plan_section_version WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -495,6 +483,30 @@ deleted_channel_binding_tokens AS (
 deleted_wecom_install_sessions AS (
     DELETE FROM wecom_install_session WHERE workspace_id = $1
 ),
+deleted_workspace_composio_connections AS (
+    DELETE FROM workspace_composio_connection WHERE workspace_id = $1
+),
+deleted_agent_apps AS (
+    DELETE FROM agent_app WHERE workspace_id = $1
+),
+deleted_app_action_rules AS (
+    DELETE FROM app_action_rule WHERE workspace_id = $1
+),
+deleted_app_action_requests AS (
+    DELETE FROM app_action_request WHERE workspace_id = $1
+),
+deleted_app_tool_calls AS (
+    DELETE FROM app_tool_call WHERE workspace_id = $1
+),
+deleted_issue_environments AS (
+    DELETE FROM issue_environment WHERE workspace_id = $1
+),
+deleted_workspace_app_settings AS (
+    DELETE FROM workspace_app_setting WHERE workspace_id = $1
+),
+deleted_app_tool_class_overrides AS (
+    DELETE FROM app_tool_class_override WHERE workspace_id = $1
+),
 deleted_lark_chat_bindings AS (
     DELETE FROM lark_chat_session_binding
     WHERE installation_id IN (SELECT id FROM ws_lark_installations)
@@ -538,8 +550,6 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
-// M-275: plan review threads and section history carry workspace_id and no FK
-// to agent_plan (additive-only house style), so no cascade reaches them.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
@@ -625,6 +635,9 @@ deleted_runtimes AS (
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
+),
+deleted_project_members AS (
+    DELETE FROM project_member WHERE project_member.workspace_id = $1
 )
 DELETE FROM project WHERE project.workspace_id = $1
 `

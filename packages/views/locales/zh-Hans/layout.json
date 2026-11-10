@@ -37,7 +37,8 @@
     "changelog": "更新日志",
     "discord": "Discord",
     "feedback": "反馈",
-    "server_version": "服务器版本 {{version}}"
+    "server_version": "服务器版本 {{version}}",
+    "star_on_github": "在 GitHub 上 Star"
   },
   "whats_new": {
     "trigger": "新功能",
@@ -149,7 +150,8 @@
       "view_remove": "从侧栏移除",
       "view_rename": "重命名",
       "view_duplicate": "创建副本",
-      "view_delete": "删除视图"
+      "view_delete": "删除视图",
+      "view_edit": "编辑视图"
     },
     "team": {
       "new_agent": "新建智能体",
@@ -163,7 +165,9 @@
       "members_other": "{{count}} 位成员",
       "resources": "资源",
       "runtimes_online_other": "{{count}} 台在线",
-      "invite_member": "邀请成员"
+      "invite_member": "邀请成员",
+      "show_more_agents": "再显示 {{count}} 项...",
+      "show_fewer_agents": "收起"
     },
     "autopilots": {
       "all": "全部自动化",
@@ -215,5 +219,13 @@
     "go_to_slide": "转到第 {{index}} 张",
     "previous": "上一张",
     "next": "下一张"
+  },
+  "star_prompt": {
+    "title_other": "{{agent}} 已经完成了 {{count}} 个任务",
+    "body": "如果 Multica 帮上了忙，在 GitHub 上点个 Star，能让更多团队发现它。",
+    "star": "Star",
+    "star_label": "在 GitHub 上给 Multica 点 Star",
+    "later": "以后再说",
+    "close": "关闭"
   }
 }

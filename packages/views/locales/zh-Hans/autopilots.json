@@ -159,7 +159,9 @@
     "skipped_group": {
       "label": "已跳过",
       "summary": "{{count}} 条跳过的运行"
-    }
+    },
+    "stop": "停止运行",
+    "stop_failed": "无法停止运行。"
   },
   "webhook_payload": {
     "label": "Webhook 事件：",

@@ -159,7 +159,9 @@
     "skipped_group": {
       "label": "건너뜀",
       "summary": "건너뛴 실행 {{count}}개"
-    }
+    },
+    "stop": "실행 중지",
+    "stop_failed": "실행을 중지하지 못했습니다."
   },
   "webhook_payload": {
     "label": "Webhook 이벤트:",

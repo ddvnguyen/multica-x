@@ -1,0 +1,61 @@
+{
+  "detail": {
+    "answered": "Answered {{age}}",
+    "answered_hint": "Recorded answers are read-only. A new request arrives as its own row.",
+    "answers_empty": "No answer text was stored.",
+    "answers_title": "Answer",
+    "by": "{{actor}}",
+    "error_hint": "It is still waiting — nothing was answered.",
+    "error_hint_answered": "Could not read this request. Try again.",
+    "error_title": "This request could not be loaded",
+    "issue_link": "Open issue",
+    "loading": "Loading the request…",
+    "native_no_form_hint": "This ask reached the transcript as text only, so it is answered on the issue page.",
+    "native_no_form_title": "No structured form",
+    "no_answer": "No answer",
+    "plan_comment_resolved": "Resolved",
+    "plan_comments": "Commented passages",
+    "rationale_title": "Rationale",
+    "requested": "Asked {{age}}",
+    "retry": "Retry",
+    "review_comments": "Comments",
+    "review_no_comments": "No comments",
+    "review_title": "Verdict",
+    "status_hint": "This handoff is answered on the issue page for now; this list reads it from the issue itself.",
+    "status_title": "Waiting on a workflow decision",
+    "unknown_actor": "A member",
+    "unknown_hint": "It is still waiting. Open the issue to read its context.",
+    "unknown_title": "This build cannot answer this request"
+  },
+  "kind": {
+    "native": "Agent question",
+    "plan": "Plan",
+    "question": "Question",
+    "status": "Workflow handoff"
+  },
+  "list": {
+    "aria": "Decisions",
+    "empty_answered_hint": "Every answer recorded from this page is kept here.",
+    "empty_answered_title": "No answers yet",
+    "empty_pending_hint": "Questions, plans and handoffs appear here as soon as an agent asks.",
+    "empty_pending_title": "Nothing waiting",
+    "error_hint": "The queue is derived from issue and task state, so a failed read is not an empty one.",
+    "error_title": "Decisions could not be loaded",
+    "load_more": "Load more",
+    "loading": "Loading decisions…",
+    "none_selected_hint": "Pick one on the left to read it and answer it here.",
+    "none_selected_title": "Select a request",
+    "retry": "Retry",
+    "unknown_kind": "Unrecognised source"
+  },
+  "page": {
+    "answered_tab": "Answered",
+    "pending_tab": "Pending",
+    "title": "Decisions"
+  },
+  "row": {
+    "by_agent": "{{agent}}",
+    "unknown_agent": "An agent",
+    "waiting": "waiting {{age}}"
+  }
+}

@@ -136,6 +136,8 @@
     "type_to_find_people": "Type to find people and agents"
   },
   "delegate": {
+    "row": "Hand to agent: “{{prompt}}”",
+    "hint": "Quick create",
     "heading": "Hand to agent",
     "create_and_assign": "New issue and assign to {{name}}",
     "squad": "Squad",
@@ -162,12 +164,12 @@
     "navigate": "Navigate",
     "select": "Select",
     "open_in_new_tab": "Open in new tab",
-    "delegate": "Create and hand to {{name}}",
-    "search_instead": "Search as keywords",
     "back": "Back",
     "prefix_commands": "Commands",
     "prefix_issues": "Issues",
-    "prefix_people": "People & agents"
+    "prefix_people": "People & agents",
+    "delegate": "Create and hand to {{name}}",
+    "search_instead": "Search as keywords"
   },
   "trigger": {
     "label": "Search..."

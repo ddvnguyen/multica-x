@@ -37,7 +37,8 @@
     "changelog": "변경 로그",
     "discord": "Discord",
     "feedback": "피드백",
-    "server_version": "서버 버전 {{version}}"
+    "server_version": "서버 버전 {{version}}",
+    "star_on_github": "GitHub에서 Star 하기"
   },
   "whats_new": {
     "trigger": "새 기능",
@@ -149,7 +150,8 @@
       "view_remove": "사이드바에서 제거",
       "view_rename": "이름 변경",
       "view_duplicate": "복제",
-      "view_delete": "뷰 삭제"
+      "view_delete": "뷰 삭제",
+      "view_edit": "뷰 편집"
     },
     "team": {
       "new_agent": "새 에이전트",
@@ -163,7 +165,9 @@
       "members_other": "멤버 {{count}}명",
       "resources": "리소스",
       "runtimes_online_other": "{{count}}대 온라인",
-      "invite_member": "멤버 초대"
+      "invite_member": "멤버 초대",
+      "show_more_agents": "{{count}}개 더 보기…",
+      "show_fewer_agents": "접기"
     },
     "autopilots": {
       "all": "전체 오토파일럿",
@@ -215,5 +219,13 @@
     "go_to_slide": "{{index}}번째 슬라이드로 이동",
     "previous": "이전",
     "next": "다음"
+  },
+  "star_prompt": {
+    "title_other": "{{agent}}이(가) 태스크 {{count}}개를 완료했습니다",
+    "body": "Multica가 도움이 되었다면 GitHub에서 Star를 눌러 주세요. 다른 팀이 Multica를 찾는 데 도움이 됩니다.",
+    "star": "Star",
+    "star_label": "GitHub에서 Multica에 Star 하기",
+    "later": "나중에",
+    "close": "닫기"
   }
 }
