@@ -2189,6 +2189,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/wakeups/{wakeupID}", h.DeleteIssueWakeup)
 					r.Post("/wakeups/{wakeupID}/trigger", h.TriggerIssueWakeup)
 					r.Post("/wakeups/{wakeupID}/checkin", h.CheckInIssueWakeup)
+					r.Post("/checkin", h.CheckInIssue)
 					r.Get("/wakeups/{wakeupID}/runs", h.ListIssueWakeupRuns)
 					r.Get("/system-wakeups", h.ListIssueSystemWakeups)
 					r.Put("/system-wakeups/{rule}", h.UpdateIssueSystemWakeup)

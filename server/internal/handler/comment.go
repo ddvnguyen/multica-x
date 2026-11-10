@@ -1828,6 +1828,54 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
 	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
 
+	// Narrow repeat-root guard (M-305 S2): an agent with no triggering comment
+	// and no --parent that tries to open another top-level thread while its
+	// previous root is still the newest comment (and nothing else changed)
+	// must instead reply under that root or use `multica issue checkin`.
+	if authorType == "agent" && !parentID.Valid {
+		hasTrigger := false
+		if task, ok := h.taskFromRequestHeader(r); ok && task.IssueID.Valid && uuidToString(task.IssueID) == uuidToString(issue.ID) && task.TriggerCommentID.Valid {
+			hasTrigger = true
+		}
+		if !hasTrigger {
+			roots, _ := h.Queries.ListRootCommentsForIssue(r.Context(), db.ListRootCommentsForIssueParams{
+				IssueID:     issue.ID,
+				WorkspaceID: issue.WorkspaceID,
+				RowLimit:    1000,
+			})
+			var latestAgentRoot *db.ListRootCommentsForIssueRow
+			for i := range roots {
+				rroot := &roots[i]
+				if rroot.AuthorType == "agent" && uuidToString(rroot.AuthorID) == authorID {
+					if latestAgentRoot == nil || rroot.CreatedAt.Time.After(latestAgentRoot.CreatedAt.Time) {
+						cp := rroot
+						latestAgentRoot = cp
+					}
+				}
+			}
+			if latestAgentRoot != nil && latestAgentRoot.SourceTaskID.Valid {
+				// Do not guard a root that this same run already authored.
+				sameRun := false
+				if task, ok := h.taskFromRequestHeader(r); ok && uuidToString(latestAgentRoot.SourceTaskID) == uuidToString(task.ID) {
+					sameRun = true
+				}
+				if !sameRun {
+					recent, _ := h.Queries.ListCommentsForIssue(r.Context(), db.ListCommentsForIssueParams{
+						IssueID:     issue.ID,
+						WorkspaceID: issue.WorkspaceID,
+						Limit:       1,
+					})
+					if len(recent) > 0 && uuidToString(recent[0].ID) == uuidToString(latestAgentRoot.ID) {
+						if !issue.UpdatedAt.Time.After(latestAgentRoot.CreatedAt.Time) {
+							writeError(w, http.StatusConflict, "reply under "+uuidToString(latestAgentRoot.ID)+" or use `multica issue checkin`")
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// parent_id stores the exact comment being replied to. Thread-level behavior
 	// (for example auto-unresolving a resolved thread) resolves the root
 	// separately so storing a reply-to-reply does not destroy the direct-parent

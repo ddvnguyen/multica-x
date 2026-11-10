@@ -192,11 +192,15 @@ func (s *IssueWakeupService) CheckIn(ctx context.Context, issueID, id, taskID pg
 // which case its completion posts no fallback comment.
 func HasWakeupCheckin(task db.AgentTaskQueue) bool {
 	var ctx struct {
-		WakeupID string          `json:"wakeup_id"`
-		Checkin  json.RawMessage `json:"wakeup_checkin"`
+		WakeupID    string          `json:"wakeup_id"`
+		Checkin     json.RawMessage `json:"wakeup_checkin"`
+		TaskCheckin json.RawMessage `json:"checkin"`
 	}
 	if json.Unmarshal(task.Context, &ctx) != nil {
 		return false
 	}
-	return ctx.WakeupID != "" && len(ctx.Checkin) > 0 && string(ctx.Checkin) != "null"
+	if ctx.WakeupID != "" && len(ctx.Checkin) > 0 && string(ctx.Checkin) != "null" {
+		return true
+	}
+	return len(ctx.TaskCheckin) > 0 && string(ctx.TaskCheckin) != "null"
 }
