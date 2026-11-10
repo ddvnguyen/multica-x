@@ -2306,7 +2306,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 				// ready-to-run commands with real ids live in the per-turn message.
 				// Pin the command NAME and the flag mnemonics, not full templates.
 				"post it with `multica issue comment add` using",
-				"mandatory",
+				"only when there is a real update",
 			}
 			for _, want := range mustContain {
 				if !strings.Contains(s, want) {
@@ -2318,7 +2318,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			// output is not user-visible. This is the second line of defense
 			// in case the agent skips past the workflow steps.
 			for _, want := range []string{
-				"Final results MUST be delivered via `multica issue comment add`",
+				"Final results are delivered via `multica issue comment add`",
 				"does NOT see your terminal output",
 			} {
 				if !strings.Contains(s, want) {
@@ -5447,7 +5447,7 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// mention-after-work bullet is gone with the block (the discipline
 		// itself stays in `## Mentions`, pinned by the Mentions subtest).
 		for _, want := range []string{
-			"**Post your final results as a comment — this step is mandatory**",
+			"**Post your final results as a comment only when there is a real update**",
 			"whose only possible reply is another courtesy",
 		} {
 			if !strings.Contains(s, want) {
@@ -5514,11 +5514,6 @@ func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("squad leader comment-triggered CLAUDE.md missing %q", want)
 		}
-	}
-	// The unconditional ordinary-agent imperative must not coexist with the
-	// carve-out variant.
-	if strings.Contains(s, "**Post your final results as a comment — this step is mandatory**") {
-		t.Errorf("squad leader CLAUDE.md still carries the unconditional delivery step")
 	}
 	// And neither site may restate the rule's mechanics — that is what drifted
 	// when four copies of it existed.
