@@ -1853,16 +1853,23 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			if latestAgentRoot != nil {
-				recent, _ := h.Queries.ListCommentsForIssue(r.Context(), db.ListCommentsForIssueParams{
-					IssueID:     issue.ID,
-					WorkspaceID: issue.WorkspaceID,
-					Limit:       1,
-				})
-				if len(recent) > 0 && uuidToString(recent[0].ID) == uuidToString(latestAgentRoot.ID) {
-					if !issue.UpdatedAt.Time.After(latestAgentRoot.CreatedAt.Time) {
-						writeError(w, http.StatusConflict, "reply under "+uuidToString(latestAgentRoot.ID)+" or use `multica issue checkin`")
-						return
+			if latestAgentRoot != nil && latestAgentRoot.SourceTaskID.Valid {
+				// Do not guard a root that this same run already authored.
+				sameRun := false
+				if task, ok := h.taskFromRequestHeader(r); ok && uuidToString(latestAgentRoot.SourceTaskID) == uuidToString(task.ID) {
+					sameRun = true
+				}
+				if !sameRun {
+					recent, _ := h.Queries.ListCommentsForIssue(r.Context(), db.ListCommentsForIssueParams{
+						IssueID:     issue.ID,
+						WorkspaceID: issue.WorkspaceID,
+						Limit:       1,
+					})
+					if len(recent) > 0 && uuidToString(recent[0].ID) == uuidToString(latestAgentRoot.ID) {
+						if !issue.UpdatedAt.Time.After(latestAgentRoot.CreatedAt.Time) {
+							writeError(w, http.StatusConflict, "reply under "+uuidToString(latestAgentRoot.ID)+" or use `multica issue checkin`")
+							return
+						}
 					}
 				}
 			}
