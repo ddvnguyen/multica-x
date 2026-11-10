@@ -13,11 +13,11 @@ import (
 // The sync (#52 "Stack: upstream v0.7.1 + freebuff runtime + accounts") moved
 // migrations the fork had already shipped to lane databases under other
 // numbers onto new version rows — SQL the same now ships as
-// 618_agent_question_card … 624_task_supplement_mode where those databases
+// 638_agent_question_card … 644_task_supplement_mode where those databases
 // recorded running it as their old numbers. Such a database has the objects
 // but carries no schema_migrations row for the new versions, so `migrate up`
 // re-runs non-idempotent CREATEs and aborts the whole run (M-166/M-167:
-// 618_agent_question_card dies with `relation "agent_question_card" already
+// 638_agent_question_card dies with `relation "agent_question_card" already
 // exists`).
 //
 // Each condition here returns apply=false with a reason — the runner records
@@ -29,7 +29,7 @@ import (
 // pinned connection the SQL itself would use, so unqualified names resolve
 // exactly where the migration would have created them.
 //
-// 621_agent_task_queue_blocked is a DROP + ADD CONSTRAINT pair that passes
+// 641_agent_task_queue_blocked is a DROP + ADD CONSTRAINT pair that passes
 // either way on an already-applied database, so it is deliberately not gated.
 
 // renamerObject is one object a renumbered migration created, checked by kind
