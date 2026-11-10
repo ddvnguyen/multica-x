@@ -22,6 +22,7 @@ export interface AskPlanQuestionCard {
   issue_id: string;
   task_id: string;
   agent_id: string;
+  trigger_comment_id?: string | null;
   /** `open` on every card this read returns; the query filters on it. */
   status: string;
   context?: string | null;

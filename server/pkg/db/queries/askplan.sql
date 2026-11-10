@@ -8,10 +8,10 @@
 -- name: CreateAgentQuestionCard :one
 INSERT INTO agent_question_card (
     id, workspace_id, issue_id, task_id, agent_id,
-    status, context, questions
+    status, context, questions, trigger_comment_id
 ) VALUES (
     @id, @workspace_id, @issue_id, @task_id, @agent_id,
-    'open', sqlc.narg('context'), @questions
+    'open', sqlc.narg('context'), @questions, sqlc.narg('trigger_comment_id')
 )
 RETURNING *;
 

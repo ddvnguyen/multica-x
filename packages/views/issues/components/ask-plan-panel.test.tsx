@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@multica/core/api";
 import type { IssueAskPlan } from "@multica/core/issues/ask-plan";
 import { renderWithI18n } from "../../test/i18n";
-import { AskPlanPanel } from "./ask-plan-panel";
+import { AskPlanPanel, ThreadAskCards } from "./ask-plan-panel";
 
 vi.mock("@multica/core/api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -12,6 +12,7 @@ vi.mock("@multica/core/api", async (importOriginal) => {
     ...actual,
     api: {
       getIssueAskPlan: vi.fn(),
+      listTimeline: vi.fn().mockResolvedValue([]),
       answerQuestionCard: vi.fn(),
       reviewPlan: vi.fn(),
       createTaskSupplement: vi.fn(),
@@ -251,5 +252,52 @@ describe("AskPlanPanel", () => {
       screen.getByText("The agent is preparing this plan — there is nothing to review yet."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+  });
+});
+
+describe("thread placement (M-285)", () => {
+  const ANCHORED: IssueAskPlan = {
+    question_cards: [{ ...CARD_STATE.question_cards[0]!, trigger_comment_id: "comment-1" }],
+    plan: null,
+  };
+
+  function renderThread(commentId: string) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return renderWithI18n(
+      <QueryClientProvider client={client}>
+        <AskPlanPanel issueId="issue-3" />
+        <ThreadAskCards issueId="issue-3" commentId={commentId} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("renders a card with a trigger comment in that comment's thread, not in the panel", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(ANCHORED);
+    vi.mocked(api.listTimeline).mockResolvedValue([{ id: "comment-1" }] as never);
+
+    const view = renderThread("comment-1");
+    await screen.findByTestId("thread-ask-cards");
+    await waitFor(() => expect(view.queryByTestId("ask-plan-panel")).toBeNull());
+    expect(screen.getAllByText("Which lane ships first?")).toHaveLength(1);
+  });
+
+  it("keeps the card in the panel when its trigger comment is not on the timeline", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(ANCHORED);
+    vi.mocked(api.listTimeline).mockResolvedValue([]);
+
+    const view = renderThread("comment-9");
+    await screen.findByTestId("ask-plan-panel");
+    expect(view.queryByTestId("thread-ask-cards")).toBeNull();
+  });
+
+  it("keeps a card with no trigger comment top-level", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(CARD_STATE);
+    vi.mocked(api.listTimeline).mockResolvedValue([{ id: "comment-1" }] as never);
+
+    const view = renderThread("comment-1");
+    await screen.findByTestId("ask-plan-panel");
+    expect(view.queryByTestId("thread-ask-cards")).toBeNull();
   });
 });

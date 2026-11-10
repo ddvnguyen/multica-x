@@ -19,7 +19,7 @@ SET status = 'answered',
     answered_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open'
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id
 `
 
 type AnswerAgentQuestionCardParams struct {
@@ -49,6 +49,7 @@ func (q *Queries) AnswerAgentQuestionCard(ctx context.Context, arg AnswerAgentQu
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
 	)
 	return i, err
 }
@@ -323,22 +324,23 @@ const createAgentQuestionCard = `-- name: CreateAgentQuestionCard :one
 
 INSERT INTO agent_question_card (
     id, workspace_id, issue_id, task_id, agent_id,
-    status, context, questions
+    status, context, questions, trigger_comment_id
 ) VALUES (
     $1, $2, $3, $4, $5,
-    'open', $6, $7
+    'open', $6, $7, $8
 )
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id
 `
 
 type CreateAgentQuestionCardParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	TaskID      pgtype.UUID `json:"task_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	Context     pgtype.Text `json:"context"`
-	Questions   []byte      `json:"questions"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	TaskID           pgtype.UUID `json:"task_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	Context          pgtype.Text `json:"context"`
+	Questions        []byte      `json:"questions"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
 }
 
 // S1-A1 (M-118) ask/plan queries: question cards (585) and revisioned plans
@@ -356,6 +358,7 @@ func (q *Queries) CreateAgentQuestionCard(ctx context.Context, arg CreateAgentQu
 		arg.AgentID,
 		arg.Context,
 		arg.Questions,
+		arg.TriggerCommentID,
 	)
 	var i AgentQuestionCard
 	err := row.Scan(
@@ -373,6 +376,7 @@ func (q *Queries) CreateAgentQuestionCard(ctx context.Context, arg CreateAgentQu
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
 	)
 	return i, err
 }
@@ -480,7 +484,7 @@ func (q *Queries) GetAgentPlanForUpdate(ctx context.Context, id pgtype.UUID) (Ag
 }
 
 const getAgentQuestionCard = `-- name: GetAgentQuestionCard :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card WHERE id = $1
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id FROM agent_question_card WHERE id = $1
 `
 
 func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
@@ -501,12 +505,13 @@ func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (Age
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
 	)
 	return i, err
 }
 
 const getAgentQuestionCardForUpdate = `-- name: GetAgentQuestionCardForUpdate :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card WHERE id = $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id FROM agent_question_card WHERE id = $1 FOR UPDATE
 `
 
 // M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
@@ -532,6 +537,7 @@ func (q *Queries) GetAgentQuestionCardForUpdate(ctx context.Context, id pgtype.U
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
 	)
 	return i, err
 }
@@ -651,7 +657,7 @@ func (q *Queries) ListAgentPlanSectionVersions(ctx context.Context, arg ListAgen
 }
 
 const listOpenQuestionCardsByIssue = `-- name: ListOpenQuestionCardsByIssue :many
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id FROM agent_question_card
 WHERE issue_id = $1 AND status = 'open'
 ORDER BY created_at DESC
 `
@@ -680,6 +686,7 @@ func (q *Queries) ListOpenQuestionCardsByIssue(ctx context.Context, issueID pgty
 			&i.WithdrawnAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TriggerCommentID,
 		); err != nil {
 			return nil, err
 		}
