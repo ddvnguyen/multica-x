@@ -313,8 +313,14 @@ deleted_task_tokens AS (
 deleted_orphan_task_supplements AS (
     DELETE FROM task_supplement WHERE workspace_id = $1
 ),
+deleted_issue_decision_responses AS (
+    DELETE FROM issue_decision_response WHERE workspace_id = $1
+),
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
+),
+deleted_native_question_answers AS (
+    DELETE FROM native_question_answer WHERE workspace_id = $1
 ),
 deleted_hourly_dirty AS (
     DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1
@@ -339,6 +345,12 @@ deleted_draft_restores AS (
 ),
 deleted_agent_builder_drafts AS (
     DELETE FROM agent_builder_draft WHERE workspace_id = $1
+),
+deleted_agent_plan_comments AS (
+    DELETE FROM agent_plan_comment WHERE workspace_id = $1
+),
+deleted_agent_plan_section_versions AS (
+    DELETE FROM agent_plan_section_version WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -550,6 +562,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// M-275: plan review threads and section history carry workspace_id and no FK
+// to agent_plan (additive-only house style), so no cascade reaches them.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
