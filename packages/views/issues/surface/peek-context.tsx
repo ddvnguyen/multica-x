@@ -112,6 +112,14 @@ export function resolveIssueClick(
   supportsTabs = false,
 ): IssueOpenMode | null {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return null;
+  // The tabbed island (MMX) offers New tab beside Side preview: the full-page
+  // experience is a new header tab, so Shift toggles between the two and a
+  // legacy in-place page plain-click opens a tab (M-313).
+  if (supportsPeek && supportsTabs) {
+    if (!event.shiftKey) return openMode === "page" ? "tab" : openMode;
+    if (openMode === "tab") return "peek";
+    return "tab";
+  }
   if (!event.shiftKey) return openMode;
   if (openMode === "peek") return "page";
   if (openMode === "tab") return "page";

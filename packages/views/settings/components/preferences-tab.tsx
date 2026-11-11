@@ -266,12 +266,22 @@ function IssueOpeningRow() {
           onChange={setValue}
           buttonClassName="px-3 py-1 text-label"
           options={[
-            ["page", t(($) => $.issue.opening.page)],
-            ...(capability.supportsTabs
-              ? [["tab", t(($) => $.issue.opening.tab)] as const]
-              : capability.supportsPeek
-                ? [["peek", t(($) => $.issue.opening.peek)] as const]
-                : []),
+            // The tabbed island (MMX) has no in-place full page: its
+            // full-page experience is a new header tab, beside the side
+            // preview floating inside the dsh panel (M-313).
+            ...(!(capability.supportsTabs && capability.supportsPeek)
+              ? [["page", t(($) => $.issue.opening.page)] as const]
+              : []),
+            ...(capability.supportsTabs && capability.supportsPeek
+              ? [
+                  ["tab", t(($) => $.issue.opening.tab)] as const,
+                  ["peek", t(($) => $.issue.opening.peek)] as const,
+                ]
+              : capability.supportsTabs
+                ? [["tab", t(($) => $.issue.opening.tab)] as const]
+                : capability.supportsPeek
+                  ? [["peek", t(($) => $.issue.opening.peek)] as const]
+                  : []),
           ]}
         />
       </div>

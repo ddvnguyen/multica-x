@@ -53,6 +53,15 @@ describe("resolveIssueClick", () => {
     expect(resolveIssueClick({ ...plain, shiftKey: true }, "page", false, true)).toBe("tab");
     expect(resolveIssueClick({ ...plain, shiftKey: true }, "tab", false, true)).toBe("page");
   });
+  it("toggles between new tab and side preview when the island shows both (M-313)", () => {
+    expect(resolveIssueClick(plain, "tab", true, true)).toBe("tab");
+    expect(resolveIssueClick(plain, "peek", true, true)).toBe("peek");
+    // A legacy in-place full page plain-click opens a new tab.
+    expect(resolveIssueClick(plain, "page", true, true)).toBe("tab");
+    expect(resolveIssueClick({ ...plain, shiftKey: true }, "tab", true, true)).toBe("peek");
+    expect(resolveIssueClick({ ...plain, shiftKey: true }, "peek", true, true)).toBe("tab");
+    expect(resolveIssueClick({ ...plain, shiftKey: true }, "page", true, true)).toBe("tab");
+  });
   it.each([{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { button: 1 }, { button: 2 }])(
     "leaves modified clicks native: %j", (modifier) => {
       for (const openMode of ["page", "peek"] as const) {

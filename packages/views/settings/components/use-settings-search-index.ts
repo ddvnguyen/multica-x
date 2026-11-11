@@ -156,7 +156,10 @@ export function useSettingsSearchIndex(
         tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.title),
-        description: `${t(($) => $.issue.opening.page)} · ${t(($) => issueOpeningCapability.supportsTabs ? $.issue.opening.tab : $.issue.opening.peek)}`,
+        description:
+          issueOpeningCapability.supportsTabs && issueOpeningCapability.supportsPeek
+            ? `${t(($) => $.issue.opening.tab)} · ${t(($) => $.issue.opening.peek)}`
+            : `${t(($) => $.issue.opening.page)} · ${t(($) => issueOpeningCapability.supportsTabs ? $.issue.opening.tab : $.issue.opening.peek)}`,
       },
       {
         tab: "preferences",
@@ -303,5 +306,5 @@ export function useSettingsSearchIndex(
       ...pageEntries,
       ...rows.filter((row) => row.anchor || row.integration),
     ].filter((entry) => visible.has(entry.tab));
-  }, [pages, t, issueOpeningCapability.supportsTabs]);
+  }, [pages, t, issueOpeningCapability.supportsTabs, issueOpeningCapability.supportsPeek]);
 }

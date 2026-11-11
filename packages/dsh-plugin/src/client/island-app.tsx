@@ -547,7 +547,7 @@ export function IslandPages({
               />
             }
           />
-          <IssueOpeningCapabilityProvider supportsTabs supportsPeek={false}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
             <ScrollRestorationProvider adapter={restoration}>
             <ErrorBoundary
               resetKeys={[

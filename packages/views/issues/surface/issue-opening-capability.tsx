@@ -40,9 +40,18 @@ export function IssueOpeningCapabilityProvider({
 
   useEffect(() => {
     if (!supportsTabs) return;
+    // The tabbed island (MMX) has no in-place full page: the full-page
+    // experience is a new header tab, and the side preview is the fork's
+    // floating peek inside the dsh panel. A stored "Full page" therefore
+    // becomes "New tab"; only the peek choice survives beside it.
+    if (supportsPeek) {
+      if (mode === "page") setOpenMode("tab");
+      else if (!hasUserChoice && mode !== "tab") setDefaultOpenMode("tab");
+      return;
+    }
     if (mode === "peek") setOpenMode("tab");
     else if (!hasUserChoice) setDefaultOpenMode("tab");
-  }, [supportsTabs, mode, hasUserChoice, setOpenMode, setDefaultOpenMode]);
+  }, [supportsTabs, supportsPeek, mode, hasUserChoice, setOpenMode, setDefaultOpenMode]);
 
   const openIssueInTab = useCallback((issueId: string, activate = true) => {
     if (!supportsTabs || !navigation.openInNewTab) return false;
@@ -54,7 +63,14 @@ export function IssueOpeningCapabilityProvider({
     supportsTabs,
     supportsPeek,
     openMode: supportsTabs
-      ? (!hasUserChoice || mode === "peek" ? "tab" : mode)
+      ? (!hasUserChoice || mode === "page"
+        // No stored choice yet, or a legacy in-place full page: the island's
+        // full-page experience is a new header tab (M-313).
+        ? "tab"
+        // A peek-only host (no side panel) still migrates the peek to a tab.
+        : mode === "peek" && !supportsPeek
+          ? "tab"
+          : mode)
       : mode === "tab"
         ? "page"
         : mode,

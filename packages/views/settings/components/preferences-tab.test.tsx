@@ -432,4 +432,28 @@ describe("PreferencesTab — Scope", () => {
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
     expect(preview).toHaveAttribute("aria-pressed", "true");
   });
+
+  it("offers New tab beside Side preview in the tabbed island, without an in-place page (M-313)", async () => {
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    const user = userEvent.setup();
+    function IslandWrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+            {children}
+          </IssueOpeningCapabilityProvider>
+        </I18nProvider>
+      );
+    }
+    render(<PreferencesTab />, { wrapper: IslandWrapper });
+    const group = screen.getByRole("group", { name: "Clicking a card or row opens" });
+    const newTab = within(group).getByRole("button", { name: "New tab" });
+    const preview = within(group).getByRole("button", { name: "Side preview" });
+    expect(within(group).queryByRole("button", { name: "Full page" })).toBeNull();
+    expect(newTab).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(preview);
+    expect(useIssueOpeningStore.getState().openMode).toBe("peek");
+    expect(preview).toHaveAttribute("aria-pressed", "true");
+  });
 });
