@@ -664,18 +664,20 @@ func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
 	}
 }
 
-// The Output section for issue tasks must forbid mid-run progress
-// comments and require the single final result comment. Guards the
-// MUL-3605 regression where a review agent surfaced its progress
-// narration as the result instead of posting a conclusion. (The
-// pre-existing "Final results MUST be delivered … invisible without it"
-// and "state the outcome, not the process" lines already carry the
-// mandatory-comment and no-process-dump halves.) Chat / quick-create /
-// autopilot kinds keep their own delivery channels and must NOT inherit
-// this rule. Runs both the legacy and slim paths.
+// The Output section for issue tasks forbids mid-run progress comments and
+// carries the single final-result comment rule. Guards the MUL-3605
+// regression where a review agent surfaced its progress narration as the
+// result instead of posting a conclusion. (The pre-existing delivery
+// warning — invisible without `multica issue comment add` — and "state
+// the outcome, not the process" lines carry the no-process-dump half.)
+// M-304 relaxed the one-comment rule to silence-by-default: no trigger
+// comment and no real update = no comment. Chat / quick-create / autopilot
+// kinds keep their own delivery channels and must NOT inherit this rule.
+// Runs the single brief.
 func TestOutputForbidsMidRunProgressComments(t *testing.T) {
 	wantPhrases := []string{
-		"Post exactly ONE comment per run",
+		"Post at most ONE comment per run",
+		"only when there is a real update",
 		"Do NOT post progress updates",
 	}
 	issueCtxs := map[string]TaskContextForEnv{

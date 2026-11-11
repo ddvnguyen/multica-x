@@ -2305,8 +2305,8 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 				// MUL-5442 cross-channel dedup: the brief states the loop shape; the
 				// ready-to-run commands with real ids live in the per-turn message.
 				// Pin the command NAME and the flag mnemonics, not full templates.
-				"post it with `multica issue comment add` using",
-				"mandatory",
+				"Post it with `multica issue comment add` using",
+				"when there is a real update",
 			}
 			for _, want := range mustContain {
 				if !strings.Contains(s, want) {
@@ -2318,7 +2318,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			// output is not user-visible. This is the second line of defense
 			// in case the agent skips past the workflow steps.
 			for _, want := range []string{
-				"Final results MUST be delivered via `multica issue comment add`",
+				"Final results are delivered via `multica issue comment add` when there is a real update",
 				"does NOT see your terminal output",
 			} {
 				if !strings.Contains(s, want) {
