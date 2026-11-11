@@ -143,7 +143,9 @@
     "parent": "Sous {{identifier}}",
     "pick_crumb": "Choisir",
     "pick_another": "Confier à un autre agent ou squad...",
-    "detected": "Instruction"
+    "detected": "Instruction",
+    "row": "Confier à un agent : « {{prompt}} »",
+    "hint": "Création rapide"
   },
   "best": {
     "assign": "Assigner {{subject}} à {{name}}",

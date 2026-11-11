@@ -140,13 +140,27 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
-	"633_issue_decision_response_request_index":                 "issue_decision_response_request_idx",
-	"634_issue_decision_response_id_index":                      "issue_decision_response_id_idx",
-	"628_decision_delivered_supplement_index":                   "idx_decision_delivered_supplement",
-	"630_native_question_answer_seq_index":                      "uq_native_question_answer_task_seq",
-	"631_native_question_answer_request_index":                  "idx_native_question_answer_request",
-	"626_workspace_account_runtime_index":                       "workspace_account_runtime_id_idx",
-	"627_workspace_account_daemon_id_index":                     "workspace_account_daemon_account_id_uq",
+	"653_issue_decision_response_request_index":                 "issue_decision_response_request_idx",
+	"654_issue_decision_response_id_index":                      "issue_decision_response_id_idx",
+	"648_decision_delivered_supplement_index":                   "idx_decision_delivered_supplement",
+	"650_native_question_answer_seq_index":                      "uq_native_question_answer_task_seq",
+	"651_native_question_answer_request_index":                  "idx_native_question_answer_request",
+	"646_workspace_account_runtime_index":                       "workspace_account_runtime_id_idx",
+	"647_workspace_account_daemon_id_index":                     "workspace_account_daemon_account_id_uq",
+	"635_issue_environment_issue_idx":                           "idx_issue_environment_issue",
+	"634_issue_environment_task_key_idx":                        "uq_issue_environment_task_key",
+	"632_project_member_user_idx":                               "idx_project_member_workspace_user",
+	"628_app_action_request_chat_idx":                           "idx_app_action_request_chat",
+	"627_app_tool_call_issue_idx":                               "idx_app_tool_call_issue",
+	"626_app_action_request_task_idx":                           "idx_app_action_request_task",
+	"625_app_tool_call_workspace_idx":                           "idx_app_tool_call_workspace",
+	"624_app_action_request_pending_idx":                        "idx_app_action_request_pending",
+	"623_app_action_request_issue_idx":                          "idx_app_action_request_issue",
+	"622_app_action_rule_scope_idx":                             "idx_app_action_rule_scope",
+	"621_agent_app_workspace_toolkit_idx":                       "idx_agent_app_workspace_toolkit",
+	"620_agent_app_agent_toolkit_idx":                           "idx_agent_app_agent_toolkit",
+	"619_workspace_composio_connection_status_idx":              "idx_workspace_composio_connection_status",
+	"618_workspace_composio_connection_account_idx":             "idx_workspace_composio_connection_account",
 	"613_skill_version_index":                                   "idx_skill_version_skill_version",
 	"606_agent_task_queue_runtime_active_index":                 "idx_agent_task_queue_runtime_active",
 	"604_wecom_install_session_begin_rate_idx":                  "idx_wecom_install_session_begin_rate",
@@ -502,12 +516,12 @@ var upMigrationConditions = map[string]migrationCondition{
 	// old numbers has the objects and must record these versions without
 	// re-running; a fresh database applies them. See
 	// migrate_fork_rename_conditions.go.
-	"618_agent_question_card":  whenRenamedObjectsAllPresent(objects618AgentQuestionCard),
-	"619_agent_plan":           whenRenamedObjectsAllPresent(objects619AgentPlan),
-	"620_agent_plan_review":    whenRenamedObjectsAllPresent(objects620AgentPlanReview),
-	"622_project_settings":     whenRenamedObjectsAllPresent(objects622ProjectSettings),
-	"623_workspace_account":    whenRenamedObjectsAllPresent(objects623WorkspaceAccount),
-	"624_task_supplement_mode": whenRenamedObjectsAllPresent(objects624TaskSupplementMode),
+	"638_agent_question_card":  whenRenamedObjectsAllPresent(objects618AgentQuestionCard),
+	"639_agent_plan":           whenRenamedObjectsAllPresent(objects619AgentPlan),
+	"640_agent_plan_review":    whenRenamedObjectsAllPresent(objects620AgentPlanReview),
+	"642_project_settings":     whenRenamedObjectsAllPresent(objects622ProjectSettings),
+	"643_workspace_account":    whenRenamedObjectsAllPresent(objects623WorkspaceAccount),
+	"644_task_supplement_mode": whenRenamedObjectsAllPresent(objects624TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index

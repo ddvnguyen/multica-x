@@ -293,7 +293,7 @@
     "environment": "Entorno",
     "custom_args": "Argumentos personalizados",
     "mcp_config": "MCP",
-    "composio_mcp": "Apps MCP",
+    "composio_mcp": "Aplicaciones",
     "integrations": "Integraciones",
     "runtime_config": "Enrutado",
     "discard_dialog_title": "¿Descartar los cambios sin guardar?",
@@ -857,6 +857,27 @@
       "subtitle_recent_latest": "{{count}} latest runs",
       "avg_duration": "avg {{value}}",
       "failed_count": "{{count}} failed"
+    },
+    "connected_apps": {
+      "loading": "Cargando aplicaciones…",
+      "load_failed": "No se pudieron cargar las aplicaciones de este agente.",
+      "empty": "No hay apps conectadas disponibles.",
+      "level": "Nivel",
+      "team_connected": "Cuenta del equipo conectada",
+      "team_missing": "Cuenta del equipo sin conectar",
+      "personal_connected": "Tu cuenta está conectada",
+      "personal_missing": "No has conectado esta aplicación",
+      "team_admin_only": "Solo los administradores del espacio de trabajo pueden dar a un agente acceso a una cuenta del equipo.",
+      "team_shared_warning": "Cualquiera que pueda ejecutar este agente podrá usar esta cuenta de equipo a través de él.",
+      "manage_link": "Gestionar cuentas en Ajustes → Aplicaciones conectadas",
+      "save_failed_toast": "No se pudo guardar. Inténtalo de nuevo",
+      "team_help": "Cuenta compartida del espacio de trabajo, conectada por administradores.",
+      "personal_help": "Cada ejecución usa la cuenta de quien la inicia. Cada persona debe conectar su propia cuenta.",
+      "available_accounts": "Disponible: {{accounts}}",
+      "enable": "Activar {{app}}",
+      "account_for": "Cuenta de {{app}}",
+      "connect_hint": "¿No encuentras la app que necesitas? Conecta una cuenta en Ajustes.",
+      "available_personal": "Tu cuenta"
     }
   },
   "char_counter": {

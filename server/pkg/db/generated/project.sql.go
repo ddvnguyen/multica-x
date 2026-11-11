@@ -30,7 +30,7 @@ INSERT INTO project (
     creator_type, creator_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings
 `
 
 type CreateProjectParams struct {
@@ -83,6 +83,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.WorkflowID,
 		&i.CreatorType,
 		&i.CreatorID,
+		&i.Visibility,
 		&i.Settings,
 	)
 	return i, err
@@ -104,7 +105,7 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) er
 }
 
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -133,6 +134,7 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 		&i.WorkflowID,
 		&i.CreatorType,
 		&i.CreatorID,
+		&i.Visibility,
 		&i.Settings,
 	)
 	return i, err
@@ -181,7 +183,7 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -220,6 +222,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.WorkflowID,
 			&i.CreatorType,
 			&i.CreatorID,
+			&i.Visibility,
 			&i.Settings,
 		); err != nil {
 			return nil, err
@@ -278,7 +281,7 @@ UPDATE project SET
                - $1::text,
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings
 `
 
 type RemoveProjectSettingParams struct {
@@ -309,6 +312,7 @@ func (q *Queries) RemoveProjectSetting(ctx context.Context, arg RemoveProjectSet
 		&i.WorkflowID,
 		&i.CreatorType,
 		&i.CreatorID,
+		&i.Visibility,
 		&i.Settings,
 	)
 	return i, err
@@ -324,7 +328,7 @@ UPDATE project SET
     ),
     updated_at = now()
 WHERE id = $3 AND workspace_id = $4
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings
 `
 
 type SetProjectSettingParams struct {
@@ -362,6 +366,7 @@ func (q *Queries) SetProjectSetting(ctx context.Context, arg SetProjectSettingPa
 		&i.WorkflowID,
 		&i.CreatorType,
 		&i.CreatorID,
+		&i.Visibility,
 		&i.Settings,
 	)
 	return i, err
@@ -380,7 +385,7 @@ UPDATE project SET
     due_date = CASE WHEN $15::boolean THEN $16 ELSE due_date END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, settings
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, settings
 `
 
 type UpdateProjectParams struct {
@@ -439,6 +444,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.WorkflowID,
 		&i.CreatorType,
 		&i.CreatorID,
+		&i.Visibility,
 		&i.Settings,
 	)
 	return i, err

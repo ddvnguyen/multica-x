@@ -140,7 +140,9 @@
     "parent": "挂在 {{identifier}} 下",
     "pick_crumb": "选择",
     "pick_another": "换一个智能体或小队...",
-    "detected": "识别为指令"
+    "detected": "识别为指令",
+    "row": "交给智能体：「{{prompt}}」",
+    "hint": "快速创建"
   },
   "best": {
     "assign": "把 {{subject}} 指派给 {{name}}",

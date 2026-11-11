@@ -20,7 +20,8 @@
     "search_placeholder": "Rechercher des projets...",
     "selected_one": "{{count}} sélectionné",
     "selected_other": "{{count}} sélectionnés",
-    "clear_selection": "Effacer la sélection"
+    "clear_selection": "Effacer la sélection",
+    "rename": "Renommer"
   },
   "table": {
     "name": "Nom",
@@ -86,7 +87,8 @@
     "no_issues_yet": "Aucune tâche pour l'instant",
     "toast_link_copied": "Lien copié",
     "toast_project_deleted": "Projet supprimé",
-    "toast_move_issue_failed": "Échec du déplacement de la tâche"
+    "toast_move_issue_failed": "Échec du déplacement de la tâche",
+    "rename_action": "Renommer le projet"
   },
   "resources": {
     "section_header": "Ressources",
@@ -220,5 +222,26 @@
       "issue_pricing": "Tableau comparatif des tarifs",
       "issue_blog": "Paginer la liste du blog"
     }
+  },
+  "access": {
+    "label": "Accès",
+    "title": "Accès à {{title}}",
+    "description": "Définit qui peut voir ce projet, ses tâches, commentaires et pièces jointes.",
+    "workspace": "Tout l’espace de travail",
+    "private": "Membres du projet uniquement",
+    "members_count": "Membres du projet · {{count}}",
+    "add": "Ajouter un membre",
+    "search": "Rechercher un nom ou un e-mail...",
+    "no_members": "Aucun membre correspondant",
+    "no_selected": "Aucun membre du projet",
+    "admin_notice": "Les owner et admin de l’espace de travail ont toujours accès.",
+    "you": "Vous",
+    "remove": "Retirer {{name}}",
+    "failed": "Impossible d’enregistrer les accès.",
+    "load_failed": "Impossible de charger les membres.",
+    "publish_title": "Rendre ce projet visible à tout l’espace de travail ?",
+    "publish_description": "Tous les membres pourront voir ce projet, ses tâches, commentaires et pièces jointes.",
+    "done": "Terminé",
+    "retry": "Réessayer"
   }
 }

@@ -1,5 +1,5 @@
-import { normalizeStatusPatch } from "./status-category";
 import { useRef } from "react";
+import { issueBehavesAs, normalizeStatusPatch } from "./status-category";
 import {
   hashKey,
   useMutation,
@@ -48,6 +48,7 @@ import { refreshSubscribedIssues } from "./subscribed";
 import { getCurrentWsId } from "../platform/workspace-storage";
 import { useRecentContextStore } from "../chat/recent-context-store";
 import { useRecentIssuesStore } from "./stores";
+import { useStarPromptStore } from "../star-prompt";
 import type { InboxItem, Issue, IssueReaction } from "../types";
 import type {
   CreateCommentSubIssueManualRequest,
@@ -361,6 +362,18 @@ export function useUpdateIssue() {
       );
       // The server has committed — safe to flush any drift it reported now.
       invalidateStaleListKeys(qc, reconcile.staleKeys);
+      if (
+        vars.status !== undefined &&
+        serverIssue.assignee_type === "agent" &&
+        serverIssue.assignee_id &&
+        issueBehavesAs(serverIssue, "done")
+      ) {
+        useStarPromptStore.getState().reportAgentIssueDone({
+          wsId,
+          agentId: serverIssue.assignee_id,
+          issueId: serverIssue.id,
+        });
+      }
     },
     onSettled: (_data, err, vars, ctx) => {
       settleInboxAfterIssueWrite(qc, wsId, ctx?.inboxWrite, err !== null);

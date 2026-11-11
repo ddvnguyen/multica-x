@@ -37,7 +37,8 @@
     "changelog": "Registro de cambios",
     "discord": "Discord",
     "feedback": "Comentarios",
-    "server_version": "Versión del servidor {{version}}"
+    "server_version": "Versión del servidor {{version}}",
+    "star_on_github": "Dar una estrella en GitHub"
   },
   "workspace_loader": {
     "loading_workspace": "Cargando espacio de trabajo…",
@@ -94,7 +95,7 @@
   "rail": {
     "label": "Navegación de la app",
     "sheet_description": "Cambia de sección y de espacio de trabajo.",
-    "inbox": "Bandeja de entrada",
+    "inbox": "Bandeja",
     "work": "Trabajo",
     "team": "Equipo",
     "chat": "Chat",
@@ -150,7 +151,8 @@
       "view_remove": "Quitar de la barra lateral",
       "view_rename": "Renombrar",
       "view_duplicate": "Duplicar",
-      "view_delete": "Eliminar vista"
+      "view_delete": "Eliminar vista",
+      "view_edit": "Editar vista"
     },
     "team": {
       "new_agent": "Nuevo agente",
@@ -168,7 +170,9 @@
       "resources": "Recursos",
       "runtimes_online_one": "{{count}} en línea",
       "runtimes_online_other": "{{count}} en línea",
-      "invite_member": "Invitar miembro"
+      "invite_member": "Invitar miembro",
+      "show_more_agents": "Mostrar {{count}} más…",
+      "show_fewer_agents": "Mostrar menos"
     },
     "autopilots": {
       "all": "Todas las automatizaciones",
@@ -222,5 +226,14 @@
     "go_to_slide": "Ir a la diapositiva {{index}}",
     "previous": "Anterior",
     "next": "Siguiente"
+  },
+  "star_prompt": {
+    "title_one": "{{agent}} ha completado {{count}} tarea",
+    "title_other": "{{agent}} ha completado {{count}} tareas",
+    "body": "Si Multica te resulta útil, una estrella en GitHub ayuda a que otros equipos lo descubran.",
+    "star": "Star",
+    "star_label": "Dar una Star a Multica en GitHub",
+    "later": "Ahora no",
+    "close": "Cerrar"
   }
 }

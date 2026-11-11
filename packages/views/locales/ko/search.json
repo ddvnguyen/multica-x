@@ -140,7 +140,9 @@
     "parent": "{{identifier}} 하위",
     "pick_crumb": "선택",
     "pick_another": "다른 에이전트나 스쿼드에게 맡기기...",
-    "detected": "지시로 인식"
+    "detected": "지시로 인식",
+    "row": "에이전트에게 맡기기: “{{prompt}}”",
+    "hint": "빠른 만들기"
   },
   "best": {
     "assign": "{{subject}}를 {{name}}에게 지정",

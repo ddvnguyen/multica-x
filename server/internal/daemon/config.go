@@ -111,7 +111,7 @@ type Config struct {
 	CLICommit       string                // full build revision embedded in the running CLI; empty/unknown if unavailable
 	LaunchedBy      string                // "desktop" when spawned by the Electron app, empty for standalone
 	Profile         string                // profile name (empty = default)
-	Agents          map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
+	Agents          map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, devin, dim, zeroclaw, museapp (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
 	WorkspacesRoot  string                // base path for execution envs (default: ~/multica_workspaces)
 	// MessageSink names where a dsh-runtime task's transcript is owned. Only
 	// "dsh" is recognized (M-102): sessions go to the shared dsh store and the

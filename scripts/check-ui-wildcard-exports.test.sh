@@ -7,20 +7,34 @@
 # much as its proof that it still fires, hence this test.
 set -euo pipefail
 
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-check="$root_dir/scripts/check-ui-wildcard-exports.mjs"
+source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+check="$source_root/scripts/check-ui-wildcard-exports.mjs"
+mkdir -p "$source_root/.turbo"
+root_dir="$(mktemp -d "$source_root/.turbo/ui-exports.XXXXXX")"
 ui_dir="$root_dir/packages/ui/components/ui"
-out="$(mktemp)"
-scratch=()
+out="$root_dir/output.log"
 
 cleanup() {
-  rm -f "${scratch[@]+"${scratch[@]}"}" "$out"
+  rm -rf "$root_dir"
 }
 trap cleanup EXIT
 
-track() {
-  scratch+=("$1")
+# Keep fixture imports and wildcard exports shaped like the real workspaces.
+# The composite action checks the real repository once after these cases.
+mkdir -p "$ui_dir" "$root_dir/packages/views" \
+  "$root_dir/packages/ui/components/common" \
+  "$root_dir/packages/ui/markdown" "$root_dir/packages/ui/hooks"
+cat >"$root_dir/packages/ui/package.json" <<'EOF'
+{
+  "name": "@multica/ui",
+  "exports": {
+    "./components/ui/*": "./components/ui/*.tsx",
+    "./components/common/*": "./components/common/*.tsx",
+    "./markdown/*": "./markdown/*.tsx",
+    "./hooks/*": "./hooks/*.ts"
+  }
 }
+EOF
 
 fail() {
   echo "FAIL: $*" >&2
@@ -30,16 +44,15 @@ fail() {
 }
 
 expect_pass() {
-  if ! node "$check" >"$out" 2>&1; then fail "$1"; fi
+  if ! node "$check" "$root_dir" >"$out" 2>&1; then fail "$1"; fi
 }
 
 expect_fail_naming() {
-  if node "$check" >"$out" 2>&1; then fail "$2"; fi
+  if node "$check" "$root_dir" >"$out" 2>&1; then fail "$2"; fi
   if ! grep -Fq "$1" "$out"; then fail "check failed but did not name $1"; fi
 }
 
-# 1. Clean tree passes. Runs first so a pre-existing dead file is reported as
-#    itself rather than surfacing later as a confusing probe failure.
+# 1. The empty fixture passes before adding unused guarded files.
 expect_pass "check should pass on a clean tree"
 
 # 2. A colocated test under a wildcard directory is a vitest entry point, not a
@@ -47,7 +60,6 @@ expect_pass "check should pass on a clean tree"
 #    normal. Guarding them made every test written beside a components/ui
 #    primitive break this check.
 colocated="$ui_dir/zz-colocated.test.tsx"
-track "$colocated"
 cat >"$colocated" <<'EOF'
 import { describe, expect, it } from "vitest"
 
@@ -63,7 +75,6 @@ expect_pass "a colocated *.test.tsx under components/ui must not count as a dead
 #    file beside it is still not reported, so the exemption above stays narrow
 #    rather than excusing everything in the directory.
 probe="$ui_dir/zz-unused-export-probe.tsx"
-track "$probe"
 cat >"$probe" <<'EOF'
 export function UnusedExportProbe() {
   return null
@@ -86,20 +97,22 @@ rm -f "$colocated"
 # 4. Importing it from a consumer clears the check — the guard tracks real
 #    usage rather than just counting files.
 importer="$root_dir/packages/views/zz-probe-importer.tsx"
-track "$importer"
 cat >"$importer" <<'EOF'
 export { UnusedExportProbe } from "@multica/ui/components/ui/zz-unused-export-probe";
 EOF
 expect_pass "check should pass once a consumer imports the component"
 rm -f "$importer" "$probe"
 
-# 5. Basename collision. 17 of the 59 guarded files share a name with some
-#    other file in the repo, so a check that matched relative imports by
-#    basename would pass this dead component. `option-card` is real:
-#    packages/views/onboarding/components/option-card.tsx is imported as
-#    `../components/option-card` and must not vouch for the packages/ui file.
+# 5. A relative import of a same-named file outside UI cannot vouch for it.
+mkdir -p "$root_dir/packages/views/onboarding/components" \
+  "$root_dir/packages/views/onboarding/steps"
+cat >"$root_dir/packages/views/onboarding/components/option-card.tsx" <<'EOF'
+export function OptionCard() { return null; }
+EOF
+cat >"$root_dir/packages/views/onboarding/steps/welcome.tsx" <<'EOF'
+export { OptionCard } from "../components/option-card";
+EOF
 collide="$ui_dir/option-card.tsx"
-track "$collide"
 cat >"$collide" <<'EOF'
 export function OptionCard() {
   return null
@@ -109,13 +122,10 @@ expect_fail_naming "components/ui/option-card.tsx" \
   "a same-named file elsewhere must not mark a dead ui component as used"
 rm -f "$collide"
 
-# 6. Two dead components importing only each other, or one chain, are still
-#    dead. Liveness is reachability from outside the guarded directories, not a
-#    reference count.
+# 6. An unreachable A -> B chain is still dead. Liveness is reachability
+#    from outside the guarded directories, not a reference count.
 pair_a="$ui_dir/zz-cycle-a.tsx"
 pair_b="$ui_dir/zz-cycle-b.tsx"
-track "$pair_a"
-track "$pair_b"
 cat >"$pair_a" <<'EOF'
 import { CycleB } from "./zz-cycle-b";
 export function CycleA() {
@@ -138,8 +148,6 @@ rm -f "$pair_a" "$pair_b"
 #    scan would keep vouching for it exactly when it stops being used.
 comment_probe="$ui_dir/zz-comment-probe.tsx"
 mention="$root_dir/packages/views/zz-probe-mention.ts"
-track "$comment_probe"
-track "$mention"
 cat >"$comment_probe" <<'EOF'
 export function CommentProbe() {
   return null
@@ -165,9 +173,6 @@ for entry in components/ui:tsx components/common:tsx markdown:tsx hooks:ts; do
   test_file="$root_dir/packages/ui/$dir/zz-unused-runtime.test.$ext"
   product="$root_dir/packages/ui/$dir/zz-unused-runtime.$ext"
   spec="$root_dir/packages/ui/$dir/zz-not-discovered.spec.$ext"
-  track "$test_file"
-  track "$product"
-  track "$spec"
   cat >"$test_file" <<'EOF'
 import { it, expect } from "vitest";
 it("discovered", () => { expect(true).toBe(true); });
@@ -215,7 +220,6 @@ rm -f "$pair_a" "$pair_b" "$importer"
 
 # 9. Mock-only mentions do not import a product module.
 mock_probe="$ui_dir/zz-mock-only.tsx"
-track "$mock_probe"
 cat >"$mock_probe" <<'EOF'
 export function MockOnly() { return null; }
 EOF

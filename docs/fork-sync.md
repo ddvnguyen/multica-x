@@ -28,6 +28,13 @@ How we pull `multica-ai/multica` into our fork every 4–5 days. The script is
 3. **Resolve.** `[fork-owned]` files keep our behaviour, everything else takes
    upstream. Regenerate rather than hand-merge where you can: `make sqlc` for
    `server/pkg/db/generated/**`, both sides' keys in the locale JSON.
+
+   `packages/views/locales/parity.test.ts` only requires translations for keys
+   upstream also ships; the fork's own surfaces are listed in
+   `packages/views/locales/fork-owned-keys.ts`, so a locale that never had them
+   (Russian arrived with upstream) falls back to English instead of failing the
+   sync. When upstream adds keys inside an exempted subtree, split that prefix so
+   the new keys are covered again; a new fork surface extends the table.
 4. **Checks.** `pnpm install --frozen-lockfile`, then `pnpm typecheck`,
    `pnpm lint`, `pnpm test`, and `make test` for Go; `make check` runs the
    combined set.
@@ -47,7 +54,7 @@ Computed per run; the table maps where conflicts land, not a substitute for it.
 | Supplement data layer | `server/pkg/db/queries/supplement.sql`, `server/pkg/db/generated/{supplement,agent}.sql.go` |
 | Tab header, sidebar, dsh island | `packages/dsh-plugin/**` |
 | Fork UI primitives and copy | `packages/ui/components/ui/*`, `packages/views/locales/*/issues.json` |
-| Migrations we own | `server/migrations/617+` (upstream reached 616 on v0.8.1; the v0.8.1 sync moved our 595–614 to 617–636) |
+| Migrations we own | `server/migrations/637+` (upstream reached 636 on v0.8.2; the v0.8.2 sync moved our 617–640 to 637–660, and the v0.8.1 sync before it moved our 595–614 to 617–636) |
 | Decisions rail space (M-253) | `packages/core/paths/spaces.ts` (`decisions` space), `packages/views/layout/app-rail.tsx` (item + pending badge), `packages/views/locales/*/layout.json` (`rail.decisions`) |
 
 ## Rules

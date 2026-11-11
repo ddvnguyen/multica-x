@@ -146,7 +146,9 @@
     "parent": "Bajo {{identifier}}",
     "pick_crumb": "Elegir",
     "pick_another": "Encargar a otro agente o squad...",
-    "detected": "Instrucción"
+    "detected": "Instrucción",
+    "row": "Encargar a un agente: «{{prompt}}»",
+    "hint": "Creación rápida"
   },
   "best": {
     "assign": "Asignar {{subject}} a {{name}}",

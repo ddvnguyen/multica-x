@@ -156,7 +156,8 @@
     "local_pick_failed": "Impossible d'ouvrir le sélecteur de répertoire.",
     "local_invalid_dir": "Ce répertoire ne peut pas être utilisé. Choisissez-en un autre.",
     "local_hint": "Les agents des autres machines ne verront pas ce chemin — ils ne pourront pas démarrer. Utilisez des dépôts pour le travail partagé.",
-    "repos_ref_default": "Branche par défaut"
+    "repos_ref_default": "Branche par défaut",
+    "repos_remove_aria": "Retirer {{repo}}"
   },
   "create_issue": {
     "sr_manual": "Nouvelle tâche",
@@ -281,5 +282,14 @@
     "apply": "Copier {{count}} champs",
     "no_labels": "Aucune étiquette",
     "manual_only": "Les étiquettes, la date de début et les propriétés personnalisées ne concernent que la création manuelle."
+  },
+  "rename_project": {
+    "title": "Renommer le projet",
+    "placeholder": "Titre du projet",
+    "submit": "Enregistrer",
+    "title_required": "Saisissez un titre",
+    "offline_error": "Vous êtes hors ligne. Reconnectez-vous, puis réessayez de renommer le projet.",
+    "toast_renamed": "Projet renommé",
+    "toast_failed": "Échec du renommage du projet"
   }
 }

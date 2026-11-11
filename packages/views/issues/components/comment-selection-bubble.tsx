@@ -6,7 +6,7 @@ import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floating-ui/dom";
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
-export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned }: {
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, keepVisibleWhenDetached = false }: {
   range: Range;
   source: HTMLElement;
   children: ReactNode;
@@ -14,6 +14,7 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
   markerRanges?: Range[];
   /** Called after the popup has a visible, usable position. */
   onPositioned?: () => void;
+  keepVisibleWhenDetached?: boolean;
 }) {
   const portalContainer = usePortalContainer();
   const ref = useRef<HTMLDivElement>(null);
@@ -29,6 +30,8 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     let revision = 0;
     const update = () => {
       const currentRevision = ++revision;
+      // Keep an open note recoverable if realtime removes or replaces its source.
+      if (keepVisibleWhenDetached && (!source.isConnected || !range.startContainer.isConnected)) return;
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
@@ -65,10 +68,10 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     // resizing its source element or triggering a window resize.
     const cleanup = autoUpdate(anchor, element, update, { animationFrame: true });
     return () => { active = false; cleanup(); };
-  }, [range, source, marker, markerRanges, onPositioned]);
+  }, [range, source, marker, markerRanges, onPositioned, keepVisibleWhenDetached]);
 
   return createPortal(
-    <div ref={ref} data-reply-annotation-overlay={owner}
+    <div ref={ref} data-reply-annotation-overlay={owner} data-editor-overlay-owner={owner}
       style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content" }}>
       {children}
     </div>,

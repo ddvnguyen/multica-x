@@ -159,7 +159,9 @@
     "skipped_group": {
       "label": "Ignorées",
       "summary": "{{count}} exécutions ignorées"
-    }
+    },
+    "stop": "Arrêter l'exécution",
+    "stop_failed": "Impossible d'arrêter l'exécution."
   },
   "webhook_payload": {
     "label": "Événement webhook :",

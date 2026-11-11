@@ -344,7 +344,9 @@
     "advanced_group_match_trailing": "de ces conditions",
     "advanced_group_hint": "Les conditions de ce groupe sont reliées par « {{word}} »",
     "advanced_add_to_group": "Ajouter au groupe",
-    "advanced_turn_into_group": "Transformer en groupe"
+    "advanced_turn_into_group": "Transformer en groupe",
+    "chip_priority_count_one": "{{count}} priorités",
+    "chip_status_count_one": "{{count}} statuts"
   },
   "display": {
     "tooltip": "Paramètres d'affichage",
@@ -853,8 +855,15 @@
       "selection_failed": "Impossible de capturer la sélection. Sélectionnez du texte dans un seul commentaire ou une seule description, puis réessayez.",
       "source_label": "Commentaire de {{name}}",
       "edit": "Modifier l'annotation {{number}}",
-      "note_placeholder": "Ajouter un commentaire…"
-    }
+      "note_placeholder": "Ajouter un commentaire…",
+      "send_all": "Tout envoyer",
+      "send_with_annotations_and_body": "Sera envoyé avec les annotations enregistrées ({{count}}) et le texte du brouillon.",
+      "send_with_annotations": "Sera envoyé avec les annotations enregistrées ({{count}}).",
+      "send_with_body": "Sera envoyé avec le texte du brouillon.",
+      "confirm_add_short": "Ajouter",
+      "save_short": "Enregistrer"
+    },
+    "recipients_changed": "La cible de la réponse a changé. Vérifiez les destinataires avant de réessayer."
   },
   "agent_activity": {
     "hover_header_one": "{{count}} agent actif",
@@ -963,7 +972,12 @@
     "sparkline_now": "Maintenant",
     "jump_to_run": "Aller à l'exécution",
     "queued_count_one": "{{count}} en attente",
-    "queued_count_other": "{{count}} en attente"
+    "queued_count_other": "{{count}} en attente",
+    "latest": "Récentes",
+    "include_children": "Inclure les sous-tâches",
+    "loading": "Chargement des exécutions...",
+    "load_failed_retry": "Impossible de charger les exécutions. Réessayer",
+    "empty": "Aucune exécution dans ce périmètre."
   },
   "runs_timeline": {
     "title": "Exécutions",
@@ -1108,7 +1122,8 @@
     "remove_parent_issue_success": "Tâche parente retirée",
     "add_sub_issue": "Ajouter une sous-tâche...",
     "delete_issue": "Supprimer la tâche",
-    "mark_duplicate": "Marquer comme doublon..."
+    "mark_duplicate": "Marquer comme doublon...",
+    "locate_in_sidebar": "Afficher dans la barre latérale"
   },
   "pickers": {
     "custom_property": {
@@ -1667,7 +1682,10 @@
     "overview_summary_with_size_other": "{{count}} livrables · {{size}} au total",
     "overview_close": "Fermer",
     "overview_empty": "Aucun livrable de ce type.",
-    "group_comment_by": "Commentaire de {{name}}"
+    "group_comment_by": "Commentaire de {{name}}",
+    "copy_link": "Copier le lien vers la dernière version",
+    "not_found": "Aucun livrable nommé « {{name}} » sur ce ticket",
+    "link_load_failed": "Impossible de charger les livrables de ce ticket pour ouvrir « {{name}} ». Rechargez pour réessayer."
   },
   "workflows": {
     "default_name": "Default",
@@ -2039,5 +2057,64 @@
     "manage_hint": "L'ordre et la visibilité ne concernent que vous",
     "visible_toggle": "Afficher dans la barre de vues",
     "more_label": "Plus de vues"
+  },
+  "web": {
+    "open_in_desktop": "Ouvrir dans l’application de bureau"
+  },
+  "desktop": {
+    "link_other_instance": "L’application de bureau est connectée à une autre instance Multica.",
+    "link_workspace_unavailable": "Cet espace de travail n’est pas disponible dans l’application de bureau."
+  },
+  "app_calls": {
+    "section_title": "Apps",
+    "chips_label": "Apps utilisées dans cette exécution",
+    "calls_count_one": "{{count}} appel",
+    "calls_count_other": "{{count}} appels",
+    "more": "+{{count}} de plus",
+    "scope": {
+      "team": "Compte d'équipe",
+      "personal": "Compte personnel"
+    },
+    "outcome": {
+      "ok": "Exécuté",
+      "error": "Échec",
+      "blocked": "Bloqué",
+      "pending": "En attente",
+      "approved": "Approuvé",
+      "rejected": "Refusé",
+      "rate_limited": "Limite atteinte"
+    }
+  },
+  "environments": {
+    "section_title": "Environnements",
+    "running_count_one": "{{count}} en cours",
+    "running_count_other": "{{count}} en cours",
+    "this_machine": "Cet appareil",
+    "unknown_machine": "Appareil inconnu",
+    "state": {
+      "starting": "Démarrage",
+      "running": "En cours",
+      "exited": "Terminé",
+      "stopped": "Arrêté",
+      "unreachable": "Sans réponse"
+    },
+    "expires_in_minutes_one": "Expire dans {{count}} min",
+    "expires_in_minutes_other": "Expire dans {{count}} min",
+    "expires_in_hours_one": "Expire dans {{count}} h",
+    "expires_in_hours_other": "Expire dans {{count}} h",
+    "expires_in_days_one": "Expire dans {{count}} j",
+    "expires_in_days_other": "Expire dans {{count}} j",
+    "started_ago": "Démarré {{time}}",
+    "ended_ago": "Terminé {{time}}",
+    "last_seen": "Dernière réponse {{time}}",
+    "ended_count_one": "{{count}} terminé",
+    "ended_count_other": "{{count}} terminés",
+    "detected_hint": "Serveur trouvé dans le répertoire d'une exécution de cette tâche",
+    "remote_hint": "S'exécute sur {{machine}}. Une URL localhost ne s'ouvre que sur cet appareil.",
+    "localhost_hint": "Une URL localhost ne s'ouvre que sur l'appareil qui l'exécute.",
+    "open": "Ouvrir",
+    "copy_url": "Copier l'URL",
+    "copied": "URL copiée",
+    "copy_failed": "Impossible de copier l'URL"
   }
 }

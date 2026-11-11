@@ -140,7 +140,9 @@
     "parent": "掛在 {{identifier}} 下",
     "pick_crumb": "選擇",
     "pick_another": "換一個 AI 代理或小隊...",
-    "detected": "識別為指令"
+    "detected": "識別為指令",
+    "row": "交給 AI 代理：「{{prompt}}」",
+    "hint": "快速建立"
   },
   "best": {
     "assign": "把 {{subject}} 指派給 {{name}}",
