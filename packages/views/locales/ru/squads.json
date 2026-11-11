@@ -12,8 +12,7 @@
     },
     "no_matches": "Нет совпадений",
     "row_menu": "Действия с командой",
-    "archive_action": "Архивировать",
-    "empty_no_squads": "No squads yet."
+    "archive_action": "Архивировать"
   },
   "member_type": {
     "agent": "Агент",
@@ -77,12 +76,7 @@
     "issue_status_blocked": "заблокирована",
     "active_issue_more": "и ещё {{count}}",
     "empty_title": "Пока нет участников",
-    "empty_description": "Добавьте агентов или участников, и задачи, назначенные этой команде, будут передаваться им.",
-    "last_active_label": "last active {{time}}",
-    "section_count_other": "{{count}} members in this squad",
-    "section_count_one": "{{count}} members in this squad",
-    "section_count_few": "{{count}} members in this squad",
-    "section_count_many": "{{count}} members in this squad"
+    "empty_description": "Добавьте агентов или участников, и задачи, назначенные этой команде, будут передаваться им."
   },
   "detail": {
     "assign_work": "Назначить работу",
@@ -173,33 +167,5 @@
       }
     },
     "title": "Объедините агентов в команду для совместной работы"
-  },
-  "detail_tabs": {
-    "instructions": "Instructions",
-    "members": "Members"
-  },
-  "discard_changes_dialog": {
-    "description": "You have unsaved changes on this tab. Switching tabs will discard them.",
-    "discard_button": "Discard",
-    "keep_editing": "Keep editing",
-    "title": "Discard unsaved changes?"
-  },
-  "inspector": {
-    "archive_button": "Archive",
-    "details_section": "Details"
-  },
-  "toolbar": {
-    "clear_filters": "Clear filters",
-    "direction_asc": "Ascending",
-    "direction_desc": "Descending",
-    "display": "Display",
-    "filter_active_count_other": "{{count}} filters",
-    "filter_label": "Filter",
-    "result_count_title": "Matching squads / all squads",
-    "section_columns": "Columns",
-    "sort_by": "Sort by",
-    "filter_active_count_one": "{{count}} filters",
-    "filter_active_count_few": "{{count}} filters",
-    "filter_active_count_many": "{{count}} filters"
   }
 }

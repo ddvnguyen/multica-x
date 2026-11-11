@@ -12,14 +12,11 @@
       "mine": "Мои агенты",
       "all": "Все агенты",
       "archived": "Архивные агенты"
-    },
-    "learn_more": "Learn more →",
-    "search_placeholder": "Search agents…"
+    }
   },
   "scope": {
     "mine": "Мои",
-    "all": "Все",
-    "archived": "Archived"
+    "all": "Все"
   },
   "sort": {
     "label_recent": "Недавняя активность",
@@ -58,9 +55,7 @@
       "issue": "Назначьте ему задачу",
       "done": "(готово)",
       "connect_runtime": "Подключить"
-    },
-    "description": "Create an agent, then assign it issues.",
-    "title": "No agents yet"
+    }
   },
   "no_matches": {
     "title": "Ничего не найдено",
@@ -200,9 +195,7 @@
     "copy_link": "Копировать ссылку",
     "copy_id": "Копировать ID агента",
     "link_copied_toast": "Ссылка скопирована",
-    "id_copied_toast": "ID агента скопирован",
-    "back_to_agents": "Agents",
-    "updated": "Updated {{when}}"
+    "id_copied_toast": "ID агента скопирован"
   },
   "inspector": {
     "section_profile": "Профиль",
@@ -234,18 +227,14 @@
     "edit_description_title": "Изменить описание",
     "description_placeholder": "Чем занимается этот агент?",
     "save": "Сохранить",
-    "cancel": "Отмена",
-    "no_description_placeholder": "No description",
-    "section_skills": "Skills"
+    "cancel": "Отмена"
   },
   "overview": {
     "attention_title": "Запуски требуют внимания",
     "attention_queued_one": "{{count}} запуск стоит в очереди, пока среда выполнения недоступна.",
     "attention_queued_other": "{{count}} запуска стоят в очереди, пока среда выполнения недоступна.",
     "attention_queued_few": "{{count}} запуска стоят в очереди, пока среда выполнения недоступна.",
-    "attention_queued_many": "{{count}} запусков стоят в очереди, пока среда выполнения недоступна.",
-    "access": "Access",
-    "agent_context": "Agent"
+    "attention_queued_many": "{{count}} запусков стоят в очереди, пока среда выполнения недоступна."
   },
   "sections": {
     "runs_count_one": "{{count}} запуск",
@@ -342,9 +331,7 @@
     "discard_dialog_title": "Отменить несохранённые изменения?",
     "discard_dialog_description": "В этой вкладке есть несохранённые изменения. Если вы уйдёте сейчас, они будут потеряны.",
     "discard_keep": "Продолжить редактирование",
-    "discard_confirm": "Отменить изменения",
-    "overview": "Overview",
-    "page_navigation_aria": "Agent page"
+    "discard_confirm": "Отменить изменения"
   },
   "creation_studio": {
     "title": "Создание агента",
@@ -503,8 +490,7 @@
       "more_harnesses_many": "Ещё {{count}}: {{names}}",
       "hidden_remote_few": "Ещё {{count}} машины доступны только своим владельцам",
       "hidden_remote_many": "Ещё {{count}} машин доступны только своим владельцам"
-    },
-    "back": "Go back"
+    }
   },
   "create_dialog": {
     "title_create": "Создать агента",
@@ -891,18 +877,7 @@
       "dispatched_prefix": "Отправлено {{when}}",
       "queued_prefix": "В очереди с {{when}}",
       "runs_few": "запуска",
-      "runs_many": "запусков",
-      "avg_duration": "avg {{value}}",
-      "failed_count": "{{count}} failed",
-      "subtitle_active_other": "{{count}} active runs",
-      "subtitle_no_active": "No active work",
-      "subtitle_no_recent": "Nothing finished yet",
-      "subtitle_performance": "Performance",
-      "subtitle_recent_latest": "{{count}} latest runs",
-      "subtitle_recent_progress": "{{shown}} of {{total}} runs",
-      "subtitle_active_one": "{{count}} active runs",
-      "subtitle_active_few": "{{count}} active runs",
-      "subtitle_active_many": "{{count}} active runs"
+      "runs_many": "запусков"
     },
     "connected_apps": {
       "loading": "Загрузка приложений…",
@@ -924,22 +899,6 @@
       "account_for": "Аккаунт для {{app}}",
       "connect_hint": "Нет нужного приложения? Подключите аккаунт в настройках.",
       "available_personal": "Ваш аккаунт"
-    },
-    "composio_mcp": {
-      "connected": "Connected",
-      "empty_link_to_settings": "Connect one in Settings → Integrations",
-      "empty_title": "No connected apps yet",
-      "load_failed": "Couldn't load your connected apps. Try again shortly.",
-      "loading": "Loading your connections…",
-      "open_settings": "Open settings",
-      "redacted_hint": "Only the agent's creator can view or change which apps it may use.",
-      "redacted_title": "Configured — hidden from your view",
-      "save_failed_toast": "Couldn't save — please try again",
-      "saving": "Saving…",
-      "shared_warning": "This agent is shared. People who can run this agent may use the Composio apps you enable here. Use Private or narrow the access list if these apps expose sensitive data.",
-      "subtitle": "Check a toolkit to let this agent mount it as an MCP server — but only when you (its creator) are the one who triggered the run, directly or down a sub-agent chain.",
-      "toggle_aria": "Allow {{toolkit}} for this agent",
-      "workspace_warning": "Public to workspace: any workspace member may use these Composio apps through this agent."
     }
   },
   "char_counter": {
@@ -1161,19 +1120,7 @@
     "section_access": "Доступ",
     "section_runtime": "Среда выполнения",
     "section_owner": "Владелец",
-    "section_model": "Модель",
-    "clear_filters": "Clear filters",
-    "direction_asc": "Ascending",
-    "direction_desc": "Descending",
-    "display": "Display",
-    "filter_active_count_other": "{{count}} filters",
-    "filter_label": "Filter",
-    "result_count_title": "Matching agents / agents in scope",
-    "section_columns": "Columns",
-    "sort_by": "Sort by",
-    "filter_active_count_one": "{{count}} filters",
-    "filter_active_count_few": "{{count}} filters",
-    "filter_active_count_many": "{{count}} filters"
+    "section_model": "Модель"
   },
   "intro": {
     "art": {
@@ -1198,23 +1145,5 @@
       }
     },
     "title": "Создайте первого ИИ-коллегу"
-  },
-  "account_field": {
-    "any": "Any account",
-    "hint": "Which Freebuff account runs this agent. “Any account” picks the least busy one for each run.",
-    "label": "Account",
-    "runtime_default": "Runtime default"
-  },
-  "actions": {
-    "clear_selection": "Clear selection",
-    "selected_other": "{{count}} selected",
-    "selected_one": "{{count}} selected",
-    "selected_few": "{{count}} selected",
-    "selected_many": "{{count}} selected"
-  },
-  "freebuff_account_field": {
-    "hint": "Which Freebuff-CLI account runs this agent.",
-    "label": "Account",
-    "runtime_default": "Runtime default"
   }
 }

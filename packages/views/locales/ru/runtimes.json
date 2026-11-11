@@ -68,9 +68,7 @@
       "all": "Все среды выполнения",
       "online": "В сети",
       "offline": "Не в сети"
-    },
-    "learn_more": "Learn more →",
-    "search_placeholder": "Search…"
+    }
   },
   "mika_setup": {
     "title": "Среда выполнения готова. Начните с Mika.",
@@ -138,11 +136,7 @@
       "toast_failed": "Не удалось переименовать машину"
     },
     "busy_count_few": "{{count}} заняты",
-    "busy_count_many": "{{count}} занято",
-    "runtime_count_other": "{{count}} runtimes",
-    "runtime_count_one": "{{count}} runtimes",
-    "runtime_count_few": "{{count}} runtimes",
-    "runtime_count_many": "{{count}} runtimes"
+    "busy_count_many": "{{count}} занято"
   },
   "health": {
     "online": {
@@ -281,14 +275,7 @@
     "running_chip_few": "· {{count}} выполняется",
     "running_chip_many": "· {{count}} выполняется",
     "queued_chip_few": "· {{count}} в очереди",
-    "queued_chip_many": "· {{count}} в очереди",
-    "diagnostics_title": "Diagnostics",
-    "serving_count_other": "{{count}} agents",
-    "serving_title": "Serving",
-    "technical_details": "Technical details",
-    "serving_count_one": "{{count}} agents",
-    "serving_count_few": "{{count}} agents",
-    "serving_count_many": "{{count}} agents"
+    "queued_chip_many": "· {{count}} в очереди"
   },
   "detail_page": {
     "not_found_title": "Среда выполнения не найдена",
@@ -749,65 +736,5 @@
       }
     },
     "title": "Предоставьте агентам компьютер для работы"
-  },
-  "accounts": {
-    "add": "Add account",
-    "advanced": "Advanced",
-    "copy_login_url_aria": "Copy sign-in link",
-    "credential_placeholder": "Credential reference",
-    "delete_aria": "Delete {{label}}",
-    "description": "Agents on this runtime can use any of these accounts. The credential reference is a name the daemon resolves on its own machine, never a secret.",
-    "empty": "No accounts yet.",
-    "enabled_aria": "Enable {{label}}",
-    "endpoint_placeholder": "Endpoint (http://host:4320)",
-    "engine_default": "Default",
-    "engine_version_aria": "Engine version for {{label}}",
-    "engine_version_note": "Applies after this account's running tasks finish and its engine restarts.",
-    "label_placeholder": "Label",
-    "no_endpoint": "Default endpoint",
-    "open_login_url_aria": "Open sign-in link",
-    "retry": "Retry",
-    "title": "Accounts",
-    "toast_failed": "Could not update the account"
-  },
-  "freebuff": {
-    "add_account": "Add account",
-    "cancel": "Cancel",
-    "confirm_remove": "Confirm remove",
-    "copy_link": "Copy",
-    "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
-    "credit_title": "Credit",
-    "credit_total": "{{total}} Freebucks in total",
-    "default_badge": "Default",
-    "empty": "No Freebuff account yet. Add one to sign in.",
-    "engine_default": "Default",
-    "engine_none": "No engine versions installed. Install one on the runtime machine with `multica runtime freebuff install-version`.",
-    "engine_pinned_note": "Applies on the next run.",
-    "engine_select_failed": "Could not set the engine version",
-    "engine_title": "Engine version",
-    "link_copied": "Link copied",
-    "link_copy_failed": "Could not copy the link",
-    "link_expires": "Expires at {{time}}",
-    "link_label": "Sign-in link",
-    "make_default": "Make default",
-    "new_account": "New account",
-    "open_link": "Open",
-    "open_link_hint": "Open this link in any browser and sign in to Freebuff. This page updates when you finish.",
-    "prices_title": "Price per model",
-    "remove": "Remove",
-    "session_none": "No session slot is open",
-    "session_remaining": "{{time}} left",
-    "session_state": "{{state}}",
-    "session_title": "Session",
-    "sign_in_again": "Sign in again",
-    "state_awaiting_login": "Waiting for you to sign in",
-    "state_failed": "Sign-in failed",
-    "state_removing": "Removing…",
-    "state_requested": "Starting the sign-in…",
-    "state_signed_out": "Signed out",
-    "state_unknown": "Not signed in",
-    "title": "Freebuff-CLI accounts",
-    "toast_action_failed": "That did not work. Try again.",
-    "toast_add_failed": "Could not add the account"
   }
 }

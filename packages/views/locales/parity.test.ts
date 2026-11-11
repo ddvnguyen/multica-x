@@ -3,12 +3,22 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  FORK_OWNED_PREFIXES,
+  isForkOwnedKey,
+  isForkOwnedNamespace,
+} from "./fork-owned-keys";
 import { RESOURCES } from "./index";
 
 // Schema-level guard: every key in the EN bundle must have a counterpart
 // in every non-English bundle and vice-versa. Catches retrofit drift where a
 // new EN key lands without a translated key, which would silently fall back
 // to the English string in production.
+//
+// The EN -> locale direction covers only keys upstream ships too. Fork-owned
+// keys have no upstream counterpart, so an upstream sync cannot translate them:
+// they are product-localization work, tracked by fork-owned-keys.ts instead of
+// failing every sync.
 //
 // i18next plural rule: EN uses `_one` + `_other`; zh only uses `_other`
 // because Chinese has no grammatical number. Normalize both forms to
@@ -52,6 +62,11 @@ const en = RESOURCES.en;
 const translatedLocales = Object.keys(RESOURCES).filter(
   (locale) => locale !== "en",
 );
+const forkOwnedNamespaces = new Set(
+  Object.keys(en).filter((ns) =>
+    isForkOwnedNamespace(ns, [...keySet(en[ns] ?? {})]),
+  ),
+);
 
 describe("locale bundle parity", () => {
   it("registers every JSON file in RESOURCES (EN)", () => {
@@ -62,7 +77,11 @@ describe("locale bundle parity", () => {
     const bundle = RESOURCES[locale as keyof typeof RESOURCES];
 
     it(`declares the same namespaces in EN and ${locale}`, () => {
-      expect(Object.keys(bundle).sort()).toEqual(Object.keys(en).sort());
+      const namespacesIn = (resources: object) =>
+        Object.keys(resources)
+          .filter((ns) => !forkOwnedNamespaces.has(ns))
+          .sort();
+      expect(namespacesIn(bundle)).toEqual(namespacesIn(en));
     });
 
     it(`registers every JSON file in RESOURCES (${locale})`, () => {
@@ -70,10 +89,12 @@ describe("locale bundle parity", () => {
     });
 
     for (const ns of Object.keys(en)) {
-      it(`${ns}: ${locale} covers every EN key`, () => {
+      it(`${ns}: ${locale} covers every upstream EN key`, () => {
         const enKeys = keySet(en[ns] ?? {});
         const translatedKeys = keySet(bundle[ns] ?? {});
-        const missing = [...enKeys].filter((k) => !translatedKeys.has(k));
+        const missing = [...enKeys].filter(
+          (k) => !translatedKeys.has(k) && !isForkOwnedKey(ns, k),
+        );
         expect(missing).toEqual([]);
       });
 
@@ -85,6 +106,27 @@ describe("locale bundle parity", () => {
       });
     }
   }
+});
+
+// The fork-owned table is data, so it drifts independently of the bundles: a
+// removed fork surface would leave a prefix that exempts nothing.
+describe("fork-owned key table", () => {
+  it("names only subtrees that still exist in EN", () => {
+    const stale = Object.entries(FORK_OWNED_PREFIXES).flatMap(
+      ([ns, prefixes]) => {
+        const keys = [...keySet(en[ns] ?? {})];
+        return prefixes
+          .filter(
+            (prefix) =>
+              !keys.some(
+                (key) => key === prefix || key.startsWith(prefix + "."),
+              ),
+          )
+          .map((prefix) => `${ns}:${prefix}`);
+      },
+    );
+    expect(stale).toEqual([]);
+  });
 });
 
 // Dead plural-key guard: a locale whose CLDR plural rules have no `one`

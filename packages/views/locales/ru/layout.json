@@ -12,8 +12,7 @@
     "runtimes": "Среды выполнения",
     "skills": "Навыки",
     "settings": "Настройки",
-    "views": "Представления",
-    "decisions": "Decisions"
+    "views": "Представления"
   },
   "tab": {
     "issue": "Задача",
@@ -63,15 +62,7 @@
     "new_issue": "Новая задача",
     "pinned_label": "Закреплённые",
     "show_more_pins": "Показать ещё {{count}}…",
-    "show_fewer_pins": "Показать меньше",
-    "ai_team_group": "AI Team",
-    "discord_card": {
-      "dismiss": "Dismiss",
-      "title": "Join our Discord"
-    },
-    "new_issue_shortcut": "C",
-    "unread_overflow": "99+",
-    "work_group": "Work"
+    "show_fewer_pins": "Показать меньше"
   },
   "spaces": {
     "work": "Работа",
@@ -93,8 +84,7 @@
     "in_other_window": "Другое окно",
     "all_workspaces_open": "Все рабочие пространства уже открыты в окнах",
     "pin_workspace": "Закрепить рабочее пространство",
-    "unpin_workspace": "Открепить рабочее пространство",
-    "decisions": "Decisions"
+    "unpin_workspace": "Открепить рабочее пространство"
   },
   "panels": {
     "work": {

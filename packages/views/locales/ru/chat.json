@@ -262,7 +262,6 @@
     "rename": "Переименовать чат",
     "archive": "Архивировать чат",
     "unarchive": "Разархивировать чат",
-    "delete": "Удалить чат",
-    "view_profile": "View agent profile"
+    "delete": "Удалить чат"
   }
 }

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,6 +13,9 @@ import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
 // Load the requested locale and its English fallback synchronously so render
 // keeps Testing Library's API without importing every language into each file.
 // Discover namespaces from disk; the parity test checks production registration.
+// A locale may ship only the upstream namespaces: i18next falls back to English
+// for a namespace it cannot find, which is how a fork-owned namespace such as
+// `decisions` renders in Russian.
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), "../locales");
 const namespaces = readdirSync(join(localesDir, "en"))
   .filter((name) => name.endsWith(".json"));
@@ -21,10 +24,14 @@ const localeCache = new Map<SupportedLocale, LocaleResources>();
 function loadLocale(locale: SupportedLocale): LocaleResources {
   let resources = localeCache.get(locale);
   if (!resources) {
-    resources = Object.fromEntries(namespaces.map((filename) => [
-      filename.slice(0, -5),
-      JSON.parse(readFileSync(join(localesDir, locale, filename), "utf8")),
-    ]));
+    resources = Object.fromEntries(
+      namespaces
+        .filter((filename) => existsSync(join(localesDir, locale, filename)))
+        .map((filename) => [
+          filename.slice(0, -5),
+          JSON.parse(readFileSync(join(localesDir, locale, filename), "utf8")),
+        ]),
+    );
     localeCache.set(locale, resources);
   }
   return resources;

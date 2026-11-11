@@ -154,7 +154,6 @@ import ruUsage from "./ru/usage.json";
 import ruUi from "./ru/ui.json";
 import ruSquads from "./ru/squads.json";
 import ruBilling from "./ru/billing.json";
-import ruDecisions from "./ru/decisions.json";
 import frCommon from "./fr/common.json";
 import frAuth from "./fr/auth.json";
 import frSettings from "./fr/settings.json";
@@ -378,7 +377,6 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     ui: ruUi,
     squads: ruSquads,
     billing: ruBilling,
-    decisions: ruDecisions,
   },
   fr: {
     common: frCommon,

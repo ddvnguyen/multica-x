@@ -143,15 +143,7 @@
   },
   "delegate": {
     "row": "Передать агенту: «{{prompt}}»",
-    "hint": "Быстрое создание",
-    "context_aria": "Created with",
-    "create_and_assign": "New issue and assign to {{name}}",
-    "detected": "Instruction",
-    "heading": "Hand to agent",
-    "parent": "Under {{identifier}}",
-    "pick_another": "Hand to another agent or squad...",
-    "pick_crumb": "Choose",
-    "squad": "Squad"
+    "hint": "Быстрое создание"
   },
   "best": {
     "assign": "Назначить «{{subject}}»: {{name}}",
@@ -173,9 +165,7 @@
     "back": "Назад",
     "prefix_commands": "Команды",
     "prefix_issues": "Задачи",
-    "prefix_people": "Участники и агенты",
-    "delegate": "Create and hand to {{name}}",
-    "search_instead": "Search as keywords"
+    "prefix_people": "Участники и агенты"
   },
   "trigger": {
     "label": "Поиск..."

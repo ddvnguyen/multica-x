@@ -199,13 +199,6 @@
       "quick": "Создание с агентом",
       "manual": "Ручное создание",
       "unsupported": "Недоступно при создании с агентом"
-    },
-    "appearance_title": "Appearance",
-    "theme": {
-      "dark": "Dark",
-      "light": "Light",
-      "system": "System",
-      "title": "Theme"
     }
   },
   "appearance": {
@@ -449,8 +442,7 @@
       "click": "Клик по карточке или строке открывает",
       "page": "Полную страницу",
       "peek": "Боковой предпросмотр",
-      "hint": "Shift+клик открывает второй вариант.",
-      "tab": "New tab"
+      "hint": "Shift+клик открывает второй вариант."
     },
     "description": "Выберите, какие поля отображаются на панели инструментов каждого диалога создания. Скрытые поля остаются доступны в меню ⋯ и снова появляются, когда получают значение.",
     "fields": {
@@ -1769,39 +1761,5 @@
       "admin_required": "Администратор может восстановить доступ.",
       "account_link": "У этого аккаунта сохранились ограничения. Восстановите доступ в подключённых приложениях."
     }
-  },
-  "composio": {
-    "connect": "Connect",
-    "connect_failed": "Couldn't start the connection. Please try again.",
-    "connected": "Connected",
-    "connecting": "Connecting…",
-    "connections_load_failed": "Couldn't load your existing connections, so connected status may be incomplete.",
-    "disconnect": "Disconnect",
-    "disconnect_confirm_cancel": "Cancel",
-    "disconnect_confirm_description": "Your connected account will be revoked at Composio and your agents will lose access to this toolkit. You can reconnect later.",
-    "disconnect_confirm_title": "Disconnect this app?",
-    "disconnect_failed": "Couldn't disconnect. Please try again.",
-    "disconnecting": "Disconnecting…",
-    "empty_description": "No toolkit has an enabled auth config in your Composio project yet. Enable one in the Composio dashboard to make it available here.",
-    "empty_title": "No connectable apps yet",
-    "expired": "Token expired",
-    "last_used": "Last used {{when}}",
-    "last_used_never": "Never used",
-    "load_failed": "Failed to load Composio toolkits.",
-    "loading": "Loading toolkits…",
-    "not_enabled_description_prefix": "Set",
-    "not_enabled_description_suffix": "on the server to enable Composio toolkit connections.",
-    "not_enabled_title": "Composio integration not enabled",
-    "page_description": "Connect apps your agents can use.",
-    "reconnect": "Reconnect",
-    "search_placeholder": "Search toolkits…",
-    "toast_connect_failed": "Couldn't complete the connection. Please try again.",
-    "toast_connected": "Connected",
-    "toast_disconnected": "Disconnected"
-  },
-  "mmx": {
-    "copied": "Copied",
-    "copy": "Copy version",
-    "version_label": "MMX version"
   }
 }

@@ -15,15 +15,7 @@
     "pin": "Закрепить в боковой панели",
     "unpin": "Открепить",
     "delete": "Удалить",
-    "no_matches": "Нет подходящих проектов",
-    "clear_selection": "Clear selection",
-    "create_first": "Create your first project",
-    "empty": "No projects yet",
-    "search_placeholder": "Search projects...",
-    "selected_other": "{{count}} selected",
-    "selected_one": "{{count}} selected",
-    "selected_few": "{{count}} selected",
-    "selected_many": "{{count}} selected"
+    "no_matches": "Нет подходящих проектов"
   },
   "table": {
     "name": "Название",
@@ -182,19 +174,7 @@
     "section_status": "Статус",
     "section_priority": "Приоритет",
     "section_lead": "Руководитель",
-    "view": "Вид",
-    "clear_filters": "Clear filters",
-    "direction_asc": "Ascending",
-    "direction_desc": "Descending",
-    "display": "Display",
-    "filter_active_count_other": "{{count}} filters",
-    "filter_label": "Filter",
-    "result_count_title": "Matching projects / all projects",
-    "section_columns": "Columns",
-    "sort_by": "Sort by",
-    "filter_active_count_one": "{{count}} filters",
-    "filter_active_count_few": "{{count}} filters",
-    "filter_active_count_many": "{{count}} filters"
+    "view": "Вид"
   },
   "intro": {
     "art": {

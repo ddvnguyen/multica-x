@@ -15,14 +15,7 @@
     },
     "last_run_empty": "--",
     "no_matches": "Нет подходящих автоматизаций",
-    "retry": "Повторить",
-    "empty": {
-      "hint": "Schedule recurring work for your AI agents. Pick a template or start from scratch.",
-      "title": "No autopilots yet"
-    },
-    "scope_all": "All",
-    "start_blank": "Start from scratch",
-    "title": "Autopilot"
+    "retry": "Повторить"
   },
   "status": {
     "active": "Активен",
@@ -122,9 +115,7 @@
       "deleting": "Удаление..."
     },
     "not_found_description": "Возможно, он удалён или у вас нет доступа.",
-    "back_to_list": "Все автопилоты",
-    "section_danger": "Danger Zone",
-    "section_properties": "Properties"
+    "back_to_list": "Все автопилоты"
   },
   "access": {
     "title": "Управление доступом",
@@ -458,19 +449,7 @@
     "section_assignee": "Исполнитель",
     "section_mode": "Режим",
     "section_trigger": "Триггер",
-    "section_creator": "Создал",
-    "clear_filters": "Clear filters",
-    "direction_asc": "Ascending",
-    "direction_desc": "Descending",
-    "display": "Display",
-    "filter_active_count_other": "{{count}} filters",
-    "filter_label": "Filter",
-    "result_count_title": "Matching automations / all automations",
-    "section_columns": "Columns",
-    "sort_by": "Sort by",
-    "filter_active_count_one": "{{count}} filters",
-    "filter_active_count_few": "{{count}} filters",
-    "filter_active_count_many": "{{count}} filters"
+    "section_creator": "Создал"
   },
   "actions": {
     "row_menu": "Действия с автоматизацией",
@@ -487,12 +466,7 @@
       "deleting": "Удаление…",
       "description_few": "Это навсегда удалит {{count}} автоматизации и их историю запусков.",
       "description_many": "Это навсегда удалит {{count}} автоматизаций и их историю запусков."
-    },
-    "clear_selection": "Clear selection",
-    "selected_other": "{{count}} selected",
-    "selected_one": "{{count}} selected",
-    "selected_few": "{{count}} selected",
-    "selected_many": "{{count}} selected"
+    }
   },
   "wakeups": {
     "title": "Пробуждения по задачам",
@@ -575,16 +549,7 @@
         }
       },
       "title": "Возвращайте агентов к работе в нужный момент"
-    },
-    "clear": "Clear selection",
-    "clear_filters": "Clear filters",
-    "empty": "No wakeup rules yet",
-    "next_page": "Next",
-    "previous": "Previous",
-    "results": "Page {{page}} · {{count}} results",
-    "scope": "Scope",
-    "search": "Search issues or agents",
-    "selected": "{{count}} selected"
+    }
   },
   "intro": {
     "description": "Задайте расписание или вебхук. При каждом срабатывании Multica создаст задачу для агента или запустит его напрямую. Выберите шаблон и настройте его.",

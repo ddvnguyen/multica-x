@@ -464,16 +464,7 @@
     "empty_grouping": "Нет подходящих задач",
     "no_value": "Нет значения",
     "ordered_by": "Доска упорядочена по {{field}}",
-    "manual_reorder_hint": "Переключитесь на ручной порядок, чтобы переставлять задачи внутри столбца.",
-    "add_list": "Add list",
-    "collapse_list": "Collapse list",
-    "column_actions": "Column actions",
-    "expand_list": "Expand {{name}}",
-    "filter_to_status": "Filter to this status",
-    "outside_workflow": "Not in this board’s workflow",
-    "rename_list": "Rename list",
-    "rename_list_locked": "Built-in lists cannot be renamed.",
-    "workflow_columns_note": "Columns come from the board’s workflow; views outside a project use Default."
+    "manual_reorder_hint": "Переключитесь на ручной порядок, чтобы переставлять задачи внутри столбца."
   },
   "peek": {
     "panel_label": "Превью задачи",
@@ -607,15 +598,11 @@
     "thread_nav_show_replies_many": "Показать {{count}} ответов",
     "not_found_title": "Задача не найдена",
     "load_failed": "Не удалось загрузить задачу.",
-    "load_retry": "Повторить",
-    "restore_to_inbox_tooltip": "Restore to inbox"
+    "load_retry": "Повторить"
   },
   "timeline": {
     "loading": "Загрузка...",
-    "jump_to_latest": "К последним событиям",
-    "order_newest_first": "Newest first",
-    "order_oldest_first": "Oldest first",
-    "order_toggle_hint": "Toggle timeline order"
+    "jump_to_latest": "К последним событиям"
   },
   "activity": {
     "created": "создал(а) эту задачу",
@@ -960,23 +947,7 @@
     "more_runs_few": "Показать ещё {{count}}",
     "more_runs_many": "Показать ещё {{count}}",
     "queued_count_few": "В очереди: {{count}}",
-    "queued_count_many": "В очереди: {{count}}",
-    "open_session_tooltip": "Open session",
-    "sparkline_now": "Now",
-    "steer_aria": "Send a message to this run",
-    "steer_failed": "Could not send the message",
-    "steer_hint_queue": "Queue — next turn",
-    "steer_hint_steer": "Steer — now",
-    "steer_now": "Steer",
-    "steer_placeholder": "Message this run…",
-    "steer_promote": "Steer now",
-    "steer_promote_failed": "Could not steer this message",
-    "steer_promoted": "Steered into the running turn",
-    "steer_queue": "Queue",
-    "steer_queued": "Queued for the next turn",
-    "steer_sent": "Sent to the running turn",
-    "steer_target": "Run {{id}}",
-    "steer_tooltip": "Steer or queue a message"
+    "queued_count_many": "В очереди: {{count}}"
   },
   "runs_timeline": {
     "title": "Запуски",
@@ -1057,13 +1028,7 @@
     "day_runs_many": "{{count}} запусков",
     "cumulative_aria_few": "Совокупная стоимость во времени: {{cost}} за {{count}} запуска",
     "cumulative_aria_many": "Совокупная стоимость во времени: {{cost}} за {{count}} запусков",
-    "credits_count": "Кредиты {{provider}}: {{credits}}",
-    "detail_session": "Session",
-    "detail_session_start": "Session start",
-    "detail_work_dir": "Work dir",
-    "session_start_fresh": "Fresh",
-    "session_start_resumed": "Resumed (warm)",
-    "session_start_seeded": "Seeded from {{session}}"
+    "credits_count": "Кредиты {{provider}}: {{credits}}"
   },
   "terminate_dialog": {
     "title": "Остановить этот запуск?",
@@ -1101,8 +1066,7 @@
     "delete_dialog_title_many": "Удалить задачи ({{count}})?",
     "delete_dialog_desc_few": "Это действие нельзя отменить. Выбранные задачи и все связанные с ними данные будут удалены без возможности восстановления.",
     "delete_dialog_desc_many": "Это действие нельзя отменить. Выбранные задачи и все связанные с ними данные будут удалены без возможности восстановления.",
-    "delete_restricted": "Вы можете удалять задачи, созданные вами или вашими агентами. Владельцы и администраторы рабочего пространства могут удалять любые задачи.",
-    "delete_dialog_warning": "Any workspace member can delete issues."
+    "delete_restricted": "Вы можете удалять задачи, созданные вами или вашими агентами. Владельцы и администраторы рабочего пространства могут удалять любые задачи."
   },
   "card": {
     "update_failed": "Не удалось обновить задачу",
@@ -1240,39 +1204,7 @@
     "variant_my_any": "Любое отношение",
     "variant_my_assigned": "Назначено мне",
     "variant_my_created": "Создано мной",
-    "variant_my_involved": "Я участвую",
-    "add_filter": "Add filter",
-    "cancel": "Cancel",
-    "create": "Create view",
-    "custom_property": "Custom property",
-    "default_hint": "How members first see this view; everyone can adjust for themselves afterwards",
-    "display_defaults": "Default display",
-    "edit_title": "Edit view",
-    "filters_label": "Filters",
-    "hint_my_any": "Based on My issues · All",
-    "hint_my_assigned": "Based on My issues · Assigned",
-    "hint_my_created": "Based on My issues · Created",
-    "hint_my_involved": "Based on My issues · Involved",
-    "hint_project": "Based on project “{{title}}”, available only on that project page",
-    "hint_project_agents": "Based on project “{{title}}” issues assigned to agents, available only on that project page",
-    "hint_project_members": "Based on project “{{title}}” issues assigned to members, available only on that project page",
-    "hint_workspace": "Based on all workspace issues",
-    "hint_workspace_agents": "Based on workspace issues assigned to agents",
-    "hint_workspace_members": "Based on workspace issues assigned to members",
-    "layout_label": "Layout",
-    "my_private_note": "My issues views are visible only to you",
-    "name_label": "Name",
-    "name_placeholder": "e.g. Needs review",
-    "name_required": "Enter a view name",
-    "title": "Save as view",
-    "toast_conflict": "Someone else edited this view — reopen it and try again",
-    "toast_created": "View created",
-    "toast_failed": "Failed to create view",
-    "toast_updated": "View updated",
-    "update": "Save changes",
-    "visibility_label": "Visibility",
-    "visibility_private": "Only visible to me",
-    "visibility_workspace": "Visible to workspace members"
+    "variant_my_involved": "Я участвую"
   },
   "plugins": {
     "panels": "Плагины",
@@ -1898,9 +1830,7 @@
       "picker_more": "Создайте другие рабочие процессы в разделе «Настройки → Рабочие процессы»."
     },
     "picker": {
-      "footer": "Показаны только статусы рабочего процесса этой задачи. Справа указан исполнитель, которому задача передаётся при переходе в статус.",
-      "header": "{{workflow}} · from project “{{project}}”",
-      "header_no_project": "{{workflow}} statuses · no project"
+      "footer": "Показаны только статусы рабочего процесса этой задачи. Справа указан исполнитель, которому задача передаётся при переходе в статус."
     },
     "confirm": {
       "title": "Переместить {{issue}} в «{{status}}»?",
@@ -1943,8 +1873,7 @@
       "brief_header": "Задание рабочего процесса, переданное этому запуску"
     },
     "detail": {
-      "card_title": "{{workflow}} · из {{project}}",
-      "follows_project": "(from project)"
+      "card_title": "{{workflow}} · из {{project}}"
     },
     "list_separator": ", ",
     "handoff": {
@@ -2167,108 +2096,5 @@
     "copy_url": "Копировать URL",
     "copied": "URL скопирован",
     "copy_failed": "Не удалось скопировать URL"
-  },
-  "agent_question": {
-    "answer_label": "Your answer to: {{question}}",
-    "answer_placeholder": "Your answer",
-    "approve": "Approve plan",
-    "ask_title": "The agent needs your answer",
-    "failed": "Could not send your answer. Try again.",
-    "multiple_choices": "Pick any",
-    "other_placeholder": "Or write your own answer",
-    "plan_hint": "Approve it, or say what to change.",
-    "plan_title": "Plan ready for review",
-    "request_changes": "Request changes",
-    "send": "Answer",
-    "sending": "Sending...",
-    "sent": "Answer sent",
-    "single_choice": "Pick one"
-  },
-  "ask_plan": {
-    "add_comment": "Add comment",
-    "add_passage_comment": "Comment",
-    "cancel": "Cancel plan",
-    "cancel_confirm": "Click again to cancel",
-    "cancel_edit": "Stop editing",
-    "clear_selection": "Clear the selected passage",
-    "comment_on_passage": "What should change here?",
-    "comment_placeholder": "What should change?",
-    "comment_shortcut": "⌘/Ctrl+Enter adds the comment",
-    "comments_empty": "No comments yet.",
-    "comments_heading": "Your comments",
-    "comments_threads": "Comments",
-    "comments_threads_empty": "Select a passage to comment on it, or leave a comment on the plan below.",
-    "delivered_badge": "Sent",
-    "edit_body": "Section text",
-    "edit_heading": "Section heading",
-    "edit_section": "Edit",
-    "edit_section_named": "Edit section {{heading}}",
-    "edit_shortcut": "⌘/Ctrl+Enter saves · Esc cancels",
-    "edit_stale": "The agent wrote this section after you started editing. The newer text is above your draft.",
-    "failed": "Could not record your review. Try again.",
-    "hide_resolved": "Hide resolved",
-    "history": "History",
-    "history_close": "Close the history",
-    "history_current": "Current",
-    "history_empty": "This section has no recorded writes yet.",
-    "history_failed": "The history could not be loaded.",
-    "history_loading": "Loading the history…",
-    "history_named": "Show the history of {{heading}}",
-    "history_restore": "Restore this version",
-    "history_retry": "Retry",
-    "history_revision": "Revision {{revision}}",
-    "history_title": "History of {{heading}}",
-    "history_writer_agent": "Agent",
-    "history_writer_member": "You",
-    "pending_badge": "Pending",
-    "pending_hint": "{{n}} passage comment(s) will be sent to the agent with your verdict.",
-    "plan_changes_requested": "Changes requested. Waiting for the agent to revise and resubmit.",
-    "plan_draft": "The agent is preparing this plan — there is nothing to review yet.",
-    "remove_comment": "Remove comment",
-    "reply": "Reply",
-    "reply_placeholder": "Reply to this comment",
-    "reply_send": "Reply",
-    "resolve": "Resolve",
-    "resolved_badge": "Resolved",
-    "revision": "Revision {{revision}}",
-    "save_section": "Save section",
-    "saving_section": "Saving…",
-    "section_empty": "No content in this section yet.",
-    "sections_empty": "This plan has no sections yet.",
-    "selection_hint": "Select a passage in a section to comment on it.",
-    "selection_quote": "“{{quote}}”",
-    "show_resolved": "Show {{n}} resolved",
-    "stale_notice": "The plan moved since you opened it. The current revision is shown above; try again.",
-    "unknown_author": "A member"
-  },
-  "view_bar": {
-    "builtin_tag": "Built-in",
-    "context_edit": "Edit view",
-    "context_pin": "Pin to sidebar",
-    "context_unpin": "Unpin from sidebar",
-    "delete": "Delete",
-    "delete_description": "“{{name}}” will be deleted for everyone who can see it",
-    "delete_title": "Delete view?",
-    "drag_handle": "Drag to reorder",
-    "manage_hint": "Order and visibility only affect you",
-    "manage_title": "Manage views",
-    "menu_label": "Views",
-    "menu_manage": "Manage views",
-    "menu_new": "New view",
-    "more_label": "More views",
-    "row_hide": "Hide from bar",
-    "row_menu": "More actions",
-    "row_show": "Show on bar",
-    "toast_deleted": "View deleted",
-    "visible_toggle": "Show in view bar"
-  },
-  "view_selector": {
-    "edit": "Edit view",
-    "empty": "No saved views yet",
-    "exit": "Exit view",
-    "private_group": "Private",
-    "shared_group": "Shared with workspace",
-    "trigger": "Views",
-    "unavailable": "This view is no longer available"
   }
 }

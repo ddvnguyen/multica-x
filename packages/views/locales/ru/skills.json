@@ -33,18 +33,7 @@
       "retry": "Повторить"
     },
     "supporting_data_warning": "Не удалось загрузить часть данных рабочего пространства. Атрибуция автора, названия сред выполнения или права на редактирование могут отображаться не полностью.",
-    "search": "Поиск навыков",
-    "empty": {
-      "description": "Create or import a skill.",
-      "title": "No skills yet"
-    },
-    "intro_banner": {
-      "body": "Anyone can create a skill, import one from a URL or a local folder, or copy one from their local runtime — and every agent can use it.",
-      "highlight": "Local runtime skills stay private until you copy one here.",
-      "title": "Shared with your workspace."
-    },
-    "learn_more": "Learn more →",
-    "search_placeholder": "Search skills…"
+    "search": "Поиск навыков"
   },
   "table": {
     "name": "Название",
@@ -115,9 +104,7 @@
     "updated_toast_few": "Обновлено навыков из источника: {{count}}",
     "updated_toast_many": "Обновлено навыков из источника: {{count}}",
     "added_multi_toast_few": "Добавлено агентам: {{count}}",
-    "added_multi_toast_many": "Добавлено агентам: {{count}}",
-    "clear_selection": "Clear selection",
-    "selected": "{{count}} selected"
+    "added_multi_toast_many": "Добавлено агентам: {{count}}"
   },
   "toolbar": {
     "section_usage": "Использование",
@@ -126,19 +113,7 @@
     "no_labels": "Пока нет меток",
     "no_results": "Ничего не найдено",
     "manage_labels": "Управление метками...",
-    "manage_labels_title": "Метки навыков",
-    "clear_filters": "Clear filters",
-    "direction_asc": "Ascending",
-    "direction_desc": "Descending",
-    "display": "Display",
-    "filter_active_count_other": "{{count}} filters",
-    "filter_label": "Filter",
-    "result_count_title": "Matching skills / all skills",
-    "section_columns": "Columns",
-    "sort_by": "Sort by",
-    "filter_active_count_one": "{{count}} filters",
-    "filter_active_count_few": "{{count}} filters",
-    "filter_active_count_many": "{{count}} filters"
+    "manage_labels_title": "Метки навыков"
   },
   "detail": {
     "read_only": "Только для чтения",
@@ -191,9 +166,7 @@
         "cancel": "Отмена",
         "confirm": "Обновить",
         "refreshing": "Обновление…"
-      },
-      "button": "Update",
-      "tooltip": "Re-download this skill from its source"
+      }
     },
     "delete_dialog": {
       "title": "Удалить навык?",
@@ -225,13 +198,7 @@
       "files_one": "{{count}} файл",
       "files_other": "Файлов: {{count}}",
       "files_few": "Файлов: {{count}}",
-      "files_many": "Файлов: {{count}}",
-      "updated": "Updated {{when}}",
-      "updated_by": "Updated {{when}} by {{name}}",
-      "used_by_other": "{{count}} agents",
-      "used_by_one": "{{count}} agents",
-      "used_by_few": "{{count}} agents",
-      "used_by_many": "{{count}} agents"
+      "files_many": "Файлов: {{count}}"
     },
     "overview": {
       "properties": "Свойства",
@@ -243,13 +210,7 @@
       "permissions_owner": "Вы можете редактировать и удалять этот навык. Изменения вступят в силу при следующем запуске агента.",
       "permissions_locked_creator": "Редактировать этот навык может только создатель ({{name}}) или администратор рабочего пространства.",
       "permissions_locked": "Редактировать этот навык может только создатель или администратор рабочего пространства.",
-      "character_count": "{{count}} символов",
-      "properties_help": "About skill properties",
-      "properties_hint": "These fields stay in sync with the SKILL.md frontmatter.",
-      "used_by_other": "Used by {{count}} agents",
-      "used_by_one": "Used by {{count}} agents",
-      "used_by_few": "Used by {{count}} agents",
-      "used_by_many": "Used by {{count}} agents"
+      "character_count": "{{count}} символов"
     },
     "files": {
       "list_aria": "Файлы навыка",
@@ -312,17 +273,6 @@
       "toast_restored": "Восстановлена v{{version}}",
       "unknown_author": "Неизвестно",
       "version_label": "v{{version}}"
-    },
-    "all_skills": "All skills",
-    "delete_aria": "Delete skill",
-    "delete_tooltip": "Delete skill",
-    "tabs": {
-      "aria": "Skill sections",
-      "files_other": "Files {{count}}",
-      "overview": "Overview",
-      "files_one": "Files {{count}}",
-      "files_few": "Files {{count}}",
-      "files_many": "Files {{count}}"
     }
   },
   "create": {

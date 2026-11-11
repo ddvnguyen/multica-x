@@ -28,6 +28,13 @@ How we pull `multica-ai/multica` into our fork every 4–5 days. The script is
 3. **Resolve.** `[fork-owned]` files keep our behaviour, everything else takes
    upstream. Regenerate rather than hand-merge where you can: `make sqlc` for
    `server/pkg/db/generated/**`, both sides' keys in the locale JSON.
+
+   `packages/views/locales/parity.test.ts` only requires translations for keys
+   upstream also ships; the fork's own surfaces are listed in
+   `packages/views/locales/fork-owned-keys.ts`, so a locale that never had them
+   (Russian arrived with upstream) falls back to English instead of failing the
+   sync. When upstream adds keys inside an exempted subtree, split that prefix so
+   the new keys are covered again; a new fork surface extends the table.
 4. **Checks.** `pnpm install --frozen-lockfile`, then `pnpm typecheck`,
    `pnpm lint`, `pnpm test`, and `make test` for Go; `make check` runs the
    combined set.
