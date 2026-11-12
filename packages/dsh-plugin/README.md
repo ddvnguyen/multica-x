@@ -132,18 +132,26 @@ Every other tab keeps the name the fork resolves for it.
 The header carries one more control than the strip: dsh's own right-Sidebar
 toggle, next to the tabs. It is the shell's column, not a Multica view — a press
 flips the panel dsh draws, with its own tabs, Start guide and collapse — and it
-addresses the selected project's `local_directory` resource ("All projects"
-uses the host's `workspaceFolder`). A project with no folder disables it with
-the copy that says what is missing.
+addresses the folder of whatever the reader is looking at. The chain is the
+picked project's `local_directory` resource, else the viewed issue's project,
+else the one project the board/list filter names, else the host's
+`workspaceFolder`. A picked project with no folder is reported, never replaced
+by another rung: the header never opens a folder its own picker does not name.
+
+Because it lives in the header the island draws once, the toggle works in every
+MMX view — board, list, issue, agents, skills, inbox, chat, settings — as soon
+as any rung resolves.
 
 Which Session the column edits is the project's, not whatever the Conversation
 last selected: on a host that can host the column beside MMX (card C's
 `hostPanel` and `selectHostedSession`), a press names the folder's Session and
-flips the column in place, so the board never leaves the main column. A host
-without that opt-in puts the folder's Session on screen first and opens the
-column there, which is the only place its Sidebar can be drawn. An open column
-is closed where it is, and a press that cannot proceed reports why in the
-tooltip.
+flips the column in place, so MMX never leaves the main column. **A press never
+navigates.** A host whose build cannot host the column beside MMX gets a
+disabled button ("This dsh build cannot show the side panel next to MMX")
+with no press at all, because the only other place its Sidebar can be drawn is
+over an on-screen Session — which would replace MMX with the dsh page. An open
+column is closed where it is, and a press that cannot proceed reports why in
+the tooltip.
 
 ## Keeping the shell in step
 

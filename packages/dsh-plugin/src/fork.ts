@@ -120,6 +120,13 @@ export { usePageScope } from "@multica/views/layout";
 export type { PageScope } from "@multica/views/layout";
 export { projectListOptions } from "@multica/core/projects/queries";
 export { projectResourcesOptions } from "@multica/core/projects";
+
+// The side panel's folder chain (M-316) reads the view rather than only the
+// header's picker: the issue on screen names its project, and the board's filter
+// can name one too. Both come from the fork's own stores and route resolver, so
+// the header reads the same cache entries the page it sits above already fills.
+export { useCanonicalIssue } from "@multica/core/issues/canonical-id";
+export { useViewStore } from "@multica/core/issues/stores/view-store-context";
 export type { Project } from "@multica/core/types/project";
 export type { ProjectResource } from "@multica/core/types/project";
 

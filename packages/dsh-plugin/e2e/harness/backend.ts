@@ -27,7 +27,10 @@ const ISSUE_TITLES = [
   "Overlays close on leave",
 ];
 
-function issue(index: number) {
+/** The project `?issue&issueProject` puts the harnessed issue in (M-316). */
+export const ISSUE_PROJECT_ID = "project-issue";
+
+function issue(index: number, projectId: string | null = null) {
   return {
     id: `11111111-1111-4111-8111-11111111111${index}`,
     workspace_id: "ws-1",
@@ -42,7 +45,7 @@ function issue(index: number) {
     creator_type: "member",
     creator_id: "user-1",
     parent_issue_id: null,
-    project_id: null,
+    project_id: projectId,
     position: index * 1000,
     stage: null,
     start_date: null,
@@ -147,6 +150,12 @@ export interface BackendOptions {
   problem?: string | null;
   /** The folder the "All projects" default addresses (M-159); empty means none. */
   workspaceFolder?: string;
+  /**
+   * The project the harnessed issue belongs to, and the folder its
+   * `local_directory` resource names (M-316). Unset leaves the issue without a
+   * project, which is what the pre-M-316 pages looked like.
+   */
+  issueProject?: { id: string; folder: string };
   /** The rows `GET /api/agent-task-snapshot` answers (M-136's ownership map). */
   agentTasks?: unknown[];
 }
@@ -288,6 +297,26 @@ export function installBackend(options: BackendOptions = {}): void {
     if (url.startsWith("/multica/api/labels")) {
       return json({ labels: [], total: 0 });
     }
+    // A project's resources are watched before the projects list matcher below,
+    // which would otherwise answer them with the list envelope (M-316).
+    if (/^\/multica\/api\/projects\/[^/]+\/resources$/.test(path)) {
+      const projectId = path.split("/")[4] ?? "";
+      const folder = options.issueProject?.folder;
+      const resources =
+        folder === undefined || options.issueProject?.id !== projectId
+          ? []
+          : [
+              {
+                id: "resource-1",
+                project_id: projectId,
+                resource_type: "local_directory",
+                resource_ref: { local_path: folder, daemon_id: "" },
+                created_at: "2026-01-01T00:00:00Z",
+                updated_at: "2026-01-01T00:00:00Z",
+              },
+            ];
+      return json({ resources, total: resources.length });
+    }
     if (url.startsWith("/multica/api/projects")) return json({ projects: [], total: 0 });
     if (url.startsWith("/multica/api/pins")) return json([]);
     if (url.startsWith("/multica/api/wakeups")) return json({ wakeups: [], total: 0 });
@@ -347,7 +376,7 @@ export function installBackend(options: BackendOptions = {}): void {
     // The issue detail page addresses one issue by identifier (M-146's second
     // dialog opens from its actions menu), and reads its comments beside it.
     if (/^\/multica\/api\/issues\/[^/?]+$/.test(path)) {
-      return json(issue(1));
+      return json(issue(1, options.issueProject?.id ?? null));
     }
     if (url.includes("/comments")) return json([]);
     if (url.startsWith("/multica/api/issues")) {

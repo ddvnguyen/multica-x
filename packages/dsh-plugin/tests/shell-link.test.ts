@@ -1,7 +1,8 @@
 /**
- * The shell-link rules (M-159): folder resolution, workspace matching, session
- * binding, and the toggle plan's `hostPanel` feature detection. All pure — the
- * dsh faces enter as structural test doubles.
+ * The shell-link rules (M-159, M-316): the folder chain every MMX view feeds,
+ * workspace matching, session binding, and the toggle plan's `hostPanel`
+ * feature detection — including the press that must never navigate. All pure —
+ * the dsh faces enter as structural test doubles.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,7 @@ import {
   disabledTooltip,
   folderForSelection,
   folderOfProjectResources,
+  HOST_NO_BESIDE_PANEL_TOOLTIP,
   isNoSessionSurfaceError,
   normalizePath,
   NO_SESSION_SURFACE_NOTE,
@@ -17,8 +19,9 @@ import {
   panelToggleTitle,
   planSidebarToggle,
   sessionSurfaceMounted,
-  waitForMountedSession,
+  toggleState,
   workspaceForFolder,
+  type FolderSelectionInput,
   type ProjectResourceLike,
   type WorkspaceLike,
 } from "../src/client/shell-link";
@@ -65,40 +68,137 @@ describe("folderOfProjectResources", () => {
   });
 });
 
+/** One `resourceFor` over a fixed map: a missing id answers `null`. */
+function foldersFrom(map: Record<string, string>): (id: string) => string | null {
+  return (id) => map[id] ?? null;
+}
+
+function selection(overrides: Partial<FolderSelectionInput> = {}): FolderSelectionInput {
+  return {
+    projectId: null,
+    projects: PROJECTS,
+    resourceFor: () => null,
+    workspaceFolder: "",
+    ...overrides,
+  };
+}
+
 describe("folderForSelection", () => {
-  it("uses the selected project's folder", () => {
-    expect(folderForSelection("p1", PROJECTS, (id) => (id === "p1" ? "/srv/demo" : null), "")).toEqual({
-      folder: "/srv/demo",
-      reason: "project",
-    });
+  it("uses the picked project's folder", () => {
+    expect(
+      folderForSelection(
+        selection({ projectId: "p1", resourceFor: foldersFrom({ p1: "/srv/demo" }) }),
+      ),
+    ).toEqual({ folder: "/srv/demo", reason: "project" });
   });
 
-  it("disables with the link-a-folder copy when the project has no local_directory", () => {
-    const resolved = folderForSelection("p2", PROJECTS, () => null, "/srv/demo");
+  it("disables with the link-a-folder copy when the picked project has no local_directory", () => {
+    const resolved = folderForSelection(selection({ projectId: "p2", workspaceFolder: "/srv/demo" }));
     expect(resolved).toEqual({ folder: null, reason: "project-no-folder" });
     expect(disabledTooltip(resolved.reason, resolved.folder)).toBe("Link a folder to this project");
   });
 
-  it("does not rescue a project with the global default", () => {
-    const resolved = folderForSelection("p2", PROJECTS, () => undefined, "/srv/only-all");
+  it("does not replace a picked project with another rung", () => {
+    // The header's own picker must never open a folder it does not name.
+    const resolved = folderForSelection(
+      selection({
+        projectId: "p2",
+        issueProjectId: "p3",
+        workspaceFolder: "/srv/only-all",
+        resourceFor: foldersFrom({ p3: "/srv/issue" }),
+      }),
+    );
     expect(resolved.folder).toBeNull();
   });
 
-  it("falls back to workspaceFolder for All projects", () => {
-    expect(folderForSelection(null, PROJECTS, () => null, "/srv/demo")).toEqual({
+  it("keeps working while the project list is loading", () => {
+    const resolved = folderForSelection(
+      selection({
+        projectId: "p1",
+        projects: undefined,
+        resourceFor: foldersFrom({ p1: "/srv/demo" }),
+      }),
+    );
+    expect(resolved).toEqual({ folder: "/srv/demo", reason: "project" });
+  });
+
+  it("uses the viewed issue's project under All projects", () => {
+    // The Owner's case: an issue page whose picker still says "All projects".
+    const resolved = folderForSelection(
+      selection({
+        issueProjectId: "p3",
+        resourceFor: foldersFrom({ p3: "/srv/issue" }),
+      }),
+    );
+    expect(resolved).toEqual({ folder: "/srv/issue", reason: "issue-project" });
+  });
+
+  it("prefers the viewed issue's project over the board's filter", () => {
+    const resolved = folderForSelection(
+      selection({
+        issueProjectId: "p3",
+        viewProjectId: "p1",
+        resourceFor: foldersFrom({ p1: "/srv/demo", p3: "/srv/issue" }),
+      }),
+    );
+    expect(resolved.folder).toBe("/srv/issue");
+  });
+
+  it("uses the one project the board filter names", () => {
+    const resolved = folderForSelection(
+      selection({ viewProjectId: "p1", resourceFor: foldersFrom({ p1: "/srv/demo" }) }),
+    );
+    expect(resolved).toEqual({ folder: "/srv/demo", reason: "view-project" });
+  });
+
+  it("falls through a named project that has no folder", () => {
+    const resolved = folderForSelection(
+      selection({
+        issueProjectId: "p3",
+        viewProjectId: "p1",
+        resourceFor: foldersFrom({ p1: "/srv/demo" }),
+      }),
+    );
+    expect(resolved).toEqual({ folder: "/srv/demo", reason: "view-project" });
+  });
+
+  it("names the folder-less project when nothing else resolves", () => {
+    const resolved = folderForSelection(selection({ issueProjectId: "p3" }));
+    expect(resolved).toEqual({ folder: null, reason: "project-no-folder" });
+    expect(disabledTooltip(resolved.reason, resolved.folder)).toBe("Link a folder to this project");
+  });
+
+  it("falls back to workspaceFolder when no project is named", () => {
+    expect(folderForSelection(selection({ workspaceFolder: "/srv/demo" }))).toEqual({
       folder: "/srv/demo",
       reason: "default",
     });
   });
 
+  it("falls through while the named project's resources are still loading", () => {
+    // `undefined` is "not known yet", not "no folder": the chain keeps going
+    // rather than claiming the project is unlinked.
+    const resolved = folderForSelection(
+      selection({
+        issueProjectId: "p3",
+        workspaceFolder: "/srv/only-all",
+        resourceFor: () => undefined,
+      }),
+    );
+    expect(resolved).toEqual({ folder: "/srv/only-all", reason: "default" });
+  });
+
   it("asks the reader to choose a project when All projects has no default", () => {
-    const resolved = folderForSelection(null, PROJECTS, () => null, "");
+    const resolved = folderForSelection(selection());
     expect(resolved.folder).toBeNull();
     expect(disabledTooltip(resolved.reason, resolved.folder)).toBe("Choose a project");
   });
 
-  it("reads All projects normally while the project list is loading", () => {
-    expect(folderForSelection(null, undefined, () => undefined, "/srv/demo")?.folder).toBe("/srv/demo");
+  it("ignores a blank issue or view project id", () => {
+    expect(folderForSelection(selection({ issueProjectId: "  ", viewProjectId: "" }))).toEqual({
+      folder: null,
+      reason: "no-folder",
+    });
   });
 });
 
@@ -180,48 +280,75 @@ describe("planSidebarToggle", () => {
     ).toEqual({ kind: "toggle" });
   });
 
-  it("flips it without card C when the bound Session is the on-screen one", () => {
-    expect(
-      planSidebarToggle({
-        hasHostPanel: false,
-        canNameSession: false,
-        mountedSessionId: "s-1",
-        boundSessionId: "s-1",
-      }),
-    ).toEqual({ kind: "toggle" });
+  it("never plans a navigation on a host that cannot host the panel", () => {
+    // M-316: no `hostPanel` means the only place the Sidebar can be drawn is over
+    // an on-screen Session, which replaces MMX with the dsh page. Two shapes of
+    // that host — nothing on screen, and somebody else's Session — both refuse.
+    for (const mountedSessionId of [undefined, "s-9", "s-1"]) {
+      expect(
+        planSidebarToggle({
+          hasHostPanel: false,
+          canNameSession: false,
+          mountedSessionId,
+          boundSessionId: "s-1",
+        }),
+      ).toEqual({ kind: "unavailable" });
+    }
   });
 
-  it("reveals the folder's Session when no Session is on screen", () => {
+  it("never plans a navigation on a naming-less host either", () => {
     expect(
       planSidebarToggle({
         hasHostPanel: false,
-        canNameSession: false,
-        mountedSessionId: undefined,
-        boundSessionId: "s-1",
-      }),
-    ).toEqual({ kind: "reveal", sessionId: "s-1" });
-  });
-
-  it("reveals when the screen is showing another Workspace's Session", () => {
-    expect(
-      planSidebarToggle({
-        hasHostPanel: false,
-        canNameSession: false,
-        mountedSessionId: "s-9",
-        boundSessionId: "s-1",
-      }),
-    ).toEqual({ kind: "reveal", sessionId: "s-1" });
-  });
-
-  it("asks for a Session to be created when the Workspace has none and nothing hosts it", () => {
-    expect(
-      planSidebarToggle({
-        hasHostPanel: false,
-        canNameSession: false,
+        canNameSession: true,
         mountedSessionId: undefined,
         boundSessionId: null,
       }),
-    ).toEqual({ kind: "reveal", sessionId: null });
+    ).toEqual({ kind: "unavailable" });
+  });
+});
+
+describe("toggleState", () => {
+  it("is enabled on an issue page whose picker says All projects", () => {
+    // The Owner's own flow (M-316): the picker has no project, the issue names
+    // one, and the press must work on that project's folder.
+    const resolved = folderForSelection(
+      selection({
+        issueProjectId: "p3",
+        resourceFor: foldersFrom({ p3: "/srv/issue" }),
+      }),
+    );
+    expect(
+      toggleState({ folder: resolved.folder, reason: resolved.reason, canHostPanel: true }),
+    ).toEqual({ disabled: false, title: "Open the dsh side panel on /srv/issue" });
+  });
+
+  it("names the host's limit first: no view can fix a build without hostPanel", () => {
+    expect(
+      toggleState({ folder: "/srv/demo", reason: "project", canHostPanel: false }),
+    ).toEqual({ disabled: true, title: HOST_NO_BESIDE_PANEL_TOOLTIP });
+    expect(
+      toggleState({ folder: null, reason: "no-folder", canHostPanel: false }).title,
+    ).toBe("This dsh build cannot show the side panel next to MMX");
+  });
+
+  it("is disabled with the folder-side copy when no folder resolves", () => {
+    expect(toggleState({ folder: null, reason: "no-folder", canHostPanel: true })).toEqual({
+      disabled: true,
+      title: "Choose a project",
+    });
+  });
+
+  it("shows the pressed state while a press is in flight", () => {
+    expect(
+      toggleState({
+        folder: "/srv/demo",
+        reason: "project",
+        canHostPanel: true,
+        busy: true,
+        expanded: true,
+      }).title,
+    ).toBe("Close the dsh side panel");
   });
 });
 
@@ -229,52 +356,6 @@ describe("panelToggleTitle", () => {
   it("names the fold it opens and the close it performs", () => {
     expect(panelToggleTitle(false, "/srv/demo")).toBe("Open the dsh side panel on /srv/demo");
     expect(panelToggleTitle(true, "/srv/demo")).toBe("Close the dsh side panel");
-  });
-});
-
-describe("waitForMountedSession", () => {
-  function sidebar(initial?: string) {
-    let current = initial;
-    const listeners = new Set<() => void>();
-    return {
-      mounted: {
-        getSnapshot: (): string | undefined => current,
-        subscribe: (listener: () => void): (() => void) => {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-      },
-      select(sessionId: string | undefined): void {
-        current = sessionId;
-        for (const listener of listeners) listener();
-      },
-      get listenerCount(): number {
-        return listeners.size;
-      },
-    };
-  }
-
-  it("answers at once when the Session is already on screen", async () => {
-    const face = sidebar("s-1");
-    await expect(waitForMountedSession(face, "s-1")).resolves.toBe(true);
-  });
-
-  it("resolves when the shell draws the Session it just selected", async () => {
-    const face = sidebar(undefined);
-    const waited = waitForMountedSession(face, "s-1", { intervalMs: 10 });
-    face.select("s-1");
-    await expect(waited).resolves.toBe(true);
-    // The subscription is released: a controller snapshot never keeps a
-    // finished click alive.
-    expect(face.listenerCount).toBe(0);
-  });
-
-  it("gives up instead of hanging the button", async () => {
-    const face = sidebar(undefined);
-    await expect(
-      waitForMountedSession(face, "s-1", { timeoutMs: 30, intervalMs: 5 }),
-    ).resolves.toBe(false);
-    expect(face.listenerCount).toBe(0);
   });
 });
 
@@ -309,6 +390,10 @@ describe("isNoSessionSurfaceError", () => {
 describe("describe", () => {
   it("explains no-session for a folder the reader follows into dsh", () => {
     expect(describeReason("no-session")).toBe(NO_SESSION_SURFACE_NOTE);
+  });
+
+  it("names the host's limit when the panel cannot be hosted beside MMX", () => {
+    expect(describeReason("host")).toBe(HOST_NO_BESIDE_PANEL_TOOLTIP);
   });
 });
 

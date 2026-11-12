@@ -1,14 +1,20 @@
 /**
- * Resolving what the header's side-panel toggle addresses (M-159).
+ * Resolving what the header's side-panel toggle addresses (M-159, M-316).
  *
  * One Multica Project equals one dsh Workspace (a folder). The folder comes
- * from the selected project's `local_directory` resource; "All projects" falls
- * back to the host's `workspaceFolder` config, empty meaning none. For a
- * folder the bridge matches the dsh Workspace by normalized path — creating
- * one when none exists (`workspaces.create` is idempotent) — and binds the
- * Session the sidebar surface works on: the on-screen one when it belongs to
- * that Workspace, otherwise the Workspace's first Session, otherwise a new
- * Session in it.
+ * from a chain, because the header is shared by every MMX view: the picked
+ * project's `local_directory` resource, else the viewed issue's project, else
+ * the one project the board/list filter names, else the host's
+ * `workspaceFolder` config — empty meaning none. For a folder the bridge
+ * matches the dsh Workspace by normalized path — creating one when none exists
+ * (`workspaces.create` is idempotent) — and binds the Session the sidebar
+ * surface works on: the on-screen one when it belongs to that Workspace,
+ * otherwise the Workspace's first Session, otherwise a new Session in it.
+ *
+ * A press never navigates: MMX keeps the main column, or the button stays
+ * disabled. The only places a dsh Sidebar can be drawn are beside MMX
+ * (`hostPanel`) or over an on-screen Session, and the second one means leaving
+ * MMX — exactly what the reader must not get from this control.
  *
  * Everything here is pure: the bridges carry real services, this module only
  * decides. Tests cover each rule separately.
@@ -65,39 +71,93 @@ export function folderOfProjectResources(
   return null;
 }
 
+/** Which rung of the chain answered, for the tooltip and the disabled copy. */
+export type FolderReason =
+  | "project"
+  | "issue-project"
+  | "view-project"
+  | "default"
+  | "project-no-folder"
+  | "no-folder";
+
+export interface FolderSelectionInput {
+  /** The header picker's project, or `null` for "All projects". */
+  projectId: string | null;
+  /** The projects the picked id is resolved against. */
+  projects: readonly { id: string }[] | undefined;
+  /**
+   * One project id to its `local_directory`-eligible folder, or `null` when
+   * that project has none. `undefined` means "not known yet" (resources still
+   * loading, or an id this view does not address).
+   */
+  resourceFor: (projectId: string) => string | null | undefined;
+  /** The host's default for "All projects"; may be empty. */
+  workspaceFolder: string;
+  /** The project the viewed issue belongs to; `null` when no issue is showing. */
+  issueProjectId?: string | null;
+  /**
+   * The one project the current board/list filter names; `null` when the view
+   * names none or more than one — an ambiguous context resolves nothing.
+   */
+  viewProjectId?: string | null;
+}
+
 /**
- * The folder the Files/Terminal buttons address right now.
+ * The folder the side-panel toggle addresses right now.
  *
- * @param projectId - the selected project, or `null` for "All projects".
- * @param projects - the projects the selected id is resolved against.
- * @param resourceFor - one project id to its `local_directory`-eligible folder,
- *   or `null`/`undefined` when that project has none (or their resources are
- *   still loading).
- * @param workspaceFolder - the host's default for "All projects"; may be empty.
+ * The order is the reader's own context, most specific first: the project they
+ * picked, the project the issue on screen belongs to, the single project the
+ * board/list filter names, then the host's "All projects" default.
+ *
+ * A picked project is explicit intent, so a picked project without a folder is
+ * reported as such rather than silently replaced by another rung — the header
+ * would otherwise open a folder that contradicts its own picker. The two
+ * derived rungs are context, not intent: when their project has no folder the
+ * chain keeps going, and if nothing resolves the missing-folder copy names the
+ * project that had no folder.
  */
-export function folderForSelection(
-  projectId: string | null,
-  projects: readonly { id: string }[] | undefined,
-  resourceFor: (projectId: string) => string | null | undefined,
-  workspaceFolder: string,
-): {
+export function folderForSelection(input: FolderSelectionInput): {
   folder: string | null;
-  reason: "project" | "default" | "project-no-folder" | "no-folder";
+  reason: FolderReason;
 } {
-  if (projectId !== null) {
+  const folderOf = (id: string | null | undefined): string | null => {
+    const trimmed = id?.trim() ?? "";
+    if (trimmed === "") return null;
+    const value = input.resourceFor(trimmed);
+    return value === undefined || value === null || value === "" ? null : value;
+  };
+
+  if (input.projectId !== null) {
     const known =
-      projects === undefined || projects.some((project) => project.id === projectId);
+      input.projects === undefined ||
+      input.projects.some((project) => project.id === input.projectId);
     if (!known) return { folder: null, reason: "no-folder" };
-    const fromProject = resourceFor(projectId);
-    if (fromProject !== undefined && fromProject !== null && fromProject !== "") {
-      return { folder: fromProject, reason: "project" };
-    }
-    // No folder on the project: buttons disabled with the link-a-folder copy,
-    // per the amendment — the global default never rescues a project.
+    const picked = folderOf(input.projectId);
+    if (picked !== null) return { folder: picked, reason: "project" };
     return { folder: null, reason: "project-no-folder" };
   }
-  const fallback = workspaceFolder.trim();
-  return { folder: fallback === "" ? null : fallback, reason: fallback === "" ? "no-folder" : "default" };
+
+  // The viewed issue's project, then the board/list context. Both are read the
+  // same way and both fall through when their project has no folder.
+  const derived: { id: string | null | undefined; reason: FolderReason }[] = [
+    { id: input.issueProjectId, reason: "issue-project" },
+    { id: input.viewProjectId, reason: "view-project" },
+  ];
+  let namedWithoutFolder = false;
+  for (const rung of derived) {
+    const id = rung.id?.trim() ?? "";
+    if (id === "") continue;
+    const folder = folderOf(id);
+    if (folder !== null) return { folder, reason: rung.reason };
+    namedWithoutFolder = true;
+  }
+
+  const fallback = input.workspaceFolder.trim();
+  if (fallback !== "") return { folder: fallback, reason: "default" };
+  return {
+    folder: null,
+    reason: namedWithoutFolder ? "project-no-folder" : "no-folder",
+  };
 }
 
 /**
@@ -122,9 +182,8 @@ export const SIDEBAR_NO_SESSION_MESSAGE = "no session surface is mounted";
 /**
  * The failure the dsh face raises for a write with no Session on screen.
  *
- * The fallback path can reach the same state by waiting too long for the
- * Session it just selected to be drawn (`waitForMountedSession`), so it raises
- * this exact error rather than a new message: one note path covers both.
+ * The hosted press raises this exact error rather than a new message, so one
+ * note path covers both the pre-check and the face's own throw.
  */
 export function noSessionSurfaceError(): Error {
   return new Error(`sidebarRight: ${SIDEBAR_NO_SESSION_MESSAGE}`);
@@ -141,19 +200,30 @@ export function isNoSessionSurfaceError(cause: unknown): boolean {
   return cause instanceof Error && cause.message.includes(SIDEBAR_NO_SESSION_MESSAGE);
 }
 
-export type DisabledReason = "project" | "default" | "project-no-folder" | "no-folder" | "no-session";
+export type DisabledReason = FolderReason | "no-session" | "host";
 
-/** The copy a reveal that never landed surfaces. */
+/**
+ * Why the button is dead on a dsh build without card C's `hostPanel`.
+ *
+ * A host without it can only draw the Sidebar over an on-screen Session, which
+ * means replacing MMX with the dsh page. The control never does that — the
+ * reader asked for the panel *beside* MMX — so it says what the build cannot do
+ * instead of navigating.
+ */
+export const HOST_NO_BESIDE_PANEL_TOOLTIP =
+  "This dsh build cannot show the side panel next to MMX";
+
+/** The copy a press that found no Session surface to draw surfaces. */
 export const NO_SESSION_SURFACE_NOTE =
   "The dsh side panel needs a session in the project folder";
 
 /**
  * The tooltip copy for one reason, the way the disabled state reads.
  *
- * The no-session throw is shell state, not a glitch — a host without card C's
- * `hostPanel` draws no sidebar until a Session owns the main column — so it
- * says why the way the disabled state does, instead of the controller's raw
- * error text leaking into the header.
+ * The no-session throw is shell state, not a glitch — the hosted column has
+ * nothing to draw for until a Session is bound to it — so it says why the way
+ * the disabled state does, instead of the controller's raw error text leaking
+ * into the header.
  */
 export function describe(reason: DisabledReason, folder: string | null = null): string {
   if (reason === "no-session") return NO_SESSION_SURFACE_NOTE;
@@ -167,8 +237,12 @@ export function disabledTooltip(
 ): string {
   switch (reason) {
     case "project":
+    case "issue-project":
+    case "view-project":
     case "default":
       return "Open the dsh side panel";
+    case "host":
+      return HOST_NO_BESIDE_PANEL_TOOLTIP;
     case "project-no-folder":
       return "Link a folder to this project";
     case "no-folder":
@@ -241,28 +315,25 @@ export function boundSessionId(
  * Start guide exactly as dsh draws them. `retarget` is the hosted case: the
  * column is drawn beside MMX, and it has to be told which Session's folder it
  * edits before it opens, or Files and Terminal would point at whichever
- * Session the Conversation last had. `reveal` is the case the controller
- * cannot answer on its own: no Session is on screen (MMX owns the main column
- * and the host has neither `hostPanel` nor `selectHostedSession`), so the
- * folder's Session has to be put on screen before the column has anything to
- * draw.
+ * Session the Conversation last had. `unavailable` is a host that cannot draw
+ * the column beside MMX: there is no press that keeps MMX, so nothing happens.
  */
 export type ToggleIntent =
   | { kind: "toggle" }
   | { kind: "retarget"; sessionId: string | null }
-  | { kind: "reveal"; sessionId: string | null };
+  | { kind: "unavailable" };
 
 /**
- * Plan the call one press makes.
+ * Plan the call one press makes. Never a navigation.
  *
- * The column always shows the Session bound to the project's folder. With card
- * C it renders beside MMX, so the press names that Session
- * (`selectHostedSession`) and flips the column, leaving the main column where it
- * is. Without it the only surface is the on-screen Session, and the press has to
- * bring the folder's own Session on screen first — otherwise the column opens
- * on somebody else's workspace. A host that hosts the panel but cannot name a
- * Session is left to toggle what it shows, since moving the column would mean
- * leaving MMX.
+ * The column always shows the Session bound to the project's folder, and it is
+ * only ever drawn beside MMX. With card C it renders there, so the press names
+ * that Session (`selectHostedSession`) and flips the column, leaving the main
+ * column where it is. Without `hostPanel` the press is `unavailable`: the only
+ * other surface is over an on-screen Session, and putting one there replaces
+ * MMX with the dsh page — the one outcome the reader has ruled out. A host
+ * that hosts the panel but cannot name a Session is left to toggle what it
+ * shows, since moving the column would mean leaving MMX.
  */
 export function planSidebarToggle(input: {
   hasHostPanel: boolean;
@@ -270,17 +341,17 @@ export function planSidebarToggle(input: {
   mountedSessionId: string | undefined;
   boundSessionId: string | null;
 }): ToggleIntent {
+  if (!input.hasHostPanel) return { kind: "unavailable" };
   const mounted = input.mountedSessionId?.trim();
   const onScreen = mounted !== undefined && mounted !== "";
   // The column already edits the project's folder: flip it, nothing to move.
   if (onScreen && input.boundSessionId === mounted) return { kind: "toggle" };
-  if (input.hasHostPanel && input.canNameSession) {
+  if (input.canNameSession) {
     return { kind: "retarget", sessionId: input.boundSessionId };
   }
-  // A host that hosts the panel but cannot name the column's Session keeps the
-  // column on the Session it draws; moving it would mean leaving MMX.
-  if (onScreen && input.hasHostPanel) return { kind: "toggle" };
-  return { kind: "reveal", sessionId: input.boundSessionId };
+  // A card C build before naming shipped: the column has no way to move, and
+  // moving it any other way would replace MMX with the dsh page.
+  return { kind: "toggle" };
 }
 
 /**
@@ -293,63 +364,38 @@ export function panelToggleTitle(expanded: boolean, folder: string): string {
   return expanded ? "Close the dsh side panel" : `Open the dsh side panel on ${folder}`;
 }
 
-/** How long a fallback waits for the shell to draw the Session it selected. */
-export const SESSION_MOUNT_TIMEOUT_MS = 5000;
-
 /**
- * Wait for the sidebar's on-screen Session to become `sessionId`.
+ * The rendered state of the toggle: enabled only when a press can keep MMX.
  *
- * Selecting a Session is a navigation: the shell re-renders, the runtime mints
- * that Session's store, and only then does the sidebar adopt it. Opening a tab
- * before that lands writes into no surface at all, so the fallback waits — on
- * the controller's own `mounted` snapshot, which is what its writes read —
- * and gives up after `timeoutMs` instead of hanging the button.
+ * Two independent facts decide it. The host has to be able to draw the panel
+ * beside MMX (`canHostPanel`), and the current view has to resolve a folder
+ * (`folder`). When either fails the button is disabled, and the tooltip says
+ * which one — the host's limit first, since no view can fix it.
  *
- * @param sidebarRight - the sidebar face whose `mounted` snapshot is watched.
- * @param sessionId - the Session the tab must open under.
- * @param options - timeout and poll interval; defaults are the module's.
- * @returns whether the Session became the on-screen one in time.
+ * @param input.reason - the chain's answer, for the folder-side copy.
+ * @param input.busy - a press is in flight.
+ * @param input.expanded - whether the column is shown (pressed state).
  */
-export async function waitForMountedSession(
-  sidebarRight: Pick<SidebarRightLike, "mounted">,
-  sessionId: string,
-  options: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<boolean> {
-  const mounted = sidebarRight.mounted;
-  if (mounted.getSnapshot() === sessionId) return true;
-  const timeoutMs = options.timeoutMs ?? SESSION_MOUNT_TIMEOUT_MS;
-  const intervalMs = options.intervalMs ?? 100;
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: () => void = () => {};
-    const finish = (value: boolean): void => {
-      if (settled) return;
-      settled = true;
-      unsubscribe();
-      if (timer !== null) clearTimeout(timer);
-      resolve(value);
-    };
-    const check = (): boolean => {
-      if (mounted.getSnapshot() === sessionId) {
-        finish(true);
-        return true;
-      }
-      return false;
-    };
-    unsubscribe = mounted.subscribe(check);
-    if (check()) return;
-    const deadline = Date.now() + timeoutMs;
-    const poll = (): void => {
-      if (settled || check()) return;
-      if (Date.now() >= deadline) {
-        finish(false);
-        return;
-      }
-      timer = setTimeout(poll, intervalMs);
-    };
-    timer = setTimeout(poll, intervalMs);
-  });
+export function toggleState(input: {
+  folder: string | null;
+  reason: FolderReason;
+  canHostPanel: boolean;
+  busy?: boolean;
+  expanded?: boolean;
+}): { disabled: boolean; title: string } {
+  if (!input.canHostPanel) {
+    return { disabled: true, title: HOST_NO_BESIDE_PANEL_TOOLTIP };
+  }
+  if (input.folder === null) {
+    return { disabled: true, title: disabledTooltip(input.reason, null) };
+  }
+  if (input.busy === true) {
+    return { disabled: true, title: panelToggleTitle(input.expanded === true, input.folder) };
+  }
+  return {
+    disabled: false,
+    title: panelToggleTitle(input.expanded === true, input.folder),
+  };
 }
 
 /** Structural subset of the dsh `sidebarRight` face the bridge uses. */
@@ -382,12 +428,6 @@ export interface WorkspacesLike {
     subscribe(listener: () => void): () => void;
   };
   create(input: { path: string }): Promise<WorkspaceLike>;
-}
-
-/** Structural subset of the dsh session navigation face the bridge uses. */
-export interface SessionNavigationLike {
-  /** Select a Session and show its Conversation, as the shell's own lists do. */
-  openSession(target: string): void;
 }
 
 /** Structural subset of the dsh `sessions` face the bridge uses. */
