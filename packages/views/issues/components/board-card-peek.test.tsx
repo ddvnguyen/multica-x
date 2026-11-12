@@ -99,7 +99,8 @@ const issue = {
   updated_at: "2026-09-27T00:00:00Z",
 } as unknown as Issue;
 
-function renderCard({ withPeek = true, peekedId = null as string | null, supportsTabs = false } = {}) {
+function renderCard({ withPeek = true, peekedId = null as string | null, supportsTabs = false, supportsPeek }: { withPeek?: boolean; peekedId?: string | null; supportsTabs?: boolean; supportsPeek?: boolean } = {}) {
+  const peekEnabled = supportsPeek ?? !supportsTabs;
   const card = (
     <DndContext>
       <SortableContext items={[issue.id]}>
@@ -109,7 +110,7 @@ function renderCard({ withPeek = true, peekedId = null as string | null, support
   );
   return render(
     <NavigationProvider value={navigation}>
-      <IssueOpeningCapabilityProvider supportsTabs={supportsTabs} supportsPeek={!supportsTabs}>
+      <IssueOpeningCapabilityProvider supportsTabs={supportsTabs} supportsPeek={peekEnabled}>
       {withPeek ? (
         <IssuePeekActionsContext.Provider value={peek}>
           <IssuePeekIdContext.Provider value={peekedId}>{card}</IssuePeekIdContext.Provider>
@@ -177,6 +178,56 @@ describe("DraggableBoardCard side peek", () => {
     useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
     renderCard({ supportsTabs: true });
     expect(useIssueOpeningStore.getState().openMode).toBe("tab");
+  });
+
+  it("migrates a saved full page to a new tab when the island shows both", () => {
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    renderCard({ supportsTabs: true, supportsPeek: true });
+    expect(useIssueOpeningStore.getState().openMode).toBe("tab");
+  });
+
+  it("opens a header tab on a plain click for a migrated full page in the island", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    renderCard({ supportsTabs: true, supportsPeek: true });
+    expect(fireEvent.click(link())).toBe(false);
+    expect(navigation.openInNewTab).toHaveBeenCalledWith(
+      "/acme/issues/MUL-1",
+      "MUL-1",
+      { activate: true },
+    );
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+
+  it("opens the side preview on a plain click for a peek choice in the island", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
+    renderCard({ supportsTabs: true, supportsPeek: true });
+    fireEvent.click(link());
+    expect(peek.open).toHaveBeenCalledWith("issue-1");
+    expect(navigation.openInNewTab).not.toHaveBeenCalled();
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+
+  it("opens the other island target on Shift+Click in both modes", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    const first = renderCard({ supportsTabs: true, supportsPeek: true });
+    expect(fireEvent.click(link(), { shiftKey: true })).toBe(false);
+    expect(peek.toggle).toHaveBeenCalledWith("issue-1");
+    expect(navigation.openInNewTab).not.toHaveBeenCalled();
+    first.unmount();
+    cleanup();
+    vi.clearAllMocks();
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
+    renderCard({ supportsTabs: true, supportsPeek: true });
+    expect(fireEvent.click(link(), { shiftKey: true })).toBe(false);
+    expect(navigation.openInNewTab).toHaveBeenCalledWith(
+      "/acme/issues/MUL-1",
+      "MUL-1",
+      { activate: true },
+    );
   });
 
   it("leaves Cmd/Ctrl+Shift+Click to the new-tab behavior", () => {
