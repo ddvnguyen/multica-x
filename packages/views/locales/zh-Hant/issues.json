@@ -1519,6 +1519,15 @@
     "section_title": "重複項",
     "unmark_toast": "已重新開啟為待辦"
   },
+  "questions": {
+    "section_title": "等待你的回覆",
+    "expires_at": "將於 {{time}} 到期",
+    "multi_select_hint": "選取所有適用項目",
+    "other_placeholder": "或輸入你自己的答案",
+    "submit": "回答",
+    "answered_toast": "答案已送出",
+    "answer_failed": "無法送出答案"
+  },
   "pr_automation": {
     "link_action": "關聯 PR",
     "link_placeholder": "貼上 PR 連結",
