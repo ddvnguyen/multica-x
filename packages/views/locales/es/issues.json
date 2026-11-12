@@ -1455,6 +1455,15 @@
     "section_title": "Duplicadas",
     "unmark_toast": "Reabierta como Todo"
   },
+  "questions": {
+    "section_title": "Esperando tu respuesta",
+    "expires_at": "Caduca a las {{time}}",
+    "multi_select_hint": "Selecciona todas las opciones que correspondan",
+    "other_placeholder": "O escribe tu propia respuesta",
+    "submit": "Responder",
+    "answered_toast": "Respuesta enviada",
+    "answer_failed": "No se pudo enviar la respuesta"
+  },
   "pr_automation": {
     "link_action": "Enlazar pull request",
     "link_placeholder": "Pega la URL de un pull request",

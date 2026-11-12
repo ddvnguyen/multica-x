@@ -21,6 +21,7 @@ import type {
   SearchProjectsResponse,
   SearchIndexManifest,
   SearchIndexSnapshotPage,
+  Question,
   SearchIndexChanges,
   UpdateMeRequest,
   CreateMemberRequest,
@@ -304,6 +305,8 @@ import {
   WorkspaceAccountListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
+  QuestionListSchema,
+  QuestionSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -3147,6 +3150,35 @@ export class ApiClient {
     return parseWithFallback<AgentTask[]>(raw, AgentTaskListSchema, [], {
       endpoint: "GET /api/issues/:id/task-runs",
     });
+  }
+
+  /**
+   * Questions asked on an issue. Defaults to the open ones: the card exists to
+   * unblock a waiting run, and a settled question has nothing to answer.
+   */
+  async listIssueQuestions(issueId: string, status?: "open" | "answered" | "expired"): Promise<Question[]> {
+    const query = status ? `?status=${status}` : "";
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/questions${query}`);
+    return parseWithFallback<Question[]>(raw, QuestionListSchema, [], {
+      endpoint: "GET /api/issues/:id/questions",
+    });
+  }
+
+  /**
+   * Answers one question. The answer is the option label, the comma-joined
+   * labels of a multi-select question, or free text — one string, because that
+   * is how the waiting tool reads it.
+   */
+  async answerQuestion(questionId: string, answer: string): Promise<Question> {
+    const raw = await this.fetch<unknown>(`/api/questions/${questionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ answer }),
+    });
+    const question = parseWithFallback<Question | null>(raw, QuestionSchema, null, {
+      endpoint: "POST /api/questions/:id/answer",
+    });
+    if (!question) throw new Error("Invalid question answer response");
+    return question;
   }
 
   /**

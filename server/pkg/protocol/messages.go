@@ -74,6 +74,9 @@ const (
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
+	// DaemonCapabilityQuestionsV1 advertises that this run can route a provider
+	// ask tool call through Multica and return its answer to the same call.
+	DaemonCapabilityQuestionsV1 = "questions-v1"
 	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
 	// descendant cleanup and explicitly confirms its cancellation outcome.
 	// Persist only at start; old daemons must retain their cancellation contract.

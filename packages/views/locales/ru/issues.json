@@ -1581,6 +1581,15 @@
     "section_title": "Дубликаты",
     "unmark_toast": "Снова открыта как «К выполнению»"
   },
+  "questions": {
+    "section_title": "Ожидается ваш ответ",
+    "expires_at": "Истекает в {{time}}",
+    "multi_select_hint": "Выберите все подходящие варианты",
+    "other_placeholder": "Или введите свой ответ",
+    "submit": "Ответить",
+    "answered_toast": "Ответ отправлен",
+    "answer_failed": "Не удалось отправить ответ"
+  },
   "pr_automation": {
     "link_action": "Привязать pull request",
     "link_placeholder": "Вставьте ссылку на pull request",

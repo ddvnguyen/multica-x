@@ -174,6 +174,10 @@ type ExecOptions struct {
 	// EnableTaskSupplement, to accept additional messages; other providers
 	// ignore it.
 	CursorHookCommand []string
+	// Ask, when non-nil, lets the backend park a tool call that needs a human
+	// decision and resume it with the answer. Nil means the backend keeps its
+	// ask tool disabled rather than blocking without an answer channel.
+	Ask Asker
 	// OnUsage optionally receives the backend's cumulative usage snapshot while
 	// the run is still live, keyed exactly like Result.Usage so a mid-run flush
 	// and the terminal report upsert the same (task, provider, model) rows

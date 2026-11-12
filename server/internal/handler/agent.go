@@ -559,6 +559,7 @@ type AgentTaskResponse struct {
 	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
 	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
 	SupplementCapability  string                 `json:"supplement_capability,omitempty"`
+	QuestionCapability    string                 `json:"question_capability,omitempty"`
 	SupplementCommentIDs  []string               `json:"supplement_comment_ids,omitempty"`
 	CanSupplement         bool                   `json:"can_supplement,omitempty"`
 	SteerQueueCapable     bool                   `json:"steer_queue_capable,omitempty"`

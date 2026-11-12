@@ -95,6 +95,7 @@ import type {
   IssueUnreadChangedPayload,
   IssueMetadataChangedPayload,
   IssuePropertiesChangedPayload,
+  QuestionChangedPayload,
   InboxNewPayload,
   InboxItem,
   NotificationPreferenceResponse,
@@ -1110,6 +1111,10 @@ export function useRealtimeSync(
     const specificEvents = new Set([
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_unread:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
+      // Questions have no prefix refresh entry: their payload names the issue,
+      // so the handler below invalidates exactly one issue's list instead of
+      // every cached question query in the workspace.
+      "question:created", "question:answered", "question:expired",
       "comment:created", "comment:updated", "comment:deleted",
       "comment:resolved", "comment:unresolved",
       "activity:created",
@@ -1262,6 +1267,20 @@ export function useRealtimeSync(
           // are derived from the property definition, not just issue rows.
           qc.invalidateQueries({ queryKey: issueKeys.tableAll(wsId) });
         }
+      }),
+    );
+
+    // Structured questions (M-81). Created/answered/expired all mean the same
+    // thing to this client: the issue's open-question list changed. The record
+    // itself is not merged — the list is small, and a refetch cannot disagree
+    // with the server about which questions are still answerable.
+    const unsubQuestionChanged = (
+      ["question:created", "question:answered", "question:expired"] as const
+    ).map((event) =>
+      ws.on(event, (p) => {
+        const { issue_id } = p as QuestionChangedPayload;
+        if (!issue_id) return;
+        qc.invalidateQueries({ queryKey: issueKeys.questions(issue_id) });
       }),
     );
 
@@ -1927,6 +1946,7 @@ export function useRealtimeSync(
       unsubIssueMetadataChanged();
       unsubIssuePropertiesChanged();
       unsubPropertyChanged.forEach((unsub) => unsub());
+      unsubQuestionChanged.forEach((unsub) => unsub());
       unsubInboxNew();
       unsubCommentCreated();
       unsubCommentUpdated();
