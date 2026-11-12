@@ -12,7 +12,7 @@ import { propertyListOptions } from "@multica/core/properties";
 import { CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { descriptionPreview } from "./description-preview";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
-import { CalendarClock, CalendarDays } from "lucide-react";
+import { CalendarClock, CalendarDays } from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropertyIcon } from "../../common/property-icon";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -133,6 +133,7 @@ export const BoardCardContent = memo(function BoardCardContent({
         <PriorityPicker
           priority={issue.priority}
           onUpdate={handleUpdate}
+          tooltip={priorityLabel}
           triggerRender={
             <button
               type="button"
@@ -197,7 +198,12 @@ export const BoardCardContent = memo(function BoardCardContent({
   const showRightMeta = !!showStartDate || !!showDueDate || !!showChildProgress || showUpdatedHint;
 
   return (
-    <div className="rounded-lg border-[0.5px] border-surface-border bg-surface py-3 px-2.5 shadow-[var(--surface-shadow)] transition-colors group-hover/card:border-foreground/15 group-hover/card:bg-surface-hover group-data-[popup-open]/card:border-foreground/15 group-data-[popup-open]/card:bg-surface-hover group-data-[peeked]/card:ring-2 group-data-[peeked]/card:ring-brand/50">
+    <div
+      data-mc="board-card"
+      data-status={issue.status}
+      data-priority={issue.priority}
+      data-assignee-type={issue.assignee_type ?? "none"}
+      className="rounded-board-card border-[0.5px] border-board-card-border bg-board-card py-3 px-2.5 shadow-[var(--board-card-shadow,var(--surface-shadow))] transition-colors group-hover/card:border-foreground/15 group-hover/card:bg-board-card-hover group-data-[popup-open]/card:border-foreground/15 group-data-[popup-open]/card:bg-board-card-hover group-data-[peeked]/card:ring-2 group-data-[peeked]/card:ring-brand/50">
       {/* Row 1: priority + identifier (left), agent activity + assignee (right) */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -209,7 +215,7 @@ export const BoardCardContent = memo(function BoardCardContent({
       </div>
 
       {/* Row 2: Title */}
-      <p className="mt-1 text-body font-medium leading-snug line-clamp-2">
+      <p className="mt-1 text-body font-medium leading-snug cjk:leading-normal line-clamp-2">
         {issue.title}
       </p>
 
@@ -271,6 +277,7 @@ export const BoardCardContent = memo(function BoardCardContent({
                     <StartDatePicker
                       startDate={issue.start_date}
                       onUpdate={handleUpdate}
+                      tooltip={t(($) => $.detail.prop_start_date)}
                       trigger={
                         <span className="flex items-center gap-1 text-caption text-muted-foreground">
                           <CalendarClock className="size-3" />
@@ -292,6 +299,7 @@ export const BoardCardContent = memo(function BoardCardContent({
                     <DueDatePicker
                       dueDate={issue.due_date}
                       onUpdate={handleUpdate}
+                      tooltip={t(($) => $.detail.prop_due_date)}
                       trigger={
                         <span
                           className={`flex items-center gap-1 text-caption ${
@@ -360,7 +368,7 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({
   const p = useWorkspacePaths();
   const peek = useIssuePeekActions();
   const peeked = useIsIssuePeeked(issue.id);
-  const peekLinkProps = useIssuePeekLinkProps(issue.id);
+  const peekLinkProps = useIssuePeekLinkProps(issue.id, issue.identifier);
   const {
     attributes,
     listeners,

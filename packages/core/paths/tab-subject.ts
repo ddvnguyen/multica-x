@@ -5,7 +5,7 @@
  * resource, a container with a selected item, a creation flow, or something
  * unrecognized — is what decides how it should look (icon + title). This module
  * turns a URL into that semantic {@link TabSubject}. It is pure: no React, no
- * Lucide, no query — only URL parsing. The visual/title mapping lives in
+ * icons, no query — only URL parsing. The visual/title mapping lives in
  * `tab-presentation.ts`; the React glue lives in `@multica/views`.
  *
  * Workspace URLs are `/{slug}/{segment}/...`. The slug is index 0, the route
@@ -13,6 +13,7 @@
  * Chat) rides in the query string, so it is parsed too — the URL is the single
  * source of truth for what a tab has open, including which item.
  */
+import { isMyAgentsSearch } from "./paths";
 import { pageForSegment, type WorkspacePageKey } from "./route-icons";
 
 export type TabActorType = "agent" | "member" | "squad";
@@ -20,6 +21,8 @@ export type TabActorType = "agent" | "member" | "squad";
 export type TabSubject =
   /** A collection or tool page with no specific resource. */
   | { kind: "page"; page: WorkspacePageKey }
+  /** My agents' work: the My issues route's `?scope=agents`. */
+  | { kind: "myAgents" }
   /** A single issue detail. */
   | { kind: "issue"; id: string }
   /** A single project detail. */
@@ -41,6 +44,8 @@ export type TabSubject =
    * `archived` is the `?view=archived` sub-list (its own list/cache).
    */
   | { kind: "inbox"; selectedKey: string | null; archived: boolean }
+  /** The Decisions container; query selection and state are URL-backed. */
+  | { kind: "decisions"; selectedKey: string | null; answered: boolean }
   /** The Chat container; `sessionId` is the `?session=` selection or null. */
   | { kind: "chat"; sessionId: string | null }
   /** A creation flow that has not produced a resource yet. */
@@ -79,7 +84,9 @@ export function parseTabSubject(url: string): TabSubject {
     case "issues":
       return id ? { kind: "issue", id } : { kind: "page", page: "issues" };
     case "my-issues":
-      return { kind: "page", page: "myIssues" };
+      return isMyAgentsSearch(query) ? { kind: "myAgents" } : { kind: "page", page: "myIssues" };
+    case "views":
+      return { kind: "page", page: "views" };
     case "projects":
       return id ? { kind: "project", id } : { kind: "page", page: "projects" };
     case "autopilots":
@@ -103,6 +110,12 @@ export function parseTabSubject(url: string): TabSubject {
         kind: "inbox",
         selectedKey: query.get("issue") || null,
         archived: query.get("view") === "archived",
+      };
+    case "decisions":
+      return {
+        kind: "decisions",
+        selectedKey: query.get("decision") || null,
+        answered: query.get("state") === "answered",
       };
     case "chat":
       return { kind: "chat", sessionId: query.get("session") || null };
@@ -141,6 +154,8 @@ export function tabSubjectKey(subject: TabSubject): string {
   switch (subject.kind) {
     case "page":
       return `page:${subject.page}`;
+    case "myAgents":
+      return "my-agents";
     case "issue":
       return `issue:${subject.id}`;
     case "project":
@@ -159,6 +174,8 @@ export function tabSubjectKey(subject: TabSubject): string {
       return `attachment:${subject.id}:${subject.filename ?? ""}`;
     case "inbox":
       return `inbox:${subject.archived ? "archived" : "inbox"}:${subject.selectedKey ?? ""}`;
+    case "decisions":
+      return `decisions:${subject.answered ? "answered" : "pending"}:${subject.selectedKey ?? ""}`;
     case "chat":
       return `chat:${subject.sessionId ?? ""}`;
     case "flow":

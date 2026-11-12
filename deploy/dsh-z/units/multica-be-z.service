@@ -1,0 +1,15 @@
+[Unit]
+Description=multica-be z — lane z Go backend (multica-x @ multica-moct)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__RELEASE_DIR__
+ExecStart=__RELEASE_DIR__/bin/server
+EnvironmentFile=__SERVER_ENV__
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

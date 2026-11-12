@@ -21,14 +21,20 @@ const (
 	EventTaskDispatched            = "task.dispatched"
 	EventTaskDeferred              = "task.deferred"
 	EventTaskWaitingLocalDirectory = "task.waiting_local_directory"
-	EventTaskStarted               = "task.started"
-	EventTaskCompleted             = "task.completed"
-	EventTaskFailed                = "task.failed"
-	EventTaskCancelled             = "task.cancelled"
-	EventReactionAdded             = "reaction.added"
-	EventReactionRemoved           = "reaction.removed"
-	EventAttachmentAttached        = "attachment.attached"
-	EventAttachmentDetached        = "attachment.detached"
+	// EventTaskBlocked (S1-A1): a running task parked awaiting a human answer
+	// (ask/plan). Deliberately absent from WakeupTypes — migration 520's
+	// capture trigger does not list 'blocked', so no wakeup may subscribe to
+	// the park itself; the inbox card IS the wake, and the answer enqueues the
+	// follow-up run directly.
+	EventTaskBlocked        = "task.blocked"
+	EventTaskStarted        = "task.started"
+	EventTaskCompleted      = "task.completed"
+	EventTaskFailed         = "task.failed"
+	EventTaskCancelled      = "task.cancelled"
+	EventReactionAdded      = "reaction.added"
+	EventReactionRemoved    = "reaction.removed"
+	EventAttachmentAttached = "attachment.attached"
+	EventAttachmentDetached = "attachment.detached"
 )
 
 // WakeupTypes lists only facts with transactional capture, not every bus event.
@@ -50,7 +56,7 @@ func TaskEvent(status string) string {
 	switch status {
 	case "running":
 		return EventTaskStarted
-	case "queued", "dispatched", "deferred", "waiting_local_directory", "completed", "failed", "cancelled":
+	case "queued", "dispatched", "deferred", "waiting_local_directory", "blocked", "completed", "failed", "cancelled":
 		return "task." + status
 	default:
 		return ""

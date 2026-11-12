@@ -148,6 +148,10 @@ backend:
     # every caller. Bootstrap the workspace with this false, then flip to
     # true so users can only join via invitation.
     disableWorkspaceCreation: false
+    # Self-host allowlist (#9400): comma-separated exact emails allowed to
+    # create workspaces. Empty = every signed-in user may create one.
+    # disableWorkspaceCreation=true still blocks everyone.
+    workspaceCreationAllowedEmails: ""
     # Set to "1" or "true" to disable first-party anonymous self-host
     # telemetry collection and delivery.
     doNotTrack: ""
@@ -166,6 +170,9 @@ backend:
     s3Region: us-west-2
     cloudfrontDomain: ""
     cloudfrontKeyPairId: ""
+    # Text/HTML preview size only; values above 16 MiB are clamped.
+    # Larger limits can slow browser previews.
+    maxPreviewSize: 2MiB
     localUploadBaseUrl: http://api.multica.dev.lan
   resources:
     requests:
@@ -185,7 +192,7 @@ frontend:
   replicas: 1
   config:
     # Backend origin used by the frontend runtime proxy for /v1, /api, /auth,
-    # /uploads, and /ws. Empty defaults to this release's backend Service.
+    # /health, and /ws. Empty defaults to this release's backend Service.
     remoteApiUrl: ""
     # Optional docs origin used by the frontend runtime proxy for /docs.
     docsUrl: ""
@@ -193,6 +200,8 @@ frontend:
     # default same-origin frontend proxy.
     publicApiUrl: ""
     publicWsUrl: ""
+    # Optional GA4 Measurement ID (G-XXXXXXXXXX). Empty keeps gtag.js off.
+    googleAnalyticsId: ""
   # Compatibility shim for legacy multica-web images built before runtime
   # URL rewrites. New images do not need this unprefixed Service.
   compatibility:

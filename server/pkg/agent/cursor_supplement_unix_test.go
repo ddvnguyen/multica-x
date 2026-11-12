@@ -78,7 +78,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- session.Supplement(t.Context(), "Prefer the smaller fix.") }()
+	go func() { done <- session.Supplement(t.Context(), "Prefer the smaller fix.", "steer") }()
 	var reply map[string]any
 	for {
 		reply = relayCursorHook(t, getenv, postToolUse("sess-steer"))
@@ -210,7 +210,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
 	if session.Supplement == nil || session.SupplementReady == nil || !session.SupplementReady() {
 		t.Fatal("negotiated session does not settle supplements")
 	}
-	if err := session.Supplement(t.Context(), "Prefer the smaller fix."); err == nil {
+	if err := session.Supplement(t.Context(), "Prefer the smaller fix.", "steer"); err == nil {
 		t.Fatal("Supplement succeeded without installed hooks")
 	}
 	if err := os.WriteFile(filepath.Join(cwd, "release"), nil, 0o600); err != nil {

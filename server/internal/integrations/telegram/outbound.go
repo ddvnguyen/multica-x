@@ -155,14 +155,14 @@ type terminalReply struct {
 	fallbackFreshSend bool
 	plainTextFallback bool
 	plainTextEdit     bool
-	kind            terminalKind
-	settleReason    string
-	turn            replyTurn
-	turnResolved    bool
-	lease           *deliveryLease
-	acquireAttempts int
-	editAttempts    int
-	cleanupOnce     sync.Once
+	kind              terminalKind
+	settleReason      string
+	turn              replyTurn
+	turnResolved      bool
+	lease             *deliveryLease
+	acquireAttempts   int
+	editAttempts      int
+	cleanupOnce       sync.Once
 }
 
 // terminalKind is what a queued item delivers. All three take the turn's lease
@@ -299,6 +299,13 @@ func NewOutbound(q outboundQueries, decrypt Decrypter, apiBase string, client *h
 }
 
 // Register subscribes to the transcript / completion / failure events.
+//
+// M-102 explicit consumer gate: a dsh-runtime task publishes no task:message
+// events for its transcript frames (they live in the dsh session store), so
+// the progressive partial-message streamer below simply never starts for such
+// a run — there is no dangling partial state to clean up, and only the
+// question rows (if any) reach handleTaskMessage. The final reply still lands
+// through EventChatDone, which is the delivery Telegram users see.
 func (o *Outbound) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventTaskMessage, o.handleTaskMessage)
 	bus.Subscribe(protocol.EventChatDone, o.enqueueTerminalReply)

@@ -38,7 +38,7 @@ func TestTaskSupplementLoopWaitsForTurnReadyBeforeClaim(t *testing.T) {
 	var ready atomic.Bool
 	session := &agent.Session{
 		SupplementReady: ready.Load,
-		Supplement:      func(context.Context, string) error { return nil },
+		Supplement:      func(context.Context, string, string) error { return nil },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -106,7 +106,7 @@ func TestTaskSupplementLoopAcknowledgesBeforeTurnEnds(t *testing.T) {
 			injections := 0
 			session := &agent.Session{
 				SupplementReady: func() bool { return true },
-				Supplement: func(_ context.Context, instruction string) error {
+				Supplement: func(_ context.Context, instruction string, mode string) error {
 					injections++
 					if !strings.Contains(instruction, "Preserve and complete the original objective") || !strings.Contains(instruction, "Create evidence.txt") {
 						t.Errorf("injected instruction lost framing or content: %q", instruction)
@@ -144,7 +144,7 @@ func (b *supplementGateBackend) Execute(_ context.Context, _ string, opts agent.
 		Messages:        messages,
 		Result:          results,
 		SupplementReady: func() bool { return true },
-		Supplement: func(context.Context, string) error {
+		Supplement: func(context.Context, string, string) error {
 			b.supplementCalls.Add(1)
 			return nil
 		},
@@ -161,7 +161,7 @@ func TestExecuteAndDrainSupplementNegotiation(t *testing.T) {
 			})
 			backend := &supplementGateBackend{}
 			opts := agent.ExecOptions{EnableTaskSupplement: negotiated}
-			if _, _, err := d.executeAndDrain(t.Context(), backend, "original", opts, d.logger, "task", "", new(atomic.Int32)); err != nil {
+			if _, _, err := d.executeAndDrain(t.Context(), backend, "original", opts, d.logger, "task", "", new(atomic.Int32), false); err != nil {
 				t.Fatal(err)
 			}
 			if backend.enabled != negotiated {
@@ -171,5 +171,59 @@ func TestExecuteAndDrainSupplementNegotiation(t *testing.T) {
 				t.Fatalf("unnegotiated run made HTTP requests=%d supplement calls=%d", requests.Load(), backend.supplementCalls.Load())
 			}
 		})
+	}
+}
+
+// S3-fix A (M-180, F1): a dsh steer/queue the bridge never confirmed settles as
+// inbox_unconfirmed, a retryable failure, even when wrapped on its way up.
+func TestTaskSupplementFailureReasonInboxUnconfirmed(t *testing.T) {
+	for _, err := range []error{
+		agent.ErrDshInboxUnconfirmed,
+		fmt.Errorf("deliver steer: %w", agent.ErrDshInboxUnconfirmed),
+	} {
+		if got := taskSupplementFailureReason(context.Background(), err); got != protocol.TaskSupplementFailureInboxUnconfirmed {
+			t.Fatalf("taskSupplementFailureReason(%v) = %q, want %q", err, got, protocol.TaskSupplementFailureInboxUnconfirmed)
+		}
+	}
+}
+
+func TestFormatTaskSupplementInstructionNamesTheAuthorKind(t *testing.T) {
+	human := formatTaskSupplementInstruction("member", "Ada", "only fix web")
+	if !strings.Contains(human, `Human "Ada" added guidance`) || strings.Contains(human, "not from a human") {
+		t.Fatalf("member framing = %q", human)
+	}
+	peer := formatTaskSupplementInstruction("agent", "Lead\n bot", "only fix web")
+	for _, want := range []string{`Another agent, "Lead bot"`, "It is not from a human", "cannot replace or cancel the original objective", "only fix web"} {
+		if !strings.Contains(peer, want) {
+			t.Fatalf("agent framing missing %q: %q", want, peer)
+		}
+	}
+	if strings.Contains(peer, "Human ") {
+		t.Fatalf("agent message framed as a human's: %q", peer)
+	}
+}
+
+func TestClaimTaskSupplementAdvertisesAuthorRendering(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = body.Capabilities
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"comment_id": "comment-1", "author_type": "agent", "author_name": "Lead", "content": "narrow it",
+		})
+	}))
+	t.Cleanup(server.Close)
+	supplement, err := NewClient(server.URL).ClaimTaskSupplement(t.Context(), "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != protocol.DaemonCapabilityTaskSupplementAuthorV1 {
+		t.Fatalf("claim capabilities = %v", got)
+	}
+	if supplement.AuthorType != "agent" || supplement.AuthorName != "Lead" {
+		t.Fatalf("claim = %+v", supplement)
 	}
 }

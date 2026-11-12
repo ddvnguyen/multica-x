@@ -112,7 +112,8 @@ func (s *grokSupplementSession) ready() bool {
 	return s.sessionID != ""
 }
 
-func (s *grokSupplementSession) send(ctx context.Context, text string) error {
+func (s *grokSupplementSession) send(ctx context.Context, text string, mode string) error {
+	_ = mode
 	if !s.active.Load() {
 		return fmt.Errorf("grok turn is no longer active")
 	}

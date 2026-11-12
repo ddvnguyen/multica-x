@@ -2,12 +2,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, CircleHelp } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
 import { issueKeys, issueOpenQuestionsOptions } from "@multica/core/issues/queries";
 import type { Question } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import { ChevronRight, CircleHelp } from "@multica/ui/icons";
 import { Input } from "@multica/ui/components/ui/input";
 import { useLocale, useT } from "../../i18n";
 

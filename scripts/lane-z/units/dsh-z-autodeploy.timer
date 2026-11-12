@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the lane z auto-deploy every 60 s (M-151)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=dsh-z-autodeploy.service
+
+[Install]
+WantedBy=timers.target

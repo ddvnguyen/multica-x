@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { Loader2, MessageSquare, X } from "@multica/ui/icons";
 import {
   applyDraftModelChange,
   applyDraftRuntimeChange,
@@ -16,6 +16,7 @@ import type {
   RuntimeDevice,
 } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import { cn } from "@multica/ui/lib/utils";
 import { ChatInput } from "../../chat/components/chat-input";
 import { CHAT_COLUMN, CHAT_GUTTER } from "../../chat/components/chat-column";
@@ -221,7 +222,7 @@ export function BuilderConversation({
                   key={prompt}
                   type="button"
                   onClick={() => void onSend(prompt)}
-                  className="rounded-full border bg-background px-3 py-1.5 text-caption transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="rounded-md border bg-background px-3 py-1.5 text-caption transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {prompt}
                 </button>
@@ -243,16 +244,16 @@ export function BuilderConversation({
           >
             <span className="min-w-0 flex-1">{error}</span>
             {onDismissError && (
-              <Button
+              <IconButton
                 type="button"
                 variant="ghost"
                 size="icon-xs"
                 className="shrink-0"
-                aria-label={tModals(($) => $.common.close)}
+                label={tModals(($) => $.common.close)}
                 onClick={onDismissError}
               >
                 <X className="size-4" />
-              </Button>
+              </IconButton>
             )}
           </div>
         </div>

@@ -24,6 +24,13 @@ describe("resolveTabPresentation — pages", () => {
       title: { kind: "nav", navKey: "projects" },
     });
   });
+
+  it("titles My agents' work as its own page rather than My issues", () => {
+    expect(present("/acme/my-issues?scope=agents")).toEqual({
+      visual: { kind: "icon", icon: "Bot" },
+      title: { kind: "tab", tabKey: "my_agents" },
+    });
+  });
 });
 
 describe("resolveTabPresentation — direct resources", () => {
@@ -134,6 +141,13 @@ describe("resolveTabPresentation — direct resources", () => {
 });
 
 describe("resolveTabPresentation — containers keep their icon, title tracks selection", () => {
+  it("decisions: restores queue state from the route while keeping a stable identity", () => {
+    expect(present("/acme/decisions?state=answered&decision=question%3Acard-9")).toEqual({
+      visual: { kind: "icon", icon: "CircleDot" },
+      title: { kind: "nav", navKey: "decisions" },
+    });
+  });
+
   it("inbox: icon is always Inbox; title is the selected item or Inbox", () => {
     expect(present("/acme/inbox")).toEqual({
       visual: { kind: "icon", icon: "Inbox" },

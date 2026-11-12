@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -307,6 +308,20 @@ func jwtSecretBootError(jwtSecret, appEnv string) error {
 	return auth.ValidateJWTSecret(jwtSecret)
 }
 
+// listenAddr combines an optional bind host with the port into the address the
+// public HTTP server listens on. An empty or whitespace-only host preserves the
+// historical ":port" behavior (all interfaces), which the Docker Compose
+// self-host stack relies on; a set host binds the listener to it. Bare IPv6
+// hosts (and defensively, pre-bracketed ones) are normalized via
+// net.JoinHostPort so "::1:4390" never reaches net.Listen.
+func listenAddr(host, port string) string {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return ":" + port
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // newMainHTTPServer builds the public HTTP server with the production timeout
 // defaults. These values are load-bearing safety settings, not cosmetic tuning,
 // so they live in one helper that main() and the config regression test share.
@@ -357,6 +372,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	bindHost := os.Getenv("MULTICA_BIND_HOST")
 	shutdownHoldDuration := envNonNegativeDuration("MULTICA_SHUTDOWN_HOLD_DURATION", 0)
 
 	// Feature flags: loaded once at startup from MULTICA_FEATURE_FLAGS_FILE
@@ -602,7 +618,7 @@ func main() {
 			channelLeaseRedis = newNamedRedisClient(opts, "channel-lease")
 		}
 	}
-	registerListeners(bus, broadcaster)
+	registerListeners(bus, broadcaster, newPrivateProjectAudience(db.New(pool)))
 
 	analyticsClient := analytics.NewFromEnv()
 	defer analyticsClient.Close()
@@ -615,6 +631,7 @@ func main() {
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
+	registerIssueUnreadListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -694,6 +711,9 @@ func main() {
 		LLMMaxRetries:       llmMaxRetries,
 		LLMDisableThinking:  llmDisableThinking,
 	})
+	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
+	// stops writing it as well as sending the snapshot.
+	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -708,7 +728,7 @@ func main() {
 	// the scheduler's Run goroutine starts so the field write is race-free.
 	heartbeatScheduler.RecoveryNotifier = h
 
-	srv := newMainHTTPServer(":"+port, r)
+	srv := newMainHTTPServer(listenAddr(bindHost, port), r)
 	profilingServer := profiling.NewServer()
 	maintenanceServer, maintenanceErr := maintenance.NewServer(os.Getenv("MAINTENANCE_PORT"), maintenance.NewService(pool, maintenance.StatusCategory{}))
 	if maintenanceErr != nil {
@@ -745,14 +765,24 @@ func main() {
 		)
 		runtimeReconnectGrace = minimumRuntimeReconnectGrace
 	}
+	// S3-C (M-139): a detached-capable runtime's running task may outlive the
+	// daemon that launched it; once that runtime's heartbeat is stale, this
+	// wall-clock bound fails it. Default is the standard running budget plus
+	// the detached grace; MULTICA_DETACHED_TASK_TIMEOUT=0 disables it.
+	detachedTaskTimeout := detachedTaskTimeoutFromEnv(os.Getenv("MULTICA_DETACHED_TASK_TIMEOUT"))
 	// Queued work now expires on the same runtime-liveness signal as in-flight
 	// work, so there is no separate queue TTL to tune: a busy runtime keeps its
 	// backlog, and a departed one retires everything it owned at once.
-	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace)
+	go h.RunQoderConnections(sweepCtx, pool, "http://localhost:"+port)
+	go runRuntimeSweeper(sweepCtx, queries, liveness, taskSvc, bus, runtimeReconnectGrace, detachedTaskTimeout)
 	if telemetryWorker != nil {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// M-131: parked ask/plan tasks past their effective timeout are reaped and
+	// escalated to the project lead — its own 30s tick, since each candidate is
+	// judged against its project's override rather than a shared wall clock.
+	go runAskPlanTimeoutSweeper(sweepCtx, queries, taskSvc)
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
@@ -760,6 +790,9 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	if h.ConnectedApps != nil {
+		go h.ConnectedApps.RunSweeper(sweepCtx)
+	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -803,6 +836,14 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
+	}
+
+	// WeCom scan-code install worker: drives QR generate + poll out of band, so
+	// no HTTP request waits on WeCom. Started even when the scan flow is
+	// unconfigured, so any session already in flight reaches a terminal state
+	// instead of spinning forever in the admin's dialog.
+	if h.WecomInstallWorker != nil {
+		go h.WecomInstallWorker.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
@@ -876,7 +917,7 @@ func main() {
 	}()
 
 	go func() {
-		slog.Info("server starting", "port", port)
+		slog.Info("server starting", "addr", listenAddr(bindHost, port), "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)

@@ -6,8 +6,10 @@ codex
 copilot
 cursor-agent
 deveco
+devin
 dim
 dsh
+freebuff
 grok
 hermes
 kimi
@@ -17,6 +19,7 @@ muse
 omp
 openclaw
 opencode
+opencode2
 pi
 qodercli
 qoderclicn
@@ -25,3 +28,4 @@ qwenpaw
 reasonix
 traecli
 zeroclaw
+zcode

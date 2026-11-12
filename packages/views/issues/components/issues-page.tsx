@@ -1,85 +1,64 @@
 "use client";
 
-import { ListTodo } from "lucide-react";
-import type {
-  Issue,
-  IssueTableFacetSpec,
-  IssueTableFacetsResponse,
-  WorkingAgentSummary,
-} from "@multica/core/types";
+import { ListTodo, MessageSquare, Plus } from "@multica/ui/icons";
+import { Button } from "@multica/ui/components/ui/button";
 import { useIssuesScope } from "@multica/core/issues/stores/issues-scope-store";
-import { useViewStore } from "@multica/core/issues/stores/view-store-context";
-import { PageHeader } from "../../layout/page-header";
-import { RefreshablePageIcon } from "../../layout/refreshable-page-icon";
+import { usePageScope } from "../../layout/page-chrome";
+import { useStartChatWithDraft } from "../../chat/use-start-chat-with-draft";
 import { useT } from "../../i18n";
+import { CollectionPageState } from "../../layout/collection-page";
 import { IssueSurface } from "../surface/issue-surface";
-import { IssuesHeader } from "./issues-header";
+import { IssueViewHeader } from "../../issue-views/view-header";
 
-function IssuesSurfaceHeader({
-  issues,
-  workingAgents,
-  isRefreshing,
-  facetCountsExact,
-  tableFacetCounts,
-  onTableFacetChange,
-}: {
-  issues: Issue[];
-  workingAgents: WorkingAgentSummary[] | undefined;
-  isRefreshing: boolean;
-  facetCountsExact: boolean;
-  tableFacetCounts?: IssueTableFacetsResponse;
-  onTableFacetChange: (facet: IssueTableFacetSpec | null) => void;
-}) {
-  const { t } = useT("issues");
-  const dateFilter = useViewStore((s) => s.dateFilter);
-  const setDateFilter = useViewStore((s) => s.setDateFilter);
-
-  return (
-    <>
-      <PageHeader>
-        <RefreshablePageIcon refreshing={isRefreshing}>
-          <ListTodo className="size-4" />
-        </RefreshablePageIcon>
-        <h1 className="text-body font-medium">{t(($) => $.page.breadcrumb_title)}</h1>
-      </PageHeader>
-      <IssuesHeader
-        scopedIssues={issues}
-        workingAgents={workingAgents}
-        dateFilter={dateFilter}
-        onDateFilterChange={setDateFilter}
-        facetCountsExact={facetCountsExact}
-        tableFacetCounts={tableFacetCounts}
-        onTableFacetChange={onTableFacetChange}
-      />
-    </>
-  );
-}
+const WORKSPACE_BASE = { kind: "workspace" } as const;
 
 export function IssuesPage() {
   const { t } = useT("issues");
   const scope = useIssuesScope("issues");
+  // A host that owns a global project filter (the dsh island header) narrows
+  // the board through the project scope the fork already supports, so the
+  // server-side query, the facets and the new-issue default all agree with it.
+  const { projectId } = usePageScope();
+  const startChat = useStartChatWithDraft();
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <IssueSurface
-        scope={{ type: "workspace", actorKind: scope }}
+        scope={
+          projectId === null
+            ? { type: "workspace", actorKind: scope }
+            : { type: "project", projectId, actorKind: scope }
+        }
         modes={["board", "list", "table", "swimlane"]}
         batchToolbar="list"
-        renderHeader={({ controller }) => (
-          <IssuesSurfaceHeader
-            issues={controller.surfaceIssues}
-            workingAgents={controller.workingAgents}
-            isRefreshing={controller.isRefreshing}
-            facetCountsExact={controller.facetCountsExact}
-            tableFacetCounts={controller.tableFacetCounts}
-            onTableFacetChange={controller.setActiveTableFacet}
+        createDefaults={
+          projectId === null ? undefined : { project_id: projectId }
+        }
+        renderHeader={({ controller }) => <IssueViewHeader controller={controller} base={WORKSPACE_BASE} />}
+        renderEmpty={({ controller }) => (
+          <CollectionPageState
+            icon={ListTodo}
+            title={t(($) => $.page.empty_title)}
+            description={t(($) => $.page.empty_description)}
+            actions={
+              <>
+                <Button size="sm" onClick={() => controller.openCreateIssue()}>
+                  <Plus aria-hidden="true" />
+                  {t(($) => $.views.new_issue)}
+                </Button>
+                {startChat ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => startChat(t(($) => $.page.break_down_prompt))}
+                  >
+                    <MessageSquare aria-hidden="true" />
+                    {t(($) => $.page.break_down_with_chat)}
+                  </Button>
+                ) : null}
+              </>
+            }
           />
-        )}
-        renderEmpty={() => (
-          <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 text-muted-foreground">
-            <ListTodo className="h-10 w-10 text-faint-foreground" />
-            <p className="text-body">{t(($) => $.page.empty_title)}</p>
-          </div>
         )}
       />
     </div>

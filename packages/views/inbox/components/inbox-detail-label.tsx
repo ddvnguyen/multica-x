@@ -29,6 +29,8 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     review_requested: t(($) => $.types.review_requested),
     task_completed: t(($) => $.types.task_completed),
     task_failed: t(($) => $.types.task_failed),
+    agent_question: t(($) => $.types.agent_question),
+    plan_review: t(($) => $.types.plan_review),
     agent_blocked: t(($) => $.types.agent_blocked),
     agent_completed: t(($) => $.types.agent_completed),
     reaction_added: t(($) => $.types.reaction_added),
@@ -38,6 +40,10 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     autopilot_paused: t(($) => $.types.autopilot_paused),
     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
     children_done: t(($) => $.types.children_done),
+    app_action_requested: t(($) => $.types.app_action_requested),
+    app_action_reminder: t(($) => $.types.app_action_reminder),
+    app_connect_requested: t(($) => $.types.app_connect_requested),
+    app_action_result: t(($) => $.types.app_action_result),
   };
 }
 

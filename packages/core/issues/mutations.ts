@@ -1,4 +1,5 @@
-import { normalizeStatusPatch } from "./status-category";
+import { useRef } from "react";
+import { issueBehavesAs, normalizeStatusPatch } from "./status-category";
 import {
   hashKey,
   useMutation,
@@ -7,7 +8,14 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { api } from "../api";
+import { decisionKeys } from "../decisions/queries";
 import { issueKeys } from "./queries";
+import type { AgentAnswerDraft } from "./agent-question";
+import type {
+  PlanCommentBody,
+  PlanSectionWriteBody,
+  PlanVerdictBody,
+} from "./ask-plan";
 import { projectKeys } from "../projects/queries";
 import { inboxKeys, type ArchivedInboxCache } from "../inbox/queries";
 import {
@@ -36,17 +44,22 @@ import {
   pruneDeletedIssueFromParentChildrenCaches,
 } from "./delete-cache";
 import { useWorkspaceId } from "../hooks";
+import { refreshSubscribedIssues } from "./subscribed";
+import { getCurrentWsId } from "../platform/workspace-storage";
 import { useRecentContextStore } from "../chat/recent-context-store";
 import { useRecentIssuesStore } from "./stores";
+import { useStarPromptStore } from "../star-prompt";
 import type { InboxItem, Issue, IssueReaction } from "../types";
 import type {
   CreateCommentSubIssueManualRequest,
   CreateIssueRequest,
   ListIssuesCache,
+  ListIssuesResponse,
   MoveIssueRequest,
   UpdateIssueRequest,
 } from "../types";
-import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
+import type { Comment, TimelineEntry, IssueSubscriber, Reaction } from "../types";
+import { createSafeId } from "../utils";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
 import { applyCommentDeletion, removeCommentSubtree } from "./comment-deletion";
 import { configStore } from "../config";
@@ -162,6 +175,7 @@ function useIssueCreateMutation<TVariables>(
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
     },
   });
@@ -348,6 +362,18 @@ export function useUpdateIssue() {
       );
       // The server has committed — safe to flush any drift it reported now.
       invalidateStaleListKeys(qc, reconcile.staleKeys);
+      if (
+        vars.status !== undefined &&
+        serverIssue.assignee_type === "agent" &&
+        serverIssue.assignee_id &&
+        issueBehavesAs(serverIssue, "done")
+      ) {
+        useStarPromptStore.getState().reportAgentIssueDone({
+          wsId,
+          agentId: serverIssue.assignee_id,
+          issueId: serverIssue.id,
+        });
+      }
     },
     onSettled: (_data, err, vars, ctx) => {
       settleInboxAfterIssueWrite(qc, wsId, ctx?.inboxWrite, err !== null);
@@ -495,6 +521,7 @@ export function useDeleteIssue() {
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       if (ctx?.metadata) invalidateDeletedIssueParentCaches(qc, wsId, ctx.metadata);
     },
@@ -505,6 +532,7 @@ interface BatchUpdateSnapshots {
   prevLists?: Iterable<readonly [QueryKey, unknown]>;
   prevFlatLists?: Iterable<readonly [QueryKey, unknown]>;
   prevTableRows?: Iterable<readonly [QueryKey, unknown]>;
+  prevSidebarLists?: Iterable<readonly [QueryKey, unknown]>;
   prevDetailById?: Iterable<readonly [string, unknown]>;
   prevInboxList?: unknown;
   prevArchivedInboxCaches?: Iterable<readonly [QueryKey, unknown]>;
@@ -518,6 +546,7 @@ export function useBatchUpdateIssues() {
     for (const [key, snapshot] of ctx?.prevLists ?? []) qc.setQueryData(key, snapshot);
     for (const [key, snapshot] of ctx?.prevFlatLists ?? []) qc.setQueryData(key, snapshot);
     for (const [key, snapshot] of ctx?.prevTableRows ?? []) qc.setQueryData(key, snapshot);
+    for (const [key, snapshot] of ctx?.prevSidebarLists ?? []) qc.setQueryData(key, snapshot);
     for (const [id, snapshot] of ctx?.prevDetailById ?? []) qc.setQueryData(issueKeys.detail(wsId, id), snapshot);
     if (ctx?.prevInboxList !== undefined) qc.setQueryData(inboxKeys.list(wsId), ctx.prevInboxList);
     for (const [key, snapshot] of ctx?.prevArchivedInboxCaches ?? []) qc.setQueryData(key, snapshot);
@@ -568,6 +597,7 @@ export function useBatchUpdateIssues() {
         string,
         [QueryKey, IssueTableRowCache]
       >();
+      const prevSidebarListByHash = new Map<string, [QueryKey, ListIssuesResponse]>();
       const prevDetailById = new Map<string, Issue>();
       let prevInboxList: InboxItem[] | undefined;
       let prevArchivedInboxCaches: [QueryKey, ArchivedInboxCache | undefined][] | undefined;
@@ -592,6 +622,12 @@ export function useBatchUpdateIssues() {
           const hash = hashKey(key);
           if (!prevTableRowByHash.has(hash)) {
             prevTableRowByHash.set(hash, [key, snapshot]);
+          }
+        }
+        for (const [key, snapshot] of change.prevSidebarLists) {
+          const hash = hashKey(key);
+          if (!prevSidebarListByHash.has(hash)) {
+            prevSidebarListByHash.set(hash, [key, snapshot]);
           }
         }
         if (change.prevDetail) prevDetailById.set(id, change.prevDetail);
@@ -630,6 +666,7 @@ export function useBatchUpdateIssues() {
         prevLists: [...prevListByHash.values()],
         prevFlatLists: [...prevFlatListByHash.values()],
         prevTableRows: [...prevTableRowByHash.values()],
+        prevSidebarLists: [...prevSidebarListByHash.values()],
         prevDetailById,
         prevInboxList,
         prevArchivedInboxCaches,
@@ -807,6 +844,7 @@ export function useBatchDeleteIssues() {
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       if (ctx?.parentIssueIds && ctx.parentIssueIds.size > 0) {
         invalidateDeletedIssueParentCaches(qc, wsId, {
@@ -820,6 +858,54 @@ export function useBatchDeleteIssues() {
 // Comments / Timeline
 
 type TimelineCache = TimelineEntry[];
+
+/**
+ * Fold a comment the server already accepted into the timeline cache.
+ *
+ * Two writers can land the same row: the `comment:created` broadcast and the
+ * mutation's own success handler. The broadcast is faster and usually wins, so
+ * this dedupes by id and only fills in what the broadcast could not know — the
+ * delivery receipts, which are created after it.
+ */
+function applyCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  comment: Comment,
+): void {
+  if (comment.issue_revision) {
+    onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
+  } else {
+    invalidateIssueOwnerProjections(qc, wsId, issueId);
+  }
+  invalidateLastActivitySortedIssueLists(qc, wsId);
+  const entry: TimelineEntry = {
+    type: "comment",
+    id: comment.id,
+    actor_type: comment.author_type,
+    actor_id: comment.author_id,
+    content: comment.content,
+    parent_id: comment.parent_id,
+    comment_type: comment.type,
+    reactions: comment.reactions ?? [],
+    attachments: comment.attachments ?? [],
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    supplements: comment.supplements,
+  };
+  const steered = !!comment.supplements?.length;
+  qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
+    if (!old) return [entry];
+    if (old.some((e) => e.id === entry.id)) {
+      return steered
+        ? old.map((e) => (e.id === entry.id && !e.supplements?.length ? { ...e, supplements: entry.supplements } : e))
+        : old;
+    }
+    return sortTimelineEntriesAsc([...old, entry]);
+  });
+  // A steered turn now lists this comment among its inputs.
+  if (steered) qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+}
 
 export function useCreateComment(issueId: string) {
   const qc = useQueryClient();
@@ -842,42 +928,7 @@ export function useCreateComment(issueId: string) {
       steerTaskIds?: string[];
     }) => api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds),
     onSuccess: (comment) => {
-      if (comment.issue_revision) {
-        onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
-      } else {
-        invalidateIssueOwnerProjections(qc, wsId, issueId);
-      }
-      invalidateLastActivitySortedIssueLists(qc, wsId);
-      const entry: TimelineEntry = {
-        type: "comment",
-        id: comment.id,
-        actor_type: comment.author_type,
-        actor_id: comment.author_id,
-        content: comment.content,
-        parent_id: comment.parent_id,
-        comment_type: comment.type,
-        reactions: comment.reactions ?? [],
-        attachments: comment.attachments ?? [],
-        created_at: comment.created_at,
-        updated_at: comment.updated_at,
-        supplements: comment.supplements,
-      };
-      const steered = !!comment.supplements?.length;
-      // Dedupe by id: the `comment:created` WS event may have already added
-      // this entry from the broadcast path before this onSuccess fires. Skip
-      // the append if the entry is already in the cache — but keep the
-      // steering receipts, which that broadcast predates.
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
-        if (!old) return [entry];
-        if (old.some((e) => e.id === entry.id)) {
-          return steered
-            ? old.map((e) => (e.id === entry.id && !e.supplements?.length ? { ...e, supplements: entry.supplements } : e))
-            : old;
-        }
-        return sortTimelineEntriesAsc([...old, entry]);
-      });
-      // A steered turn now lists this comment among its inputs.
-      if (steered) qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+      applyCreatedComment(qc, wsId, issueId, comment);
       // Posting a comment changes the trigger answer itself (the enqueued
       // task now dedupes follow-up triggers), so cached previews for this
       // issue are stale the moment the create lands.
@@ -890,6 +941,227 @@ export function useCreateComment(issueId: string) {
     // reference, which forces every memoized CommentCard subtree to
     // re-render (visible as a flash across sibling threads during AI
     // streaming).
+  });
+}
+
+/**
+ * Answer a specific running turn.
+ *
+ * The turn is named, so this needs none of the comment router's fallbacks: no
+ * mention to resolve, no assignee to fall back to. That matters for a parked
+ * ask, where the run that asked may belong to an agent this issue is not
+ * assigned to, and where the answer must reach that run rather than start a
+ * new one.
+ *
+ * `client_request_id` is minted once per submitted answer: a double click
+ * retries the same intent instead of posting the answer twice.
+ *
+ * `mode` picks what the message does to the turn (M-136): `queue` stores it for
+ * the agent's next turn, `steer` delivers it into the running one. Omitting it
+ * leaves the server default (`steer`), which is what every caller before this
+ * card meant.
+ */
+export function useCreateTaskSupplement(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      taskId,
+      content,
+      mode,
+    }: {
+      taskId: string;
+      content: string;
+      mode?: "steer" | "queue";
+    }) =>
+      api.createTaskSupplement(issueId, taskId, content, createSafeId(), mode),
+    onSuccess: (comment) => {
+      applyCreatedComment(qc, wsId, issueId, comment);
+    },
+  });
+}
+
+/**
+ * Answer one native ask by its exact transcript sequence.
+ *
+ * The supplement mutation above names only the turn, so two windows can each
+ * queue an answer to the same question and a stale tab can answer one the run
+ * already left. This one names the question too: the server re-checks the
+ * pending predicate and binds one answer per `(task, sequence)` in the same
+ * statement, so a second attempt is a conflict that writes nothing.
+ *
+ * `client_request_id` outlives a failed attempt on purpose. A dropped
+ * transport retries the same intent, and the server answers with the receipt
+ * it already created instead of steering a second answer. A 409 settles the
+ * intent — the question is gone — so the form's next attempt is a new one.
+ */
+export function useAnswerNativeQuestion(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  const requests = useRef(new Map<string, string>());
+  const keyOf = (taskId: string, questionSeq: number) => `${taskId}:${questionSeq}`;
+  return useMutation({
+    mutationFn: ({
+      taskId,
+      questionSeq,
+      content,
+    }: {
+      taskId: string;
+      questionSeq: number;
+      content: string;
+    }) => {
+      const key = keyOf(taskId, questionSeq);
+      const requestId = requests.current.get(key) ?? createSafeId();
+      requests.current.set(key, requestId);
+      return api.answerNativeQuestion(issueId, taskId, questionSeq, content, requestId);
+    },
+    onSuccess: (comment, { taskId, questionSeq }) => {
+      requests.current.delete(keyOf(taskId, questionSeq));
+      applyCreatedComment(qc, wsId, issueId, comment);
+      void qc.invalidateQueries({ queryKey: decisionKeys.all(wsId) });
+    },
+    onError: (error, { taskId, questionSeq }) => {
+      // Only a settled question discards the id; anything else may still have
+      // landed, so its retry has to reuse it. Every 409 here means the ask is
+      // gone — answered, moved on, or the run ended — so none of them is worth
+      // retrying under the same id.
+      if (typeof error === "object" && error !== null && (error as { status?: unknown }).status === 409) {
+        requests.current.delete(keyOf(taskId, questionSeq));
+      }
+      void qc.invalidateQueries({ queryKey: decisionKeys.all(wsId) });
+    },
+  });
+}
+
+/**
+ * Answer one open question card (S1-A1, M-120).
+ *
+ * The server records the answer and enqueues the resume run in one
+ * transaction, so success means the card is closed for good: the ask-plan
+ * read is invalidated to drop it from the panel, and the per-issue task list
+ * so the parked task's row shows the queued resume without waiting for a
+ * realtime event. A 409 (`card_closed`, `run_already_queued`) throws through
+ * as `ApiError` and invalidates nothing — the panel re-reads on its own when
+ * it decides to.
+ */
+export function useAnswerQuestionCard(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      cardId,
+      answers,
+    }: {
+      cardId: string;
+      answers: readonly AgentAnswerDraft[];
+    }) => api.answerQuestionCard(wsId, cardId, answers),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+    },
+  });
+}
+
+/**
+ * Record one verdict on an `in_review` plan (S1-A1, M-120).
+ *
+ * Every verdict resumes the parked run, so the task list refreshes like above.
+ * `approve` additionally rewrites the issue description inside the same
+ * transaction as the verdict, so that one path also refreshes the issue
+ * detail — the promotion and the verdict can never disagree on screen.
+ */
+export function useReviewPlan(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      verdict,
+    }: {
+      planId: string;
+      verdict: PlanVerdictBody;
+    }) => api.reviewPlan(wsId, planId, verdict),
+    onSuccess: (_result, variables) => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
+      if (variables.verdict.verdict === "approve") {
+        void qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+      }
+    },
+  });
+}
+
+// M-275: the plan page's writes. Every one of them changes what the Decisions
+// queue shows (a comment is not a verdict, but a resolve/delivered badge is),
+// so all of them invalidate the decision queue beside the ask-plan read the
+// page renders from. A section write also invalidates its own history, which
+// is the ledger the history panel reads.
+
+/** Comment on a passage of one section, or reply to an existing comment. */
+export function useAddPlanComment(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      comment,
+    }: {
+      planId: string;
+      comment: PlanCommentBody;
+    }) => api.addPlanComment(wsId, planId, comment),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: decisionKeys.all(wsId) });
+    },
+  });
+}
+
+/** Resolve one comment thread. Idempotent in the server's CAS: a second
+ *  resolve answers 409 `comment_resolved`, which the panel reports. */
+export function useResolvePlanComment(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      commentId,
+    }: {
+      planId: string;
+      commentId: string;
+    }) => api.resolvePlanComment(wsId, planId, commentId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: decisionKeys.all(wsId) });
+    },
+  });
+}
+
+/**
+ * The human's edit of one section (or a restore from its history, which is the
+ * same write of an older version). Fenced on `base_revision`; a 409
+ * `stale_plan_revision` throws through so the panel can say the plan moved.
+ */
+export function useWritePlanSection(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({
+      planId,
+      sectionId,
+      body,
+    }: {
+      planId: string;
+      sectionId: string;
+      body: PlanSectionWriteBody;
+    }) => api.writePlanSection(wsId, planId, sectionId, body),
+    onSuccess: (_plan, variables) => {
+      void qc.invalidateQueries({ queryKey: issueKeys.askPlan(wsId, issueId) });
+      void qc.invalidateQueries({ queryKey: issueKeys.planHistoryAll(wsId) });
+      void qc.invalidateQueries({ queryKey: decisionKeys.all(wsId) });
+      void qc.invalidateQueries({
+        queryKey: issueKeys.planHistory(wsId, variables.planId, variables.sectionId),
+      });
+    },
   });
 }
 
@@ -1177,8 +1449,10 @@ export function useToggleIssueSubscriber(issueId: string) {
       if (ctx?.prev)
         qc.setQueryData(issueKeys.subscribers(issueId), ctx.prev);
     },
-    onSettled: () => {
+    onSettled: (_data, _err, { userType }) => {
       qc.invalidateQueries({ queryKey: issueKeys.subscribers(issueId) });
+      const wsId = getCurrentWsId();
+      if (wsId && userType === "member") void refreshSubscribedIssues(qc, wsId);
     },
   });
 }
@@ -1201,8 +1475,10 @@ export function useUnsubscribeFromIssueSubtree(issueId: string) {
     }) => {
       await api.unsubscribeFromIssueSubtree(issueId, userId, userType);
     },
-    onSettled: () => {
+    onSettled: (_data, _err, { userType }) => {
       qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });
+      const wsId = getCurrentWsId();
+      if (wsId && userType === "member") void refreshSubscribedIssues(qc, wsId);
     },
   });
 }

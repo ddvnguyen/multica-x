@@ -3,12 +3,144 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/service"
 )
+
+func TestFreebuffDesktopScopeIsolation(t *testing.T) {
+	base := Task{ID: "run-1", WorkspaceID: "ws", AgentID: "a", RuntimeID: "r", InitiatorType: "member", InitiatorID: "u", ChatSessionID: "chat"}
+	original := freebuffDesktopScope(base)
+	next := base
+	next.ID = "run-2"
+	if got := freebuffDesktopScope(next); got != original {
+		t.Fatal("same chat did not retain scope")
+	}
+	variants := []Task{}
+	change := func(f func(*Task)) { v := base; f(&v); variants = append(variants, v) }
+	change(func(t *Task) { t.ChatSessionID = ""; t.IssueID = "chat" })
+	change(func(t *Task) { t.InitiatorID = "other" })
+	change(func(t *Task) { t.WorkspaceID = "other" })
+	change(func(t *Task) { t.AgentID = "other" })
+	change(func(t *Task) { t.RuntimeID = "other" })
+	change(func(t *Task) { t.Agent = &AgentData{AccountID: "other"} })
+	for _, v := range variants {
+		if freebuffDesktopScope(v) == original {
+			t.Fatal("distinct context shared scope")
+		}
+	}
+	base.InitiatorID = ""
+	next = base
+	next.ID = "run-2"
+	if freebuffDesktopScope(base) == freebuffDesktopScope(next) {
+		t.Fatal("unknown initiator reused scope")
+	}
+	base.ID = ""
+	if freebuffDesktopScope(base) != "" {
+		t.Fatal("missing task ID should fail closed")
+	}
+}
+
+func TestDesktopGeneratedQuickCreateAndCommentCopy(t *testing.T) {
+	const userText = "The agent and worker must keep this exact text."
+	cases := map[string]Task{
+		"quick-default":  {QuickCreatePrompt: userText},
+		"quick-id":       {QuickCreatePrompt: userText, Agent: &AgentData{ID: "agent-id"}},
+		"quick-name":     {QuickCreatePrompt: userText, Agent: &AgentData{Name: "Participant"}},
+		"quick-squad":    {QuickCreatePrompt: userText, SquadID: "squad-id", SquadName: "Team"},
+		"comment":        {IssueID: "i", TriggerCommentID: "c", TriggerCommentContent: userText, TriggerAuthorType: "agent", TriggerAuthorName: "Person"},
+		"comment-folded": {IssueID: "i", TriggerCommentID: "c", TriggerCommentContent: userText, TriggerAuthorType: "agent", CoalescedComments: []CoalescedCommentData{{ID: "c2", AuthorType: "agent", Content: "Earlier comment"}}},
+	}
+	for name, task := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
+			if !strings.Contains(out, userText) {
+				t.Fatal("user text changed")
+			}
+			prose := strings.ReplaceAll(out, userText, "")
+			prose = strings.ReplaceAll(prose, "agent-id", "identity")
+			prose = regexp.MustCompile("`[^`]*`").ReplaceAllString(prose, "")
+			if line := regexp.MustCompile(`(?im)^.*\b(agent|worker)s?\b.*$`).FindString(prose); line != "" {
+				t.Fatalf("unexpected wording: %.300s", line)
+			}
+			// The picker identity rides in task context and the CLI resolves
+			// `--assignee-picker` from it, so the model must never see the UUID
+			// and the default assignment must still name the flag.
+			if name == "quick-id" || name == "quick-squad" {
+				if strings.Contains(out, "agent-id") || strings.Contains(out, "squad-id") {
+					t.Fatal("picker identity leaked into the prompt")
+				}
+				if !strings.Contains(out, "--assignee-picker") {
+					t.Fatal("default assignment lost its picker directive")
+				}
+			}
+		})
+	}
+}
+
+func TestFreebuffDesktopPromptIntroduction(t *testing.T) {
+	const original = "You are running as a local coding agent for a Multica workspace."
+	cases := []struct {
+		name string
+		task Task
+	}{
+		{"assignment", Task{IssueID: "issue-1"}},
+		{"comment", Task{IssueID: "issue-1", TriggerCommentID: "comment-1", TriggerCommentContent: original}},
+		{"wakeup", Task{IssueID: "issue-1", WakeupID: "wake-1", HandoffNote: original}},
+		{"resume", Task{IssueID: "issue-1", TriggerEvidenceKind: "question_answer", HandoffNote: original}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ordinary := BuildPrompt(tc.task, "codebuddy")
+			desktop := BuildPrompt(tc.task, "codebuddy", WithFreebuffDesktop())
+			if !strings.HasPrefix(ordinary, original+"\n\n") {
+				t.Fatal("ordinary runtime introduction changed")
+			}
+			want := "We are working with Multica workspace\n\n" + strings.TrimPrefix(ordinary, original+"\n\n")
+			if desktop != want {
+				t.Fatalf("desktop prompt changed content beyond the introduction:\n%s", desktop)
+			}
+		})
+	}
+}
+
+func TestFreebuffDesktopRuntimeDetection(t *testing.T) {
+	cases := []struct {
+		path string
+		task Task
+		want bool
+	}{
+		{"/opt/FREEBUFF-DESKTOP-custom", Task{}, true},
+		{"/opt/custom-wrapper", Task{Agent: &AgentData{CustomEnv: map[string]string{"FREEBUFF_DESKTOP_URL": "http://localhost"}}}, true},
+		{"/opt/codebuddy", Task{}, false},
+		{"/opt/codebuddy", Task{Agent: &AgentData{CustomEnv: map[string]string{"OTHER": "value"}}}, false},
+	}
+	for _, tc := range cases {
+		if got := isFreebuffDesktopRuntime(tc.path, tc.task); got != tc.want {
+			t.Errorf("isFreebuffDesktopRuntime(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestFreebuffDesktopPromptRequesterIdentity(t *testing.T) {
+	for _, task := range []Task{
+		{IssueID: "issue-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"},
+		{IssueID: "issue-1", WakeupID: "wake-1", InitiatorName: "Owner", InitiatorEmail: "owner@example.test"},
+	} {
+		desktop := BuildPrompt(task, "codebuddy", WithFreebuffDesktop())
+		for _, want := range []string{"We are working on behalf of **Owner** (owner@example.test)", "person-specific privacy or access rules", "do not assume this person can access everything you can"} {
+			if !strings.Contains(desktop, want) {
+				t.Errorf("desktop prompt missing %q: %s", want, desktop)
+			}
+		}
+	}
+	if got := BuildPrompt(Task{IssueID: "issue-1"}, "codebuddy", WithFreebuffDesktop()); strings.Contains(got, "## On Behalf Of") {
+		t.Fatal("empty requester should not create an identity block")
+	}
+}
 
 // TestBuildQuickCreatePromptRules locks in the rules that govern how the
 // quick-create agent is allowed to translate raw user input into the issue
@@ -112,7 +244,7 @@ func TestBuildQuickCreatePromptLargestAcceptedSourceContextFitsBudget(t *testing
 
 func TestIssuePromptsKeepSourceContextRuleOutOfPerTurnMessage(t *testing.T) {
 	const rule = "If the issue JSON contains `source_context`"
-	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude")
+	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude", false)
 	comment := buildCommentPrompt(Task{IssueID: "issue-1", TriggerCommentID: "comment-1"}, "claude")
 	if strings.Contains(assignment, rule) || strings.Contains(comment, rule) {
 		t.Fatal("source-context precedence rule must live in the cache-stable runtime brief, not per-turn prompts")
@@ -136,52 +268,6 @@ func TestBuildQuickCreatePromptAssigneeIncludesSquads(t *testing.T) {
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
 			t.Errorf("buildQuickCreatePrompt assignee block missing %q\n--- output ---\n%s", s, out)
-		}
-	}
-}
-
-// TestBuildQuickCreatePromptSquadDefaultsToSquad locks in the MUL-2203
-// fix: when the picker was a squad, the task runs on the squad's leader
-// agent, but the default assignee for issues created by this run must
-// point at the SQUAD's UUID — not the leader agent's UUID. The previous
-// "default to YOURSELF" instruction made squad-created issues land under
-// the leader, hiding them from the squad's delegation flow.
-func TestBuildQuickCreatePromptSquadDefaultsToSquad(t *testing.T) {
-	const (
-		squadID   = "aaaa1111-2222-3333-4444-555555555555"
-		squadName = "独立团"
-		leaderID  = "bbbb1111-2222-3333-4444-666666666666"
-	)
-	out := buildQuickCreatePrompt(Task{
-		QuickCreatePrompt: "fix the login button color",
-		Agent:             &AgentData{ID: leaderID, Name: "leader-agent"},
-		SquadID:           squadID,
-		SquadName:         squadName,
-	})
-
-	// The default-assignee instruction must point at the squad UUID.
-	if !strings.Contains(out, "--assignee-id \""+squadID+"\"") {
-		t.Errorf("buildQuickCreatePrompt with SquadID must default to the squad's UUID, got:\n%s", out)
-	}
-	// And it must NOT tell the agent to default to itself (the leader).
-	if strings.Contains(out, "--assignee-id \""+leaderID+"\"") {
-		t.Errorf("buildQuickCreatePrompt with SquadID must NOT default to the leader agent's UUID, got:\n%s", out)
-	}
-	// The squad name should appear in the instruction so the agent has
-	// human-readable context for the routing decision.
-	if !strings.Contains(out, squadName) {
-		t.Errorf("buildQuickCreatePrompt with SquadID should mention the squad name %q, got:\n%s", squadName, out)
-	}
-	// And the prompt must explicitly call out the squad-vs-leader rule
-	// so the agent does not silently regress to "default to YOURSELF".
-	mustContain := []string{
-		"picker SQUAD",
-		"running on the squad's behalf",
-		"do not assign it to your own agent UUID",
-	}
-	for _, s := range mustContain {
-		if !strings.Contains(out, s) {
-			t.Errorf("buildQuickCreatePrompt with SquadID missing %q\n--- output ---\n%s", s, out)
 		}
 	}
 }
@@ -1893,10 +1979,11 @@ func TestTurnModeMarkersRetired(t *testing.T) {
 func TestBriefCarriesNoModeRouter(t *testing.T) {
 	t.Parallel()
 
-	brief, err := execenv.InjectRuntimeConfig(t.TempDir(), "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
+	rendered, err := execenv.InjectRuntimeConfig(t.TempDir(), "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
 	if err != nil {
 		t.Fatalf("InjectRuntimeConfig: %v", err)
 	}
+	brief := rendered.Content
 	for _, banned := range []string{"Turn mode", "Ownership mode", "Reply mode", "mode block"} {
 		if strings.Contains(brief, banned) {
 			t.Errorf("brief still references the retired turn-mode split via %q (MUL-6417)\n---\n%s", banned, brief)
@@ -2252,5 +2339,77 @@ func TestPromptCarriesJoinedWakeups(t *testing.T) {
 	}
 	if out := BuildPrompt(Task{IssueID: "issue-1"}, "claude"); strings.Contains(out, "joined this run") {
 		t.Errorf("prompt without joined wakeups mentions them:\n%s", out)
+	}
+}
+
+// A sub-issue's run is pointed at its parent whatever started it (MUL-8441).
+// The claim JSON decodes into the block, a resumed session gets the short form
+// that still names the commands, and a run without a parent is unchanged.
+func TestPromptPointsSubIssueRunsAtTheirParent(t *testing.T) {
+	t.Parallel()
+
+	var decoded Task
+	if err := json.Unmarshal([]byte(`{
+		"issue_id":"issue-1",
+		"parent_issue":{"id":"parent-uuid","identifier":"MUL-9","title":"Merge PRs from Multica","status":"in_progress"}
+	}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	parent := decoded.ParentIssue
+
+	header := "[Parent issue]\nThis issue is a sub-issue of MUL-9 \"Merge PRs from Multica\" (status: in_progress)."
+	readCmds := []string{
+		"`multica issue get parent-uuid --output json`",
+		"`multica issue comment list parent-uuid --roots-only --summary --compact --output json`",
+	}
+	full := []string{
+		"this issue's description is only the part handed to you",
+		"Before starting work, read the parent",
+		"`multica issue children parent-uuid --output json`",
+		"If they conflict, ask on this issue instead of picking one.",
+	}
+
+	for name, task := range map[string]Task{
+		"assignment": decoded,
+		"comment":    {IssueID: "issue-1", TriggerCommentID: "c1", TriggerCommentContent: "please look", ParentIssue: parent},
+		"wakeup":     {IssueID: "issue-1", WakeupID: "w1", HandoffNote: "check CI", ParentIssue: parent},
+	} {
+		out := BuildPrompt(task, "claude")
+		for _, want := range append(append([]string{header}, readCmds...), full...) {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s prompt lacks %q:\n%s", name, want, out)
+			}
+		}
+	}
+
+	resumed := BuildPrompt(Task{IssueID: "issue-1", PriorSessionID: "s1", ParentIssue: parent}, "claude")
+	for _, want := range append([]string{header, "If you have not read the parent in this session"}, readCmds...) {
+		if !strings.Contains(resumed, want) {
+			t.Errorf("resumed prompt lacks %q:\n%s", want, resumed)
+		}
+	}
+	if strings.Contains(resumed, "Before starting work, read the parent") {
+		t.Errorf("resumed prompt repeats the full parent instruction:\n%s", resumed)
+	}
+
+	// A resume the server could only serve from an older session reconstructs,
+	// so it gets the full instruction.
+	fallback := BuildPrompt(Task{IssueID: "issue-1", PriorSessionID: "s0", PriorSessionResumeUnavailable: true, ParentIssue: parent}, "claude")
+	if !strings.Contains(fallback, "Before starting work, read the parent") {
+		t.Errorf("fallback-session prompt lacks the full parent instruction:\n%s", fallback)
+	}
+
+	noIdentifier := BuildPrompt(Task{IssueID: "issue-1", ParentIssue: &ParentIssueData{ID: "parent-uuid", Title: "T", Status: "todo"}}, "claude")
+	if !strings.Contains(noIdentifier, "sub-issue of parent-uuid \"T\" (status: todo).") {
+		t.Errorf("parent without identifier must be named by ID:\n%s", noIdentifier)
+	}
+
+	for name, task := range map[string]Task{
+		"no parent": {IssueID: "issue-1"},
+		"chat":      {ChatSessionID: "chat-1", ParentIssue: parent},
+	} {
+		if out := BuildPrompt(task, "claude"); strings.Contains(out, "[Parent issue]") {
+			t.Errorf("%s prompt renders a parent block:\n%s", name, out)
+		}
 	}
 }

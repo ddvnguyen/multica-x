@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Cpu, Loader2, Plus, Check, Info } from "lucide-react";
+import { ChevronDown, Cpu, Loader2, Plus, Check, Info } from "@multica/ui/icons";
 import {
   refreshRuntimeModels,
   runtimeModelsOptions,
@@ -34,19 +34,28 @@ import { ModelSearchHeader } from "./model-search-header";
 // needs when their runtime could not enumerate anything (MUL-6606).
 export function ModelDropdown({
   runtimeId,
+  workspaceSlug,
   runtimeOnline,
   value,
   onChange,
   onAutomaticChange = onChange,
   disabled,
+  account,
 }: {
   runtimeId: string | null;
+  /** Target workspace when rendered before a workspace route is active. */
+  workspaceSlug?: string;
   runtimeOnline: boolean;
   value: string;
   onChange: (value: string) => void;
   /** Automatic value cleanup, separate from explicit user selections. */
   onAutomaticChange?: (value: string) => void;
   disabled?: boolean;
+  /**
+   * Account scope of the catalog: an account id, or `all`. Omitted lists the
+   * runtime's default catalog. Chosen by `AgentAccountField`.
+   */
+  account?: string;
 }) {
   const { t } = useT("agents");
   const queryClient = useQueryClient();
@@ -54,7 +63,7 @@ export function ModelDropdown({
   const [search, setSearch] = useState("");
 
   const modelsQuery = useQuery(
-    runtimeModelsOptions(runtimeOnline ? runtimeId : null),
+    runtimeModelsOptions(runtimeOnline ? runtimeId : null, account, workspaceSlug),
   );
 
   const supported = modelsQuery.data?.supported ?? true;
@@ -116,7 +125,7 @@ export function ModelDropdown({
 
   const refresh = () => {
     if (!runtimeId || !runtimeOnline) return;
-    void refreshRuntimeModels(queryClient, runtimeId).catch(() => {
+    void refreshRuntimeModels(queryClient, runtimeId, account, workspaceSlug).catch(() => {
       // React Query owns the error state rendered below. Swallow the returned
       // promise rejection so a failed manual refresh is not also unhandled.
     });
@@ -173,7 +182,7 @@ export function ModelDropdown({
                 two pickers sit side-by-side; inline-in-flex vs block-line-
                 box height calc would otherwise leave them ~1px misaligned. */}
             <div className="flex items-center gap-2">
-              <span className="truncate font-medium">{triggerLabel}</span>
+              <span className="min-w-0 truncate font-medium">{triggerLabel}</span>
             </div>
             {value && (
               <div className="truncate text-caption text-muted-foreground">
@@ -224,7 +233,14 @@ export function ModelDropdown({
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{m.label}</div>
+                        <div className="truncate font-medium">
+                          {m.label}
+                          {m.account_label && (
+                            <span className="ml-2 text-caption text-muted-foreground">
+                              {m.account_label}
+                            </span>
+                          )}
+                        </div>
                         {m.label !== m.id && (
                           <div className="truncate text-caption text-muted-foreground">
                             {m.id}
@@ -289,7 +305,7 @@ export function ModelDropdown({
                 className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-body text-primary transition-colors hover:bg-accent/50"
               >
                 <Plus className="h-4 w-4 shrink-0" />
-                <span className="truncate">
+                <span className="min-w-0 truncate">
                   {t(($) => $.pickers.model_custom_use, { value: trimmedSearch })}
                 </span>
               </button>

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -47,7 +49,9 @@ const (
 	// precedes the block — write a missing file from scratch) from "file
 	// that pre-existed" (managed separator precedes the block) so the
 	// file's existence is preserved exactly across the inject→cleanup
-	// cycle, including empty / whitespace-only pre-existing files.
+	// cycle, including empty / whitespace-only pre-existing files. Blocks
+	// written by current daemons also carry boundary metadata, which is
+	// itself proof the file pre-existed (see runtimeBoundaryPrefix).
 	runtimeManagedSeparator = "\n\n"
 )
 
@@ -167,7 +171,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For DevEco Code: writes {workDir}/AGENTS.md  (skills discovered natively from .deveco/skills/)
 // For OpenClaw: writes {workDir}/AGENTS.md  (skills discovered natively from {workDir}/skills/ via per-task openclaw-config.json that pins agents.defaults.workspace)
 // For Hermes:   writes {workDir}/AGENTS.md  (skills discovered natively from a per-task HERMES_HOME/skills seeded by the daemon; see hermes_home.go)
-// For Pi:       writes {workDir}/AGENTS.md  (skills discovered natively from .pi/skills/)
+// For Pi:       writes {workDir}/AGENTS.md  (skills explicitly loaded from .pi/skills/ via --skill)
 // For Oh-My-Pi (omp): writes {workDir}/AGENTS.md  (omp is a pi fork; skills discovered from .omp/skills/)
 // For Cursor:   writes {workDir}/AGENTS.md  (skills discovered natively from .cursor/skills/)
 // For Kimi:        writes {workDir}/AGENTS.md  (Kimi Code CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
@@ -179,14 +183,74 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Traecli:     writes {workDir}/AGENTS.md  (traecli reads .trae/rules/ not AGENTS.md, so the brief is delivered inline via providerNeedsInlineSystemPrompt; the file is written for parity/visibility only)
 // For Grok:        writes {workDir}/AGENTS.md  (Grok Build CLI reads AGENTS.md natively from the workdir)
 // For Qwen:        writes {workDir}/QWEN.md (Qwen Code's native context file; it also reads AGENTS.md, but QWEN.md avoids cross-runtime ambiguity)
-func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
-	content := buildMetaSkillContent(provider, ctx)
-	path := runtimeConfigPath(workDir, provider)
-	if path == "" {
-		// Unknown provider — skip config injection, prompt-only mode.
-		return content, nil
+func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (RuntimeBrief, error) {
+	content, parts := buildMetaSkillContentSlim(provider, ctx)
+	brief := RuntimeBrief{
+		Content: content,
+		SHA256:  initctx.Hash(runtimeConfigBlock(content)),
+		Parts: []initctx.PartReport{
+			{
+				Part:     initctx.PartInstructions,
+				Tokens:   initctx.EstimateBytes(parts.InstructionsBytes),
+				Budget:   initctx.Budget(initctx.PartInstructions),
+				Measured: true,
+				Note:     "identity, workspace context, command catalogue and workflow; never trimmed, overage is flagged",
+			},
+			{
+				Part:     initctx.PartSkills,
+				Tokens:   initctx.EstimateBytes(parts.SkillsBytes),
+				Budget:   initctx.Budget(initctx.PartSkills),
+				Measured: true,
+				Trimmed:  parts.Skills.trimmed,
+				Dropped:  parts.Skills.dropped,
+				Note:     parts.Skills.note,
+			},
+			{
+				Part:     initctx.PartProject,
+				Tokens:   initctx.EstimateBytes(parts.ProjectBytes),
+				Budget:   initctx.Budget(initctx.PartProject),
+				Measured: true,
+				Trimmed:  parts.ProjectTrimmed,
+				Note:     parts.ProjectNote,
+			},
+		},
 	}
-	return content, writeRuntimeConfigFile(path, content)
+	path := runtimeConfigPathForTask(workDir, provider, ctx)
+	if path == "" {
+		// Unknown provider — skip config injection, prompt-only mode. The hash
+		// then fingerprints the text the backend receives inline, which is the
+		// same prefix property on a provider that reads no file.
+		brief.SHA256 = initctx.Hash(content)
+		return brief, nil
+	}
+	return brief, writeRuntimeConfigFile(path, content)
+}
+
+func runtimeConfigPathForTask(workDir, provider string, ctx TaskContextForEnv) string {
+	if ctx.IsFreebuffDesktop && provider == "codebuddy" {
+		return filepath.Join(workDir, "AGENTS.md")
+	}
+	return runtimeConfigPath(workDir, provider)
+}
+
+// RuntimeBrief is the rendered runtime config plus the accounting the daemon
+// records on the run row (M-140).
+//
+// Content is exactly the text that was written; Parts describes the three parts
+// that live in this file (instructions, skills, project) with their estimated
+// tokens, and SHA256 fingerprints the managed block so two fresh sessions can be
+// proved byte-identical without a provider key.
+type RuntimeBrief struct {
+	Content string
+	Parts   []initctx.PartReport
+	SHA256  string
+}
+
+// runtimeConfigBlock is the exact managed block written into the runtime config
+// file, markers included. Inject and the prefix fingerprint share it so the hash
+// can never describe a block that was not the one written.
+func runtimeConfigBlock(brief string) string {
+	return runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
 }
 
 // runtimeConfigPath returns the absolute path to the runtime config file that
@@ -215,7 +279,7 @@ func runtimeConfigPath(workDir, provider string) string {
 		return filepath.Join(workDir, "CODEBUDDY.md")
 	case "qwen":
 		return filepath.Join(workDir, "QWEN.md")
-	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw":
+	case "codex", "copilot", "opencode", "codearts", "deveco", "freebuff", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw", "devin", "museapp", "zcode":
 		return filepath.Join(workDir, "AGENTS.md")
 	default:
 		return ""
@@ -234,18 +298,22 @@ func runtimeConfigPath(workDir, provider string) string {
 //     separator's bytes are part of the managed region so Cleanup can
 //     restore the user's pre-injection bytes exactly (no trailing-newline
 //     normalisation, no surprises for files that ended without a newline
-//     or with extra trailing newlines).
+//     or with extra trailing newlines). The block's first line records
+//     the file's original trailing CR/LF bytes and whether it was blank
+//     (see runtimeBoundaryPrefix), so Cleanup can still restore the exact
+//     boundary after a formatter normalises the separator.
 //   - file present, marker block already there → replace the body between
 //     the markers in place so repeated runs in the same workdir don't grow
 //     the file unboundedly. The pre-block content (including any managed
-//     separator established by the first inject) is preserved verbatim.
+//     separator established by the first inject) and the first inject's
+//     boundary metadata are preserved verbatim.
 //
 // The previous implementation called os.WriteFile unconditionally, which
 // silently truncated a repository's CLAUDE.md / AGENTS.md the
 // first time the agent was pointed at the user's own directory via the
 // local_directory project resource flow. See MUL-2753.
 func writeRuntimeConfigFile(path, brief string) error {
-	block := runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
+	block := runtimeConfigBlock(brief)
 
 	existing, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -257,6 +325,12 @@ func writeRuntimeConfigFile(path, brief string) error {
 
 	existingStr := string(existing)
 	if start, end, ok := locateMarkerBlock(existingStr); ok {
+		// Carry the boundary metadata recorded by the first Inject forward
+		// so a re-injection never re-baselines against the already-injected
+		// file (whose "original" bytes would include our own separator).
+		if meta, ok := parseRuntimeBoundaryMeta(existingStr[start:end]); ok {
+			block = runtimeBlockWithBoundaryMeta(block, meta)
+		}
 		// Replace the existing block in place. locateMarkerBlock already
 		// consumes the trailing newline that closed the previous block, so
 		// successive runs don't accumulate blank lines around the block.
@@ -271,7 +345,109 @@ func writeRuntimeConfigFile(path, brief string) error {
 	// that already end in two or more newlines — so the byte boundary
 	// between user content and the managed region is deterministic, which
 	// is what lets Cleanup roll back to the user's exact original bytes.
+	//
+	// The separator alone is not enough once a Markdown formatter runs
+	// between Inject and Cleanup: formatters collapse the blank lines in
+	// front of the block (or drop them entirely for a blank file), so the
+	// user's own trailing newlines become indistinguishable from ours.
+	// Record them inside the block, which formatters leave alone.
+	trimmed := strings.TrimRight(existingStr, "\r\n")
+	block = runtimeBlockWithBoundaryMeta(block, runtimeBoundaryMeta{
+		boundary: existingStr[len(trimmed):],
+		blank:    trimmed == "",
+	})
 	return os.WriteFile(path, []byte(existingStr+runtimeManagedSeparator+block), 0o644)
+}
+
+// runtimeBoundaryPrefix opens the metadata line written as the first line
+// inside the marker block whenever Inject appends to a pre-existing file:
+//
+//	<!-- MULTICA-RUNTIME original-boundary: "<quoted CR/LF bytes>"[ blank] -->
+//
+// Its presence also means "the file existed before Inject", so Cleanup never
+// deletes a file that carries it. Daemons that predate the metadata strip it
+// together with the block, so mixed-version inject/cleanup stays safe.
+const runtimeBoundaryPrefix = "<!-- MULTICA-RUNTIME original-boundary: "
+
+// runtimeBoundaryMeta is the pre-injection state Cleanup needs to undo a
+// formatter-normalised separator.
+type runtimeBoundaryMeta struct {
+	// boundary is the run of trailing CR/LF bytes the user's file ended with.
+	boundary string
+	// blank reports that the file held nothing but those bytes. Cleanup
+	// only restores the boundary into an empty prefix when this is set;
+	// otherwise an empty prefix means the agent legitimately removed or
+	// moved the original content, and re-adding the old newlines would
+	// leak a stray blank line into the user's file.
+	blank bool
+}
+
+func runtimeBlockWithBoundaryMeta(block string, meta runtimeBoundaryMeta) string {
+	line := runtimeBoundaryPrefix + strconv.Quote(meta.boundary)
+	if meta.blank {
+		line += " blank"
+	}
+	line += " -->\n"
+	return strings.Replace(block, runtimeMarkerBegin+"\n", runtimeMarkerBegin+"\n"+line, 1)
+}
+
+// parseRuntimeBoundaryMeta reads the metadata line from a marker block.
+// Anything malformed is treated as absent so Cleanup falls back to the
+// legacy fixed-separator behaviour instead of guessing.
+func parseRuntimeBoundaryMeta(block string) (runtimeBoundaryMeta, bool) {
+	line := strings.TrimLeft(strings.TrimPrefix(block, runtimeMarkerBegin), "\r\n")
+	if !strings.HasPrefix(line, runtimeBoundaryPrefix) {
+		return runtimeBoundaryMeta{}, false
+	}
+	rest := strings.TrimPrefix(line, runtimeBoundaryPrefix)
+	quoted, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return runtimeBoundaryMeta{}, false
+	}
+	boundary, err := strconv.Unquote(quoted)
+	if err != nil || strings.Trim(boundary, "\r\n") != "" {
+		return runtimeBoundaryMeta{}, false
+	}
+	meta := runtimeBoundaryMeta{boundary: boundary}
+	switch tail := rest[len(quoted):]; {
+	case strings.HasPrefix(tail, " blank -->"):
+		meta.blank = true
+	case strings.HasPrefix(tail, " -->"):
+	default:
+		return runtimeBoundaryMeta{}, false
+	}
+	return meta, true
+}
+
+// runtimeIsCollapsedSeparator reports whether gap (the CR/LF run between the
+// user's last content byte and the marker block) is exactly two line breaks,
+// i.e. the single blank line a Markdown formatter leaves before an HTML block.
+// Line breaks may be LF or CRLF since formatters may rewrite line endings.
+func runtimeIsCollapsedSeparator(gap string) bool {
+	breaks := 0
+	for rest := gap; rest != ""; breaks++ {
+		switch {
+		case strings.HasPrefix(rest, "\r\n"):
+			rest = rest[2:]
+		case rest[0] == '\n':
+			rest = rest[1:]
+		default:
+			return false
+		}
+	}
+	return breaks == 2
+}
+
+// runtimeBoundaryInStyle rewrites the recorded boundary into the line-ending
+// style of the gap the formatter left behind, so restoring an original CRLF
+// boundary into a file the formatter converted to LF (or vice versa) does
+// not produce mixed line endings.
+func runtimeBoundaryInStyle(boundary, gap string) string {
+	lf := strings.ReplaceAll(boundary, "\r\n", "\n")
+	if strings.HasPrefix(gap, "\r\n") {
+		return strings.ReplaceAll(lf, "\n", "\r\n")
+	}
+	return lf
 }
 
 // locateMarkerBlock finds the [start, end) byte range of the Multica marker
@@ -308,7 +484,11 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 		return start, len(content), true
 	}
 	end = afterBegin + endRel + len(runtimeMarkerEnd)
-	if end < len(content) && content[end] == '\n' {
+	// Consume the line break closing the block. A formatter that rewrites
+	// the file to CRLF also rewrites the block's own LF, so accept both.
+	if strings.HasPrefix(content[end:], "\r\n") {
+		end += 2
+	} else if end < len(content) && content[end] == '\n' {
 		end++
 	}
 	return start, end, true
@@ -325,9 +505,10 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 //
 //   - file has no marker block → no-op (nothing was ever injected here);
 //   - block is at the start of the file with no preceding managed
-//     separator → the file was created by Inject from a missing-file
-//     state. Remove the file outright so the post-cleanup directory
-//     listing is byte-identical to the pre-Inject one.
+//     separator and no boundary metadata → the file was created by Inject
+//     from a missing-file state. Remove the file outright so the
+//     post-cleanup directory listing is byte-identical to the pre-Inject
+//     one.
 //   - block is preceded by the fixed managed separator → strip the
 //     separator together with the block; whatever remains (which may be
 //     an empty pre-existing file, a whitespace-only file, or arbitrary
@@ -335,6 +516,11 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 //     with NO trailing-newline normalisation and NO TrimSpace-based file
 //     removal heuristic. Both of those were sources of subtle diff in
 //     PR #3438 review feedback.
+//   - block carries boundary metadata and a formatter normalised the
+//     separator (collapsed to one blank line, or dropped in front of a
+//     blank file) → restore the recorded original boundary instead of
+//     stripping a fixed width, in the line-ending style the formatter
+//     left. Edits to the user content around the block are kept as-is.
 //
 // Required for the local_directory flow (WorkDir is the user's own repo):
 // without this pass, a manual `claude` / `codex` run started by
@@ -347,7 +533,13 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 // Missing files, unknown providers, and files without a marker block are
 // no-ops — Cleanup is safe to call defensively.
 func CleanupRuntimeConfig(workDir, provider string) error {
-	path := runtimeConfigPath(workDir, provider)
+	return CleanupRuntimeConfigForTask(workDir, provider, TaskContextForEnv{})
+}
+
+// CleanupRuntimeConfigForTask removes only this task's managed block and
+// preserves any pre-existing project guidance in the file.
+func CleanupRuntimeConfigForTask(workDir, provider string, ctx TaskContextForEnv) error {
+	path := runtimeConfigPathForTask(workDir, provider, ctx)
 	if path == "" {
 		return nil
 	}
@@ -366,18 +558,31 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 	pre := existingStr[:start]
 	post := existingStr[end:]
 
-	// Detect — and strip — the fixed managed separator that Inject puts
-	// immediately before the block whenever it appended to a file that
-	// pre-existed. The absence of the separator is the marker that says
-	// "Inject created this file from scratch", which is the only case
-	// where Cleanup is allowed to delete the file.
+	// Undo the managed separator. With boundary metadata (blocks written by
+	// this version) two formatter-normalised shapes are restored from the
+	// record instead of by stripping a fixed width:
+	//   - the separator collapsed to a single blank line after user content;
+	//   - a blank pre-existing file whose separator the formatter dropped,
+	//     and which is still blank apart from the block. If content now
+	//     follows the block, the agent wrote the file's new body; putting
+	//     the old blank lines back in front of it would leak a stray diff.
+	// Every other shape — legacy blocks, untouched separators, or user edits
+	// to the boundary — keeps the fixed-separator behaviour.
 	hadManagedSeparator := strings.HasSuffix(pre, runtimeManagedSeparator)
-	if hadManagedSeparator {
+	meta, hasMeta := parseRuntimeBoundaryMeta(existingStr[start:end])
+	trimmedPre := strings.TrimRight(pre, "\r\n")
+	gap := pre[len(trimmedPre):]
+	switch {
+	case hasMeta && trimmedPre != "" && runtimeIsCollapsedSeparator(gap):
+		pre = trimmedPre + runtimeBoundaryInStyle(meta.boundary, gap)
+	case hasMeta && meta.blank && pre == "" && post == "":
+		pre = meta.boundary
+	case hadManagedSeparator:
 		pre = pre[:len(pre)-len(runtimeManagedSeparator)]
 	}
 	remainder := pre + post
 
-	if !hadManagedSeparator && remainder == "" {
+	if !hadManagedSeparator && !hasMeta && remainder == "" {
 		// Inject created the file (no managed separator → block was the
 		// only content). Restore the missing-file state.
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -402,5 +607,6 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 // legacy verbose brief; the flag has been retired (MUL-4297) and the slim brief
 // is now the only path.
 func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
-	return buildMetaSkillContentSlim(provider, ctx)
+	content, _ := buildMetaSkillContentSlim(provider, ctx)
+	return content
 }

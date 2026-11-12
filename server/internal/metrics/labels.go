@@ -35,6 +35,7 @@ const (
 	labelGate         = "gate"
 	labelOutcome      = "outcome"
 	labelStage        = "stage"
+	labelClaimPath    = "claim_path"
 )
 
 var businessMetricLabels = map[string][]string{
@@ -45,6 +46,7 @@ var businessMetricLabels = map[string][]string{
 	"multica_agent_task_failed_total":                  {labelSource, labelRuntimeMode, labelFailureReason},
 	"multica_agent_task_queue_wait_seconds":            {labelSource, labelRuntimeMode},
 	"multica_agent_task_claimable_wait_seconds":        {labelSource, labelRuntimeMode},
+	"multica_agent_task_claim_decision_total":          {labelClaimPath, labelOutcome, labelReason},
 	"multica_agent_task_run_seconds":                   {labelSource, labelRuntimeMode, labelTerminalStatus},
 	"multica_agent_task_total_seconds":                 {labelSource, labelRuntimeMode, labelTerminalStatus},
 	"multica_agent_task_in_progress":                   {labelSource, labelRuntimeMode},
@@ -151,6 +153,7 @@ var (
 		"copilot":       "copilot",
 		"cursor":        "cursor",
 		"dsh":           "dsh",
+		"freebuff":      "freebuff",
 		"gemini":        "gemini",
 		"grok":          "grok",
 		"hermes":        "hermes",
@@ -158,12 +161,16 @@ var (
 		"kimi":          "kimi",
 		"reasonix":      "reasonix",
 		"dim":           "dim",
+		"devin":         "devin",
 		"mcode":         "mcode",
 		"muse":          "muse",
 		"zeroclaw":      "zeroclaw",
+		"museapp":       "museapp",
+		"zcode":         "zcode",
 		"multica_agent": "multica_agent",
 		"openclaw":      "openclaw",
 		"opencode":      "opencode",
+		"opencode2":     "opencode2",
 		"deveco":        "deveco",
 		"pi":            "pi",
 		"qoder":         "qoder",

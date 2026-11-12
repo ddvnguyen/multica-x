@@ -54,9 +54,13 @@ type cachedReadiness struct {
 }
 
 type liveResponse struct {
-	Status    string `json:"status"`
-	PID       int    `json:"pid,omitempty"`
-	Commit    string `json:"commit,omitempty"`
+	Status string `json:"status"`
+	PID    int    `json:"pid,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	// Version is the stamped build identity (M-155), x.x.x-yyMMMdd.HH.mm —
+	// it sits beside commit so one /health answer names the whole build, not
+	// just the revision.
+	Version   string `json:"version,omitempty"`
 	StartedAt string `json:"started_at,omitempty"`
 }
 
@@ -83,7 +87,7 @@ func newServerHealth(pool *pgxpool.Pool) *serverHealth {
 }
 
 func (h *serverHealth) liveHandler(w http.ResponseWriter, _ *http.Request) {
-	resp := liveResponse{Status: "ok", PID: h.pid, Commit: commit}
+	resp := liveResponse{Status: "ok", PID: h.pid, Commit: commit, Version: version}
 	if !h.startedAt.IsZero() {
 		resp.StartedAt = h.startedAt.Format(time.RFC3339)
 	}

@@ -18,14 +18,16 @@ import (
 var MinVersions = map[string]string{
 	"antigravity": "1.1.10", // stream-json usage plus reliable headless --model selection
 	"claude":      "2.0.0",
-	"codex":       "0.100.0", // app-server --listen stdio:// added in 0.100.0
-	"copilot":     "1.0.0",   // --output-format json envelope stable from 1.0.x
-	"grok":        "0.2.89",  // ACP + authenticate/session-load/set_model/MCP and --effort thinking flag
-	"qwen":        "0.20.0",  // stream-json protocol captured and verified against Qwen Code 0.20.0
-	"dim":         "0.3.10",  // cross-run session/load: per-process lock releases on graceful exit
-	"mcode":       "0.1.2",   // ACP v1 session/new, prompt, MCP capability forwarding
-	"muse":        "1.4.10",  // MSP stable surface: session/start, turn/start, item stream
-	"zeroclaw":    "0.8.0",   // persistent ACP sessions and session/resume were added in 0.8.0
+	"codex":       "0.100.0",   // app-server --listen stdio:// added in 0.100.0
+	"copilot":     "1.0.0",     // --output-format json envelope stable from 1.0.x
+	"grok":        "0.2.89",    // ACP + authenticate/session-load/set_model/MCP and --effort thinking flag
+	"qwen":        "0.20.0",    // stream-json protocol captured and verified against Qwen Code 0.20.0
+	"dim":         "0.3.10",    // cross-run session/load: per-process lock releases on graceful exit
+	"mcode":       "0.1.2",     // ACP v1 session/new, prompt, MCP capability forwarding
+	"muse":        "1.4.10",    // MSP stable surface: session/start, turn/start, item stream
+	"devin":       "3000.3.22", // devin acp --model was introduced in 3000.3.22
+	"zeroclaw":    "0.8.0",     // persistent ACP sessions and session/resume were added in 0.8.0
+	"zcode":       "0.16.0",    // native NDJSON app-server protocol
 	// opencode: honors TMPDIR/TMP/TEMP from 1.1.54. Earlier builds ignore all
 	// three when their embedded Bun runtime extracts a native module, writing
 	// into the shared system temp dir whatever the daemon exports — one 4-8 MB
@@ -34,6 +36,10 @@ var MinVersions = map[string]string{
 	// filename in a shared /tmp is not safe, so refusing the CLI is the only
 	// place we can stop it. See #8392: ~2,960 files, 11.16 GiB, root at 99%.
 	"opencode": "1.1.54",
+	// opencode2 is the 2.x runtime identity. 2.0.0 is the contract it claims
+	// (see opencodeUsesV2Contract), so a 1.x binary registered under it is
+	// refused rather than launched with argv it does not understand.
+	"opencode2": "2.0.0",
 }
 
 // MinQuickCreateCLIVersion gates the agent-create (quick-create) flow against
@@ -131,6 +137,9 @@ type semver struct {
 func SupportsTaskSupplement(provider, version string) bool {
 	var minimum string
 	switch provider {
+	case "pi":
+		// Pi 1.4 RPC reports authoritative prompt/steer dispositions.
+		minimum = "1.4.0"
 	case "codex":
 		// v0.100.0 exposes turn/steer with the expectedTurnId precondition.
 		minimum = "0.100.0"
@@ -142,16 +151,51 @@ func SupportsTaskSupplement(provider, version string) bool {
 		// Grok Build 1.0.14 supports atomic delivery of in-turn interjections
 		// through its x.ai/interject ACP extension.
 		minimum = "1.0.14"
+	case "kiro":
+		// 2.33.0 is the oldest kiro-cli verified to fold `_session/steer`
+		// into the running ACP turn (queued, then injected at the next
+		// tool/message boundary of the same session/prompt).
+		minimum = "2.33.0"
 	case "cursor":
 		// 2026.10.14 is the oldest build verified to forward postToolUse
 		// additional_context into the model turn in --print mode.
 		minimum = "2026.10.14"
+	case "dsh":
+		// 0.2.1 is the floor the private Multica runtime bridge itself demands
+		// (its engines field), so a dsh below it cannot carry the bridge that
+		// implements answer delivery. The bridge version, not the CLI version,
+		// decides at runtime whether answers are actually writable: an older
+		// bridge never advertises `questions` in its ready frame and the dsh
+		// backend refuses the supplement without touching stdin (M-109).
+		minimum = "0.2.1"
 	default:
 		return false
 	}
 	detected, err := parseSemver(version)
 	floor, _ := parseSemver(minimum)
 	return err == nil && !detected.lessThan(floor)
+}
+
+// SupportsTaskMCP reports whether this provider can carry daemon-injected MCP
+// servers (the per-task overlay: saved agent config, remote broker, moct,
+// ask/plan) into a launch without failing it. Every provider consumes the
+// overlay without a version floor except builtin pi, whose gate lives in
+// pi.go: preparePiMcpExtension refuses to start when the MCP extension needs
+// a Pi newer than piMcpMinVersion, and an unparseable version fails closed
+// there ("could not verify detected version"). Pre-checking the same floor
+// lets the daemon skip the overlay entry and run the task without tools
+// instead of failing the launch — and a custom profile skips the floor
+// entirely (validatePiMcpVersion), so only builtin pi is gated.
+func SupportsTaskMCP(provider, version string, builtinRuntime bool) bool {
+	if provider != "pi" || !builtinRuntime {
+		return true
+	}
+	detected, err := parseSemver(version)
+	if err != nil {
+		return false
+	}
+	floor, _ := parseSemver(piMcpMinVersion)
+	return !detected.lessThan(floor)
 }
 
 // versionRe matches version strings like "2.1.100", "v2.0.0", or

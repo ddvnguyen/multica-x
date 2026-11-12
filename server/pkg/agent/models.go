@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,6 +36,10 @@ type Model struct {
 	ID                                  string             `json:"id"`
 	Label                               string             `json:"label"`
 	Provider                            string             `json:"provider,omitempty"`
+	AccountID                           string             `json:"account_id,omitempty"`
+	AccountLabel                        string             `json:"account_label,omitempty"`
+	AccountIDs                          []string           `json:"account_ids,omitempty"`
+	AccountLabels                       []string           `json:"account_labels,omitempty"`
 	Default                             bool               `json:"default,omitempty"`
 	ServiceTiers                        []ModelServiceTier `json:"service_tiers,omitempty"`
 	SupportsExplicitStandardServiceTier bool               `json:"supports_explicit_standard_service_tier,omitempty"`
@@ -285,6 +290,18 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 			return discovered(discoverOpenclawAgents(ctx, runtimeCmd))
 		})
 	case "codebuddy":
+		// The freebuff-desktop bridge speaks codebuddy's stream-json for runs
+		// but does not implement ACP, so it enumerates models with its own
+		// `--list-models --json` and takes the account from its environment.
+		if isFreebuffDesktopCommand(runtimeCmd) {
+			return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+				models, err := discoverFreebuffDesktopModels(ctx, runtimeCmd)
+				if err != nil {
+					return Catalog{}, err
+				}
+				return Catalog{Models: models}, nil
+			})
+		}
 		// discoverCodebuddyModels owns the thinking annotation too, so the one
 		// `--help` capture feeds both catalogs. Annotating out here would run
 		// the command a second time (MUL-5549).
@@ -304,6 +321,10 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		// makes model selection session-scoped, restore a discovery helper
 		// here modelled on discoverTraecliModels.
 		return Catalog{Models: []Model{}}, nil
+	case "devin":
+		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+			return discovered(discoverDevinModels(ctx, runtimeCmd))
+		})
 	case "mcode":
 		// MCode's ACP server does not expose session-scoped model selection or
 		// a model catalog. The configured MCode runtime owns the model choice.
@@ -330,6 +351,13 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
 			return discoverDimModels(ctx, runtimeCmd)
 		})
+	case "freebuff":
+		// Model selection is now supported (see ModelSelectionSupported), but
+		// enumeration cannot run here: the catalog is the account picker of a
+		// running orchestrator, and only the daemon can launch one per account
+		// profile (see daemon's freebuff model discovery). An empty list keeps
+		// manual entry alive for callers outside that path.
+		return Catalog{Models: []Model{}}, nil
 	case "zeroclaw":
 		// ZeroClaw's ACP server advertises no catalog: session/new answers
 		// exactly {sessionId, workspaceDir} (verified against 0.8.4), and it
@@ -337,6 +365,24 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		// ModelSelectionSupported. Return an empty list rather than spawning
 		// an ACP subprocess that can only ever come back empty.
 		return Catalog{Models: []Model{}}, nil
+	case "museapp":
+		// museapp (muse.ai) is a single personal agent behind a remote receptionist, not a
+		// model family: there is no catalog to discover and no session-scoped
+		// model selection to consume one. An empty list keeps manual entry
+		// available without spawning anything.
+		return Catalog{Models: []Model{}}, nil
+	case "zcode":
+		// ZCode has no model-catalog command or RPC — the catalog lives only
+		// inside a running session's snapshot (settings.model.available,
+		// assembled from the logged-in account's provider registry). Discovery
+		// spawns a throwaway app-server, creates a deferred draft session and
+		// reads the snapshot (discoverZcodeModels, modelled on
+		// discoverTraecliModels); any failure degrades to the empty catalog so
+		// the UI keeps manual entry in the composite `providerId/modelId`
+		// format (see splitZcodeModelSelection).
+		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+			return discoverZcodeModels(ctx, runtimeCmd)
+		})
 	default:
 		return Catalog{}, fmt.Errorf("unknown agent type: %q", providerType)
 	}
@@ -356,7 +402,18 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 // opencode's `run --model` and the DevEco fork of it resolve strictly through
 // `provider/model` and reject anything else — verified against opencode
 // 1.18.14, which answers a bare id with `UnknownError` before any provider
-// call. pi is deliberately absent: its resolver accepts a canonical selector,
+// call. dsh resolves the same shape of contract: its LLM layer dispatches
+// every model call through the (provider route, model id) tuple the task
+// carries, so an id whose provider segment is not a route the runtime's own
+// adapter registry registered — a bare SDK provider like `opencode-go`, where
+// the registered route is `dsh-opencode-go` — fails the run at dispatch with
+// `DSH_RUNTIME_ERROR: no adapter registered for provider "..."` (observed,
+// 2026-11-08 lane z, task 01a1bbaa-3051 for the M-135 S3 acceptance). Like
+// opencode, a pinned dsh model is worth one catalog read before launch so the
+// daemon can map the persisted id onto the route the runtime actually
+// registered (qualifyDshModelID).
+//
+// pi is deliberately absent: its resolver accepts a canonical selector,
 // a bare id, AND an id containing a slash (see buildPiArgs), so a pi task
 // launches correctly without the daemon qualifying anything first.
 //
@@ -367,7 +424,7 @@ func ModelSelectorMustBeProviderQualified(providerType string) bool {
 		providerType = desc.ProtocolFamily
 	}
 	switch providerType {
-	case "opencode", "deveco":
+	case "opencode", "deveco", "dsh":
 		return true
 	default:
 		return false
@@ -426,6 +483,93 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 	return qualified, true
 }
 
+// QualifyModelIDForProvider dispatches model qualification by provider, the
+// one seam provider-keyed model behaviour uses to accept a runtime identity.
+// QualifyModelID alone assumes a catalog row whose Provider field is the
+// provider segment of its own ID (`vendor/id`, matched by
+// `m.Provider == provider`); the dsh runtime's frames carry a display name in
+// that field ("DSH OpenCode Go"), and its model IDs name a provider ROUTE
+// (`dsh-opencode-go/<model>`) rather than the SDK-facing provider a
+// persisted id holds, so the generic rewrite can never match a dsh row.
+func QualifyModelIDForProvider(provider string, catalog Catalog, model string) (string, bool) {
+	if Family(provider) == "dsh" {
+		return qualifyDshModelID(catalog, model)
+	}
+	return QualifyModelID(catalog, model)
+}
+
+// qualifyDshModelID resolves a persisted model id onto the canonical ID the
+// dsh runtime's own catalog advertises.
+//
+// dsh-llm (the dsh harness's LLM layer) resolves every model call strictly
+// through its adapter registry: the provider segment of the selection must be
+// a route the runtime actually registered. dsh LLM-provider plugins register
+// their harness-facing route namespaced OVER the SDK-facing provider
+// (the opencode-go provider plugin declares PROVIDER_ID "dsh-opencode-go"
+// beside SDK_PROVIDER_ID "opencode-go" in its own provider-identity.ts), so a
+// persisted id in the SDK shape (`opencode-go/beam-free`) can never exist in
+// the catalog and the run dies at dispatch with
+// `DSH_RUNTIME_ERROR: no adapter registered for provider "opencode-go"`.
+//
+// The rewrite is catalog-confirmed, never invented: the runtime's catalog
+// must advertise exactly one row whose model segment is the persisted one and
+// whose route keeps the persisted provider as a namespaced suffix
+// (`dsh-opencode-go` over `opencode-go`). Two candidates mean the daemon
+// cannot tell which route the persisted name meant, so the value goes to the
+// runtime untouched and its own resolver judges it.
+func qualifyDshModelID(catalog Catalog, model string) (string, bool) {
+	model = strings.TrimSpace(model)
+	// Same posture as QualifyModelID: a blank value means "let the runtime
+	// resolve its own default", and a fallback catalog (or one whose discovery
+	// never succeeded) must not rewrite a working id into one the runtime never
+	// advertised.
+	if model == "" || !catalog.Verified() {
+		return model, false
+	}
+	for _, m := range catalog.Models {
+		if m.ID == model {
+			return model, false
+		}
+	}
+	provider, selectedID, ok := strings.Cut(model, "/")
+	if !ok || strings.TrimSpace(provider) == "" || strings.TrimSpace(selectedID) == "" {
+		// A bare id names no SDK provider to namespace, and dsh's own selection
+		// parser rejects a route-less id anyway; the runtime is the better judge.
+		return model, false
+	}
+	qualified := ""
+	for _, m := range catalog.Models {
+		// The model segment is everything after the LAST slash so a
+		// gateway-style route (`gateway-a/claude`) stays intact; such a route
+		// fails the suffix check below and is left alone.
+		idx := strings.LastIndex(m.ID, "/")
+		if idx < 0 {
+			continue
+		}
+		route, catalogID := m.ID[:idx], m.ID[idx+1:]
+		if catalogID != selectedID {
+			continue
+		}
+		// dsh-llm routes are single-segment plugin identities; an id whose
+		// route half itself contains a slash is a gateway-style selector, not
+		// a route name, and is left for the runtime to judge.
+		if route == provider || !strings.HasSuffix(route, provider) || strings.Contains(route, "/") {
+			continue
+		}
+		if qualified != "" && qualified != m.ID {
+			// Two routes claim this namespace. Picking one would silently
+			// route the task through a foreign provider — same reasoning as
+			// QualifyModelID's ambiguous branch.
+			return model, false
+		}
+		qualified = m.ID
+	}
+	if qualified == "" {
+		return model, false
+	}
+	return qualified, true
+}
+
 // ModelSelectionSupported reports whether setting `agent.model` has
 // any effect for the given provider. Every built-in provider now honours
 // `opts.Model` end-to-end — Hermes routes it through the ACP
@@ -438,9 +582,14 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 // a model-less runtime can opt out in one place, which makes the UI
 // render a disabled "Managed by runtime" picker instead of an empty
 // dropdown plus a silently-ignored manual-entry field.
+//
+// zcode deliberately stays out of the false list: it supports model selection
+// end-to-end, but its selection string is the composite `providerId/modelId`
+// (the runtime's own picker format, model-selection.ts), split by the backend
+// in splitZcodeModelSelection.
 func ModelSelectionSupported(providerType string) bool {
 	switch providerType {
-	case "qwenpaw", "mcode", "zeroclaw":
+	case "qwenpaw", "mcode", "zeroclaw", "museapp":
 		// QwenPaw's `session/set_model` persists to agent.json at the agent
 		// scope, not the session scope. Calling it would mutate the user's
 		// shared, persistent agent config. Model override is therefore
@@ -452,8 +601,17 @@ func ModelSelectionSupported(providerType string) bool {
 		// its ACP dispatch table at all (0.8.4 answers -32601) and no handler
 		// reads a model param, so the model comes from the ZeroClaw agent
 		// profile (`agents.<alias>.model_provider`) and nothing Multica sends
-		// can change it.
+		// can change it. museapp is a single personal agent behind a remote
+		// receptionist: the wire protocol has no model parameter, so the
+		// receptionist's own configuration is the source of truth.
 		return false
+	case "freebuff":
+		// The orchestrator pins a thread's model at creation (POST
+		// /api/threads carrying `model`), and the backend applies the pick
+		// there — see freebuffBackend.run. Delete this (and the empty
+		// ListModels case) if the orchestrator ever learns to change a
+		// running thread's model.
+		return true
 	default:
 		return true
 	}
@@ -610,8 +768,9 @@ func claudeStaticModels() []Model {
 // codexStaticModels is the fallback for Codex versions older than 0.122.0
 // and for failed/malformed live and bundled discovery calls. It lists the
 // visible entries of the newest locally verified live catalog — which can run
-// ahead of the bundled one (gpt-6.1-sol was live-only on codex-cli 0.159.0)
-// — plus still-common models from older Codex releases.
+// ahead of the bundled one (gpt-6.1-sol was live-only on codex-cli 0.159.0,
+// gpt-6.1-terra on 0.164.0-alpha.11.1) — plus still-common models from older
+// Codex releases.
 // Each entry carries its own reasoning catalog so old/offline CLIs retain the
 // same model + thinking picker contract as dynamic discovery. Service tiers are
 // intentionally NOT guessed here: they are runtime/version/account-sensitive,
@@ -656,6 +815,7 @@ func codexStaticModels() []Model {
 	return []Model{
 		{ID: "gpt-6-astra", Label: "GPT-6 Astra", Provider: "openai", Default: true, Thinking: standardThinking("low", true, true)},
 		{ID: "gpt-6.1-sol", Label: "GPT-6.1 Sol", Provider: "openai", Thinking: standardThinking("low", true, true)},
+		{ID: "gpt-6.1-terra", Label: "GPT-6.1 Terra", Provider: "openai", Thinking: standardThinking("low", true, true)},
 		{ID: "gpt-6-sol", Label: "GPT-6 Sol", Provider: "openai", Thinking: standardThinking("medium", true, true)},
 		{ID: "gpt-6-luna", Label: "GPT-6 Luna", Provider: "openai", Thinking: standardThinking("medium", true, false)},
 		{ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Provider: "openai", Thinking: standardThinking("low", true, true)},
@@ -768,6 +928,17 @@ func isOpenAIReasoningSeriesID(id string) bool {
 }
 
 // ── Dynamic discovery ──
+
+// discoverOpenCode2Models enumerates the OpenCode 2 identity through the
+// family's discovery. It only fills in the identity's own binary when the
+// caller passed no command, so an empty Command cannot silently enumerate the
+// 1.x `opencode` binary instead of the 2.x one this runtime runs.
+func discoverOpenCode2Models(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if runtimeCmd.Path == "" {
+		runtimeCmd.Path = opencode2RuntimeID
+	}
+	return discoverOpenCodeModels(ctx, runtimeCmd)
+}
 
 // discoverOpenCodeModels reads model metadata using the installed CLI's contract:
 // the model API on 2.x, and verbose model rows on 1.x. Plain IDs remain a
@@ -1114,6 +1285,13 @@ func discoverPiModelsWithin(ctx context.Context, runtimeCmd Command, rpcTimeout,
 // will choose when Multica omits --model; its thinking level is the runtime's
 // effective default for that selected model.
 func discoverPiModelsRPC(ctx context.Context, runtimeCmd Command, lookedUp string) ([]Model, bool) {
+	runtimeCmd.Path = lookedUp
+	probeCmd, cleanup, err := runtimeCmd.withProbeDirectory()
+	if err != nil {
+		return nil, false
+	}
+	defer cleanup()
+	runtimeCmd = probeCmd
 	args := []string{
 		"--mode", "rpc",
 		"--no-session",
@@ -1124,7 +1302,7 @@ func discoverPiModelsRPC(ctx context.Context, runtimeCmd Command, lookedUp strin
 		"--no-prompt-templates",
 		"--no-context-files",
 	}
-	cmd, _, _ := runtimeCmd.execVia(ctx, choosePiInvocation, lookedUp, args, slog.Default())
+	cmd, _, _ := runtimeCmd.execVia(ctx, choosePiInvocation, runtimeCmd.Path, args, slog.Default())
 	hideAgentWindow(cmd)
 	cmd.WaitDelay = time.Second
 	cmd.Stderr = io.Discard
@@ -1282,6 +1460,12 @@ func piThinkingSupports(thinking *ModelThinking, value string) bool {
 // capture both and parse whichever is non-empty. The fallback intentionally
 // leaves Thinking nil because the table exposes only a yes/no capability bit.
 func discoverPiModelsTable(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	probeCmd, cleanup, err := runtimeCmd.withProbeDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("pi model discovery: %w", err)
+	}
+	defer cleanup()
+	runtimeCmd = probeCmd
 	// Newer pi fetches its catalog from each configured provider over the
 	// network, so discovery time scales with provider count — a multi-provider
 	// setup measured ~4.6-4.8s, right at the old 5s cap. When jitter pushed it
@@ -1317,6 +1501,7 @@ func parsePiModels(output string) []Model {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var models []Model
 	seen := map[string]bool{}
+	tableColumns := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -1335,16 +1520,21 @@ func parsePiModels(output string) []Model {
 			continue
 		}
 		first := fields[0]
-		if strings.EqualFold(first, "provider") {
+		if len(fields) >= 3 && strings.EqualFold(first, "provider") && strings.EqualFold(fields[1], "model") {
+			tableColumns = len(fields)
 			continue
 		}
 		var id string
-		if strings.ContainsAny(first, ":/") {
-			// Legacy `provider:model` format — normalize colon to slash.
-			// Restricted to this branch so a model name with a `:` in
-			// the table format's column 1 is not silently rewritten.
-			id = strings.Replace(first, ":", "/", 1)
-		} else if len(fields) >= 2 {
+		if len(fields) == 1 && strings.ContainsAny(first, ":/") {
+			// The first delimiter separates the provider. Legacy model IDs
+			// can contain slashes (provider:org/model), while later colons in
+			// provider/model:version belong to the model and stay unchanged.
+			id = first
+			colon, slash := strings.IndexByte(first, ':'), strings.IndexByte(first, '/')
+			if colon >= 0 && (slash < 0 || colon < slash) {
+				id = strings.Replace(first, ":", "/", 1)
+			}
+		} else if tableColumns >= 3 && len(fields) == tableColumns && piModelContextPattern.MatchString(fields[2]) {
 			id = first + "/" + fields[1]
 		} else {
 			continue
@@ -1367,6 +1557,11 @@ func parsePiModels(output string) []Model {
 	}
 	return models
 }
+
+// The table's context window is numeric, optionally abbreviated (128K, 1M).
+// Requiring its structure as well as the header keeps wrapper prose out even
+// when it appears between real catalog rows. Custom provider IDs stay valid.
+var piModelContextPattern = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmg]?$`)
 
 // isPiDiscoveryNoise reports whether a `pi --list-models` line is a diagnostic
 // message rather than a catalog row. pi prints these alongside the table when
@@ -1589,9 +1784,11 @@ func discoverHermesModels(ctx context.Context, runtimeCmd Command) ([]Model, err
 		// The same handshake carries an effort selector on jcode and carries
 		// none on Hermes Agent, so annotate is what tells the two apart —
 		// Hermes Agent models come back with a nil Thinking and show no
-		// picker. Only the session's current model is annotated; see
-		// annotateACPThinkingForSessionModel.
-		annotate: annotateACPThinkingForSessionModel,
+		// picker. annotate covers the session's current model; the probe
+		// switches the discovery session onto each remaining model for its
+		// own catalog. See probeACPModelEffort.
+		annotate:         annotateACPThinkingForSessionModel,
+		probeModelEffort: true,
 	})
 	if err != nil {
 		return nil, annotateHermesDiscoveryUnconfigured(err)
@@ -1911,7 +2108,7 @@ func acpConfigOptionCurrentValue(raw json.RawMessage, configID string) (string, 
 // Only the session's current model gets a catalog: reasonix derives the effort
 // vocabulary from the current model's provider entry, so the advertised list
 // describes that model alone. Every other model keeps a nil Thinking and shows
-// no picker until per-model probing exists. See
+// no picker until reasonix opts into probeModelEffort. See
 // annotateACPThinkingForSessionModel.
 func discoverReasonixModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
 	return discoverACPModels(ctx, runtimeCmd, acpDiscoveryProvider{
@@ -1931,6 +2128,7 @@ func discoverKiroModels(ctx context.Context, runtimeCmd Command) ([]Model, error
 		defaultBin:   "kiro-cli",
 		clientName:   "multica-model-discovery",
 		tmpdirPrefix: "multica-kiro-discovery-",
+		enrich:       enrichKiroModelThinking,
 	})
 }
 
@@ -2018,9 +2216,12 @@ type acpDiscoveryProvider struct {
 	// server mode. Defaults to []string{"acp"} when nil/empty.
 	acpArgs []string
 	// selectAuthMethod inspects the initialize response and child environment
-	// after initialize succeeds. A non-nil selector must return one advertised
-	// method id; its error aborts discovery before any session operation.
+	// after initialize succeeds. An empty method id skips authentication; an
+	// error aborts discovery before any session operation.
 	selectAuthMethod func(json.RawMessage, []string) (string, error)
+	// parseModels overrides the shared catalog parser for providers whose
+	// execution contract gives a different session field precedence.
+	parseModels func(json.RawMessage) ([]Model, error)
 	// strictErrors surfaces stage-specific handshake errors to the caller.
 	// Legacy discovery providers keep their empty-list behavior; Grok enables
 	// this so it can log the actual fallback reason.
@@ -2030,6 +2231,12 @@ type acpDiscoveryProvider struct {
 	// ignores. CodeBuddy uses it to read its effort catalog out of the same
 	// handshake, which is why it needs no separate discovery call at all.
 	annotate func([]Model, json.RawMessage)
+	// enrich reads provider-specific metadata through the same discovery
+	// session when session/new does not include model capabilities.
+	enrich func(context.Context, acpRequestFn, []Model, json.RawMessage)
+	// probeModelEffort switches the throwaway session onto each non-current
+	// model to read that model's own effort catalog; see probeACPModelEffort.
+	probeModelEffort bool
 	// timeout bounds the whole handshake — spawn, initialize, session/new.
 	// Zero means acpDiscoveryDefaultTimeout.
 	//
@@ -2124,7 +2331,7 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
 	nextID := 1
-	requestACP := func(method string, params map[string]any) (json.RawMessage, error) {
+	requestACP := func(method string, params any) (json.RawMessage, error) {
 		id := nextID
 		nextID++
 		msg := map[string]any{
@@ -2212,11 +2419,13 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 		if err != nil {
 			return fail("auth method selection", err)
 		}
-		if _, err := requestACP("authenticate", map[string]any{
-			"methodId": methodID,
-			"_meta":    map[string]any{"headless": true},
-		}); err != nil {
-			return fail(fmt.Sprintf("authenticate (%s)", methodID), err)
+		if methodID != "" {
+			if _, err := requestACP("authenticate", map[string]any{
+				"methodId": methodID,
+				"_meta":    map[string]any{"headless": true},
+			}); err != nil {
+				return fail(fmt.Sprintf("authenticate (%s)", methodID), err)
+			}
 		}
 	}
 
@@ -2227,7 +2436,15 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	if err != nil {
 		return fail("session/new", err)
 	}
-	models := parseACPSessionNewModels(sessionResult)
+	var models []Model
+	if p.parseModels != nil {
+		models, err = p.parseModels(sessionResult)
+		if err != nil {
+			return fail("session/new model parsing", err)
+		}
+	} else {
+		models = parseACPSessionNewModels(sessionResult)
+	}
 	if len(models) == 0 {
 		// session/new succeeded but carried no catalog we recognise. This
 		// is what upstream schema drift looks like from here (MUL-5239:
@@ -2248,6 +2465,19 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	}
 	if p.annotate != nil {
 		p.annotate(models, sessionResult)
+	}
+	if p.enrich != nil {
+		p.enrich(runCtx, func(_ context.Context, method string, params any) (json.RawMessage, error) {
+			return requestACP(method, params)
+		}, models, sessionResult)
+	}
+	if p.probeModelEffort {
+		probeACPModelEffort(runCtx, func(_ context.Context, method string, params any) (json.RawMessage, error) {
+			return requestACP(method, params)
+		}, sessionResult, models)
+		if err := runCtx.Err(); err != nil {
+			return fail("per-model effort discovery", err)
+		}
 	}
 	return models, nil
 }
@@ -3060,4 +3290,76 @@ func discoverDimModels(ctx context.Context, runtimeCmd Command) (Catalog, error)
 		return Catalog{Models: []Model{}, Fallback: true}, nil
 	}
 	return Catalog{Models: models}, nil
+}
+
+// freebuffDesktopEnvURL is the environment variable that selects which
+// Freebuff Desktop account endpoint the bridge talks to.
+const freebuffDesktopEnvURL = "FREEBUFF_DESKTOP_URL"
+
+// isFreebuffDesktopCommand reports whether the runtime command is the
+// freebuff-desktop bridge: either its binary is named freebuff-desktop*, or a
+// per-account bridge environment was applied to it.
+func isFreebuffDesktopCommand(c Command) bool {
+	if _, ok := c.envValue(freebuffDesktopEnvURL); ok {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(filepath.Base(c.Path)), "freebuff-desktop")
+}
+
+// discoverFreebuffDesktopModels runs `<bridge> --list-models --json` with the
+// command's environment, so one call enumerates one account's models. Failure
+// is returned, not masked by a static catalog: a per-account fallback would
+// make every account look identical.
+func discoverFreebuffDesktopModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if _, err := exec.LookPath(runtimeCmd.Path); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model discovery: %w", err)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := runtimeCmd.exec(runCtx, "--list-models", "--json")
+	hideAgentWindow(cmd)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := outputOwned(cmd, runtimeCmd.logger)
+	if err != nil {
+		return nil, fmt.Errorf("freebuff-desktop --list-models: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return parseFreebuffDesktopModels(stdout)
+}
+
+// parseFreebuffDesktopModels parses the bridge's `--list-models --json`
+// output: {"models":[{"id":"...","name":"...","provider":"..."}]}. `label` is
+// accepted as an alias of `name`. Entries without an id are dropped and
+// duplicate ids keep their first entry.
+func parseFreebuffDesktopModels(data []byte) ([]Model, error) {
+	var wrapper struct {
+		Models []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Label    string `json:"label"`
+			Provider string `json:"provider"`
+			Default  bool   `json:"default"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(data), &wrapper); err != nil {
+		return nil, fmt.Errorf("freebuff-desktop model list: invalid JSON: %w", err)
+	}
+	seen := map[string]bool{}
+	models := make([]Model, 0, len(wrapper.Models))
+	for _, m := range wrapper.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		label := strings.TrimSpace(m.Name)
+		if label == "" {
+			label = strings.TrimSpace(m.Label)
+		}
+		if label == "" {
+			label = id
+		}
+		models = append(models, Model{ID: id, Label: label, Provider: strings.TrimSpace(m.Provider), Default: m.Default})
+	}
+	return models, nil
 }

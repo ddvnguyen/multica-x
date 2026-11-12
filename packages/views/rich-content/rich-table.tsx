@@ -31,10 +31,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
-import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
+import { Check, Copy, Maximize2, RotateCcw } from "@multica/ui/icons";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { useT } from "../i18n";
+import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
 import {
   columnWidthKey,
@@ -177,6 +179,7 @@ export interface RichTableFrameProps {
 }
 
 export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children }: RichTableFrameProps) {
+  const portalContainer = usePortalContainer();
   const { t } = useT("editor");
   const columnCount = model.headerText.length;
   const storageKey = useMemo(() => columnWidthKey(model), [model]);
@@ -406,24 +409,32 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
             {t(($) => $.table.reset_widths)}
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className={cn(toolbarButton, "w-6")}
-          title={t(($) => $.table.expand)}
-          aria-label={t(($) => $.table.expand)}
-        >
-          <Maximize2 className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={copyMarkdown}
-          className={cn(toolbarButton, "w-6")}
-          title={copied ? t(($) => $.table.copied) : t(($) => $.table.copy_markdown)}
-          aria-label={t(($) => $.table.copy_markdown)}
-        >
-          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-        </button>
+        <DeferredTooltip
+          content={t(($) => $.table.expand)}
+          trigger={
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className={cn(toolbarButton, "w-6")}
+              aria-label={t(($) => $.table.expand)}
+            >
+              <Maximize2 className="size-3.5" />
+            </button>
+          }
+        />
+        <DeferredTooltip
+          content={copied ? t(($) => $.table.copied) : t(($) => $.table.copy_markdown)}
+          trigger={
+            <button
+              type="button"
+              onClick={copyMarkdown}
+              className={cn(toolbarButton, "w-6")}
+              aria-label={t(($) => $.table.copy_markdown)}
+            >
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            </button>
+          }
+        />
       </div>
       <div className="relative">
         <div ref={wrapperRef} className="tableWrapper">
@@ -489,7 +500,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         typeof document !== "undefined" &&
         createPortal(
           <div aria-hidden className="fixed inset-0 z-50 cursor-col-resize touch-none select-none" />,
-          document.body,
+          portalContainer ?? document.body,
         )}
     </div>
   );

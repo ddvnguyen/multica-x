@@ -26,9 +26,10 @@ FOR UPDATE;
 -- name: CreateProject :one
 INSERT INTO project (
     workspace_id, title, description, icon, status,
-    lead_type, lead_id, priority, start_date, due_date, workflow_id
+    lead_type, lead_id, priority, start_date, due_date, workflow_id,
+    creator_type, creator_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 ) RETURNING *;
 
 -- name: UpdateProject :one
@@ -44,6 +45,31 @@ UPDATE project SET
     due_date = CASE WHEN sqlc.arg('due_date_set')::boolean THEN sqlc.narg('due_date') ELSE due_date END,
     updated_at = now()
 WHERE id = $1
+RETURNING *;
+
+-- name: SetProjectSetting :one
+-- One key of the project's settings object (S2-C, M-123), written in SQL for
+-- the same reason as SetWorkspaceSetting: the row is not round-tripped, so a
+-- concurrent edit of another key cannot be lost.
+UPDATE project SET
+    settings = jsonb_set(
+        CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END,
+        ARRAY[sqlc.arg('key')::text],
+        sqlc.arg('value')::jsonb,
+        true
+    ),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
+-- name: RemoveProjectSetting :one
+-- Clearing a key is what returns the project to the workspace default; it
+-- must not persist the current default as if the project had chosen it.
+UPDATE project SET
+    settings = CASE WHEN jsonb_typeof(settings) = 'object' THEN settings ELSE '{}'::jsonb END
+               - sqlc.arg('key')::text,
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
 RETURNING *;
 
 -- name: DeleteProject :exec

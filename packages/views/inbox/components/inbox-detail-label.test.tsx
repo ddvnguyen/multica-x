@@ -149,3 +149,16 @@ describe("InboxDetailLabel localized values", () => {
     expect(container.textContent).not.toContain("Aug");
   });
 });
+
+describe("InboxDetailLabel ask/plan", () => {
+  // The server emits `plan_review` (S1-A1); without a label the row falls
+  // through to the raw type and reads "plan_review" to the member.
+  it("labels a plan review with its type label rather than the raw type", () => {
+    const { container } = render(
+      <InboxDetailLabel item={item({ type: "plan_review" })} />,
+    );
+
+    expect(container.textContent).toContain("Plan ready for review");
+    expect(container.textContent).not.toContain("plan_review");
+  });
+});

@@ -48,6 +48,8 @@ const TYPE_KEY: Record<InboxItemType, string> = {
   review_requested: "type.review_requested",
   task_completed: "type.task_completed",
   task_failed: "type.task_failed",
+  agent_question: "type.agent_question",
+  plan_review: "type.plan_review",
   agent_blocked: "type.agent_blocked",
   agent_completed: "type.agent_completed",
   reaction_added: "type.reaction_added",
@@ -57,6 +59,10 @@ const TYPE_KEY: Record<InboxItemType, string> = {
   autopilot_paused: "type.autopilot_paused",
   autopilot_quota_exceeded: "type.autopilot_quota_exceeded",
   children_done: "type.children_done",
+  app_action_requested: "type.app_action_requested",
+  app_action_reminder: "type.app_action_reminder",
+  app_connect_requested: "type.app_connect_requested",
+  app_action_result: "type.app_action_result",
 };
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).

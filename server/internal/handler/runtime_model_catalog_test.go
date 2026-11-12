@@ -263,7 +263,7 @@ func TestModelCatalogServeWindow_ServesDayOldSnapshotAndRevalidates(t *testing.T
 	if age := served.Age(time.Now()); age < modelCatalogRevalidateAfter {
 		t.Fatalf("test fixture is younger than the revalidate threshold (%s < %s)", age, modelCatalogRevalidateAfter)
 	}
-	h.revalidateModelCatalog(ctx, "rt-revalidate")
+	h.revalidateModelCatalog(ctx, "rt-revalidate", "")
 	pending, err := store.HasPending(ctx, "rt-revalidate")
 	if err != nil {
 		t.Fatalf("has pending: %v", err)
@@ -395,7 +395,7 @@ func TestRevalidateModelCatalog_EnqueuesAndHints(t *testing.T) {
 	rec := &pendingWorkRecorder{}
 	h := &Handler{ModelListStore: store, DaemonPendingWork: rec}
 
-	h.revalidateModelCatalog(ctx, "rt-1")
+	h.revalidateModelCatalog(ctx, "rt-1", "")
 
 	pending, err := store.HasPending(ctx, "rt-1")
 	if err != nil {
@@ -410,7 +410,7 @@ func TestRevalidateModelCatalog_EnqueuesAndHints(t *testing.T) {
 
 	// Stampede control: a second open while the first refresh is still queued
 	// must not pile on another request.
-	h.revalidateModelCatalog(ctx, "rt-1")
+	h.revalidateModelCatalog(ctx, "rt-1", "")
 	if rec.count() != 1 {
 		t.Fatalf("expected the queued refresh to suppress a second hint, got %d", rec.count())
 	}

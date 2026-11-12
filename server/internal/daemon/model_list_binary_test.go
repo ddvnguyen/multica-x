@@ -102,7 +102,7 @@ func TestHandleModelList_CustomProfileEnumeratesProfileBinary(t *testing.T) {
 	d.runtimeIndex["rt-custom"] = Runtime{ID: "rt-custom", Provider: "hermes", ProfileID: "prof-1"}
 	d.profileLaunchSpecs["prof-1"] = profileLaunchSpec{path: "/usr/local/bin/jcode", version: "1.2.3"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1", nil)
 
 	provider, path, calls, report := fx.snapshot()
 	if calls != 1 {
@@ -133,7 +133,7 @@ func TestHandleModelList_CustomProfileWithoutBuiltinAgent(t *testing.T) {
 	d.runtimeIndex["rt-custom"] = Runtime{ID: "rt-custom", Provider: "hermes", ProfileID: "prof-1"}
 	d.profileLaunchSpecs["prof-1"] = profileLaunchSpec{path: "/usr/local/bin/jcode"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1", nil)
 
 	_, path, calls, report := fx.snapshot()
 	if calls != 1 {
@@ -165,7 +165,7 @@ func TestHandleModelList_BuiltinRuntimeUnaffected(t *testing.T) {
 	d.runtimeIndex["rt-custom"] = Runtime{ID: "rt-custom", Provider: "codex", ProfileID: "prof-1"}
 	d.profileLaunchSpecs["prof-1"] = profileLaunchSpec{path: "/opt/bin/company-codex"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1", nil)
 
 	_, path, calls, report := fx.snapshot()
 	if calls != 1 {
@@ -187,7 +187,7 @@ func TestHandleModelListReportsExplicitStandardCapability(t *testing.T) {
 	d.cfg.Agents = map[string]AgentEntry{"codex": {Path: builtinPath}}
 	d.runtimeIndex["rt-builtin"] = Runtime{ID: "rt-builtin", Provider: "codex"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1", nil)
 
 	_, _, _, report := fx.snapshot()
 	models, ok := report["models"].([]any)
@@ -213,7 +213,7 @@ func TestHandleModelList_NoProfileAndNoBuiltinStillFails(t *testing.T) {
 	d.cfg.Agents = map[string]AgentEntry{}
 	d.runtimeIndex["rt-builtin"] = Runtime{ID: "rt-builtin", Provider: "codex"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-builtin"], "req-1", nil)
 
 	_, _, calls, report := fx.snapshot()
 	if calls != 0 {
@@ -239,7 +239,7 @@ func TestHandleModelList_UnresolvedProfileFallsBackToBuiltin(t *testing.T) {
 	d.cfg.Agents = map[string]AgentEntry{"hermes": {Path: builtinPath}}
 	d.runtimeIndex["rt-custom"] = Runtime{ID: "rt-custom", Provider: "hermes", ProfileID: "prof-missing"}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1", nil)
 
 	_, path, calls, report := fx.snapshot()
 	if calls != 1 {
@@ -270,7 +270,7 @@ func TestHandleModelList_CustomProfileCarriesFixedArgs(t *testing.T) {
 		fixedArgs: []string{"start", "q36"},
 	}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1", nil)
 
 	fx.mu.Lock()
 	path, prefix := fx.listedPath, append([]string(nil), fx.listedPrefix...)
@@ -299,7 +299,7 @@ func TestHandleModelList_FixedArgsFilteredBeforeDiscovery(t *testing.T) {
 		fixedArgs: []string{"start", "q36", "--output-format", "text"},
 	}
 
-	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1")
+	d.handleModelList(context.Background(), d.runtimeIndex["rt-custom"], "req-1", nil)
 
 	fx.mu.Lock()
 	prefix := append([]string(nil), fx.listedPrefix...)
@@ -335,7 +335,7 @@ exit 2
 	rt := Runtime{ID: "rt-custom", Provider: "omp", ProfileID: "prof-1"}
 	d.runtimeIndex[rt.ID] = rt
 	d.profileLaunchSpecs[rt.ProfileID] = profileLaunchSpec{path: path, fixedArgs: []string{"launch"}}
-	d.handleModelList(context.Background(), rt, "req-omp")
+	d.handleModelList(context.Background(), rt, "req-omp", nil)
 	_, _, _, report := fx.snapshot()
 	if report["status"] != "completed" {
 		t.Fatalf("OMP discovery: %+v", report)
@@ -345,7 +345,7 @@ exit 2
 		t.Fatalf("lost provider-qualified selector: %+v", report)
 	}
 	rt.Provider = "pi"
-	d.handleModelList(context.Background(), rt, "req-pi")
+	d.handleModelList(context.Background(), rt, "req-pi", nil)
 	_, _, _, report = fx.snapshot()
 	reason, _ := report["error"].(string)
 	if report["status"] != "failed" || !strings.Contains(reason, "unknown flags") {

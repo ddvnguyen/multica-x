@@ -10,6 +10,7 @@ const releaseWorkflow = {
   name: "版本发布",
   description: "",
   is_default: false,
+  owner_id: null,
   steps: [],
   project_ids: ["project-1"],
   created_at: "",
@@ -18,7 +19,6 @@ const releaseWorkflow = {
 
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
 vi.mock("@multica/core/api", () => ({ api: {}, clientErrorMessage: () => null }));
-vi.mock("@multica/core/config", () => ({ useFeatureEnabled: () => true }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
 vi.mock("@multica/core/paths", () => ({ useWorkspacePaths: () => ({ settings: () => "/settings" }) }));
 vi.mock("@multica/core/projects/queries", () => ({ projectListOptions: () => ({}) }));

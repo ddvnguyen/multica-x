@@ -6,19 +6,22 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RecoverOrphanedTasks is called by the daemon at startup for each runtime
 // it owns. It atomically fails any dispatched/running tasks the server still
 // believes belong to that runtime — those are the tasks the previous daemon
 // process was running when it died — and triggers MaybeRetryFailedTask for
-// each so the user sees a fresh attempt instead of a permanently stuck row.
+// each so retry-safe work gets a fresh attempt. Started Muse executions retain
+// a cleanup fence because their workers can survive the daemon process.
 //
 // This is the targeted fix for "issue stuck at in_progress when daemon
 // restarts mid-task": the runtime heartbeat sweeper takes up to 75s + the
@@ -27,6 +30,30 @@ import (
 func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 	if _, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID); !ok {
+		return
+	}
+
+	// S3-C (M-139): runtimes that declare the detached capability launch their
+	// tasks in their own transient systemd user scope, so a row here may still
+	// be executing a live child after the restart. Failing it on re-register
+	// would be wrong; leaving it running forever would be worse. The bound
+	// lives in the sweeper (`detachedTaskTimeout` in cmd/server): a detached
+	// running row is failed once it exceeds its wall-clock budget plus the
+	// detached grace, whatever the daemon heartbeat says. Non-detached runtimes
+	// keep the legacy behaviour exactly.
+	if rt, err := h.Queries.GetAgentRuntime(r.Context(), parseUUID(runtimeID)); err == nil && runtimeHasDetachedCapability(rt) {
+		running, err := h.Queries.ListRunningTasksForRuntime(r.Context(), rt.ID)
+		if err != nil {
+			slog.Warn("recover-orphans: list running tasks failed", "runtime_id", runtimeID, "error", err)
+			writeError(w, http.StatusInternalServerError, "list running tasks failed")
+			return
+		}
+		slog.Info("recover-orphans skipped for detached-capable runtime",
+			"runtime_id", runtimeID, "running_detached", len(running))
+		writeJSON(w, http.StatusOK, recoverOrphansDetachedResponse{
+			Detached:        true,
+			RunningDetached: runningDetachedTasks(running),
+		})
 		return
 	}
 
@@ -56,6 +83,56 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		"orphaned": len(rows),
 		"retried":  retried,
 	})
+}
+
+// RunningDetachedTask is one task the server still records as running on a
+// detached-capable runtime. The restarted daemon uses it to re-attach to the
+// task's systemd scope or finalize it from the scope's recorded outcome.
+type RunningDetachedTask struct {
+	TaskID    string `json:"task_id"`
+	WorkDir   string `json:"work_dir"`
+	SessionID string `json:"session_id"`
+}
+
+// recoverOrphansDetachedResponse keeps the legacy counters (always zero here)
+// so daemons that predate running_detached keep decoding the response.
+type recoverOrphansDetachedResponse struct {
+	Orphaned        int                   `json:"orphaned"`
+	Retried         int                   `json:"retried"`
+	Detached        bool                  `json:"detached"`
+	RunningDetached []RunningDetachedTask `json:"running_detached,omitempty"`
+}
+
+func runningDetachedTasks(rows []db.ListRunningTasksForRuntimeRow) []RunningDetachedTask {
+	out := make([]RunningDetachedTask, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RunningDetachedTask{
+			TaskID:    uuidToString(row.ID),
+			WorkDir:   row.WorkDir.String,
+			SessionID: row.SessionID.String,
+		})
+	}
+	return out
+}
+
+// runtimeHasDetachedCapability reports whether the runtime advertised the
+// detached-runtime capability in its registration metadata (S3-C, M-139).
+func runtimeHasDetachedCapability(rt db.AgentRuntime) bool {
+	var meta struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if len(rt.Metadata) == 0 {
+		return false
+	}
+	if err := json.Unmarshal(rt.Metadata, &meta); err != nil {
+		return false
+	}
+	for _, c := range meta.Capabilities {
+		if c == protocol.DaemonCapabilityDetachedRuntimeV1 {
+			return true
+		}
+	}
+	return false
 }
 
 // PinTaskSession lets the daemon persist the agent's session_id and
@@ -140,6 +217,57 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// TaskSummaryDecisionRequest is the dsh summary clock's per-run decision
+// report (S3-B1 / M-137). The clock fires at TTL−margin — long after the
+// terminal callback wrote the run row — so the decision (summarized / skipped
+// with the token counts, or a build/store failure) arrives here and merges
+// into the row's result JSONB under the dsh_summary key.
+type TaskSummaryDecisionRequest struct {
+	Decision        string `json:"decision"`
+	SessionID       string `json:"session_id"`
+	Model           string `json:"model,omitempty"`
+	TokensAboveInit int64  `json:"tokens_above_init"`
+	IdleSeconds     int64  `json:"idle_seconds"`
+	SummaryTokens   int64  `json:"summary_tokens,omitempty"`
+	MadeAt          string `json:"made_at,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// RecordTaskSummaryDecision merges one summary-clock decision into the run
+// row. Idempotent by merge semantics: a replayed decision for the same task
+// overwrites the previous one rather than duplicating. A missing row (the run
+// was GC'd before the clock fired) is a no-op, not an error — the decision is
+// observability, never task state.
+func (h *Handler) RecordTaskSummaryDecision(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+		return
+	}
+
+	var req TaskSummaryDecisionRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Decision) == "" || strings.TrimSpace(req.SessionID) == "" {
+		writeError(w, http.StatusBadRequest, "decision and session_id required")
+		return
+	}
+	patch, err := json.Marshal(map[string]any{"dsh_summary": req})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "record summary decision failed")
+		return
+	}
+	if _, err := h.DB.Exec(r.Context(),
+		`UPDATE agent_task_queue SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+		parseUUID(taskID), patch); err != nil {
+		slog.Warn("record summary decision failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "record summary decision failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // RerunIssueRequest is the optional body of POST /api/issues/{id}/rerun.
 // All fields are optional; an empty body keeps the legacy "rerun the issue's
 // current assignee" behaviour used by the CLI.
@@ -152,16 +280,8 @@ type RerunIssueRequest struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 
-// RerunIssue manually re-enqueues an agent run for the issue. By default it
-// targets the issue's current assignee (agent or squad leader); if the
-// request body carries task_id, the rerun targets the agent that ran that
-// specific past task instead. The new task is flagged force_fresh_session=true:
-// the daemon claim handler skips the (agent_id, issue_id) session-resume
-// lookup so the agent starts a clean session. A user clicking rerun has just
-// judged the prior output bad — replaying the same conversation would replay
-// the same poisoned state. (Automatic retry, by contrast, intentionally
-// inherits the session — that path handles infrastructure failures, not bad
-// output.)
+// RerunIssue preserves the issue-scoped API used by installed clients. A
+// task_id repeats that run; an empty body targets the current assignee.
 func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
@@ -187,7 +307,50 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		sourceTaskID = parsed
 	}
+	h.rerunIssue(w, r, issue, sourceTaskID, false)
+}
 
+// RerunTaskByUser repeats an issue-linked run without requiring its issue ID.
+func (h *Handler) RerunTaskByUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireUserID(w, r); !ok {
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, ctxWorkspaceID(r.Context()), "workspace id")
+	if !ok {
+		return
+	}
+	taskID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "taskId"), "task id")
+	if !ok {
+		return
+	}
+	source, err := h.Queries.GetAgentTaskInWorkspace(r.Context(), db.GetAgentTaskInWorkspaceParams{
+		ID: taskID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !source.IssueID.Valid {
+		writeError(w, http.StatusBadRequest, "only issue-linked runs can be rerun with this endpoint")
+		return
+	}
+	issue, ok := h.loadIssueForUser(w, r, uuidToString(source.IssueID))
+	if !ok {
+		return
+	}
+	var req struct {
+		Fresh bool `json:"fresh"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+	h.rerunIssue(w, r, issue, source.ID, req.Fresh)
+}
+
+func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Issue, sourceTaskID pgtype.UUID, fresh bool) {
 	// A manual rerun is a direct human action: attribute the new run to the
 	// rerunning member (MUL-4302 §5). Resolve the actor the same way assign/promote
 	// does; an agent A2A actor is not a human and threads an invalid actor.
@@ -208,7 +371,7 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 	}
 
-	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, fresh, canInvoke)
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
@@ -217,11 +380,15 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
 	}
+	if errors.Is(err, service.ErrProjectAccessDenied) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProjectAccessBlocked)
+		return
+	}
 	// Not a dispatch refusal: the issue may well be runnable, and only the named
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".
 	if err != nil {
-		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
+		slog.Warn("issue rerun failed", "issue_id", uuidToString(issue.ID), "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

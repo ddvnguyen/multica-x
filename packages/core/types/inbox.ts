@@ -1,4 +1,4 @@
-import type { IssuePriority, IssueStatus } from "./issue";
+import type { IssueAssigneeType, IssuePriority, IssueStatus } from "./issue";
 
 export type InboxSeverity = "action_required" | "attention" | "info";
 
@@ -16,6 +16,13 @@ export type InboxItemType =
   | "review_requested"
   | "task_completed"
   | "task_failed"
+  // A run parked on a question or a plan review (M-109). Action required:
+  // the run cannot continue until a member answers it.
+  | "agent_question"
+  // An agent submitted a plan for review through the ask/plan tools (S1-A1).
+  // Action required for the same reason: the run is parked until a member
+  // approves, requests changes or cancels.
+  | "plan_review"
   | "agent_blocked"
   | "agent_completed"
   | "reaction_added"
@@ -31,7 +38,13 @@ export type InboxItemType =
   | "autopilot_quota_exceeded"
   // Sub-issues of an issue assigned to the recipient closed (the child_done
   // system rule notifies a member assignee instead of waking an agent).
-  | "children_done";
+  | "children_done"
+  // Connected Apps (MUL-8516): an agent waits on the recipient to confirm an
+  // app call, or to connect their account.
+  | "app_action_requested"
+  | "app_action_reminder"
+  | "app_connect_requested"
+  | "app_action_result";
 
 /**
  * One workspace's unread inbox count in the cross-workspace summary
@@ -63,6 +76,16 @@ export interface InboxItem {
    * projection; null also covers notifications without a linked issue.
    */
   issue_priority?: IssuePriority | null;
+  /**
+   * The linked issue's fields the inbox filters match on. Optional for the
+   * same reason as `issue_priority`; a server that has them always sends
+   * `issue_label_ids` as an array.
+   */
+  issue_project_id?: string | null;
+  issue_assignee_type?: IssueAssigneeType | null;
+  issue_assignee_id?: string | null;
+  issue_due_date?: string | null;
+  issue_label_ids?: string[] | null;
   read: boolean;
   archived: boolean;
   created_at: string;
@@ -80,5 +103,9 @@ export interface ArchivedInboxFacets {
   statuses: Record<string, number>;
   priorities: Record<string, number>;
   actors: Record<string, number>;
+  types: Record<string, number>;
+  projects: Record<string, number>;
+  assignees: Record<string, number>;
+  labels: Record<string, number>;
   unreadCount: number;
 }

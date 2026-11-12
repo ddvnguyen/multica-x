@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# deploy/dsh-z/pnpm-shim/pnpm — the `pnpm` that `dsh plugin` forwards to on this
+# lane.
+#
+# dsh resolves pnpm from PATH (it only takes an explicit package-manager command
+# from the desktop host), so whatever is first on PATH wins. Here that was the
+# user's global pnpm 10 while the lane web profile's node_modules had been
+# installed by pnpm 12. pnpm treats a modules directory from another major as a
+# different store layout, decides node_modules has to be recreated, and — with
+# no TTY, which is how dsh runs it — aborts with
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+#
+# The fix is to give every `dsh plugin` call the pnpm the profile declares. dsh
+# runs pnpm with the profile directory as its working directory, so the pin is
+# read from that package.json `packageManager` field and handed to corepack,
+# which serves it from its cache: no version lives in this script, and a profile
+# that forgets to declare one fails here instead of silently installing with
+# whatever happens to be on PATH.
+set -euo pipefail
+
+manifest="$PWD/package.json"
+if [ ! -f "$manifest" ]; then
+  echo "pnpm-shim: no package.json in $PWD — dsh plugin runs pnpm in the profile directory" >&2
+  exit 1
+fi
+
+pin="$(node -e '
+  const manifest = require(process.argv[1]);
+  if (typeof manifest.packageManager !== "string" || manifest.packageManager === "") process.exit(3);
+  process.stdout.write(manifest.packageManager);
+' "$manifest")" || {
+  echo "pnpm-shim: $manifest declares no packageManager; the profile must pin the pnpm that built its node_modules" >&2
+  exit 1
+}
+
+exec corepack "$pin" "$@"

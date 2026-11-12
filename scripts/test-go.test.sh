@@ -30,7 +30,8 @@ case "${1:-}" in
       github.com/multica-ai/multica/server \
       github.com/multica-ai/multica/server/internal/daemon \
       github.com/multica-ai/multica/server/pkg/agent \
-      github.com/multica-ai/multica/server/pkg/agent/internal/testutil
+      github.com/multica-ai/multica/server/pkg/agent/internal/testutil \
+      github.com/multica-ai/multica/server/pkg/redact
     ;;
   test)
     printf '%s\n' "$*" >>"$MULTICA_TEST_GO_CALLS"
@@ -43,7 +44,9 @@ esac
 FAKE
 chmod 755 "$BIN_DIR/go"
 
-regular_call='test -race github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon'
+regular_call='test -race github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon github.com/multica-ai/multica/server/pkg/redact'
+db_call='test -race github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon'
+pkg_call='test -race github.com/multica-ai/multica/server/pkg/redact'
 agent_call='test -race -p 2 -parallel 2 ./pkg/agent/...'
 
 # $1: case label; $2: expected go calls, one per line. Clears the log after.
@@ -77,7 +80,7 @@ expect_usage_failure() {
     cat "$CALLS_FILE" >&2
     exit 1
   fi
-  if ! grep -q '^usage: .*test-go.sh \[--race\] \[--only regular|agent\]$' "$OUTPUT_FILE"; then
+  if ! grep -q '^usage: .*test-go.sh \[--race\] \[--only regular|agent|db|pkg\]$' "$OUTPUT_FILE"; then
     echo "$label did not print usage" >&2
     cat "$OUTPUT_FILE" >&2
     exit 1
@@ -94,6 +97,13 @@ expect_calls "--only regular" "$regular_call"
 # Option order must not matter: CI spells it one way, humans another.
 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --only agent --race
 expect_calls "--only agent" "$agent_call"
+
+# M-161 shard groups: db = cmd/internal (services), pkg = pkg minus agent.
+PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only db
+expect_calls "--only db" "$db_call"
+
+PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --only pkg
+expect_calls "--only pkg" "$pkg_call"
 
 expect_usage_failure "unknown option" --unknown
 expect_usage_failure "unknown --only scope" --only everything

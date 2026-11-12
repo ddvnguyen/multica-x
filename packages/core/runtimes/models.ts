@@ -4,8 +4,22 @@ import type { RuntimeModelsResult } from "../types/agent";
 
 export const runtimeModelsKeys = {
   all: () => ["runtimes", "models"] as const,
-  forRuntime: (runtimeId: string) =>
-    [...runtimeModelsKeys.all(), runtimeId] as const,
+  // The default (account-less) catalog keeps the bare runtime key so existing
+  // lookups and invalidations of it are unchanged; an account scope extends it.
+  forRuntime: (runtimeId: string, account?: string, workspaceSlug?: string) => {
+    const scoped = [
+      ...runtimeModelsKeys.all(),
+      runtimeId,
+      ...(account === undefined ? [] : [account]),
+    ] as const;
+    // A catalog is per workspace; without the slug in the key two workspaces
+    // sharing a runtime id would serve each other's cached models.
+    return (
+      workspaceSlug === undefined
+        ? scoped
+        : ([...scoped, workspaceSlug] as const)
+    );
+  },
 };
 
 const POLL_INTERVAL_MS = 500;
@@ -67,12 +81,23 @@ export const MODELS_GC_TIME_MS = 30 * 60_000;
 // window past what the server itself promises.
 export async function resolveRuntimeModels(
   runtimeId: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; account?: string; workspaceSlug?: string } = {},
 ): Promise<RuntimeModelsResult> {
-  const initial =
-    options.force === true
-      ? await api.initiateListModels(runtimeId, { force: true })
-      : await api.initiateListModels(runtimeId);
+  // Two independent scopes travel to the server: the fork's Freebuff account
+  // picks which sign-in runs the discovery, and upstream's workspace slug picks
+  // which workspace's catalog is being served.
+  const body =
+    options.force === true || options.account !== undefined
+      ? {
+          ...(options.force === true ? { force: true } : {}),
+          ...(options.account !== undefined ? { account: options.account } : {}),
+        }
+      : undefined;
+  const initial = await api.initiateListModels(
+    runtimeId,
+    body,
+    options.workspaceSlug,
+  );
   const start = Date.now();
   let current = initial;
   while (current.status === "pending" || current.status === "running") {
@@ -80,7 +105,11 @@ export async function resolveRuntimeModels(
       throw new Error("model discovery timed out");
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    current = await api.getListModelsResult(runtimeId, initial.id);
+    current = await api.getListModelsResult(
+      runtimeId,
+      initial.id,
+      options.workspaceSlug,
+    );
   }
   // Only an explicit `completed` is a catalog. Anything else — failed, timeout,
   // or a status this client does not know (newer server, or a response that fell
@@ -119,12 +148,17 @@ export function staleTimeFor(data: RuntimeModelsResult | undefined): number {
   return data.cached ? 0 : LIVE_MODELS_STALE_TIME_MS;
 }
 
-export function runtimeModelsOptions(runtimeId: string | null | undefined) {
+export function runtimeModelsOptions(
+  runtimeId: string | null | undefined,
+  account?: string,
+  workspaceSlug?: string,
+) {
   return queryOptions({
     queryKey: runtimeId
-      ? runtimeModelsKeys.forRuntime(runtimeId)
+      ? runtimeModelsKeys.forRuntime(runtimeId, account, workspaceSlug)
       : runtimeModelsKeys.all(),
-    queryFn: () => resolveRuntimeModels(runtimeId as string),
+    queryFn: () =>
+      resolveRuntimeModels(runtimeId as string, { account, workspaceSlug }),
     enabled: Boolean(runtimeId),
     staleTime: (query) => staleTimeFor(query.state.data),
     gcTime: MODELS_GC_TIME_MS,
@@ -139,10 +173,13 @@ export function runtimeModelsOptions(runtimeId: string | null | undefined) {
 export function refreshRuntimeModels(
   queryClient: QueryClient,
   runtimeId: string,
+  account?: string,
+  workspaceSlug?: string,
 ): Promise<RuntimeModelsResult> {
   return queryClient.fetchQuery({
-    ...runtimeModelsOptions(runtimeId),
-    queryFn: () => resolveRuntimeModels(runtimeId, { force: true }),
+    ...runtimeModelsOptions(runtimeId, account, workspaceSlug),
+    queryFn: () =>
+      resolveRuntimeModels(runtimeId, { force: true, account, workspaceSlug }),
     staleTime: 0,
   });
 }

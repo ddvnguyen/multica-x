@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func (h *Handler) ListWorkspaceWakeups(w http.ResponseWriter, r *http.Request) {
@@ -488,4 +492,80 @@ func (h *Handler) ListPausedWakeups(w http.ResponseWriter, r *http.Request) {
 		out = append(out, paused{IssueID: uuidToString(row.IssueID), ID: uuidToString(row.ID), AgentID: uuidToString(row.AgentID), Reason: row.PausedReason.String})
 	}
 	writeJSON(w, 200, out)
+}
+
+// CheckInIssue stamps a task-level check-in on the calling run so the
+// completion fallback comment is skipped. Unlike the wakeup check-in, this
+// works for any run (assignment, orchestrator tick, comment-triggered).
+func (h *Handler) CheckInIssue(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	taskID := h.wakeupSourceTaskID(r)
+	if !taskID.Valid {
+		writeError(w, http.StatusForbidden, "only an agent run can check in")
+		return
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "run not found")
+		return
+	}
+	if !task.IssueID.Valid || uuidToString(task.IssueID) != uuidToString(issue.ID) {
+		writeError(w, http.StatusForbidden, "run is not on this issue")
+		return
+	}
+	if task.Status != "running" {
+		writeError(w, http.StatusConflict, "only a running run can check in")
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		writeError(w, 400, "invalid check-in body")
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if note == "" || utf8.RuneCountInString(note) > 500 {
+		writeError(w, 400, "note must contain 1-500 characters")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	checkin, _ := json.Marshal(map[string]any{"note": note, "at": now})
+	if _, err := h.DB.Exec(r.Context(), "UPDATE agent_task_queue SET context=COALESCE(context,'{}'::jsonb)||jsonb_build_object('checkin',$2::jsonb) WHERE id=$1", taskID, string(checkin)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check in")
+		return
+	}
+	// Mirror the wakeup recordWakeupActivities path: the check-in leaves a
+	// timeline entry ("silent check: <note>") so a silent run is still
+	// visible. Best-effort: the marker above already suppresses the fallback.
+	details, _ := json.Marshal(map[string]any{"note": note, "task_id": uuidToString(taskID)})
+	activity, err := h.Queries.CreateActivity(r.Context(), db.CreateActivityParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		ActorType:   pgtype.Text{String: "agent", Valid: true},
+		ActorID:     task.AgentID,
+		Action:      "wakeup_checkin",
+		Details:     details,
+	})
+	if err == nil {
+		h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), "agent", uuidToString(task.AgentID), map[string]any{
+			"issue_id": uuidToString(issue.ID),
+			"entry": map[string]any{
+				"type":       "activity",
+				"id":         uuidToString(activity.ID),
+				"actor_type": "agent",
+				"actor_id":   uuidToString(task.AgentID),
+				"action":     activity.Action,
+				"details":    json.RawMessage(details),
+				"created_at": timestampToString(activity.CreatedAt),
+			},
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

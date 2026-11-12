@@ -12,13 +12,18 @@
     "FRONTEND_ORIGIN",
     "NEXT_PUBLIC_API_URL",
     "NEXT_PUBLIC_WS_URL",
+    "NEXT_PUBLIC_SITE_PREVIEW",
     "MULTICA_SERVER_URL",
     "DOCS_URL",
     "COMPOSE_PROJECT_NAME",
     "POSTGRES_DB",
     "POSTGRES_PORT",
     "DESKTOP_RENDERER_PORT",
-    "DESKTOP_APP_SUFFIX"
+    "DESKTOP_APP_SUFFIX",
+    // Apps/web emits the standalone bundle only when set; without it in the
+    // hash a cache entry from a non-standalone build could satisfy the CI
+    // build that packages web-dist (M-161).
+    "STANDALONE"
   ],
   "tasks": {
     // `fumadocs-mdx` regenerates `.source/` by removing the directory and
@@ -42,11 +47,18 @@
       // `public/**` assets, nor `package.json` / `tsconfig.json`, so the task
       // hash was unchanged by edits to any of them -- harmless while nothing
       // was ever cached, a stale-build bug the moment it is.
-      "outputs": [".next/**", "!.next/cache/**", "dist/**", "out/**"]
+      // `lib/**` is the dsh plugin: it compiles to ESM for the host half and a
+      // wrapped client bundle, under `lib` rather than `dist`.
+      "outputs": [".next/**", "!.next/cache/**", "dist/**", "lib/**", "out/**"]
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      // scripts/dev-env.sh opens a Desktop DevTools port (read by
+      // electron-vite) and signs the dev Desktop in (read by its main process).
+      // Desktop's bundled CLI finds a custom dev-env registry through
+      // MULTICA_DEV_HOME, or refuses its daemon inside an agent task.
+      "passThroughEnv": ["REMOTE_DEBUGGING_PORT", "MULTICA_DEV_AUTH_TOKEN", "MULTICA_DEV_HOME"]
     },
     "dev:staging": {
       "cache": false,

@@ -32,6 +32,15 @@
  * file outside the guarded directories and follows imports inward, so a pair
  * of dead components importing only each other stays dead.
  *
+ * Test files are outside both roles. `*.test.*` are vitest entry points found
+ * by the runner's own glob, so "nothing imports it" is what a colocated test
+ * looks like on a healthy tree — guarding them made every test added beside a
+ * components/ui primitive fail CI. They are not roots either: a component
+ * imported only by its own test is dead, for the same reason a `vi.mock("...")`
+ * is not an edge. `*.spec.*` are not runner-discovered; only contract specs
+ * named by a non-wildcard export are exempt, and every other spec file stays
+ * guarded so an unreferenced one keeps failing this check.
+ *
  * Edges come from real syntax nodes via the TypeScript parser, not from a
  * regex over source text. Text matching counts a commented-out import as a
  * live edge, which is precisely the state a file passes through when its last
@@ -39,14 +48,14 @@
  * or prose today; none currently point into packages/ui, but that is a
  * coincidence rather than a property.
  *
- * Run: node scripts/check-ui-wildcard-exports.mjs
+ * Run: node scripts/check-ui-wildcard-exports.mjs [repo-root]
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const repoRoot = resolve(process.argv[2] ?? resolve(import.meta.dirname, ".."));
 const uiRoot = join(repoRoot, "packages", "ui");
 const pkgName = "@multica/ui";
 
@@ -93,6 +102,14 @@ function importedSpecifiers(sourceText, filePath) {
 
   visit(source);
   return specifiers;
+}
+
+/** Runner entry points, not library modules: vitest discovers `.test` files by
+ * glob. `.spec` files stay guarded: only the contract specs named by a
+ * non-wildcard export are entry points, and non-contract ones must keep
+ * failing this check when nothing imports them. */
+function isTestFile(file) {
+  return /\.test\.[cm]?[jt]sx?$/.test(file);
 }
 
 function walk(dir, out = []) {
@@ -154,11 +171,13 @@ for (const { dir, extension } of wildcards) {
   for (const entry of entries) {
     if (!entry.endsWith(extension)) continue;
     const file = join(uiRoot, dir, entry);
-    if (statSync(file).isFile() && !exactExportTargets.has(file)) guarded.add(file);
+    if (statSync(file).isFile() && !exactExportTargets.has(file) && !isTestFile(file)) {
+      guarded.add(file);
+    }
   }
 }
 
-const sourceFiles = walk(repoRoot);
+const sourceFiles = walk(repoRoot).filter((file) => !isTestFile(file));
 const known = new Set(sourceFiles);
 
 /** Resolve one specifier from one importer to a guarded file, or null. */
@@ -204,6 +223,9 @@ while (queue.length > 0) {
 }
 
 const dead = [...guarded]
+  // UI Vitest discovers these tests without a product import. Keep them in
+  // guarded so their imports cannot become new reachability roots.
+  .filter((file) => !/\.test\.(ts|tsx)$/.test(file))
   .filter((file) => !reached.has(file))
   .map((file) => relative(repoRoot, file).split(sep).join("/"))
   .sort();

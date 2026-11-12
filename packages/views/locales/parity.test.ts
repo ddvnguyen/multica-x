@@ -3,12 +3,22 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  FORK_OWNED_PREFIXES,
+  isForkOwnedKey,
+  isForkOwnedNamespace,
+} from "./fork-owned-keys";
 import { RESOURCES } from "./index";
 
 // Schema-level guard: every key in the EN bundle must have a counterpart
 // in every non-English bundle and vice-versa. Catches retrofit drift where a
 // new EN key lands without a translated key, which would silently fall back
 // to the English string in production.
+//
+// The EN -> locale direction covers only keys upstream ships too. Fork-owned
+// keys have no upstream counterpart, so an upstream sync cannot translate them:
+// they are product-localization work, tracked by fork-owned-keys.ts instead of
+// failing every sync.
 //
 // i18next plural rule: EN uses `_one` + `_other`; zh only uses `_other`
 // because Chinese has no grammatical number. Normalize both forms to
@@ -41,7 +51,7 @@ function flattenKeys(obj: unknown, prefix = ""): string[] {
 }
 
 function normalizePlural(key: string): string {
-  return key.replace(/_(one|other)$/, "_count");
+  return key.replace(/_(one|few|many|other)$/, "_count");
 }
 
 function keySet(bundle: Record<string, unknown>): Set<string> {
@@ -51,6 +61,11 @@ function keySet(bundle: Record<string, unknown>): Set<string> {
 const en = RESOURCES.en;
 const translatedLocales = Object.keys(RESOURCES).filter(
   (locale) => locale !== "en",
+);
+const forkOwnedNamespaces = new Set(
+  Object.keys(en).filter((ns) =>
+    isForkOwnedNamespace(ns, [...keySet(en[ns] ?? {})]),
+  ),
 );
 
 describe("locale bundle parity", () => {
@@ -62,7 +77,11 @@ describe("locale bundle parity", () => {
     const bundle = RESOURCES[locale as keyof typeof RESOURCES];
 
     it(`declares the same namespaces in EN and ${locale}`, () => {
-      expect(Object.keys(bundle).sort()).toEqual(Object.keys(en).sort());
+      const namespacesIn = (resources: object) =>
+        Object.keys(resources)
+          .filter((ns) => !forkOwnedNamespaces.has(ns))
+          .sort();
+      expect(namespacesIn(bundle)).toEqual(namespacesIn(en));
     });
 
     it(`registers every JSON file in RESOURCES (${locale})`, () => {
@@ -70,10 +89,12 @@ describe("locale bundle parity", () => {
     });
 
     for (const ns of Object.keys(en)) {
-      it(`${ns}: ${locale} covers every EN key`, () => {
+      it(`${ns}: ${locale} covers every upstream EN key`, () => {
         const enKeys = keySet(en[ns] ?? {});
         const translatedKeys = keySet(bundle[ns] ?? {});
-        const missing = [...enKeys].filter((k) => !translatedKeys.has(k));
+        const missing = [...enKeys].filter(
+          (k) => !translatedKeys.has(k) && !isForkOwnedKey(ns, k),
+        );
         expect(missing).toEqual([]);
       });
 
@@ -85,6 +106,27 @@ describe("locale bundle parity", () => {
       });
     }
   }
+});
+
+// The fork-owned table is data, so it drifts independently of the bundles: a
+// removed fork surface would leave a prefix that exempts nothing.
+describe("fork-owned key table", () => {
+  it("names only subtrees that still exist in EN", () => {
+    const stale = Object.entries(FORK_OWNED_PREFIXES).flatMap(
+      ([ns, prefixes]) => {
+        const keys = [...keySet(en[ns] ?? {})];
+        return prefixes
+          .filter(
+            (prefix) =>
+              !keys.some(
+                (key) => key === prefix || key.startsWith(prefix + "."),
+              ),
+          )
+          .map((prefix) => `${ns}:${prefix}`);
+      },
+    );
+    expect(stale).toEqual([]);
+  });
 });
 
 // Dead plural-key guard: a locale whose CLDR plural rules have no `one`
@@ -106,6 +148,51 @@ describe("dead plural-key guard", () => {
           .filter((key) => key.endsWith("_one"))
           .map((key) => `${ns}:${key}`),
       );
+      expect(offenders).toEqual([]);
+    });
+  }
+});
+
+// Missing plural-form guard: the mirror of the check above. i18next picks the
+// suffix from Intl.PluralRules, so a plural set without a category the locale
+// needs (e.g. ru `_few` for 2–4, `_many` for 5–20) does not fall back to the
+// locale's `_other` — it falls back to the English string. Parity cannot catch
+// this because it normalizes every suffix away.
+describe("missing plural-form guard", () => {
+  for (const locale of translatedLocales) {
+    // Only categories that everyday counts reach: fr `many` exists in CLDR but
+    // fires only for millions, so requiring it would be noise.
+    const rules = new Intl.PluralRules(locale);
+    const categories = [
+      ...new Set(
+        [...Array.from({ length: 1001 }, (_, n) => n), 1.5].map((n) =>
+          rules.select(n),
+        ),
+      ),
+    ].sort();
+
+    const bundle = RESOURCES[locale as keyof typeof RESOURCES];
+    it(`${locale} plural sets cover every category (${categories.join("/")})`, () => {
+      const offenders = Object.keys(bundle).flatMap((ns) => {
+        const keys = new Set(flattenKeys(bundle[ns]));
+        const bases = new Set(
+          [...keys]
+            .filter((key) => /_(zero|one|two|few|many|other)$/.test(key))
+            .map((key) => key.replace(/_(zero|one|two|few|many|other)$/, "")),
+        );
+        // EN may omit `_one` when the UI handles 1 separately. Russian still
+        // needs it for counts such as 21 and 31.
+        const enKeys = new Set(flattenKeys(en[ns] ?? {}));
+        return [...bases].flatMap((base) =>
+          categories
+            .filter(
+              (category) =>
+                locale === "ru" || category !== "one" || enKeys.has(`${base}_one`),
+            )
+            .filter((category) => !keys.has(`${base}_${category}`))
+            .map((category) => `${ns}:${base}_${category}`),
+        );
+      });
       expect(offenders).toEqual([]);
     });
   }

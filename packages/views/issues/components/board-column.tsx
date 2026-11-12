@@ -11,7 +11,7 @@ import {
   Pencil,
   Plus,
   UserMinus,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import type {
@@ -27,6 +27,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@multica/ui/components/ui/dropdown-menu";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
@@ -222,7 +223,9 @@ export const BoardColumn = memo(function BoardColumn({
         issue={issue}
         childProgress={childProgressMap?.get(issue.id)}
         project={
-          issue.project_id ? projectMap?.get(issue.project_id) : undefined
+          issue.project_id && issue.project_id !== projectId
+            ? projectMap?.get(issue.project_id)
+            : undefined
         }
         disableSorting={!!sortLabel}
       />
@@ -231,8 +234,9 @@ export const BoardColumn = memo(function BoardColumn({
 
   return (
     <div
+      data-mc="board-column"
       style={{ width: BOARD_COL_WIDTH }}
-      className={`group/column relative flex shrink-0 flex-col rounded-xl bg-muted/40 p-2 ${
+      className={`group/column relative flex shrink-0 flex-col rounded-board-column bg-board-column p-2 ${
         hint ? "ring-2 ring-brand/30" : ""
       }`}
     >
@@ -262,7 +266,7 @@ export const BoardColumn = memo(function BoardColumn({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="rounded-full text-muted-foreground"
+                  className="text-muted-foreground"
                   aria-label={t(($) => $.board.collapse_list)}
                   onClick={onCollapse}
                 >
@@ -278,11 +282,12 @@ export const BoardColumn = memo(function BoardColumn({
           {status && (
             <DeferredPopup
               ariaHasPopup="menu"
+              tooltip={t(($) => $.board.column_actions)}
               triggerRender={
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="rounded-full text-muted-foreground"
+                  className="text-muted-foreground"
                   aria-label={t(($) => $.board.column_actions)}
                 >
                   <MoreHorizontal className="size-3.5" />
@@ -291,16 +296,21 @@ export const BoardColumn = memo(function BoardColumn({
             >
               {(open, onOpenChange) => (
                 <DropdownMenu open={open} onOpenChange={onOpenChange}>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="rounded-full text-muted-foreground"
-                        aria-label={t(($) => $.board.column_actions)}
-                      >
-                        <MoreHorizontal className="size-3.5" />
-                      </Button>
+                  <DeferredTooltip
+                    content={t(($) => $.board.column_actions)}
+                    trigger={
+                      <DropdownMenuTrigger
+                        render={
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="text-muted-foreground"
+                            aria-label={t(($) => $.board.column_actions)}
+                          >
+                            <MoreHorizontal className="size-3.5" />
+                          </Button>
+                        }
+                      />
                     }
                   />
                   <DropdownMenuContent align="end">
@@ -338,7 +348,8 @@ export const BoardColumn = memo(function BoardColumn({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className="rounded-full text-muted-foreground"
+                  className="text-muted-foreground"
+                  aria-label={t(($) => $.board.add_issue_tooltip)}
                   onClick={() => {
                     const data = {
                       ...(group.createData ?? {}),
@@ -528,9 +539,11 @@ function BoardGroupHeading({
           className="size-2.5 shrink-0 rounded-full bg-muted-foreground/30"
           style={group.propertyOptionColor ? { backgroundColor: group.propertyOptionColor } : undefined}
         />
-        <span className="truncate text-body font-medium" title={group.title}>
-          {group.title}
-        </span>
+        <TruncatedTooltip content={group.title}>
+          <span className="truncate text-body font-medium">
+            {group.title}
+          </span>
+        </TruncatedTooltip>
         <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-micro font-medium tabular-nums text-muted-foreground">
           {count}
         </span>
@@ -548,9 +561,11 @@ function BoardGroupHeading({
             <FolderMinus className="size-3.5" />
           </span>
         )}
-        <span className="truncate text-body font-medium" title={group.title}>
-          {group.title}
-        </span>
+        <TruncatedTooltip content={group.title}>
+          <span className="truncate text-body font-medium">
+            {group.title}
+          </span>
+        </TruncatedTooltip>
         <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-micro font-medium tabular-nums text-muted-foreground">
           {count}
         </span>
@@ -575,9 +590,11 @@ function BoardGroupHeading({
   return (
     <div className="flex min-w-0 items-center gap-2">
       {actorIcon}
-      <span className="truncate text-body font-medium" title={group.title}>
-        {group.title}
-      </span>
+      <TruncatedTooltip content={group.title}>
+        <span className="truncate text-body font-medium">
+          {group.title}
+        </span>
+      </TruncatedTooltip>
       <span className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-micro font-medium tabular-nums text-muted-foreground">
         {count}
       </span>

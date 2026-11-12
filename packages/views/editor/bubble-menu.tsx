@@ -3,11 +3,13 @@
 /**
  * EditorBubbleMenu — floating formatting toolbar for text selection.
  *
- * Positioned with @floating-ui/dom (computePosition + autoUpdate) and
- * portaled to document.body via createPortal. This escapes ALL overflow
- * containers in the ancestor chain (Card overflow:hidden, scrollable
- * containers, etc.) while autoUpdate monitors every ancestor scroll
- * container to keep the menu anchored to the selection.
+ * Positioned with @floating-ui/dom (computePosition + autoUpdate) and rendered
+ * inline as a fixed-position element — no portal of its own. `fixed` escapes
+ * the overflow containers in the ancestor chain (Card overflow:hidden,
+ * scrollable containers, etc.) as long as none establishes a containing
+ * block; autoUpdate monitors every ancestor scroll container to keep the menu
+ * anchored to the selection. The nested Popover/Tooltip overlays portal
+ * through `usePortalContainer`, so they follow the island's popup seat.
  *
  * Key design decisions:
  * - contextElement on the virtual reference tells Floating UI where to
@@ -51,7 +53,7 @@ import {
   PopoverContent,
 } from "@multica/ui/components/ui/popover";
 import { Input } from "@multica/ui/components/ui/input";
-import { Button } from "@multica/ui/components/ui/button";
+import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   Bold,
   Italic,
@@ -74,7 +76,7 @@ import {
   FilePlus,
   Loader2,
   MessageSquarePlus,
-} from "lucide-react";
+} from "@multica/ui/icons";
 
 // Helpers
 
@@ -216,35 +218,35 @@ function LinkEditBar({
           if (e.key === "Escape") { e.preventDefault(); onClose(); editor.commands.focus(); }
         }}
       />
-      <Button
+      <IconButton
         size="icon-xs"
         variant="ghost"
-        aria-label={t(($) => $.bubble_menu.link_edit.apply)}
+        label={t(($) => $.bubble_menu.link_edit.apply)}
         onClick={apply}
         onMouseDown={(e) => e.preventDefault()}
       >
         <Check className="size-3.5" />
-      </Button>
+      </IconButton>
       {existingHref && (
-        <Button
+        <IconButton
           size="icon-xs"
           variant="ghost"
-          aria-label={t(($) => $.bubble_menu.link_edit.remove)}
+          label={t(($) => $.bubble_menu.link_edit.remove)}
           onClick={remove}
           onMouseDown={(e) => e.preventDefault()}
         >
           <Unlink className="size-3.5" />
-        </Button>
+        </IconButton>
       )}
-      <Button
+      <IconButton
         size="icon-xs"
         variant="ghost"
-        aria-label={t(($) => $.bubble_menu.link_edit.close)}
+        label={t(($) => $.bubble_menu.link_edit.close)}
         onClick={() => { onClose(); editor.commands.focus(); }}
         onMouseDown={(e) => e.preventDefault()}
       >
         <X className="size-3.5" />
-      </Button>
+      </IconButton>
     </div>
   );
 }

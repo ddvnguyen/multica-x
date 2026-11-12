@@ -19,7 +19,6 @@ for (const [name, files, selected] of [
   ["readme only", ["README.md"], []],
   ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality"]],
   ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality"]],
-  ["UI Lab", ["apps/ui-lab/src/app.tsx"], ["frontend", "quality"]],
   ["mobile UI", ["apps/mobile/app/index.tsx"], ["quality"]],
   ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc"]],
   ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
@@ -34,10 +33,18 @@ for (const [name, files, selected] of [
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
   ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
+  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts"]],
+  ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts"]],
   ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
   ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
+  ["brand source", ["packages/ui/lib/multica-brand.ts"], ["frontend", "quality", "scripts"]],
+  ["CLI brand copy", ["server/cmd/multica/cmd_auth.go"], ["backend", "runtime", "scripts"]],
+  ["mobile brand copy", ["apps/mobile/components/brand/multica-logo.tsx"], ["quality", "scripts"]],
+  ["README logo", ["docs/assets/logo-dark.svg"], ["scripts"]],
+  ["brand generator", ["scripts/brand/sync.mjs"], ["quality", "scripts"]],
   ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
+  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
@@ -51,9 +58,14 @@ for (const [name, files, selected] of [
     for (const event of ["pull_request", "push"]) {
       const outputs = decideScopes(event, filterFiles(files));
       assert.equal(outputs.full, "false");
+      // Fork policy (M-151/M-161): a push is a merged SHA the deploy pulls
+      // artifacts from, so both product scopes are forced on push.
+      const expected = event === "push"
+        ? [...new Set([...selected, "frontend", "backend"])]
+        : selected;
       assert.deepEqual(Object.keys(filters).filter((scope) => outputs[scope] === "true").sort(),
-        [...selected].sort());
-      assert.equal(outputs.quality_only, String(selected.includes("quality") && !selected.includes("frontend")));
+        [...expected].sort());
+      assert.equal(outputs.quality_only, String(expected.includes("quality") && !expected.includes("frontend")));
     }
   });
 }
@@ -197,17 +209,17 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   const output = join(dir, "output");
   const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
   const run = spawnSync(process.execPath, [script, "decide"], {
-    env: { ...process.env, EVENT_NAME: "push", FILTER_RESULTS: JSON.stringify(filterFiles(["README.md"])), GITHUB_OUTPUT: output },
+    env: { ...process.env, EVENT_NAME: "pull_request", FILTER_RESULTS: JSON.stringify(filterFiles(["README.md"])), GITHUB_OUTPUT: output },
     encoding: "utf8",
   });
   assert.equal(run.status, 0, run.stderr);
   assert.match(readFileSync(output, "utf8"), /^backend=false$/m);
   const failed = productionNeeds("backend", decideScopes("workflow_dispatch", {}));
-  failed["backend-tests"].result = "failure";
+  failed["backend-test-db"].result = "failure";
   const gate = spawnSync(process.execPath, [script, "gate"], {
     env: { ...process.env, NEEDS_JSON: JSON.stringify(failed), JOB_SCOPES: JSON.stringify(productionMapping("backend")) },
     encoding: "utf8",
   });
   assert.equal(gate.status, 1);
-  assert.match(gate.stderr, /backend-tests/);
+  assert.match(gate.stderr, /backend-test-db/);
 });

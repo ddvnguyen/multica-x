@@ -58,6 +58,7 @@ const (
 type ModelListRequest struct {
 	ID        string          `json:"id"`
 	RuntimeID string          `json:"runtime_id"`
+	Account   string          `json:"account,omitempty"`
 	Status    ModelListStatus `json:"status"`
 	Models    []ModelEntry    `json:"models,omitempty"`
 	// UnavailableModels is advisory display copy, never a source of pickable
@@ -97,6 +98,10 @@ type ModelEntry struct {
 	ID                                  string             `json:"id"`
 	Label                               string             `json:"label"`
 	Provider                            string             `json:"provider,omitempty"`
+	AccountID                           string             `json:"account_id,omitempty"`
+	AccountLabel                        string             `json:"account_label,omitempty"`
+	AccountIDs                          []string           `json:"account_ids,omitempty"`
+	AccountLabels                       []string           `json:"account_labels,omitempty"`
 	Default                             bool               `json:"default,omitempty"`
 	Thinking                            *ModelThinking     `json:"thinking,omitempty"`
 	ServiceTiers                        []ModelServiceTier `json:"service_tiers,omitempty"`
@@ -169,7 +174,7 @@ const (
 // implementation can honour the heartbeat-side timeout that gates a
 // slow shared store from stalling the rest of the heartbeat.
 type ModelListStore interface {
-	Create(ctx context.Context, runtimeID string) (*ModelListRequest, error)
+	Create(ctx context.Context, runtimeID, account string) (*ModelListRequest, error)
 	Get(ctx context.Context, id string) (*ModelListRequest, error)
 	// HasPending is a cheap read-only probe used by the heartbeat hot path
 	// to gate the side-effecting PopPending. A spurious "true" is fine —
@@ -219,7 +224,7 @@ func NewInMemoryModelListStore() *InMemoryModelListStore {
 	return &InMemoryModelListStore{requests: make(map[string]*ModelListRequest)}
 }
 
-func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID string) (*ModelListRequest, error) {
+func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID, account string) (*ModelListRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -234,6 +239,7 @@ func (s *InMemoryModelListStore) Create(_ context.Context, runtimeID string) (*M
 	req := &ModelListRequest{
 		ID:        randomID(),
 		RuntimeID: runtimeID,
+		Account:   account,
 		Status:    ModelListPending,
 		// Default to true; the daemon overrides this in the report
 		// for providers that don't support per-agent model selection.
@@ -351,12 +357,21 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolvedRuntimeID := uuidToString(rt.ID)
-
+	account, err := normalizeModelAccountParam(r.URL.Query().Get("account"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if account != modelAccountDefault && len(resolveModelAccounts(r.Context(), h.Queries, resolvedRuntimeID, account)) == 0 {
+		writeError(w, http.StatusBadRequest, "no enabled account matches this selection")
+		return
+	}
+	cacheKey := modelCatalogCacheKey(resolvedRuntimeID, account)
 	if r.URL.Query().Get("force") != "true" {
-		if cached := h.cachedModelCatalog(r.Context(), resolvedRuntimeID); cached != nil {
+		if cached := h.cachedModelCatalog(r.Context(), cacheKey); cached != nil {
 			age := cached.Age(time.Now())
 			if age >= modelCatalogRevalidateAfter {
-				h.revalidateModelCatalog(r.Context(), resolvedRuntimeID)
+				h.revalidateModelCatalog(r.Context(), resolvedRuntimeID, account)
 			}
 			storedAt := cached.StoredAt
 			writeJSON(w, http.StatusOK, &ModelListRequest{
@@ -378,7 +393,7 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	req, err := h.ModelListStore.Create(r.Context(), resolvedRuntimeID)
+	req, err := h.ModelListStore.Create(r.Context(), resolvedRuntimeID, account)
 	if err != nil {
 		slog.Warn("enqueue model list request failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue model list request")
@@ -386,6 +401,18 @@ func (h *Handler) InitiateListModels(w http.ResponseWriter, r *http.Request) {
 	}
 	h.requestDaemonPendingWork(resolvedRuntimeID, protocol.PendingWorkKindModelList)
 	writeJSON(w, http.StatusOK, req)
+}
+
+// modelCatalogCacheKey is the catalog cache key for one runtime and account
+// scope. The default scope keeps the bare runtime id (other readers, such as
+// the agent model check, look a runtime up by that key), and every account
+// scope gets its own entry: an un-keyed cache would serve one account's catalog
+// for another.
+func modelCatalogCacheKey(runtimeID, account string) string {
+	if account == "" || account == modelAccountDefault {
+		return runtimeID
+	}
+	return runtimeID + ":" + account
 }
 
 // cachedModelCatalog returns a usable cached catalog, or nil when the cache is
@@ -417,7 +444,7 @@ func (h *Handler) cachedModelCatalog(ctx context.Context, runtimeID string) *Mod
 // two opens in the same second can enqueue two refreshes — bounded, cheap
 // (the daemon memoizes discovery for 60s), and strictly better than the
 // alternative of never refreshing.
-func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID string) {
+func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID, account string) {
 	if h.ModelListStore == nil {
 		return
 	}
@@ -429,7 +456,7 @@ func (h *Handler) revalidateModelCatalog(ctx context.Context, runtimeID string) 
 	if pending {
 		return
 	}
-	if _, err := h.ModelListStore.Create(ctx, runtimeID); err != nil {
+	if _, err := h.ModelListStore.Create(ctx, runtimeID, account); err != nil {
 		slog.Debug("model catalog revalidate enqueue failed", "error", err, "runtime_id", runtimeID)
 		return
 	}
@@ -556,14 +583,15 @@ func (h *Handler) ReportModelListResult(w http.ResponseWriter, r *http.Request) 
 		// models are a static stand-in, so they are neither fresh truth to
 		// store nor grounds to discard a real catalog we already hold. Treat it
 		// like a failure and leave the cache untouched (MUL-5549).
+		cacheKey := modelCatalogCacheKey(runtimeID, existing.Account)
 		if h.ModelCatalogCache != nil {
 			switch modelCatalogCacheDecision(body.Models, supported, body.Fallback) {
 			case modelCatalogCacheStore:
-				if err := h.ModelCatalogCache.Put(r.Context(), runtimeID, body.Models, body.UnavailableModels, supported); err != nil {
+				if err := h.ModelCatalogCache.Put(r.Context(), cacheKey, body.Models, body.UnavailableModels, supported); err != nil {
 					slog.Warn("model catalog cache write failed", "error", err, "runtime_id", runtimeID)
 				}
 			case modelCatalogCacheDrop:
-				if err := h.ModelCatalogCache.Invalidate(r.Context(), runtimeID); err != nil {
+				if err := h.ModelCatalogCache.Invalidate(r.Context(), cacheKey); err != nil {
 					slog.Warn("model catalog cache invalidate failed", "error", err, "runtime_id", runtimeID)
 				}
 			case modelCatalogCacheKeep:

@@ -44,7 +44,7 @@ export function CompactRuntimeRow({
           : "hover:border-foreground/20",
       )}
     >
-      <ProviderLogo provider={runtime.provider} className="h-5 w-5" />
+      <ProviderLogo provider={runtime.provider} runtime={runtime} className="h-5 w-5" />
       <div className="min-w-0 flex-1">
         <div className="truncate text-body font-medium">
           {runtimeDisplayName(runtime)}

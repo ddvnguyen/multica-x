@@ -1924,3 +1924,50 @@ func TestApplyOpenclawOverride_CLITimeout(t *testing.T) {
 		}
 	})
 }
+
+// The daemon advertises detached-runtime-v1 from Config.DetachedRuntime, so it
+// must follow the launcher's own predicate: an opt-in the launcher would
+// ignore (no systemd-run) must not be advertised.
+func TestLoadConfig_DetachedRuntimeFollowsLauncherAvailability(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("detached runtime is Linux only")
+	}
+	binDir := stageFakeAgent(t)
+	redirectTestHome(t, t.TempDir())
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing-shell"))
+	overrides := Overrides{ServerURL: "http://localhost:0", WorkspacesRoot: t.TempDir()}
+
+	for _, value := range []string{"true", "1"} {
+		t.Setenv("MULTICA_DETACHED_RUNTIME", value)
+		cfg, err := LoadConfig(overrides)
+		if err != nil {
+			t.Fatalf("LoadConfig without systemd-run (%s): %v", value, err)
+		}
+		if cfg.DetachedRuntime {
+			t.Fatalf("DetachedRuntime = true for %q without systemd-run on PATH", value)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(binDir, "systemd-run"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake systemd-run: %v", err)
+	}
+	for _, value := range []string{"true", "1"} {
+		t.Setenv("MULTICA_DETACHED_RUNTIME", value)
+		cfg, err := LoadConfig(overrides)
+		if err != nil {
+			t.Fatalf("LoadConfig with systemd-run (%s): %v", value, err)
+		}
+		if !cfg.DetachedRuntime {
+			t.Fatalf("DetachedRuntime = false for %q with systemd-run on PATH", value)
+		}
+	}
+
+	t.Setenv("MULTICA_DETACHED_RUNTIME", "")
+	cfg, err := LoadConfig(overrides)
+	if err != nil {
+		t.Fatalf("LoadConfig unset: %v", err)
+	}
+	if cfg.DetachedRuntime {
+		t.Fatal("DetachedRuntime must stay off when MULTICA_DETACHED_RUNTIME is unset")
+	}
+}

@@ -5,9 +5,6 @@ import "encoding/json"
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
 	DaemonCapabilityCoalescedCommentsV1 = "coalesced-comments-v1"
-	DaemonCapabilityExecutionManifestV1 = "execution-manifest-v1"
-	DaemonCapabilityAgentSkillV1        = "agent-skill-v1"
-	DaemonCapabilityRemoteMCPV1         = "remote-mcp-v1"
 	// DaemonCapabilityLocalWorktreeV1 advertises that the daemon implements
 	// worktree mode for local_directory resources (execution_mode=worktree).
 	//
@@ -66,22 +63,50 @@ const (
 	// along the inputs of wakeup rules that waited for this run; for any other
 	// daemon those rules keep their inputs and start a run of their own.
 	DaemonCapabilityJoinedWakeupsV1 = "joined-wakeups-v1"
+	// DaemonCapabilityDetachedRuntimeV1 advertises that this daemon can run a
+	// task in its own transient systemd user scope so it survives a daemon
+	// restart, and recover the outcome from the session/result record instead
+	// of being failed on re-register (S3-C, M-139). Linux only, off by default.
+	DaemonCapabilityDetachedRuntimeV1 = "detached-runtime-v1"
+
 	// DaemonCapabilityTaskSupplementV1 advertises that this provider run can accept
 	// an additional text instruction without cancelling or starting a task.
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
-	// DaemonCapabilityQuestionsV1 advertises that this run can park a provider
-	// tool call on a question and resume it with the answer. Negotiated per
-	// run, not persisted: the daemon consumes the answer while building this
-	// run's exec options, so nothing later needs to remember it. Absence means
-	// the backend keeps its ask tool disabled, which is today's behaviour.
+	// DaemonCapabilityQuestionsV1 advertises that this run can route a provider
+	// ask tool call through Multica and return its answer to the same call.
 	DaemonCapabilityQuestionsV1 = "questions-v1"
+	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
+	// descendant cleanup and explicitly confirms its cancellation outcome.
+	// Persist only at start; old daemons must retain their cancellation contract.
+	DaemonCapabilityPiProcessCleanupV1 = "pi-process-cleanup-v1"
+	// Muse workers run outside the daemon process tree and must acknowledge
+	// execution shutdown before cancellation can release subsequent work.
+	DaemonCapabilityMuseAppProcessCleanupV1 = "museapp-process-cleanup-v1"
+	// DaemonCapabilityWorkflowStatusRulesV1 advertises that the daemon's
+	// runtime brief drops its built-in in_progress / in_review rules for an
+	// issue whose claim carries a project workflow (MUL-8145). Only then may
+	// the server leave out the workflow brief's lines that override those
+	// rules; an older daemon still states them, so it keeps getting them.
+	DaemonCapabilityWorkflowStatusRulesV1 = "workflow-status-rules-v1"
+	// DaemonCapabilityTaskSupplementAuthorV1 is sent when claiming a
+	// supplement: the daemon renders the claim's author_type, so an agent's
+	// message is presented as an agent's. Without it the server marks an
+	// agent's message in its content instead.
+	DaemonCapabilityTaskSupplementAuthorV1 = "task-supplement-author-v1"
+	// DaemonCapabilityCLICommentSteerV1 advertises that the multica CLI this
+	// daemon puts on the agent's PATH has `issue comment add --steer`. The
+	// server tells a squad leader about steering only then.
+	DaemonCapabilityCLICommentSteerV1 = "cli-comment-steer-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
 	TaskSupplementFailureTimeout          = "timeout"
 	TaskSupplementFailureTurnEnded        = "turn_ended"
+	// TaskSupplementFailureInboxUnconfirmed: the dsh bridge never answered the
+	// steer/queue with inbox_state, so delivery is unknown; the human may retry.
+	TaskSupplementFailureInboxUnconfirmed = "inbox_unconfirmed"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
@@ -176,6 +201,9 @@ const (
 	// PendingWorkKindFreebuff asks the daemon to start a browser login for
 	// the runtime's Freebuff account.
 	PendingWorkKindFreebuff = "freebuff"
+	// PendingWorkKindFreebuffDesktop asks the daemon to drive a browser login
+	// for a workspace's daemon-managed freebuff-desktop account.
+	PendingWorkKindFreebuffDesktop = "freebuff-desktop"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -195,6 +223,12 @@ type TaskProgressPayload struct {
 	Summary string `json:"summary"`
 	Step    int    `json:"step,omitempty"`
 	Total   int    `json:"total,omitempty"`
+}
+
+// TaskUsageUpdatedPayload invalidates cached usage after a successful report.
+// It carries no usage values; clients refetch through their authorized APIs.
+type TaskUsageUpdatedPayload struct {
+	TaskID string `json:"task_id"`
 }
 
 // TaskCompletedPayload is sent from daemon to server when a task finishes.
@@ -229,7 +263,7 @@ type TaskMessagePayload struct {
 	TaskID  string         `json:"task_id"`
 	IssueID string         `json:"issue_id,omitempty"`
 	Seq     int            `json:"seq"`
-	Type    string         `json:"type"`              // "text", "tool_use", "tool_result", "error"
+	Type    string         `json:"type"`              // "text", "tool_use", "tool_result", "error", "question"
 	Tool    string         `json:"tool,omitempty"`    // tool name for tool_use/tool_result
 	Content string         `json:"content,omitempty"` // text content
 	Input   map[string]any `json:"input,omitempty"`   // tool input (tool_use only)
@@ -452,8 +486,20 @@ type DaemonHeartbeatPendingUpdate struct {
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to
 // enumerate the runtime's supported models.
+type DaemonModelAccount struct {
+	ID              string `json:"id"`
+	Label           string `json:"label,omitempty"`
+	Endpoint        string `json:"endpoint,omitempty"`
+	CredentialRef   string `json:"credential_ref,omitempty"`
+	DaemonAccountID string `json:"daemon_account_id,omitempty"`
+	LaunchID        string `json:"-"`
+	LaunchError     string `json:"-"`
+}
+
 type DaemonHeartbeatPendingModelList struct {
-	ID string `json:"id"`
+	ID       string               `json:"id"`
+	Account  string               `json:"account,omitempty"`
+	Accounts []DaemonModelAccount `json:"accounts,omitempty"`
 }
 
 // DaemonHeartbeatPendingLocalSkills describes a request for the runtime's

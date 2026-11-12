@@ -196,7 +196,6 @@ describe("Board column collapsing, adding and renaming", () => {
             <BoardView
               issues={issues}
               visibleStatuses={statuses}
-              hiddenStatuses={[]}
               onMoveIssue={() => {}}
             />
           </IssueContextMenuProvider>

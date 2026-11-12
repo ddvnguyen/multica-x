@@ -190,6 +190,16 @@ func TestServerHealthLiveHandlerReportsProcessIdentity(t *testing.T) {
 	if body.Commit != commit {
 		t.Fatalf("commit = %q, want %q", body.Commit, commit)
 	}
+	// The stamped build identity rides next to the commit (M-155): the lane
+	// injects it with -X main.version, so a local test binary sees the
+	// ldflags default ("dev") and an empty string would mean the flag never
+	// reached this handler at all.
+	if body.Version != version {
+		t.Fatalf("version = %q, want %q", body.Version, version)
+	}
+	if body.Version == "" {
+		t.Fatal("version must not be empty: /multica/health is how an agent names the build")
+	}
 }
 
 // newServerHealth is the only production constructor, so startedAt is never

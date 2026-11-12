@@ -5,6 +5,12 @@ import { providerSupportsMcpConfig } from "./mcp-support";
 describe("providerSupportsMcpConfig", () => {
   it("accepts a provider whose runtime consumes mcp_config", () => {
     expect(providerSupportsMcpConfig("claude")).toBe(true);
+    expect(providerSupportsMcpConfig("devin")).toBe(true);
+    expect(providerSupportsMcpConfig("zcode")).toBe(true);
+    // opencode2 receives MCP through OPENCODE_CONFIG_CONTENT on its private
+    // per-run server (--standalone), same as the 1.x path.
+    expect(providerSupportsMcpConfig("opencode")).toBe(true);
+    expect(providerSupportsMcpConfig("opencode2")).toBe(true);
   });
   it("rejects providers whose runtime ignores mcp_config", () => {
     expect(providerSupportsMcpConfig("antigravity")).toBe(false);

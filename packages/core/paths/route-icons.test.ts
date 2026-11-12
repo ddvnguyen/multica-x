@@ -30,7 +30,7 @@ describe("workspace page coverage", () => {
     for (const [method, fn] of Object.entries(ws)) {
       if (typeof fn !== "function" || fn.length !== 0) continue;
       if (EXCLUDED_METHODS.has(method)) continue;
-      const segment = fn().split("/").filter(Boolean)[1] ?? "";
+      const segment = fn().split(/[?#]/)[0]!.split("/").filter(Boolean)[1] ?? "";
       if (!KNOWN_SEGMENTS.has(segment)) missing.push(`${method} → "${segment}"`);
     }
 
@@ -59,6 +59,7 @@ describe("resolveRouteIconName", () => {
     expect(resolveRouteIconName("/acme/projects")).toBe("FolderKanban");
     expect(resolveRouteIconName("/acme/autopilots")).toBe("Zap");
     expect(resolveRouteIconName("/acme/chat")).toBe("MessageSquare");
+    expect(resolveRouteIconName("/acme/decisions")).toBe("CircleDot");
     expect(resolveRouteIconName("/acme/squads")).toBe("Users");
     expect(resolveRouteIconName("/acme/usage")).toBe("BarChart3");
     expect(resolveRouteIconName("/acme/my-issues")).toBe("CircleUser");

@@ -17,14 +17,16 @@ import type {
   ListGroupedIssuesParams,
   ListIssuesParams,
   ListIssuesCache,
+  ListIssuesResponse,
 } from "../types";
+import type { SidebarIssuesRequest } from "./sidebar-list";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 
-export function issueTasksOptions(issueId: string) {
+export function issueTasksOptions(issueId: string, includeDescendants = false) {
   return queryOptions({
-    queryKey: issueKeys.tasks(issueId),
-    queryFn: () => api.listTasksByIssue(issueId),
+    queryKey: includeDescendants ? issueKeys.subtreeTasks(issueId) : issueKeys.tasks(issueId),
+    queryFn: () => api.listTasksByIssue(issueId, includeDescendants),
     enabled: !!issueId,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -142,8 +144,29 @@ export const issueKeys = {
       projectId,
       assigneeTypes ?? null,
     ] as const,
+  /** Every sidebar issue list — prefix for cross-list refresh. */
+  sidebarAll: (wsId: string) => [...issueKeys.all(wsId), "sidebar"] as const,
+  /**
+   * One expanded sidebar row's issues. `source` (`project:{id}` / `view:{id}` / `builtin:{key}`)
+   * sits at a fixed index so realtime refresh can target a project's lists.
+   */
+  sidebar: (wsId: string, source: string, request: SidebarIssuesRequest, limit: number) =>
+    [...issueKeys.sidebarAll(wsId), source, request, limit] as const,
   detail: (wsId: string, id: string) =>
     [...issueKeys.all(wsId), "detail", id] as const,
+  /** S1-A1 ask/plan state for one issue — the single read behind the M-120
+   *  panel. Its own segment so answering a card or verdicting a plan
+   *  invalidates only this, never the issue detail beside it. */
+  askPlanAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "ask-plan"] as const,
+  askPlan: (wsId: string, id: string) =>
+    [...issueKeys.askPlanAll(wsId), id] as const,
+  /** M-275: one section's write history, keyed per plan + section. The plan
+   *  id is in the key because a revised plan is a different ledger. */
+  planHistory: (wsId: string, planId: string, sectionId: string) =>
+    [...issueKeys.all(wsId), "plan-history", planId, sectionId] as const,
+  planHistoryAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "plan-history"] as const,
   /** Resolve a bare issue identifier (e.g. "MUL-123") to an issue. */
   identifier: (wsId: string, identifier: string) =>
     [...issueKeys.all(wsId), "identifier", identifier] as const,
@@ -165,6 +188,11 @@ export const issueKeys = {
     [...issueKeys.childrenByParentsAll(wsId), parentIds] as const,
   childProgress: (wsId: string) =>
     [...issueKeys.all(wsId), "child-progress"] as const,
+  /** Prefix for every per-issue environments query in a workspace. */
+  environmentsAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "environments"] as const,
+  environments: (wsId: string, issueId: string) =>
+    [...issueKeys.environmentsAll(wsId), issueId] as const,
   /** Prefix-match keys for invalidating the per-issue caches below across
    *  all issues. These keys carry no wsId, so `issueKeys.all(wsId)` does NOT
    *  cover them — WS reconnect recovery must invalidate these `*All`
@@ -213,6 +241,7 @@ export const issueKeys = {
   /** Per-issue open questions (issue-detail question card, M-81). */
   questions: (issueId: string) =>
     [...issueKeys.questionsAll(), issueId] as const,
+  subtreeTasks: (issueId: string) => [...issueKeys.tasks(issueId), "subtree"] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
@@ -400,8 +429,12 @@ export function issueListOptions(wsId: string, sort?: IssueSortParam) {
  * Page size for the scheduled-issue fetch. The Gantt view always pulls every
  * scheduled issue (no client pagination), so this is just the chunk size we
  * use to walk the server's `(limit, offset)` window until we hit `total`.
+ *
+ * Must not exceed the server's `ListIssues` page-size cap (100): the server
+ * silently clamps larger values, and a clamped page would otherwise look like
+ * a short final page.
  */
-export const PROJECT_GANTT_PAGE_LIMIT = 500;
+export const PROJECT_GANTT_PAGE_LIMIT = 100;
 
 /**
  * Paranoia cap on the loop in {@link fetchProjectGanttIssues}. Real projects
@@ -426,9 +459,14 @@ async function fetchProjectGanttIssues(
       offset,
     });
     issues.push(...res.issues);
-    if (res.issues.length < PROJECT_GANTT_PAGE_LIMIT) break;
+    if (res.issues.length === 0) break;
     if (issues.length >= res.total) break;
-    offset += PROJECT_GANTT_PAGE_LIMIT;
+    if (res.issues.length < PROJECT_GANTT_PAGE_LIMIT) break;
+    // Advance by what the server actually returned. This does not make the
+    // loop tolerate a server cap below PROJECT_GANTT_PAGE_LIMIT — a capped
+    // page is short and ends the loop above — so the constant must stay in
+    // sync with the server's ListIssues page-size cap.
+    offset += res.issues.length;
   }
   return issues;
 }
@@ -459,10 +497,105 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/** Both list endpoints cap a page here, so a longer sidebar list is fetched in pages. */
+const SIDEBAR_MAX_PAGE = 100;
+
+async function listSidebarTableIssues(query: IssueTableQuerySpec, limit: number): Promise<ListIssuesResponse> {
+  const issues: Issue[] = [];
+  let total = 0;
+  let cursor: string | null = null;
+  do {
+    const page = await api.listIssueTableRows({
+      query,
+      group: { kind: "none" },
+      group_key: null,
+      hierarchy: { enabled: false },
+      parent_id: null,
+      page: { limit: Math.min(limit - issues.length, SIDEBAR_MAX_PAGE), cursor },
+    });
+    issues.push(...page.rows.map((row) => row.issue));
+    total = page.total;
+    cursor = page.next_cursor;
+  } while (cursor && issues.length < limit);
+  return { issues, total };
+}
+
+async function listSidebarIssues(params: ListIssuesParams, limit: number): Promise<ListIssuesResponse> {
+  const issues: Issue[] = [];
+  let total = 0;
+  do {
+    const page = await api.listIssues({
+      ...params,
+      limit: Math.min(limit - issues.length, SIDEBAR_MAX_PAGE),
+      offset: issues.length,
+    });
+    issues.push(...page.issues);
+    total = page.total;
+    if (page.issues.length === 0) break;
+  } while (issues.length < limit && issues.length < total);
+  return { issues, total };
+}
+
+/** The first `limit` issues of a sidebar list, with the filtered total. */
+export function sidebarIssuesOptions(
+  wsId: string,
+  source: string,
+  request: SidebarIssuesRequest,
+  limit: number,
+) {
+  return queryOptions({
+    queryKey: issueKeys.sidebar(wsId, source, request, limit),
+    queryFn: () =>
+      "table" in request
+        ? listSidebarTableIssues(request.table, limit)
+        : listSidebarIssues(request, limit),
+  });
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+  });
+}
+
+/**
+ * The issue's open ask/plan state: parked question cards plus the one open
+ * plan (M-120).
+ *
+ * Neither state has a transcript row of its own — the card and the plan are
+ * their own tables (migrations 585/586), and the inbox row that announced them
+ * carries only an id — so the panel reads both through this one call. On
+ * malformed JSON `parseWithFallback` answers the empty state, which renders no
+ * panel rather than a broken one.
+ */
+export function issueAskPlanOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.askPlan(wsId, issueId),
+    queryFn: () => api.getIssueAskPlan(wsId, issueId),
+    enabled: !!wsId && !!issueId,
+  });
+}
+
+/**
+ * One plan section's history (M-275), newest version first.
+ *
+ * The server seeds the current text as a version on the first read of a
+ * section that predates the ledger, so an empty list here means the section
+ * itself is gone, never that it was never written. Keyed on the plan and the
+ * section: a revision bump is not a key change — the caller refetches, which
+ * is what makes a save show up in its own history.
+ */
+export function planSectionHistoryOptions(
+  wsId: string,
+  planId: string,
+  sectionId: string,
+  revision: number,
+) {
+  return queryOptions({
+    queryKey: [...issueKeys.planHistory(wsId, planId, sectionId), revision] as const,
+    queryFn: () => api.listPlanSectionVersions(wsId, planId, sectionId),
+    enabled: !!wsId && !!planId && sectionId !== "",
   });
 }
 
@@ -643,6 +776,17 @@ export function issueSubscribersOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.subscribers(issueId),
     queryFn: () => api.listIssueSubscribers(issueId),
+  });
+}
+
+// Reports arrive over realtime; the interval only re-derives "unreachable"
+// once a daemon goes quiet, which no event announces.
+export function issueEnvironmentsOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.environments(wsId, issueId),
+    queryFn: () => api.listIssueEnvironments(issueId),
+    enabled: !!wsId && !!issueId,
+    refetchInterval: 60_000,
   });
 }
 

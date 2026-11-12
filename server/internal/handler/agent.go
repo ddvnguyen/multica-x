@@ -120,6 +120,8 @@ type AgentResponse struct {
 	// ServiceTier is the runtime-native Codex execution tier persisted for
 	// this agent (empty = inherit local Codex configuration).
 	ServiceTier string `json:"service_tier"`
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id,omitempty"`
 	// ComposioToolkitAllowlist is the subset of Composio toolkit slugs this
 	// agent is allowed to mount as MCP at task dispatch — for ANY run that
 	// passes the agent's invocation permission, using the agent OWNER's
@@ -233,6 +235,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		Model:                    a.Model.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
+		AccountMode:              a.AccountMode,
+		AccountID:                uuidToString(a.AccountID),
 		ComposioToolkitAllowlist: composioAllowlist,
 		OwnerID:                  uuidToPtr(a.OwnerID),
 		Skills:                   []AgentSkillSummary{},
@@ -300,6 +304,23 @@ func preserveMaskedGatewayToken(incoming any, persistedRuntimeConfig []byte) {
 	gw["token"] = prev.Gateway.Token
 }
 
+// openclawModelOverride reads the agent's persistent underlying-model override
+// from runtime_config. Every claim snapshots the current setting until it is
+// changed or cleared. Absent, malformed, or whitespace-only values return "".
+func openclawModelOverride(raw []byte) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var rc struct {
+		ModelOverride string `json:"model_override"`
+	}
+	if err := json.Unmarshal(trimmed, &rc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(rc.ModelOverride)
+}
+
 // RepoData holds repository information included in claim responses so the
 // daemon can set up worktrees for each workspace repo.
 type RepoData struct {
@@ -356,6 +377,18 @@ type TaskIssueStatusData struct {
 // in the per-turn prompt, never in the cached runtime brief.
 type TaskProjectWorkflowData struct {
 	Brief string `json:"brief"`
+	// stepMoved selects the server-side leader briefing without changing the wire.
+	stepMoved bool
+}
+
+// ClaimParentIssue points a sub-issue's run at its parent issue, where the
+// discussion that produced the sub-issue lives. Identifier is empty when the
+// workspace prefix could not be loaded; the daemon then names the parent by ID.
+type ClaimParentIssue struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier,omitempty"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
 }
 
 // TaskCancellationActor is the point-in-time actor snapshot attached to a
@@ -368,9 +401,14 @@ type TaskCancellationActor struct {
 }
 
 type AgentTaskResponse struct {
+	// Restricted marks a run on an issue in a private project the caller
+	// cannot see (MUL-8472): only identity, status, timing and usage remain.
+	Restricted bool `json:"restricted,omitempty"`
+
 	StartClaimSupported      bool                   `json:"start_claim_supported,omitempty"`
 	CancelledByCommentChange bool                   `json:"cancelled_by_comment_change,omitempty"`
 	CancelledBy              *TaskCancellationActor `json:"cancelled_by,omitempty"`
+	ContinuationReminder     string                 `json:"continuation_reminder,omitempty"`
 
 	ID                   string                 `json:"id"`
 	AgentID              string                 `json:"agent_id"`
@@ -379,6 +417,7 @@ type AgentTaskResponse struct {
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	IssueTitle           string                 `json:"issue_title,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
@@ -389,6 +428,15 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// MoctMemoryInject is the workspace's pre-run memory switch (S2-C, M-123)
+	// as it stands for this claim. The daemon fetches the MOCT inject block only
+	// when this is nil (a server that predates the switch: keep the behavior the
+	// daemon had) or true. false is the one value that suppresses it — the
+	// switch only ever turns memory off, never on, because a workspace that
+	// never touched it still injects exactly as before. The `moct` MCP tools are
+	// unaffected: they are a deliberate pull, not the automatic block.
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —
@@ -434,7 +482,45 @@ type AgentTaskResponse struct {
 	ProjectResources   []ProjectResourceData    `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt          string                   `json:"created_at"`
 	PriorSessionID     string                   `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir       string                   `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// PriorSessionEndedAt is when that session's run reached a terminal state
+	// (RFC3339, S3-B2/M-138). The daemon's seeded-session decision measures the
+	// cache's warmth from this instead of guessing from the trigger time.
+	// Empty on a cold start and on rows that recorded no timestamp.
+	PriorSessionEndedAt string `json:"prior_session_ended_at,omitempty"`
+	// PriorSessionPinned marks PriorSessionID as the session a human explicitly
+	// continued: the source run parked awaiting an answer (ask/plan) and the
+	// answer's run must land in that same session, however long the question
+	// waited. A parked row is not terminal, so it has no completed_at and
+	// therefore no end time to judge — the dsh session-start decision resumes a
+	// pinned session instead of calling it fresh (S1-A1/M-177).
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	PriorSessionPinned bool `json:"prior_session_pinned,omitempty"`
+	// LinkedPriorSession* carry the newest terminal dsh session on an issue
+	// explicitly linked to this one (its parent or a child), with the same
+	// resume guards GetLastTaskSession applies (S3-B2/M-138). Deterministic
+	// relevance v1 — the link is the whole rule. Sent only to dsh tasks; empty
+	// everywhere else and on servers predating the fields.
+	LinkedPriorSessionID      string `json:"linked_prior_session_id,omitempty"`
+	LinkedPriorSessionIssueID string `json:"linked_prior_session_issue_id,omitempty"`
+	LinkedPriorSessionEndedAt string `json:"linked_prior_session_ended_at,omitempty"`
+	LinkedPriorSessionWorkDir string `json:"linked_prior_session_work_dir,omitempty"`
+	// SessionID is the provider session this run writes to, pinned by the
+	// daemon as soon as the provider reports it (M-136). It is the only
+	// session key a live turn can be matched on: PriorSessionID names the
+	// session a run resumed *from*, and a seeded run may abandon that session
+	// and continue in a fresh one. Empty until the daemon reports a session.
+	SessionID string `json:"session_id,omitempty"`
+	// DshSessionURL is set only on dsh-runtime tasks whose transcript is owned
+	// by the dsh session store (M-102): it links to the dsh web app whose
+	// sidebar lists the run's session. Empty everywhere else — the run row's
+	// "Open session" action renders on this field alone.
+	DshSessionURL string `json:"dsh_session_url,omitempty"`
+	PriorWorkDir  string `json:"prior_work_dir,omitempty"` // work_dir from a previous task on same issue
+	// ModelOverride snapshots the agent's persistent OpenClaw model override at
+	// claim time. Later config edits affect subsequent claims, not this payload.
+	// Mirrors internal/daemon/types.go with the same JSON name; empty for other
+	// providers.
+	ModelOverride string `json:"model_override,omitempty"`
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback, and the daemon surfaces the continuity gap
@@ -467,25 +553,33 @@ type AgentTaskResponse struct {
 	// verbatim: it is a ref inside the user's own repo, not a filesystem path.
 	// Populated on both terminal paths — a failed run can still have committed
 	// partial work, and that is when the pointer matters most.
-	BranchName           string                 `json:"branch_name,omitempty"`
-	TriggerCommentID     *string                `json:"trigger_comment_id,omitempty"`    // comment that triggered this task
-	CoalescedCommentIDs  []string               `json:"coalesced_comment_ids,omitempty"` // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
-	CoalescedComments    []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
-	DeliveredCommentIDs  []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
-	SupplementCapability string                 `json:"supplement_capability,omitempty"`
-	// QuestionCapability echoes the question channel this run negotiated, so a
-	// daemon knows whether its question endpoints are understood before it
-	// offers the ask tool. Absent from a server that predates them.
-	QuestionCapability    string   `json:"question_capability,omitempty"`
-	SupplementCommentIDs  []string `json:"supplement_comment_ids,omitempty"`
-	CanSupplement         bool     `json:"can_supplement,omitempty"`
-	TriggerThreadID       string   `json:"trigger_thread_id,omitempty"`       // root comment ID for the triggering thread
-	TriggerCommentContent string   `json:"trigger_comment_content,omitempty"` // content of the triggering comment
-	TriggerSummary        *string  `json:"trigger_summary,omitempty"`         // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
-	TriggerAuthorType     string   `json:"trigger_author_type,omitempty"`     // "agent" or "member" — author kind of the triggering comment
-	TriggerAuthorName     string   `json:"trigger_author_name,omitempty"`     // display name of the triggering comment author
-	NewCommentCount       int      `json:"new_comment_count,omitempty"`       // ISSUE-WIDE comments since this agent's last run — every thread, not just the triggering one (CountNewCommentsSince); excludes the injected trigger and the agent's own comments; omitempty so old daemons ignore it
-	NewCommentsSince      string   `json:"new_comments_since,omitempty"`      // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it. Suppressed with the count when the delta is zero — NewCommentsDeltaKnown, not this field, is what says the server looked
+	BranchName            string                 `json:"branch_name,omitempty"`
+	TriggerCommentID      *string                `json:"trigger_comment_id,omitempty"`    // comment that triggered this task
+	CoalescedCommentIDs   []string               `json:"coalesced_comment_ids,omitempty"` // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
+	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
+	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
+	SupplementCapability  string                 `json:"supplement_capability,omitempty"`
+	QuestionCapability    string                 `json:"question_capability,omitempty"`
+	SupplementCommentIDs  []string               `json:"supplement_comment_ids,omitempty"`
+	CanSupplement         bool                   `json:"can_supplement,omitempty"`
+	SteerQueueCapable     bool                   `json:"steer_queue_capable,omitempty"`
+	TriggerThreadID       string                 `json:"trigger_thread_id,omitempty"`       // root comment ID for the triggering thread
+	TriggerCommentContent string                 `json:"trigger_comment_content,omitempty"` // content of the triggering comment
+	TriggerSummary        *string                `json:"trigger_summary,omitempty"`         // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
+	TriggerAuthorType     string                 `json:"trigger_author_type,omitempty"`     // "agent" or "member" — author kind of the triggering comment
+	TriggerAuthorName     string                 `json:"trigger_author_name,omitempty"`     // display name of the triggering comment author
+	NewCommentCount       int                    `json:"new_comment_count,omitempty"`       // ISSUE-WIDE comments since this agent's last run — every thread, not just the triggering one (CountNewCommentsSince); excludes the injected trigger and the agent's own comments; omitempty so old daemons ignore it
+	NewCommentsSince      string                 `json:"new_comments_since,omitempty"`      // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it. Suppressed with the count when the delta is zero — NewCommentsDeltaKnown, not this field, is what says the server looked
+
+	ProcessCleanupCapability string `json:"process_cleanup_capability,omitempty"`
+
+	// MUL-8218: set only when the trigger comment was edited AFTER the run
+	// whose session this claim resumes had started, so that session's history
+	// may still hold an earlier version of the text. EditedAt is RFC3339;
+	// Revision is the comment's current revision. omitempty so old daemons
+	// ignore both.
+	TriggerCommentEditedAt string `json:"trigger_comment_edited_at,omitempty"`
+	TriggerCommentRevision int64  `json:"trigger_comment_revision,omitempty"`
 	// NewCommentsDeltaKnown reports that the issue-wide delta above was
 	// actually COMPUTED this claim — both the anchor lookup and the count
 	// query succeeded. Without it, NewCommentCount == 0 is ambiguous: a true
@@ -513,6 +607,8 @@ type AgentTaskResponse struct {
 	ChatChannelType          string               `json:"chat_channel_type,omitempty"`           // "slack" when the chat session is backed by an IM channel; empty for a web-only chat. Makes the agent channel-aware (read history from the channel, not Multica)
 	ChatChannelDeliversFiles bool                 `json:"chat_channel_delivers_files,omitempty"` // server capability: THIS deployment can put a file the agent produced into THIS conversation — the adapter goes back for the bound attachment AND object storage exists to go back to. Absent/false on a server predating it, which is the safe reading: the agent is told to describe its file in words. Never inferred daemon-side from chat_channel_type; see handler.Handler.channelDeliversFiles
 	ChatType                 string               `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
+	ChatNoticeLocale         string               `json:"chat_notice_locale,omitempty"`          // locale for bridge-generated delivery notices; optional and ignored by installed daemons
+	ChatSource               *protocol.ChatSource `json:"chat_source,omitempty"`
 	ChatInThread             bool                 `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
 	ChatMessage              string               `json:"chat_message,omitempty"`                // user message for chat tasks
 	ChatMessageAttachments   []ChatAttachmentMeta `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
@@ -532,10 +628,17 @@ type AgentTaskResponse struct {
 	WakeupSystemRule         string               `json:"wakeup_system_rule,omitempty"`      // set when a platform rule (e.g. child_done) started the run
 	WakeupJoined             string               `json:"wakeup_joined,omitempty"`           // wakeups that fired while this run waited to start and joined it instead of queuing their own
 	HandoffNote              string               `json:"handoff_note,omitempty"`            // legacy assignment handoff instruction retained for installed clients; rendered by the daemon only in the per-turn prompt
+	TriggerEvidenceKind      string               `json:"trigger_evidence_kind,omitempty"`   // S1-A1: question_answer / plan_verdict names a parked ask/plan resume
 	SquadID                  string               `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName                string               `json:"squad_name,omitempty"`              // display name for the picker squad
 	ParentIssueID            string               `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier    string               `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	// ParentIssue is the parent of the issue this run works on, for issue-bound
+	// runs on a sub-issue. Unrelated to ParentIssueID above, which is where a
+	// quick-create run must file the issue it is about to create. Omitted when
+	// the issue has no parent or the parent cannot be read in this workspace;
+	// the daemon then renders no parent block.
+	ParentIssue *ClaimParentIssue `json:"parent_issue,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -748,6 +851,15 @@ type CoalescedCommentData struct {
 	AuthorName string `json:"author_name,omitempty"`
 	Content    string `json:"content"`
 	CreatedAt  string `json:"created_at,omitempty"`
+	// MUL-8218: set when this comment was edited after the run whose session
+	// this claim resumes had started (see triggerCommentEditedSince). omitempty
+	// so old daemons ignore both.
+	EditedAt string `json:"edited_at,omitempty"`
+	Revision int64  `json:"revision,omitempty"`
+
+	// source is the row this entry was read from, kept so the claim can run
+	// the edit check once the resumed session is known. Never serialized.
+	source db.Comment
 }
 
 // TaskUsageData is one (provider, model) slice of a single run's token usage.
@@ -760,6 +872,9 @@ type CoalescedCommentData struct {
 // from its rate table. A pointer, not a zero value: 0 ticks is a real answer
 // ("the provider says this was free") and must stay distinguishable from
 // "the provider said nothing".
+//
+// CreditsMicros is the provider's charge in millionths of its own credit unit,
+// nil for token-metered providers. It is never converted to USD.
 type TaskUsageData struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model"`
@@ -768,6 +883,7 @@ type TaskUsageData struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
+	CreditsMicros    *int64 `json:"credits_micros,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon
@@ -784,6 +900,11 @@ type TaskAgentData struct {
 	Model                 string                      `json:"model,omitempty"`
 	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
 	ServiceTier           string                      `json:"service_tier,omitempty"`
+	AccountMode           string                      `json:"account_mode,omitempty"`
+	AccountID             string                      `json:"account_id,omitempty"`
+	AccountEndpoint       string                      `json:"account_endpoint,omitempty"`
+	AccountCredentialRef  string                      `json:"account_credential_ref,omitempty"`
+	AccountDaemonID       string                      `json:"account_daemon_id,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
@@ -837,6 +958,10 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.BranchName.Valid {
 		branchName = t.BranchName.String
 	}
+	sessionID := ""
+	if t.SessionID.Valid {
+		sessionID = t.SessionID.String
+	}
 	var wakeupContext struct {
 		ID         string `json:"wakeup_id"`
 		SystemRule string `json:"wakeup_system"`
@@ -845,6 +970,10 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	handoffNote := ""
 	if t.HandoffNote.Valid {
 		handoffNote = t.HandoffNote.String
+	}
+	triggerEvidenceKind := ""
+	if t.TriggerEvidenceKind.Valid {
+		triggerEvidenceKind = t.TriggerEvidenceKind.String
 	}
 	return AgentTaskResponse{
 		// Task-scoped provenance must not transfer through copied retry context.
@@ -875,10 +1004,12 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:         textToPtr(t.TriggerSummary),
 		HandoffNote:            handoffNote,
+		TriggerEvidenceKind:    triggerEvidenceKind,
 		WakeupID:               wakeupContext.ID,
 		WakeupSystemRule:       wakeupContext.SystemRule,
 		WakeupJoined:           service.JoinedWakeupNotes(t.Context),
 		WorkDir:                workDir,
+		SessionID:              sessionID,
 		RelativeWorkDir:        relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
 		DurableWorkDir:         durableWorkDir,
 		RelativeDurableWorkDir: relativeWorkDir(durableWorkDir, "", ""),
@@ -1112,10 +1243,10 @@ func (h *Handler) loadAgentRuntimeAvailability(ctx context.Context, agents []db.
 			continue
 		}
 		// ListAgentRuntimes exposes every row to workspace owner/admin and only
-		// owner/public rows to regular members. Keep the coarse bridge for the
+		// owner/shared/public rows to regular members. Keep the coarse bridge for the
 		// rows that the viewer's runtime list cannot carry.
 		if runtime.Visibility == "public" ||
-			(runtime.OwnerID.Valid && uuidToString(runtime.OwnerID) == viewerID) {
+			service.RuntimeAllowsUser(runtime, parseUUID(viewerID)) {
 			continue
 		}
 		result[uuidToString(runtime.ID)] = deriveAgentRuntimeAvailability(runtime, now)
@@ -1334,6 +1465,11 @@ type CreateAgentRequest struct {
 	Model              string                     `json:"model"`
 	ThinkingLevel      string                     `json:"thinking_level"`
 	ServiceTier        string                     `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153).
+	// AccountMode: "default" | "specific" | "any". AccountID is required
+	// when mode is "specific".
+	AccountMode string `json:"account_mode"`
+	AccountID   string `json:"account_id"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1471,10 +1607,26 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before creating agents")
 		return
 	}
 
+	if err := agent.ValidateCustomArgs(runtime.Provider, req.CustomArgs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if runtime.Provider == "qoder_cloud" {
+		raw, _ := json.Marshal(req.RuntimeConfig)
+		if err := validateQoderAgentConfig(raw); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		overrides := qoderOverrides{skills: len(req.SkillIDs), customEnv: len(req.CustomEnv), customArgs: len(req.CustomArgs), mcpConfig: req.McpConfig, model: req.Model, thinkingLevel: req.ThinkingLevel, serviceTier: req.ServiceTier}
+		if err := overrides.validate(); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+	}
 	// thinking_level validation: fixed-enum providers reject unknown literals;
 	// dynamic-catalog providers (Codex/OpenCode) reject malformed tokens here.
 	// Pi has a fixed token universe and a daemon-discovered per-model subset.
@@ -1602,7 +1754,24 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before creating agents")
+		return
+	}
+
+	// Account selection (M-153).
+	accountSel, err := normalizeAccountSelection(true, req.AccountMode, true, req.AccountID, accountModeDefault, pgtype.UUID{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if status, msg := h.validateAgentAccount(r.Context(), wsUUID, runtime, accountSel); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	// Freebuff account pick in runtime_config (M-165). Validated against the
+	// runtime the agent is being created on.
+	if status, msg := validateFreebuffAccountPick(runtime, rc); status != 0 {
+		writeError(w, status, msg)
 		return
 	}
 
@@ -1627,6 +1796,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		AccountMode:              accountSel.Mode,
+		AccountID:                accountSel.ID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1643,6 +1814,12 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if err := replaceInvocationTargetsWithQueries(r.Context(), qtx, created.ID, parseUUID(ownerID), perm.targets); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save agent access")
 		return
+	}
+	if len(allowlist) > 0 {
+		if err := syncAgentAppsFromAllowlist(r.Context(), qtx, created, allowlist, parseUUID(ownerID)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save agent apps")
+			return
+		}
 	}
 	for _, skillID := range skillUUIDs {
 		if err := qtx.AddAgentSkill(r.Context(), db.AddAgentSkillParams{
@@ -1733,6 +1910,10 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
+	// omitted preserves; present sets account_mode (+ account_id when specific).
+	AccountMode *string `json:"account_mode"`
+	AccountID   *string `json:"account_id"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -2025,20 +2206,90 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+			writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
 			return
 		}
 		// Task delivery authorizes private runtimes against the agent owner,
 		// not the member making this update. Admin management permission must
 		// not save a binding that the existing delivery gate will reject.
-		if runtime.Visibility == "private" && runtime.OwnerID != existing.OwnerID {
-			writeError(w, http.StatusForbidden, "this runtime is private; its owner must match the agent owner")
+		if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
+			writeError(w, http.StatusForbidden, "this runtime is private; its owner must grant the agent owner access")
 			return
 		}
 		params.RuntimeID = runtime.ID
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
+	}
+	// Validate the settings the agent will have after this update, not only the
+	// fields in the request: a Qoder agent must never be left with settings the
+	// bridge refuses at run time.
+	runtimeChange := req.RuntimeConfig != nil || req.RuntimeID != nil
+	if runtimeChange || req.CustomArgs != nil || req.McpConfig != nil || req.Model != nil || req.ThinkingLevel != nil || req.ServiceTier != nil {
+		provider := targetProvider
+		if provider == "" {
+			var ok bool
+			provider, ok = h.resolveAgentProvider(r, existing.WorkspaceID, targetRuntimeID)
+			if !ok {
+				writeError(w, 400, "cannot resolve agent runtime")
+				return
+			}
+		}
+		if req.CustomArgs != nil || req.RuntimeID != nil {
+			var customArgs []string
+			if req.CustomArgs != nil {
+				customArgs = *req.CustomArgs
+			} else if len(existing.CustomArgs) > 0 {
+				if err := json.Unmarshal(existing.CustomArgs, &customArgs); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to read existing custom_args")
+					return
+				}
+			}
+			if err := agent.ValidateCustomArgs(provider, customArgs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if provider == "qoder_cloud" {
+			if runtimeChange {
+				raw := existing.RuntimeConfig
+				if req.RuntimeConfig != nil {
+					raw, _ = json.Marshal(req.RuntimeConfig)
+				}
+				if err := validateQoderAgentConfig(raw); err != nil {
+					writeError(w, 400, err.Error())
+					return
+				}
+			}
+			overrides := storedQoderOverrides(existing)
+			if req.RuntimeID != nil {
+				skills, err := h.Queries.ListAgentSkills(r.Context(), existing.ID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load agent skills")
+					return
+				}
+				overrides.skills = len(skills)
+			}
+			if req.CustomArgs != nil {
+				overrides.customArgs = len(*req.CustomArgs)
+			}
+			if req.McpConfig != nil {
+				overrides.mcpConfig = *req.McpConfig
+			}
+			if req.Model != nil {
+				overrides.model = *req.Model
+			}
+			if req.ThinkingLevel != nil {
+				overrides.thinkingLevel = *req.ThinkingLevel
+			}
+			if req.ServiceTier != nil {
+				overrides.serviceTier = *req.ServiceTier
+			}
+			if err := overrides.validate(); err != nil {
+				writeError(w, 400, err.Error())
+				return
+			}
+		}
 	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
@@ -2240,6 +2491,73 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Account selection (M-153). Mode and id are applied together after the
+	// main update (SetAgentAccount), so the consistency CHECK never sees half.
+	accountChanged := req.AccountMode != nil || req.AccountID != nil
+	var accountSel agentAccountSelection
+	if accountChanged {
+		modeVal, idVal := "", ""
+		if req.AccountMode != nil {
+			modeVal = *req.AccountMode
+		}
+		if req.AccountID != nil {
+			idVal = *req.AccountID
+		}
+		var selErr error
+		accountSel, selErr = normalizeAccountSelection(
+			req.AccountMode != nil, modeVal, req.AccountID != nil, idVal,
+			existing.AccountMode, existing.AccountID,
+		)
+		if selErr != nil {
+			writeError(w, http.StatusBadRequest, selErr.Error())
+			return
+		}
+	} else {
+		accountSel = agentAccountSelection{Mode: existing.AccountMode, ID: existing.AccountID}
+	}
+	// A runtime change must not leave a non-default account on a runtime that
+	// cannot honour it, so validate whenever either side moved.
+	if accountChanged || req.RuntimeID != nil {
+		targetRuntime, rtErr := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+			ID: targetRuntimeID, WorkspaceID: existing.WorkspaceID,
+		})
+		if rtErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid runtime_id")
+			return
+		}
+		if status, msg := h.validateAgentAccount(r.Context(), existing.WorkspaceID, targetRuntime, accountSel); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+	}
+
+	// Freebuff account pick in runtime_config (M-165). Validated against the
+	// runtime that will be in force after this update; moving an agent to a
+	// runtime that cannot honour the pick strips it from the stored config,
+	// the same reset rule the freebuff-desktop account columns follow.
+	freebuffPickRC := existing.RuntimeConfig
+	if params.RuntimeConfig != nil {
+		freebuffPickRC = params.RuntimeConfig
+	}
+	if pick := freebuffAccountPickFromRuntimeConfig(freebuffPickRC); pick.HasPick {
+		effRuntime, rtErr := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+			ID: targetRuntimeID, WorkspaceID: existing.WorkspaceID,
+		})
+		if rtErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid runtime_id")
+			return
+		}
+		if status, msg := validateFreebuffAccountPick(effRuntime, freebuffPickRC); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+		if effRuntime.Provider != FreebuffProvider {
+			if stripped, changed := stripFreebuffAccountPick(freebuffPickRC); changed {
+				params.RuntimeConfig = stripped
+			}
+		}
+	}
+
 	// composio_toolkit_allowlist handling (MUL-3869). Tri-state semantics
 	// mirror thinking_level (see above): omitted → no change, null →
 	// ClearAgentComposioToolkitAllowlist, slice → wholesale replace.
@@ -2282,6 +2600,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// as soon as a public runtime becomes private.
 	updateQueries := h.Queries
 	var bindingTx pgx.Tx
+	// Set when queued/deferred rows were re-stamped, so the new runtime's daemon
+	// is woken after commit instead of waiting out its empty-claim cache.
+	var pendingMovedTo pgtype.UUID
 	if req.RuntimeID != nil {
 		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
 		if !ok {
@@ -2308,10 +2629,39 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+			writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
+			return
+		}
+		if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
+			writeError(w, http.StatusForbidden, "the agent owner does not have access to this runtime")
 			return
 		}
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
+
+		// Runtime row, then agent row: the order teardown and revocation use.
+		// FOR UPDATE waits out an enqueue holding the agent FOR KEY SHARE, so its
+		// row is committed with the old runtime before the re-stamp below sees it.
+		locked, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock agent")
+			return
+		}
+		if locked.RuntimeID != runtime.ID {
+			reassignment, err := updateQueries.ReassignPendingAgentTasksToRuntime(r.Context(), db.ReassignPendingAgentTasksToRuntimeParams{
+				AgentID:      existing.ID,
+				NewRuntimeID: runtime.ID,
+			})
+			if err != nil {
+				slog.Warn("update agent: reassign pending tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+				writeError(w, http.StatusInternalServerError, "failed to move queued tasks to the new runtime")
+				return
+			}
+			if !reassignment.FenceOk {
+				writeError(w, http.StatusConflict, "the agent or runtime was removed while switching runtimes")
+				return
+			}
+			pendingMovedTo = runtime.ID
+		}
 	}
 	updated, err := updateQueries.UpdateAgent(r.Context(), params)
 	if err != nil {
@@ -2339,6 +2689,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err := bindingTx.Commit(r.Context()); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to commit agent binding")
 			return
+		}
+		if pendingMovedTo.Valid {
+			h.TaskService.NotifyRuntimeMayHaveWork(pendingMovedTo)
 		}
 	}
 
@@ -2374,6 +2727,26 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent composio_toolkit_allowlist failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear composio_toolkit_allowlist")
+			return
+		}
+	}
+	if accountChanged {
+		updated, err = h.Queries.SetAgentAccount(r.Context(), db.SetAgentAccountParams{
+			ID:          updated.ID,
+			AccountMode: accountSel.Mode,
+			AccountID:   accountSel.ID,
+		})
+		if err != nil {
+			slog.Warn("set agent account failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update agent account")
+			return
+		}
+	}
+
+	if shouldClearComposioAllowlist || params.ComposioToolkitAllowlist != nil {
+		if err := syncAgentAppsFromAllowlist(r.Context(), h.Queries, updated, params.ComposioToolkitAllowlist, parseUUID(requestUserID(r))); err != nil {
+			slog.Warn("update agent: sync agent apps failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update agent apps")
 			return
 		}
 	}
@@ -2840,7 +3213,19 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 			taskIDs[i] = t.ID
 		}
 	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), tasks, resp); err != nil {
+		slog.Warn("list agent tasks: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
 	h.hydrateTaskSupplementMetadata(r.Context(), r, agent.WorkspaceID, tasks, resp)
+	if err := h.redactHiddenProjectTasks(r, workspaceID, tasks, resp); err != nil {
+		slog.Warn("list agent tasks: resolve project access failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
+	// Run rows carry the "Open session" action for dsh-owned runs (M-102).
+	h.hydrateDshSessionURLs(r.Context(), tasks, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 	if includeUsage {
 		if err := h.hydrateAgentTaskUsage(r.Context(), agent.ID, taskIDs, resp); err != nil {
@@ -3129,12 +3514,29 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	}
 
 	resp := make([]AgentTaskResponse, 0, len(tasks))
+	kept := make([]db.AgentTaskQueue, 0, len(tasks))
 	for _, t := range tasks {
 		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
 			continue
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
+		kept = append(kept, t)
 	}
+	if err := h.redactForeignChatTaskContent(r.Context(), requestUserID(r), kept, resp); err != nil {
+		slog.Warn("agent task snapshot: resolve chat owners failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
+		return
+	}
+	if err := h.redactHiddenProjectTasks(r, workspaceID, kept, resp); err != nil {
+		slog.Warn("agent task snapshot: resolve project access failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list agent task snapshot")
+		return
+	}
+	// The dsh composer takeover reads ownership from THIS snapshot, so it needs
+	// the same supplement metadata the task lists carry: without the negotiated
+	// capability and the caller's permission the map stays empty and the chat
+	// keeps its read-only composer (M-136). Fail-closed like every other caller.
+	h.hydrateTaskSupplementMetadata(r.Context(), r, parseUUID(workspaceID), kept, resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)

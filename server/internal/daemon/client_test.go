@@ -58,6 +58,10 @@ func TestClient_IdentityHeaders_PostJSON(t *testing.T) {
 			// Without it the server never hands this daemon the wakeups that
 			// waited for its run; they start runs of their own instead.
 			protocol.DaemonCapabilityJoinedWakeupsV1,
+			// Without it the server keeps adding the lines that override the
+			// built-in in_progress / in_review rules to [Project workflow],
+			// rules this daemon's brief no longer states (MUL-8145).
+			protocol.DaemonCapabilityWorkflowStatusRulesV1,
 		} {
 			if !capabilities[want] {
 				t.Errorf("X-Client-Capabilities missing %q: %v", want, capabilities)
@@ -557,7 +561,7 @@ func TestTerminalReportsCarryRetiredSessionID(t *testing.T) {
 			name:     "complete",
 			endpoint: "/api/daemon/tasks/task-1/complete",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "POISONED-S", "")
+				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "POISONED-S", "", nil, "")
 			},
 		},
 		{
@@ -600,7 +604,7 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "sess-1", "/tmp/wd", false, "", ""); err != nil {
+	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "sess-1", "/tmp/wd", false, "", "", nil, ""); err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
 	if _, present := body["retired_session_id"]; present {
@@ -617,7 +621,7 @@ func TestTerminalReportsCarryDurableWorkDir(t *testing.T) {
 		{
 			name: "complete",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "", durableWorkDir)
+				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "", durableWorkDir, nil, "")
 			},
 		},
 		{

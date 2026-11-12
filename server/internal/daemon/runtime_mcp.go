@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -54,7 +55,7 @@ func mergeRuntimeAndAgentMcpConfig(provider string, agentConfig json.RawMessage)
 	agentServers := map[string]any{}
 	if servers, ok := nestedRuntimeMcpMap(agentDocument, "mcpServers"); ok {
 		agentServers = servers
-	} else if provider == "opencode" || provider == "codearts" {
+	} else if family := agent.Family(provider); family == "opencode" || family == "codearts" {
 		// Older OpenCode agents may store the provider-native top-level `mcp`
 		// map. Its individual entries can still flow through the existing
 		// OpenCode adapter when placed under the canonical mcpServers envelope.
@@ -285,7 +286,13 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 		path, key, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "toml"
 	case "cursor":
 		path, key, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "json"
-	case "opencode":
+	case "opencode", "opencode2":
+		// A built-in runtime identity shares the family's config root: the
+		// OpenCode 2 identity is the same tool, so it reads the same
+		// opencode.json the 1.x binary does. Listed explicitly rather than
+		// canonicalised through agent.Family, because the config root is a
+		// per-binary fact, not a protocol one — omp is the precedent (it
+		// reads ~/.omp/agent/mcp.json, not pi's ~/.pi/agent/mcp.json).
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(home, ".config")
@@ -315,8 +322,13 @@ func loadRuntimeMcpServerConfigs(provider string) (map[string]any, bool, error) 
 		if err != nil {
 			return nil, true, err
 		}
-		if configured, ok := nestedRuntimeMcpMap(cfg, key); ok {
+		if configured, ok := runtimeMcpServersForProvider(provider, key, cfg); ok {
 			for name, entry := range configured {
+				// OpenCode 2.x uses disabled, but the task adapters only read
+				// enabled. Keep disabled entries in inventory, not in task config.
+				if server, ok := entry.(map[string]any); ok && (provider == "opencode" || provider == "opencode2") && server["disabled"] == true {
+					continue
+				}
 				servers[name] = normalizeRuntimeMcpEntry(provider, entry)
 			}
 		}
@@ -422,7 +434,7 @@ func listRuntimeLocalMcpServers(provider string) ([]runtimeLocalMcpServerSummary
 		path, key, source, format = filepath.Join(codexHome, "config.toml"), "mcp_servers", "User config", "toml"
 	case "cursor":
 		path, key, source, format = filepath.Join(home, ".cursor", "mcp.json"), "mcpServers", "User config", "json"
-	case "opencode":
+	case "opencode", "opencode2":
 		configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 		if configHome == "" {
 			configHome = filepath.Join(home, ".config")
@@ -464,7 +476,7 @@ func listRuntimeLocalMcpServers(provider string) ([]runtimeLocalMcpServerSummary
 		if err != nil {
 			return nil, true, err
 		}
-		if servers, ok := nestedRuntimeMcpMap(cfg, key); ok {
+		if servers, ok := runtimeMcpServersForProvider(provider, key, cfg); ok {
 			out = append(out, runtimeMcpSummaries(servers, source)...)
 		}
 	} else if !os.IsNotExist(err) {
@@ -543,6 +555,41 @@ func listClaudePluginMcpServers(home string) []runtimeLocalMcpServerSummary {
 		}
 	}
 	return out
+}
+
+// runtimeMcpServersForProvider resolves the user-scope MCP server map for a
+// provider. OpenCode is the only provider that stores the same field under two
+// shapes depending on which version wrote the config file, so it gets a
+// dedicated resolver; every other provider uses the dotted-key lookup. The
+// opencode2 identity shares the opencode family's config root.
+func runtimeMcpServersForProvider(provider, key string, cfg map[string]any) (map[string]any, bool) {
+	if provider == "opencode" || provider == "opencode2" {
+		return opencodeNativeMcpServers(cfg, key)
+	}
+	return nestedRuntimeMcpMap(cfg, key)
+}
+
+// opencodeNativeMcpServers returns the OpenCode user MCP server map. OpenCode
+// 1.x stores servers directly under "mcp" while 2.x nests them under
+// "mcp.servers"; the shape is decided by whichever version the user runs, so it
+// is detected from the content rather than a fixed key.
+func opencodeNativeMcpServers(cfg map[string]any, key string) (map[string]any, bool) {
+	mcp, ok := cfg[key].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if servers, ok := mcp["servers"].(map[string]any); ok {
+		// A flat server named "servers" has entry fields; a nested server
+		// with one of these names has an object as its value instead.
+		for _, field := range []string{"type", "url", "command", "enabled", "disabled"} {
+			switch servers[field].(type) {
+			case string, bool, []any:
+				return mcp, true
+			}
+		}
+		return servers, true
+	}
+	return mcp, true
 }
 
 func nestedRuntimeMcpMap(cfg map[string]any, path string) (map[string]any, bool) {

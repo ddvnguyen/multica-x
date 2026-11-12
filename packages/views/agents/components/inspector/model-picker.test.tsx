@@ -130,6 +130,7 @@ describe("ModelPicker (inspector)", () => {
     expect(mockRefreshRuntimeModels).toHaveBeenCalledWith(
       queryClient,
       "rt-claude",
+      undefined,
     );
     queryClient.clear();
   });

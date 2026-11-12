@@ -15,6 +15,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enAuth from "../../locales/en/auth.json";
 import enSettings from "../../locales/en/settings.json";
+import { IssueOpeningCapabilityProvider } from "../../issues/surface/issue-opening-capability";
 
 const navigationState = vi.hoisted(() => ({ search: "", replace: vi.fn() }));
 vi.mock("../../navigation", () => ({
@@ -30,14 +31,9 @@ const mockReload = vi.hoisted(() => vi.fn());
 const mockToastWarning = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
-const mockSetTheme = vi.hoisted(() => vi.fn());
 const mockSetUser = vi.hoisted(() => vi.fn());
 const userRef = vi.hoisted(() => ({
   current: null as { id: string; timezone?: string | null } | null,
-}));
-
-vi.mock("@multica/ui/components/common/theme-provider", () => ({
-  useTheme: () => ({ theme: "light", setTheme: mockSetTheme }),
 }));
 
 vi.mock("@multica/core/i18n/react", async () => {
@@ -69,6 +65,7 @@ vi.mock("@multica/core/chat", () => ({
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -120,7 +117,7 @@ const TEST_RESOURCES = {
 function I18nWrapper({ children }: { children: ReactNode }) {
   return (
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      {children}
+      <IssueOpeningCapabilityProvider>{children}</IssueOpeningCapabilityProvider>
     </I18nProvider>
   );
 }
@@ -160,21 +157,6 @@ describe("PreferencesTab — Language switcher", () => {
     expect(mockReload).not.toHaveBeenCalled();
   });
 
-  it("applies the theme on this device without announcing success", async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<PreferencesTab />, { wrapper: I18nWrapper });
-
-    const group = screen.getByRole("group", { name: "Theme" });
-    expect(within(group).getByRole("button", { name: "Light" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await user.click(within(group).getByRole("button", { name: "Dark" }));
-
-    expect(mockSetTheme).toHaveBeenCalledWith("dark");
-    expect(mockToastSuccess).not.toHaveBeenCalled();
-  });
-
   it.each([
     { name: "한국어", locale: "ko" },
     { name: "日本語", locale: "ja" },
@@ -193,8 +175,10 @@ describe("PreferencesTab — Language switcher", () => {
   });
 
   it.each([
-    { name: "中文", locale: "zh-Hans" },
+    { name: "简体中文", locale: "zh-Hans" },
+    { name: "繁體中文", locale: "zh-Hant" },
     { name: "Français", locale: "fr" },
+    { name: "Español", locale: "es" },
   ])("when logged in: saves $locale before reloading", async ({ name, locale }) => {
     userRef.current = { id: "user-1" };
     mockUpdateMe.mockResolvedValueOnce({});
@@ -215,7 +199,7 @@ describe("PreferencesTab — Language switcher", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<PreferencesTab />, { wrapper: I18nWrapper });
 
-    await pickLanguage(user, "中文");
+    await pickLanguage(user, "简体中文");
 
     // Local persist still happened so the reload below sees the new locale.
     expect(mockPersist).toHaveBeenCalledWith("zh-Hans");
@@ -430,8 +414,8 @@ describe("PreferencesTab — Scope", () => {
   it("labels where each group of settings is stored", () => {
     render(<PreferencesTab />, { wrapper: I18nWrapper });
     expect(screen.getByText("Account · synced")).toBeInTheDocument();
-    // Appearance, opening issues, comments & chat.
-    expect(screen.getAllByText("This device only")).toHaveLength(3);
+    // Opening issues, comments & chat.
+    expect(screen.getAllByText("This device only")).toHaveLength(2);
   });
 
   it("switches what clicking a card or row opens, and says what Shift does", async () => {

@@ -1,0 +1,15 @@
+[Unit]
+Description=moct-be z — lane z MOCT fleet backend (own Turso file)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__MOCT_ROOT__
+ExecStart=/usr/bin/env node __MOCT_ROOT__/current/dist/daemon.js
+EnvironmentFile=__MOCT_ENV__
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

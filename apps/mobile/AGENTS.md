@@ -4,7 +4,7 @@ These rules apply only to `apps/mobile/`, in addition to the [root instructions]
 
 ## Sharing and Dependencies
 
-- Mobile owns its UI, state, hooks, providers, API client, QueryClient, i18n, and build/release workflow. Import core types with `import type`; runtime imports are limited to pure utilities and platform-independent schemas. Do not import web/desktop stores, hooks, Query factories, or WS updaters.
+- Mobile owns its UI, state, hooks, providers, API client, QueryClient, i18n, and build/release workflow. Import core types with `import type`; runtime imports are limited to pure utilities and platform-independent schemas. Do not import web/desktop stores, hooks, Query factories, or WS updaters. Import runtime values through the pure module's own subpath (e.g. `@multica/core/agents/derive-presence`); `eslint.config.js` rejects value imports from core barrels other than `types` and `markdown`, because the rest also load hooks, queries, stores, or React context. Add the narrow subpath to `packages/core/package.json` exports when it is missing.
 - Use `package.json` and the lockfile for current versions. Mobile pins Expo/React Native dependencies rather than taking the root React catalog.
 - Add SDK-aligned native packages with `pnpm exec expo install <package>` from this directory. Check compatibility before adding other dependencies; do not pick versions from memory.
 - Follow [README.md](README.md) for setup, simulator/device builds, and environment variants. Keep iOS scripts routed through `scripts/ios-run.sh`, which prebuilds before running iOS so config plugins are reapplied. Preserve the caller's `APP_ENV`; avoid clean prebuilds in the normal edit loop.
@@ -88,7 +88,7 @@ pnpm --filter @multica/mobile lint
 pnpm --filter @multica/mobile test
 ```
 
-- Root frontend checks exclude mobile. `.github/workflows/mobile-verify.yml` defines the current mobile CI scope; these checks do not build an IPA or verify native rendering.
+- Root frontend checks exclude mobile, and since M-161 there is no mobile CI workflow: a mobile-only change runs only the lightweight `quality` job in the main CI (mobile is not part of the shipped web product). These checks do not build an IPA or verify native rendering.
 - For UI changes, verify the affected flow in the simulator/device, including themes, keyboard/scrolling, and navigation. For shared semantics or realtime changes, change the same data from web and confirm mobile catches up without manual refresh, including after reconnect.
 - Test parsing/transforms in the existing Vitest setup. Preserve `scripts/ios-run.test.sh` coverage when changing the native build wrapper.
 - Report which checks ran and which native/cross-client checks were unavailable. Do not claim visual or release verification from typecheck/unit tests alone.

@@ -1,12 +1,11 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
-  <img alt="Multica" src="docs/assets/logo-light.svg" width="50">
+  <source media="(prefers-reduced-motion: reduce) and (prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/logo-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.gif">
+  <img alt="Multica" src="docs/assets/logo-light.gif" width="240">
 </picture>
-
-# Multica
 
 **Agents that show up on the board.**
 
@@ -36,7 +35,7 @@ back for review. Self-hostable, works with the agent CLIs you already use, no lo
 
 [Website](https://multica.ai) · [Docs](https://multica.ai/docs) · [Quickstart](https://multica.ai/docs/cloud-quickstart) · [Download](https://multica.ai/download) · [Vision](VISION.md) · [Self-Hosting](SELF_HOSTING.md) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI)
 
-**English | [简体中文](README.zh.md)**
+**English | [简体中文](README.zh.md) | [日本語](README.ja.md)**
 
 </div>
 
@@ -47,6 +46,64 @@ back for review. Self-hostable, works with the agent CLIs you already use, no lo
 <p align="center">
   <sub><em>Your next 10 hires won't be human.</em></sub>
 </p>
+
+---
+
+## multica-moct-x
+
+> **This repository is a fork.** Everything below the fork section is upstream
+> `multica-ai/multica` (`v0.6.5`; fork base `cbd75011`, recorded in
+> [`packages/dsh-plugin/FORK.md`](packages/dsh-plugin/FORK.md)). The section
+> describes the fork's own integration; upstream content starts at
+> [What is Multica?](#what-is-multica) and is kept intact.
+
+**multica-moct-x** runs this fork of Multica inside DeepSeek Harness (dsh) as
+a native plugin, on top of MOCT — the team-memory service. Two backends, two
+databases, one thin seam; no iframe, no loopback page.
+
+```mermaid
+flowchart LR
+  subgraph dsh["dsh shell (browser + host)"]
+    IS["React 19 island<br/>@multica/dsh-plugin"]
+  end
+  MB["multica-be<br/>Go + PostgreSQL<br/>WORK PLANE"] --> PG[("issues, board,<br/>agents, skills")]
+  D["Multica daemon"] --> MB
+  D -->|"pre-run memory inject<br/>+ multica moct-mcp tools"| MO["moct-be<br/>TS + Turso<br/>MEMORY PLANE"]
+  MO --> T[("typed memory,<br/>decisions, conventions")]
+  IS -->|"/multica/* (proxied)"| MB
+```
+
+- **One writer per entity**: `multica-be` owns issues/threads/board/agents;
+  `moct-be` owns memory. The seam is one typed HTTP client, and *memory never
+  blocks a run* — if MOCT is down, tasks run without it.
+- **The UI is a plugin** (`packages/dsh-plugin`): the fork's own board and
+  issue page in a React 19 island, transport proxied through the dsh host so
+  no Multica token reaches the browser. GitHub/Slack integrations, billing,
+  autopilots and squads are **hidden in the panel, not deleted** — they stay
+  reachable from the Multica web app.
+
+| Doc | What it covers |
+|---|---|
+| [docs/moct-x/architecture.md](docs/moct-x/architecture.md) | two backends, ownership, identity split, ADR summary |
+| [docs/moct-x/seam.md](docs/moct-x/seam.md) | the MOCT seam: inject, tools, config, failure mode |
+| [docs/moct-x/dsh-plugin.md](docs/moct-x/dsh-plugin.md) | the dsh plugin: island, proxy, fork-entry gate |
+| [docs/moct-x/interactions.md](docs/moct-x/interactions.md) | ask/plan parity: parked questions answered through the steer path |
+| [docs/moct-x/operations.md](docs/moct-x/operations.md) | lanes, `deploy/dsh-z`, env vars, CI, runbooks |
+| [docs/moct-x/fork-and-upstream.md](docs/moct-x/fork-and-upstream.md) | fork bases, divergence map, upstream merges |
+| [docs/moct-x/glossary.md](docs/moct-x/glossary.md) | work/memory plane, seam, lane, island, ref |
+| [docs/moct-seam.md](docs/moct-seam.md) | the seam contract itself (ref grammar, endpoints, write semantics) |
+
+**Build/run on a dsh lane:** provision the proving lane with
+`bash deploy/dsh-z/deploy.sh` (idempotent; loopback-only; see
+[deploy/dsh-z/README.md](deploy/dsh-z/README.md)). Develop the plugin with
+`pnpm --filter @multica/dsh-plugin build`, `pnpm --filter @multica/dsh-plugin test`, or `pnpm --filter @multica/dsh-plugin lint` (see
+[packages/dsh-plugin/README.md](packages/dsh-plugin/README.md)). Upstream
+build/self-host instructions below apply unchanged.
+
+Verified at `multica-moct` commit `ac8a04078`.
+
+**Unverified:** live lane behavior and external MOCT internals were not re-tested;
+see the Unverified sections in the linked documents.
 
 ---
 
@@ -67,6 +124,10 @@ issue — so nobody reconstructs context, and nothing ships without a human sayi
 
 *Claude Code, Codex, Cursor, Kimi — you don't pick one. You hire them all.*
 
+<p align="center">
+  <img src="docs/assets/readme/team.webp" alt="An agent's page in Multica: Builder is online and working on an issue, next to its recent runs, runtime, and success rate" width="100%">
+</p>
+
 - **[The agent CLIs you already use](#runtimes) →** Claude Code, Codex, Cursor, Copilot, Kimi, OpenCode, and more.
 - **[Agents as teammates](https://multica.ai/docs/agents) →** Give each one a name, a provider, and a runtime — they show up on the board like anyone else.
 - **[Squads](https://multica.ai/docs/squads) →** Put agents and people on one team; the leader routes the work.
@@ -77,6 +138,10 @@ issue — so nobody reconstructs context, and nothing ships without a human sayi
 
 *It starts as three rough sentences in an issue. It ends as a pull request.*
 
+<p align="center">
+  <img src="docs/assets/readme/issue.webp" alt="An issue handed to an agent: Frontend opened a pull request, asked the Reviewer agent for a review, and moved the issue to In Review" width="100%">
+</p>
+
 - **[Assign an issue](https://multica.ai/docs/assigning-issues) →** Pick an agent as assignee the way you'd pick a colleague — it takes the work from there.
 - **[Autopilots](https://multica.ai/docs/autopilots) →** Run standups, audits, and reports on a cron — nobody to remind.
 - **[Chat](https://multica.ai/docs/chat) →** Ask your workspace a question, or start work without filing anything.
@@ -86,8 +151,12 @@ issue — so nobody reconstructs context, and nothing ships without a human sayi
 
 *Which agent touched this? What did it run? What did it cost? Open the run.*
 
+<p align="center">
+  <img src="docs/assets/readme/run.webp" alt="A live run transcript: every tool call and command, timestamped, with a failing test's output open" width="100%">
+</p>
+
 - **[Execution log](https://multica.ai/docs/tasks) →** Replay every tool call, command, and error, timestamped.
-- **Steer a running agent →** Reply while it works and the message lands in the current run, not the next one. Claude Code, Codex, and Grok today.
+- **Steer a running agent →** Reply while it works and the message lands in the current run, not the next one. Claude Code, Codex, Grok, and Kiro today.
 - **Usage analytics →** See what each run cost, per agent and per issue.
 - **[Review gates](https://multica.ai/docs/issues) →** Work lands in review, not in main. You decide what ships.
 - **[Inbox](https://multica.ai/docs/inbox) →** Get pinged when an agent needs a call, not for every step.
@@ -146,10 +215,11 @@ turn it off — [what's collected](SELF_HOSTING.md#anonymous-deployment-telemetr
 
 **1. Connect a computer.** A *runtime* is any machine agents can work on — your laptop, or a
 cloud box. Desktop registers the computer it's running on automatically and detects the agent
-CLIs installed there. On the web — or to add another machine — open **Runtimes** in the sidebar,
-click **Add a computer**, and paste the two commands it shows into a terminal on that machine.
+CLIs installed there. On the web — or to add another machine — open **Team → Runtimes**, click
+**Add runtime → Other machine or server**, and paste the two commands it shows into a terminal on
+that machine.
 
-**2. Create an agent.** Open **Agents** in the sidebar and click **New agent**. Pick the runtime
+**2. Create an agent.** Open **Team** in the sidebar and click **+** (**New agent**). Pick the runtime
 you just connected, pick a provider, and give it a name — or let **Build with AI** generate the
 configuration from a description. That name is how it shows up on the board and in comments.
 
@@ -180,6 +250,7 @@ authenticated — 26 of them today — so switching providers is a dropdown, not
 | DeepSeek Harness | `dsh` | Oh-My-Pi | `omp` |
 | MiniMax Code | `mcode` | Dim | `dim` |
 | Huawei Cloud CodeArts | `codearts` | ZeroClaw | `zeroclaw` |
+| ZCode | `zcode` / ZCode Desktop | | |
 
 Installing and authenticating them: [Install an agent runtime](https://multica.ai/docs/install-agent-runtime) ·
 [Providers](https://multica.ai/docs/providers)

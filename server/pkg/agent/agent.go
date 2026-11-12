@@ -24,11 +24,18 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
+	// DetachedStarted is called after a dsh scope launcher starts successfully.
+	DetachedStarted func()
+	// PreserveDetached reports whether cancellation is a daemon shutdown.
+	PreserveDetached func() bool
 	// EnableTaskSupplement installs provider hooks only for runs whose daemon/server
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
 	Cwd                  string
 	Model                string
+	// PiSkillPaths contains only the SKILL.md files written for this task by
+	// the daemon. Pi loads them explicitly without trusting other project files.
+	PiSkillPaths []string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -74,6 +81,15 @@ type ExecOptions struct {
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
 	ResumeSessionID        string // if non-empty, resume a previous agent session
+	// ForkParent names a dsh session to fork instead of resuming (S3-B2/M-138):
+	// the new session inherits a seed built from that session's summary and is
+	// linked to it as its parent. Sent only when the bridge advertises the
+	// `fork` capability on its ready frame; otherwise the backend resumes
+	// ForkParent, which is the behaviour every bridge before S3-B2 had.
+	ForkParent string
+	// Seed is the summary+trigger text the forked child inherits. Ignored when
+	// ForkParent is empty or the bridge cannot fork.
+	Seed string
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
@@ -94,6 +110,20 @@ type ExecOptions struct {
 	// knows the resume is gone, and the backend covers only the case the daemon
 	// cannot see — a live resume RPC rejected mid-run.
 	ResumeContinuityNotice string
+	// TaskToken is the task-scoped Multica API credential (mat_...) the server
+	// mints at claim time. CLI backends receive it as MULTICA_TOKEN in the
+	// subprocess environment. Backends that delegate remotely (museapp) forward
+	// it in their wire request so the remote worker can call the Multica API
+	// with the same scoped identity. Empty when the server did not provide one.
+	TaskToken string
+	// MulticaServerURL is the Multica API base URL (e.g.
+	// https://multica.example.com). Remote backends forward it so the worker
+	// knows where to call; CLI backends get it as MULTICA_SERVER_URL.
+	MulticaServerURL string
+	// MulticaWorkspaceID is the workspace UUID for this task. Remote backends
+	// forward it so the worker can pass it as a query param; CLI backends get
+	// it as MULTICA_WORKSPACE_ID.
+	MulticaWorkspaceID string
 	// ExtraArgs is honoured only by backends that opt in by reading it; the
 	// rest ignore it. Deliberately not enumerated here — the previous list
 	// went stale as backends were added, which is how MULTICA_QWENPAW_ARGS
@@ -129,6 +159,12 @@ type ExecOptions struct {
 	// ignore this field, mirroring ThinkingLevel's renderer-side fall-through
 	// pattern. See issue #3260.
 	OpenclawMode string
+	// OpenclawModelOverride is the claim-time snapshot of the agent's persistent
+	// underlying-model override. The setting applies to all newly claimed runs
+	// until changed or cleared. OpenClaw receives it as `--model <id>` alongside
+	// `--agent <id>`, preserving the identity, workspace, sessions, and memory
+	// selected by Model. Other backends ignore this field.
+	OpenclawModelOverride string
 	// ClaudeSettingsPath is a daemon-owned, task-local settings file passed
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
@@ -139,10 +175,20 @@ type ExecOptions struct {
 	// ignore it.
 	CursorHookCommand []string
 	// Ask, when non-nil, lets the backend park a tool call that needs a human
-	// decision and resume it with the answer. Nil means "no answer channel",
-	// and a backend must then keep its ask tool disabled rather than block.
-	// Currently honoured by the codebuddy backend (which also serves freebuff).
+	// decision and resume it with the answer. Nil means the backend keeps its
+	// ask tool disabled rather than blocking without an answer channel.
 	Ask Asker
+	// OnUsage optionally receives the backend's cumulative usage snapshot while
+	// the run is still live, keyed exactly like Result.Usage so a mid-run flush
+	// and the terminal report upsert the same (task, provider, model) rows
+	// instead of adding a second row the rollup would charge twice. Backends
+	// that cannot meter mid-run never call it.
+	//
+	// The callback runs on the backend's protocol reader goroutine and MUST NOT
+	// block: a daemon that reports from here holds the agent's stdout open and
+	// can trip its idle watchdog. Take the snapshot and report on your own
+	// goroutine.
+	OnUsage func(map[string]TokenUsage)
 	// piMcpExtensionPath is set by piBackend.Execute after it writes the
 	// temporary MCP extension. The daemon does not fill it.
 	piMcpExtensionPath string
@@ -163,11 +209,15 @@ func runContext(ctx context.Context, timeout time.Duration) (context.Context, co
 
 // Session represents a running agent execution.
 type Session struct {
+	// CleanupRequired means Result is also the acknowledgement that the
+	// backend's bounded process cleanup finished. A missing acknowledgement
+	// must prevent automatic continuation, even after upstream cancellation.
+	CleanupRequired bool
 	// Supplement delivers an additional human instruction to the currently
 	// active provider turn. Nil means the backend cannot safely do so.
 	// Adapters bound their own transport calls; a hook-based adapter may wait
 	// for the next provider boundary until ctx or the execution is cancelled.
-	Supplement func(context.Context, string) error
+	Supplement func(context.Context, string, string) error
 	// SupplementReady reports whether Supplement currently targets a live,
 	// provider-confirmed turn. The daemon must not claim durable input before
 	// this becomes true: claiming during provider initialization would convert
@@ -222,6 +272,12 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
+	// MessageQuestion is a user-decision request the backend is parked on:
+	// the run stays alive until Session.Supplement delivers the human's
+	// answer (or the run is cancelled). Content carries the rendered
+	// question(s) for the transcript; CallID keys the answer round-trip.
+	// Currently emitted only by the dsh backend (ask/plan parity, M-109).
+	MessageQuestion MessageType = "question"
 )
 
 // Message is a unified event emitted by an agent during execution.
@@ -272,6 +328,19 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// FirstPromptTokens is the prompt size (input + cache_read +
+	// cache_write) of the run's FIRST model request, in frame order — for a
+	// run that started its session, the session's init prefix. LastPromptTokens
+	// is the same measure for the run's LAST model request, i.e. the size of
+	// the conversation a resume (or a summary) would re-read. S3-B1 (M-137):
+	// the dsh backend records both from its per-request usage frames (the
+	// bridge emits one usage frame per assistant message, verified against
+	// dsh-multica-runtime's observeSessionEvent); other backends leave both
+	// zero. The summary clock's trigger is Last − First, so a one-shot run
+	// can reach it — unlike a sum over Usage, which is billed volume across
+	// steps, not conversation size.
+	FirstPromptTokens int64
+	LastPromptTokens  int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history
@@ -302,6 +371,12 @@ type Result struct {
 	// shouldRetryWithFreshSession, where "was this run a resume?" is already
 	// known. Do not encode it here.
 	ResumeRejected bool
+	// DshForkUsed reports that this dsh run opened as a forked child of the
+	// session named in ExecOptions.ForkParent (S3-B2/M-138). False on every
+	// other backend, and false on a dsh bridge that did not advertise the
+	// `fork` capability — the backend then resumed the parent instead, which
+	// is the fallback the daemon records as a plain resume.
+	DshForkUsed bool
 	// ResumeRejectedTransient is positive evidence that this run's requested
 	// resume cannot proceed right now, but the session itself remains healthy.
 	// The daemon may use a fresh session for this turn, but must not retire the
@@ -384,6 +459,7 @@ var SupportedTypes = []string{
 	"opencode",
 	"codearts",
 	"deveco",
+	"freebuff",
 	"openclaw",
 	"hermes",
 	"pi",
@@ -402,7 +478,10 @@ var SupportedTypes = []string{
 	"mcode",
 	"muse",
 	"dim",
+	"devin",
 	"zeroclaw",
+	"museapp",
+	"zcode",
 }
 
 // IsSupportedType reports whether agentType is in the SupportedTypes whitelist.
@@ -441,8 +520,12 @@ var resumeRejectionUndetectable = map[string]bool{
 // cannot tell a refused resume from any other startup failure. Callers use it
 // to read a false Result.ResumeRejected correctly: "could not tell" for these,
 // "checked, not a rejection" for everything else.
+//
+// A built-in runtime identity inherits its family's answer: the capability
+// belongs to the backend that scrapes the stream, not to the name a host
+// registered it under.
 func ResumeRejectionUndetectable(agentType string) bool {
-	return resumeRejectionUndetectable[agentType]
+	return resumeRejectionUndetectable[Family(agentType)]
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
@@ -474,6 +557,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return newCodeArtsBackend(cfg)
 	case "deveco":
 		return &devecoBackend{cfg: cfg}, nil
+	case "freebuff":
+		return &freebuffBackend{cfg: cfg}, nil
 	case "openclaw":
 		return &openclawBackend{cfg: cfg}, nil
 	case "hermes":
@@ -506,10 +591,16 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &qwenpawBackend{cfg: cfg}, nil
 	case "mcode":
 		return &mcodeBackend{cfg: cfg}, nil
+	case "devin":
+		return &devinBackend{cfg: cfg}, nil
 	case "muse":
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
 		return &zeroclawBackend{cfg: cfg}, nil
+	case "museapp":
+		return &museappBackend{cfg: cfg}, nil
+	case "zcode":
+		return &zcodeBackend{cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q (supported: %s)", agentType, strings.Join(SupportedTypes, ", "))
 	}
@@ -540,6 +631,7 @@ var launchHeaders = map[string]string{
 	"cursor":      "cursor-agent (stream-json)",
 	"codearts":    "codearts run (json)",
 	"deveco":      "deveco run (json)",
+	"freebuff":    "bun orchestrator.js (local HTTP)",
 	"hermes":      "hermes acp",
 	"kimi":        "kimi acp",
 	"reasonix":    "reasonix acp",
@@ -555,9 +647,12 @@ var launchHeaders = map[string]string{
 	"qwen":        "qwen -p (stream-json)",
 	"qwenpaw":     "qwenpaw acp",
 	"dim":         "dim acp",
+	"devin":       "devin acp",
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",
+	"museapp":     "museapp (remote receptionist)",
+	"zcode":       "zcode app-server",
 }
 
 // LaunchHeader returns the user-visible launch skeleton for agentType, or an

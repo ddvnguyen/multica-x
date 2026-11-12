@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -82,9 +83,10 @@ var parentBubbleNotifTypes = map[string]bool{
 // unconditionally: they are either addressed at the human directly, or they are
 // exceptions that stall the work until a human looks.
 var delegatedAlwaysNotifTypes = map[string]bool{
-	"mentioned":     true,
-	"task_failed":   true,
-	"agent_blocked": true,
+	"mentioned":      true,
+	"task_failed":    true,
+	"agent_blocked":  true,
+	"agent_question": true,
 }
 
 // issueStatusIsHandoff reports whether ARRIVING on this status hands the issue
@@ -173,6 +175,7 @@ func deliverToSubscriber(reason, notifType string, statusIsHandoff bool) bool {
 // notifTypeToGroup maps each InboxItemType to a user-configurable preference
 // group. Types not in this map are always delivered (not configurable).
 var notifTypeToGroup = map[string]string{
+	"agent_question":     "agent_activity",
 	"issue_assigned":     "assignments",
 	"unassigned":         "assignments",
 	"assignee_changed":   "assignments",
@@ -1078,6 +1081,78 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			issue.Title, "",
 			emptyDetails)
 	})
+
+	// task:message with type "question" — the run parked on an ask or a plan
+	// review and cannot go on without a human. This is the one agent message
+	// that is addressed at a person rather than being progress, so it earns an
+	// inbox row where `task_completed` deliberately does not: nobody waits on
+	// a completed run, and everybody waits on this one. Without the row the ask
+	// lives only inside the issue's transcript, which is exactly the surface a
+	// member is not watching.
+	bus.Subscribe(protocol.EventTaskMessage, func(e events.Event) {
+		payload, ok := e.Payload.(protocol.TaskMessagePayload)
+		if !ok || payload.Type != "question" || payload.IssueID == "" {
+			return
+		}
+		issueUUID, err := util.ParseUUID(payload.IssueID)
+		if err != nil {
+			// A malformed issue id is a producer bug, and notifying
+			// nothing is better than panicking the bus dispatch.
+			slog.Warn("task:message question notification: bad issue id",
+				"issue_id", payload.IssueID, "error", err)
+			return
+		}
+		issue, err := queries.GetIssue(ctx, issueUUID)
+		if err != nil {
+			slog.Error("task:message question notification: failed to get issue",
+				"issue_id", payload.IssueID, "error", err)
+			return
+		}
+		// The run's agent is the actor, for the avatar and for the delegated
+		// tier's "skip the actor" rule. A task row that is already gone still
+		// leaves the question worth delivering, so a failed lookup degrades to
+		// nobody rather than dropping the row.
+		agentID := ""
+		if taskID, err := util.ParseUUID(payload.TaskID); err == nil {
+			if task, err := queries.GetAgentTask(ctx, taskID); err == nil {
+				agentID = util.UUIDToString(task.AgentID)
+			}
+		}
+		notifySubscribers(ctx, queries, bus, payload.IssueID, issue.Status, e.WorkspaceID,
+			events.Event{
+				Type:        e.Type,
+				WorkspaceID: e.WorkspaceID,
+				ActorType:   "agent",
+				ActorID:     agentID,
+			},
+			map[string]bool{}, "agent_question", "action_required",
+			issue.Title, firstQuestionPrompt(payload.Input),
+			emptyDetails)
+	})
+}
+
+// firstQuestionPrompt is the one line the inbox row shows for an ask.
+//
+// The row's body is a summary, not the form: it names what the agent is asking
+// about so the member can triage the queue, and the question itself is answered
+// in the issue, where the options and the run's context are. A multi-question
+// ask leads with its first prompt for the same reason `renderDshQuestions`
+// numbers them: the row is an entry point, not a copy.
+func firstQuestionPrompt(input map[string]any) string {
+	questions, ok := input["questions"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, entry := range questions {
+		question, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if prompt, ok := question["question"].(string); ok && strings.TrimSpace(prompt) != "" {
+			return strings.TrimSpace(prompt)
+		}
+	}
+	return ""
 }
 
 // inboxItemToResponse converts a db.InboxItem into a map suitable for

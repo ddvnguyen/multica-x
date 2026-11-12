@@ -25,6 +25,7 @@ import {
   TableRow,
 } from "@multica/ui/components/ui/table";
 import { columnSizeVar, getCellStyle } from "@multica/ui/lib/data-table";
+import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
 import { cn } from "@multica/ui/lib/utils";
 
 // Pointer travel that turns a press on the resize handle into a drag. Matches
@@ -100,6 +101,7 @@ export function DataTable<TData>({
   className,
   ...props
 }: DataTableProps<TData>) {
+  const portalContainer = usePortalContainer();
   const [resizingColumnId, setResizingColumnId] = React.useState<string | null>(
     null,
   );
@@ -572,8 +574,10 @@ export function DataTable<TData>({
         * document.body instead loses both fights, since a descendant's own
         * cursor wins over an inherited one. Pointer events still reach the
         * gesture: it listens on `window`, which the layer's events bubble to.
-        * Portaled to body so an ancestor with a transform / filter / contain
-        * cannot turn `fixed` into "relative to that ancestor". */}
+        * Portaled to the host's portal container — the island's popup seat
+        * inside a shadow-rooted island, `document.body` otherwise — so an
+        * ancestor with a transform / filter / contain cannot turn `fixed`
+        * into "relative to that ancestor". */}
       {resizingColumnId !== null &&
         typeof document !== "undefined" &&
         createPortal(
@@ -582,7 +586,7 @@ export function DataTable<TData>({
             data-slot="data-table-resize-overlay"
             className="fixed inset-0 z-50 cursor-col-resize touch-none select-none"
           />,
-          document.body,
+          portalContainer ?? document.body,
         )}
       {actionBar &&
         table.getFilteredSelectedRowModel().rows.length > 0 &&

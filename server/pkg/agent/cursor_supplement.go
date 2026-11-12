@@ -229,7 +229,8 @@ func (s *cursorSupplementSession) ready() bool {
 	return s.active && !s.ended && s.ctx.Err() == nil
 }
 
-func (s *cursorSupplementSession) supplement(ctx context.Context, text string) error {
+func (s *cursorSupplementSession) supplement(ctx context.Context, text string, mode string) error {
+	_ = mode
 	wrapped := s.wrap(text)
 	if n := jsStringLength(wrapped); n > cursorHookContextLimit {
 		return fmt.Errorf("cursor hook additional_context is %d units, limit %d", n, cursorHookContextLimit)

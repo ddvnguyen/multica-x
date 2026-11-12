@@ -90,7 +90,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		// member actor is threaded; otherwise attribution falls back to the chain.
 		_, _ = h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
 	case "squad":
-		h.enqueueSquadLeaderTask(ctx, issue, pgtype.UUID{}, actorType, actorID, handoffNote)
+		h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
 	}
 }
 
@@ -268,7 +268,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 					AssigneeType: loaded.AssigneeType,
 					AssigneeID:   loaded.AssigneeID,
 				}
-				if hand, err := h.applyIssueWorkflow(r.Context(), loaded, &params, true, false, false, nil); err == nil && hand != nil {
+				if hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, loaded, &params, true, false, false, nil); err == nil && hand != nil {
 					post.AssigneeType = params.AssigneeType
 					post.AssigneeID = params.AssigneeID
 					in.AssigneeChanged = true
