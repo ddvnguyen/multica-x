@@ -5,7 +5,7 @@ import { join, matchesGlob } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { checkGate, decideScopes, filters } from "./ci-scope.mjs";
+import { checkGate, checkTopLevelGate, decideScopes, filters } from "./ci-scope.mjs";
 
 // The filters use only literal paths, * and **; Node's matcher exercises those
 // against realistic changes, including files removed or renamed by a PR.
@@ -176,6 +176,86 @@ for (const gate of ["frontend", "backend"]) {
     assert.throws(() => checkGate(extra, mapping), /Unchecked dependency/);
   });
 }
+
+// The top-level `ci` check gates the always-run product aggregates plus the
+// self-hosted firewall; the aggregate gate machinery cannot express it, which
+// is why it owns its own contract (M-324).
+test("the ci job wires gate-ci to the always-run aggregates and the firewall", () => {
+  assert.match(jobs.ci, /^    needs: \[changes, frontend, backend, mmx-firewall\]$/m);
+  assert.match(jobs.ci, /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.match(jobs.ci, /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
+  assert.match(jobs.ci, /^        run: node scripts\/ci-scope\.mjs gate-ci$/m);
+  // The aggregates are not path-gated: they run on every change and report
+  // success even when every sub-job skipped, which is how docs-only PRs pass.
+  for (const job of ["frontend", "backend"]) {
+    assert.doesNotMatch(jobs[job], /^    if: \$\{\{ needs\.changes\.outputs\./m);
+  }
+  assert.match(jobs["mmx-firewall"], /^    if: \$\{\{ needs\.changes\.outputs\.self_hosted == 'true' \}\}$/m);
+  assert.match(jobs.changes, /^      self_hosted: \$\{\{ steps\.runner\.outputs\.self_hosted \}\}$/m);
+  assert.deepEqual(
+    JSON.parse(field(jobs.ci, /^          CONDITIONAL_JOBS: '(.+)'$/m)),
+    { "mmx-firewall": "self_hosted" },
+  );
+});
+
+test("the ci gate passes skipped paths and rejects failed or cancelled aggregates", () => {
+  const docsOnly = () => Object.fromEntries([
+    // self_hosted is a runner-step output, not a decide output.
+    ["changes", { result: "success", outputs: { ...decideScopes("pull_request", filterFiles([])), self_hosted: "false" } }],
+    ["frontend", { result: "success" }],
+    ["backend", { result: "success" }],
+    ["mmx-firewall", { result: "skipped" }],
+  ]);
+  checkTopLevelGate(docsOnly(), { "mmx-firewall": "self_hosted" });
+  for (const job of ["frontend", "backend"]) {
+    for (const result of ["failure", "cancelled", "skipped", undefined]) {
+      const input = docsOnly();
+      input[job].result = result;
+      assert.throws(() => checkTopLevelGate(input, { "mmx-firewall": "self_hosted" }), new RegExp(job));
+    }
+  }
+  const conditional = { "mmx-firewall": "self_hosted" };
+  for (const [selected, result] of [["true", "success"], ["false", "skipped"]]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = selected;
+    input["mmx-firewall"].result = result;
+    checkTopLevelGate(input, conditional);
+  }
+  for (const [selected, result] of [["true", "failure"], ["false", "success"], ["false", "failure"], ["false", "cancelled"]]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = selected;
+    input["mmx-firewall"].result = result;
+    assert.throws(() => checkTopLevelGate(input, conditional), /mmx-firewall/);
+  }
+  for (const value of [undefined, "", "unknown"]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = value;
+    assert.throws(() => checkTopLevelGate(input, conditional), /scope/);
+  }
+  for (const result of ["failure", "cancelled", "skipped", undefined]) {
+    const input = docsOnly();
+    input.changes.result = result;
+    assert.throws(() => checkTopLevelGate(input, conditional), /Path filtering/);
+  }
+});
+
+test("the CLI exits nonzero on a failed top-level gate", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-scope-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
+  const failed = Object.fromEntries([
+    ["changes", { result: "success", outputs: { ...decideScopes("pull_request", filterFiles([])), self_hosted: "false" } }],
+    ["frontend", { result: "cancelled" }],
+    ["backend", { result: "success" }],
+    ["mmx-firewall", { result: "skipped" }],
+  ]);
+  const run = spawnSync(process.execPath, [script, "gate-ci"], {
+    env: { ...process.env, NEEDS_JSON: JSON.stringify(failed), CONDITIONAL_JOBS: '{"mmx-firewall":"self_hosted"}' },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /frontend/);
+});
 
 test("the backend gate owns the three-platform installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");

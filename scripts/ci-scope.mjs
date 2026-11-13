@@ -92,6 +92,33 @@ export function checkGate(needs, jobScopes) {
   }
 }
 
+// Top-level gate for the `ci` check (M-324): it aggregates the product
+// aggregates and the self-hosted firewall. The aggregates always run — their
+// `if: !cancelled()` does not gate on paths — and report `success` even when
+// every sub-job skipped, so they are gated on result alone. Only the jobs in
+// `conditionalJobs` are path-conditional through a `changes` output.
+export function checkTopLevelGate(needs, conditionalJobs) {
+  if (needs.changes?.result !== "success") {
+    throw new Error("Path filtering did not succeed");
+  }
+  for (const [job, scope] of Object.entries(conditionalJobs)) {
+    const selected = needs.changes.outputs?.[scope];
+    if (selected !== "true" && selected !== "false") {
+      throw new Error(`Missing or invalid scope: ${scope}`);
+    }
+    const expected = selected === "true" ? "success" : "skipped";
+    if (needs[job]?.result !== expected) {
+      throw new Error(`${job}: expected ${expected}, got ${needs[job]?.result ?? "missing"}`);
+    }
+  }
+  for (const [job, value] of Object.entries(needs)) {
+    if (job === "changes" || Object.hasOwn(conditionalJobs, job)) continue;
+    if (value?.result !== "success") {
+      throw new Error(`${job}: expected success, got ${value?.result ?? "missing"}`);
+    }
+  }
+}
+
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     switch (process.argv[2]) {
@@ -121,8 +148,12 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
         checkGate(JSON.parse(process.env.NEEDS_JSON), JSON.parse(process.env.JOB_SCOPES));
         console.log("All selected CI jobs succeeded; only unselected jobs were skipped.");
         break;
+      case "gate-ci":
+        checkTopLevelGate(JSON.parse(process.env.NEEDS_JSON), JSON.parse(process.env.CONDITIONAL_JOBS || "{}"));
+        console.log("All aggregate CI jobs succeeded; only path-skipped jobs were skipped.");
+        break;
       default:
-        throw new Error("Usage: node scripts/ci-scope.mjs decide|runner|gate");
+        throw new Error("Usage: node scripts/ci-scope.mjs decide|runner|gate|gate-ci");
     }
   } catch (error) {
     console.error(error.message);
