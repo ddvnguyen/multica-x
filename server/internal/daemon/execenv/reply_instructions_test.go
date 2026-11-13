@@ -217,7 +217,7 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 		"**Every issue turn runs the same workflow.**",
 		"with the `--parent` value it gives you for THIS turn",
 		"never one from an earlier turn",
-		"With no triggering comment, post a new top-level comment",
+		"With no triggering comment and a real update, post a new top-level comment",
 		// The no-write default that makes the un-routed workflow safe: a
 		// turn that moved nothing writes nothing (MUL-6300 → MUL-6417).
 		"questions, discussion, and acknowledgements never touch status",

@@ -595,7 +595,7 @@ func TestProtocolHeadingInInstructionsGetsNoLeaderBrief(t *testing.T) {
 			t.Fatalf("ordinary-agent brief leaked leader-only content %q\n---\n%s", banned, out)
 		}
 	}
-	if !strings.Contains(out, "**Post your final results as a comment — this step is mandatory**") {
+	if !strings.Contains(out, "**Post your final results as a comment** when there is a real update") {
 		t.Fatalf("ordinary-agent brief lost the unconditional reply obligation\n---\n%s", out)
 	}
 }
@@ -675,7 +675,7 @@ func TestChatOutputDoesNotRequireIssueComment(t *testing.T) {
 // this rule. Runs both the legacy and slim paths.
 func TestOutputForbidsMidRunProgressComments(t *testing.T) {
 	wantPhrases := []string{
-		"Post exactly ONE comment per run",
+		"Post at most ONE comment per run",
 		"Do NOT post progress updates",
 	}
 	issueCtxs := map[string]TaskContextForEnv{

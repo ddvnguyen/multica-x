@@ -2305,7 +2305,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 				// MUL-5442 cross-channel dedup: the brief states the loop shape; the
 				// ready-to-run commands with real ids live in the per-turn message.
 				// Pin the command NAME and the flag mnemonics, not full templates.
-				"post it with `multica issue comment add` using",
+				"Post it with `multica issue comment add` using",
 				"mandatory",
 			}
 			for _, want := range mustContain {
@@ -2318,7 +2318,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			// output is not user-visible. This is the second line of defense
 			// in case the agent skips past the workflow steps.
 			for _, want := range []string{
-				"Final results MUST be delivered via `multica issue comment add`",
+				"Final results are delivered via `multica issue comment add`",
 				"does NOT see your terminal output",
 			} {
 				if !strings.Contains(s, want) {
@@ -2587,7 +2587,7 @@ func TestInjectRuntimeConfigAutopilotRunOnlyNoIssueWorkflow(t *testing.T) {
 
 	for _, absent := range []string{
 		"Run `multica issue get",
-		"Final results MUST be delivered via `multica issue comment add`",
+		"Final results are delivered via `multica issue comment add`",
 		// Per-run VALUES belong to the per-turn message, which renders them
 		// once (daemon.buildAutopilotPrompt). This file is the prompt-cache
 		// prefix, and its own contract is that no per-run identifier reaches
@@ -5447,7 +5447,7 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// mention-after-work bullet is gone with the block (the discipline
 		// itself stays in `## Mentions`, pinned by the Mentions subtest).
 		for _, want := range []string{
-			"**Post your final results as a comment — this step is mandatory**",
+			"**Post your final results as a comment** when there is a real update",
 			"whose only possible reply is another courtesy",
 		} {
 			if !strings.Contains(s, want) {
@@ -5517,7 +5517,7 @@ func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 	}
 	// The unconditional ordinary-agent imperative must not coexist with the
 	// carve-out variant.
-	if strings.Contains(s, "**Post your final results as a comment — this step is mandatory**") {
+	if strings.Contains(s, "**Post your final results as a comment** when there is a real update") {
 		t.Errorf("squad leader CLAUDE.md still carries the unconditional delivery step")
 	}
 	// And neither site may restate the rule's mechanics — that is what drifted
