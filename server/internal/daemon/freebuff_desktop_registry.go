@@ -17,6 +17,7 @@ type freebuffRegistryEntry struct {
 	AccountID string `json:"accountId"`
 	RuntimeID string `json:"runtimeId"`
 	Label     string `json:"label"`
+	Version   string `json:"version"`
 	Port      int    `json:"port"`
 	PID       int    `json:"pid"`
 	LaunchID  string `json:"launchId"`
@@ -48,7 +49,7 @@ func (d *Daemon) writeFreebuffDesktopRegistryLocked() error {
 		if err != nil || port < 1 || port > 65535 || inst.client.PID() <= 0 || inst.client.LaunchID() == "" {
 			return true
 		}
-		entries = append(entries, freebuffRegistryEntry{AccountID: parts[1], RuntimeID: parts[0], Label: inst.label, Port: port, PID: inst.client.PID(), LaunchID: inst.client.LaunchID()})
+		entries = append(entries, freebuffRegistryEntry{AccountID: parts[1], RuntimeID: parts[0], Label: inst.label, Version: inst.pin, Port: port, PID: inst.client.PID(), LaunchID: inst.client.LaunchID()})
 		return true
 	})
 	if err := os.MkdirAll(root, 0700); err != nil {

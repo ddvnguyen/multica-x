@@ -16,7 +16,7 @@ func TestFreebuffDesktopRegistryLifecycle(t *testing.T) {
 	d := newFreebuffFixture(t).daemon
 	rt := Runtime{ID: "runtime"}
 	client := &fakeAccount{launchID: "secret"}
-	d.freebuffDesktopInstances.Store(freebuffDesktopLoginKey(rt.ID, "account"), &freebuffDesktopInstance{client: client, stop: func() {}})
+	d.freebuffDesktopInstances.Store(freebuffDesktopLoginKey(rt.ID, "account"), &freebuffDesktopInstance{client: client, stop: func() {}, pin: "0.0.190"})
 	read := func() []freebuffRegistryEntry {
 		t.Helper()
 		path := filepath.Join(root, "registry.json")
@@ -39,7 +39,7 @@ func TestFreebuffDesktopRegistryLifecycle(t *testing.T) {
 	}
 	d.setFreebuffDesktopConnected(rt, "account", client, true, "label")
 	entries := read()
-	if len(entries) != 1 || entries[0].AccountID != "account" || entries[0].PID != 123 || entries[0].LaunchID != "secret" {
+	if len(entries) != 1 || entries[0].AccountID != "account" || entries[0].PID != 123 || entries[0].LaunchID != "secret" || entries[0].Version != "0.0.190" {
 		t.Fatalf("unexpected entry: %+v", entries)
 	}
 	d.setFreebuffDesktopConnected(rt, "account", client, false, "")
