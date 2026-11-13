@@ -15,6 +15,11 @@ const freebuffDesktopConnectPollInterval = 5 * time.Second
 const freebuffDesktopStatusInterval = 5 * time.Minute
 const freebuffDesktopLaunchIDEnv = "FREEBUFF_DESKTOP_LAUNCH_ID"
 
+// freebuffDesktopIdleTimeout is the grace period after the last task release
+// before a managed Desktop orchestrator process is closed to return the
+// Freebuff session slot/credit (M-254). Hardcoded per approved plan v1.
+const freebuffDesktopIdleTimeout = 5 * time.Minute
+
 // Managed credentials must be paired with their local endpoint and account
 // directory, regardless of user-supplied environment overrides.
 func applyManagedFreebuffDesktopEnv(env map[string]string, endpoint, dir, launchID string) {
@@ -24,11 +29,21 @@ func applyManagedFreebuffDesktopEnv(env map[string]string, endpoint, dir, launch
 }
 
 type freebuffDesktopInstance struct {
-	client    freebuffAccount
-	stop      func()
+	client     freebuffAccount
+	stop       func()
+	connected  bool
+	label      string
+	pin        string
+	lastUsedAt time.Time
+}
+
+// freebuffDesktopIdleInfo is the last-known report state kept at idle-close
+// time (M-254) so the 5-min status loop can keep reporting the account as
+// connected/signed_out without restarting its process.
+type freebuffDesktopIdleInfo struct {
 	connected bool
 	label     string
-	pin       string
+	endpoint  string
 }
 
 func freebuffDesktopLoginKey(runtimeID, accountID string) string { return runtimeID + "/" + accountID }
@@ -40,6 +55,10 @@ func (d *Daemon) ensureFreebuffDesktopInstance(ctx context.Context, rt Runtime, 
 	if v, ok := d.freebuffDesktopInstances.Load(key); ok {
 		inst := v.(*freebuffDesktopInstance)
 		if desktopInstanceReady(ctx, inst.client) {
+			// Model discovery and status polls share this path (M-254 Q1):
+			// only the task reservation release refreshes lastUsedAt, so
+			// picker traffic never keeps an idle process alive.
+			delete(d.freebuffDesktopIdleAccounts, key)
 			return inst.client, nil
 		}
 		inst.stop()
@@ -63,7 +82,8 @@ func (d *Daemon) ensureFreebuffDesktopInstance(ctx context.Context, rt Runtime, 
 		return nil, fmt.Errorf("engine %s has no local thread API; pin <=0.0.190", freebuffAccountEngineVersion(rt.ID, accountID))
 	}
 	delete(d.freebuffDesktopFailedPins, key)
-	d.freebuffDesktopInstances.Store(key, &freebuffDesktopInstance{client: client, stop: stop, pin: freebuffAccountEngineVersion(rt.ID, accountID)})
+	d.freebuffDesktopInstances.Store(key, &freebuffDesktopInstance{client: client, stop: stop, pin: freebuffAccountEngineVersion(rt.ID, accountID), lastUsedAt: time.Now()})
+	delete(d.freebuffDesktopIdleAccounts, key)
 	return client, nil
 }
 
@@ -100,6 +120,10 @@ func (d *Daemon) reserveFreebuffDesktopAccount(runtimeID, accountID string) func
 		d.freebuffDesktopReservations[key]--
 		if d.freebuffDesktopReservations[key] == 0 {
 			delete(d.freebuffDesktopReservations, key)
+		}
+		// Only task reservations refresh the idle clock (M-254 Q1).
+		if v, ok := d.freebuffDesktopInstances.Load(key); ok {
+			v.(*freebuffDesktopInstance).lastUsedAt = time.Now()
 		}
 		d.freebuffDesktopInstanceMu.Unlock()
 	}
@@ -191,6 +215,41 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 			busy[acc.ID] = true
 		}
 	}
+	// Idle reaper (M-254): close instances whose last task ended >= 5 min
+	// ago. Guarded by the same mutex as reservations/logins so a close can
+	// never race a task start mid-lookup. Zero lastUsedAt (e.g. fixtures
+	// built before M-254) is treated as just-created, never idle.
+	now := time.Now()
+	prefix := rt.ID + "/"
+	d.freebuffDesktopInstances.Range(func(k, v any) bool {
+		key := k.(string)
+		if !strings.HasPrefix(key, prefix) {
+			return true
+		}
+		id := strings.TrimPrefix(key, prefix)
+		if !agent.ValidFreebuffAccountID(id) || busy[id] || d.freebuffDesktopReservations[key] > 0 {
+			return true
+		}
+		if _, login := d.freebuffDesktopLogins.Load(key); login {
+			return true
+		}
+		inst := v.(*freebuffDesktopInstance)
+		if inst.lastUsedAt.IsZero() || now.Sub(inst.lastUsedAt) < freebuffDesktopIdleTimeout {
+			return true
+		}
+		if d.freebuffDesktopIdleAccounts == nil {
+			d.freebuffDesktopIdleAccounts = make(map[string]freebuffDesktopIdleInfo)
+		}
+		d.freebuffDesktopIdleAccounts[key] = freebuffDesktopIdleInfo{
+			connected: inst.connected,
+			label:     inst.label,
+			endpoint:  inst.client.BaseURL(),
+		}
+		inst.stop()
+		d.freebuffDesktopInstances.Delete(key)
+		d.publishFreebuffDesktopLocked()
+		return true
+	})
 	var reports []map[string]any
 	for id := range pending.Pins {
 		key := freebuffDesktopLoginKey(rt.ID, id)
@@ -198,6 +257,11 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 			continue
 		}
 		if _, login := d.freebuffDesktopLogins.Load(key); login {
+			continue
+		}
+		// Idle-closed accounts stay down until a real task reserves them
+		// (M-254): the 5s sync poll must not eagerly restart them.
+		if _, idled := d.freebuffDesktopIdleAccounts[key]; idled {
 			continue
 		}
 		v, ok := d.freebuffDesktopInstances.Load(key)
@@ -226,7 +290,7 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 		statusCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		st, err := client.AuthStatus(statusCtx)
 		cancel()
-		replacement := &freebuffDesktopInstance{client: client, stop: stop, pin: desired}
+		replacement := &freebuffDesktopInstance{client: client, stop: stop, pin: desired, lastUsedAt: time.Now()}
 		threadless := false
 		if err == nil && st.Authed {
 			if probe, ok := client.(interface {
@@ -255,6 +319,7 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 		}
 		d.freebuffDesktopInstances.Store(key, replacement)
 		delete(d.freebuffDesktopFailedPins, key)
+		delete(d.freebuffDesktopIdleAccounts, key)
 		d.publishFreebuffDesktopLocked()
 		if err == nil {
 			if dir, dirErr := freebuffDesktopAccountDir(rt, id); dirErr == nil {
@@ -315,6 +380,7 @@ func (d *Daemon) syncFreebuffDesktopRuntime(ctx context.Context, rt Runtime) {
 				d.freebuffDesktopInstances.Delete(key)
 				d.publishFreebuffDesktopLocked()
 			}
+			delete(d.freebuffDesktopIdleAccounts, key)
 			d.freebuffDesktopInstanceMu.Unlock()
 			cfg := agent.Config{RuntimeID: rt.ID}
 			if err := agent.RemoveFreebuffAccount(cfg, acc.ID); err != nil {
@@ -498,6 +564,29 @@ func (d *Daemon) reportFreebuffDesktopAccounts(ctx context.Context, rt Runtime) 
 		entries = append(entries, map[string]any{"id": id})
 		key := freebuffDesktopLoginKey(rt.ID, id)
 		if _, loggingIn := d.freebuffDesktopLogins.Load(key); loggingIn {
+			continue
+		}
+		// Idle-closed accounts keep reporting last-known state without
+		// restarting the process (M-254 amendment 3). Bare {"id"} entries
+		// are presence-only server-side and never flip state to signed_out
+		// (workspace_account.go: State == "" -> skip), so a missing cache
+		// entry is also safe — but cached state preserves endpoint/label.
+		d.freebuffDesktopInstanceMu.Lock()
+		idle, idled := d.freebuffDesktopIdleAccounts[key]
+		d.freebuffDesktopInstanceMu.Unlock()
+		if idled {
+			dir, err := freebuffDesktopAccountDir(rt, id)
+			if err != nil {
+				continue
+			}
+			entry := map[string]any{"id": id, "state": "signed_out", "endpoint": idle.endpoint, "credential_ref": dir}
+			if idle.connected {
+				entry["state"] = "connected"
+				if idle.label != "" {
+					entry["label"] = idle.label
+				}
+			}
+			entries[len(entries)-1] = entry
 			continue
 		}
 		client, err := d.ensureFreebuffDesktopInstance(ctx, rt, id)
