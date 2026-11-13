@@ -42,15 +42,36 @@ vi.mock("@multica/core/workspace", () => ({
   }),
 }));
 
-vi.mock("@multica/core/paths", () => ({
-  WorkspaceSlugProvider: ({ children }: { children: ReactNode }) => (
-    <>{children}</>
-  ),
-  paths: {
-    login: () => "/login",
-    onboarding: () => "/onboarding",
-  },
-}));
+vi.mock("@multica/core/paths", async () => {
+  const actual = await vi.importActual<typeof import("@multica/core/paths")>(
+    "@multica/core/paths",
+  );
+  return {
+    ...actual,
+    paths: {
+      login: () => "/login",
+      onboarding: () => "/onboarding",
+    },
+  };
+});
+
+vi.mock("@multica/views/navigation", async () => {
+  const actual = await vi.importActual<
+    typeof import("@multica/views/navigation")
+  >("@multica/views/navigation");
+  return {
+    ...actual,
+    useNavigation: () => ({
+      push: vi.fn(),
+      replace: state.replace,
+      back: vi.fn(),
+      pathname: state.pathname,
+      searchParams: new URLSearchParams(),
+      hash: "",
+      getShareableUrl: (path: string) => path,
+    }),
+  };
+});
 
 vi.mock("@multica/core/platform", () => ({
   setCurrentWorkspace: vi.fn(),

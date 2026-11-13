@@ -28,11 +28,10 @@ vi.mock("@multica/core/platform", () => ({
   setCurrentWorkspace: vi.fn(),
 }));
 
-vi.mock("@multica/core/paths", () => ({
-  WorkspaceSlugProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-}));
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return { ...actual };
+});
 
 vi.mock("@multica/ui/components/common/multica-icon", () => ({
   MulticaIcon: () => <div data-testid="workspace-loading" />,
@@ -79,11 +78,25 @@ vi.mock("../pages/auth-recovery", () => ({
   ),
 }));
 
-vi.mock("../platform/issue-window-navigation", () => ({
-  IssueWindowNavigationProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-}));
+vi.mock("../platform/issue-window-navigation", async () => {
+  const { NavigationProvider } = await import("@multica/views/navigation");
+  const adapter = {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/acme/issues/123",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (path: string) => path,
+  };
+  return {
+    IssueWindowNavigationProvider: ({
+      children,
+    }: {
+      children: React.ReactNode;
+    }) => <NavigationProvider value={adapter}>{children}</NavigationProvider>,
+  };
+});
 
 import { IssueWindow } from "./issue-window";
 

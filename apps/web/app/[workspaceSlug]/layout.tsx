@@ -8,6 +8,7 @@ import { workspaceBySlugOptions } from "@multica/core/workspace";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import { NoAccessPage } from "@multica/views/workspace/no-access-page";
+import { IssueOpeningCapabilityProvider } from "@multica/views/issues/issue-opening-capability";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 import { workspaceSlugFromPathname } from "@/lib/workspace-slug-from-pathname";
@@ -103,7 +104,12 @@ export default function WorkspaceLayout({
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
-      {children}
+      {/* Web and desktop keep the upstream open modes (Full page + Side
+          preview): the provider wires the persisted preference through. The
+          tabbed island (MMX) mounts its own provider with supportsTabs. */}
+      <IssueOpeningCapabilityProvider>
+        {children}
+      </IssueOpeningCapabilityProvider>
     </WorkspaceSlugProvider>
   );
 }

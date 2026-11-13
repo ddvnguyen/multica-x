@@ -18,6 +18,7 @@ import { DragStrip, WindowTitleBarProvider } from "@multica/views/platform";
 import type { IssueWindowContext } from "../../../shared/issue-window";
 import { DesktopAuthRecoveryPage } from "../pages/auth-recovery";
 import { IssueDetailPage } from "../pages/issue-detail-page";
+import { IssueOpeningCapabilityProvider } from "@multica/views/issues/issue-opening-capability";
 import { IssueWindowNavigationProvider } from "../platform/issue-window-navigation";
 import { TRAFFIC_LIGHT_CLEARANCE } from "./window-toolbar";
 
@@ -82,9 +83,12 @@ function IssueWindowRoute() {
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <IssueWindowNavigationProvider>
         <WorkspacePresencePrefetch />
-        <IssueWindowFrame pageOwnsTitleBar>
-          <IssueDetailPage onDelete={() => window.desktopAPI.closeWindow()} />
-        </IssueWindowFrame>
+        {/* Detached issue windows keep the upstream open modes too. */}
+        <IssueOpeningCapabilityProvider>
+          <IssueWindowFrame pageOwnsTitleBar>
+            <IssueDetailPage onDelete={() => window.desktopAPI.closeWindow()} />
+          </IssueWindowFrame>
+        </IssueOpeningCapabilityProvider>
         <ModalRegistry />
       </IssueWindowNavigationProvider>
     </WorkspaceSlugProvider>
