@@ -711,6 +711,83 @@ func TestOutputForbidsMidRunProgressComments(t *testing.T) {
 // `parent_issue_id` of their own — that is where the `todo` vs `backlog`
 // decision matters most. The section must not gate on this issue being
 // a child, and must not even mention `parent_issue_id`.
+func TestAskPlanRuleSectionPresentForIssueRuns(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "assignment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:     "11111111-2222-3333-4444-555555555555",
+				AgentSkills: []SkillContextForEnv{platformSkillFixture()},
+			},
+		},
+		{
+			name: "comment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:          "22222222-3333-4444-5555-666666666666",
+				TriggerCommentID: "33333333-4444-5555-6666-777777777777",
+				AgentSkills:      []SkillContextForEnv{platformSkillFixture()},
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+
+			if !strings.Contains(out, "## Asking a human") {
+				t.Fatalf("expected Asking a human section in %s brief", tc.name)
+			}
+			for _, want := range []string{
+				"call the native `ask` tool (MCP server `multica`)",
+				"Plans go through the native `plan` tool",
+				"Never end a comment with a question to the Owner",
+				"post ONE comment that names the missing tool and states the question",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("[%s] section missing %q", tc.name, want)
+				}
+			}
+			if strings.Contains(out, "new question for a named person") {
+				t.Errorf("[%s] brief still routes human questions through comments", tc.name)
+			}
+		})
+	}
+}
+
+func TestAskPlanRuleSectionChatVariant(t *testing.T) {
+	t.Parallel()
+	out := buildMetaSkillContent("claude", TaskContextForEnv{
+		ChatSessionID: "session-1",
+	})
+	if !strings.Contains(out, "## Asking a human") {
+		t.Fatalf("expected Asking a human section in chat brief")
+	}
+	if !strings.Contains(out, "Ask in your chat reply when you need a human decision") {
+		t.Errorf("chat brief must allow asking in the chat reply")
+	}
+	if strings.Contains(out, "call the native `ask` tool (MCP server `multica`)") {
+		t.Errorf("chat brief must not route questions through the issue ask tool")
+	}
+}
+
+func TestAskPlanRuleSectionSkippedForIssueLessKinds(t *testing.T) {
+	t.Parallel()
+	for _, ctx := range []TaskContextForEnv{
+		{AutopilotRunID: "run-1"},
+		{QuickCreatePrompt: "make an issue"},
+	} {
+		out := buildMetaSkillContent("claude", ctx)
+		if strings.Contains(out, "## Asking a human") {
+			t.Errorf("issue-less brief must not carry the Asking a human section (ctx %+v)", ctx)
+		}
+	}
+}
+
 func TestSubIssueCreationSectionIsUnconditional(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{
