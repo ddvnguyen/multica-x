@@ -1550,9 +1550,11 @@ jobs:
 
   # Top-level aggregate gate for the auto-merge setup (M-324): the one check
   # branch protection on multica-moct requires, whatever a change touched.
-  # Path-scoped jobs and the frontend/backend aggregates skip by design, so
-  # only a failure or a cancellation fails this check. Docs-only changes still
-  # report here because `changes` always runs and this job needs it.
+  # The frontend/backend aggregates always run (their `if: !cancelled()` does
+  # not gate on paths) and report success even when every sub-job skipped, so
+  # they are gated on result alone; only mmx-firewall is path-conditional
+  # through `self_hosted`. Docs-only changes still report `ci` because
+  # `changes` always runs and this job needs it.
   ci:
     needs: [changes, frontend, backend, mmx-firewall]
     if: ${{ !cancelled() }}
@@ -1565,6 +1567,6 @@ jobs:
       - name: Check aggregate job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend":"frontend","backend":"backend","mmx-firewall":"self_hosted"}'
-        run: node scripts/ci-scope.mjs gate
+          CONDITIONAL_JOBS: '{"mmx-firewall":"self_hosted"}'
+        run: node scripts/ci-scope.mjs gate-ci
 
