@@ -2274,6 +2274,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/answer", h.AnswerQuestion)
 			})
 
+			// S1-A1 (M-332) ask/plan escalation: the project lead answering an
+			// ESCALATED card on the Owner's behalf. Not human-gated like the
+			// workspace route — the caller is an agent — so the handler itself
+			// requires a task token whose agent is the issue's project lead, and
+			// the card must carry escalated_at. Not workspace-scoped for the same
+			// reason as the questions route: the lead's run is handed the card id
+			// by the escalation comment.
+			r.Route("/api/question-cards/{cardId}", func(r chi.Router) {
+				r.Get("/", h.GetQuestionCardForLead)
+				r.Post("/lead-answer", h.LeadAnswerQuestionCard)
+			})
+
 			// Custom issue properties (definitions; values live under /api/issues/{id}/properties)
 			r.Route("/api/properties", func(r chi.Router) {
 				r.Get("/", h.ListProperties)

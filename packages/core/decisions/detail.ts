@@ -139,6 +139,13 @@ export interface DecisionQuestionDetail {
   /** Present once answered; the queue's answered state reads them. */
   answers: AgentAnswerDraft[];
   answeredBy: string | null;
+  /**
+   * Who answered: "member" for the Owner (or any workspace member), "agent"
+   * for the project lead answering on the Owner's behalf after the timeout
+   * escalation (M-332). Unknown/absent reads as a member, which is what every
+   * row written before the column existed was.
+   */
+  answeredByType: "member" | "agent";
   answeredAt: string | null;
 }
 
@@ -163,6 +170,7 @@ export function parseDecisionQuestion(
     questions: cardQuestionsToAgentQuestions(card),
     answers: readCardAnswers(detail.answers),
     answeredBy: asNullableText(detail.answered_by),
+    answeredByType: asNullableText(detail.answered_by_type) === "agent" ? "agent" : "member",
     answeredAt: asNullableText(detail.answered_at),
   };
 }

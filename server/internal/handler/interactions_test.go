@@ -426,11 +426,11 @@ func TestEffectiveAskPlanTimeoutSeconds(t *testing.T) {
 		{"project override beats default", `{"ask_plan_timeout_seconds":60}`, `{}`, 60, TimeoutSourceProject},
 		{"workspace value when no project key", `{}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
 		{"out-of-bounds project falls through to workspace", `{"ask_plan_timeout_seconds":59}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
-		{"above-bounds workspace falls through to default", `{}`, `{"ask_plan_timeout_seconds":86401}`, 600, TimeoutSourceDefault},
-		{"JSON string is not a number", `{"ask_plan_timeout_seconds":"600"}`, `{}`, 600, TimeoutSourceDefault},
-		{"malformed workspace object reads as absent", `{}`, `not-json`, 600, TimeoutSourceDefault},
-		{"both empty -> built-in default", `{}`, `{}`, 600, TimeoutSourceDefault},
-		{"nil settings -> built-in default", ``, ``, 600, TimeoutSourceDefault},
+		{"above-bounds workspace falls through to default", `{}`, `{"ask_plan_timeout_seconds":86401}`, 300, TimeoutSourceDefault},
+		{"JSON string is not a number", `{"ask_plan_timeout_seconds":"600"}`, `{}`, 300, TimeoutSourceDefault},
+		{"malformed workspace object reads as absent", `{}`, `not-json`, 300, TimeoutSourceDefault},
+		{"both empty -> built-in default", `{}`, `{}`, 300, TimeoutSourceDefault},
+		{"nil settings -> built-in default", ``, ``, 300, TimeoutSourceDefault},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

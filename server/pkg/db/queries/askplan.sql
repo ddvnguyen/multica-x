@@ -27,13 +27,37 @@ ORDER BY created_at DESC;
 -- Single-answer enforcement (team-room assertDecisionOpen): the CAS on
 -- status='open' means a second answer matches no row → pgx.ErrNoRows → the
 -- handler maps it to 409. answers is stored verbatim in question order.
+-- answered_by_type says WHO decided: 'member' for the Owner (or any workspace
+-- member), 'agent' for the project lead answering on the Owner's behalf after
+-- the M-332 escalation (answered_by is that agent's id).
 UPDATE agent_question_card
 SET status = 'answered',
     answers = @answers,
     answered_by = @answered_by,
+    answered_by_type = @answered_by_type,
     answered_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open'
+RETURNING *;
+
+-- name: EscalateAgentQuestionCard :one
+-- M-332 escalation, once per card. The CAS on 'escalated_at IS NULL' is the
+-- idempotency gate: a second sweep round (or a racing first one) matches no
+-- row, so the lead is triggered exactly once and the comment is posted once.
+-- The status is NOT touched: the card stays open for the Owner.
+UPDATE agent_question_card
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND escalated_at IS NULL
+RETURNING *;
+
+-- name: EscalateAgentPlan :one
+-- The plan half of the M-332 escalation: same once-only CAS, status untouched
+-- (in_review stays in_review until a human verdict).
+UPDATE agent_plan
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND escalated_at IS NULL
 RETURNING *;
 
 -- name: WithdrawQuestionCardsByTask :exec
@@ -165,8 +189,10 @@ WHERE issue_id = $1
 -- updated_at as its last write before the block. Both joins ride their partial
 -- indexes (idx_aqc_task WHERE status='open', idx_ap_task WHERE status IN
 -- ('draft','in_review','changes_requested')), so the scan touches live evidence
--- only. Settings come along because the effective timeout is per project; the
--- expiry judgment itself happens in Go, one row at a time.
+-- only. M-332: a live row that was already escalated is not a candidate — the
+-- ladder escalates once and then waits for the Owner.
+-- Settings come along because the effective timeout is per project; the
+-- escalation judgment itself happens in Go, one row at a time.
 SELECT
     t.id AS task_id,
     t.issue_id,
@@ -183,7 +209,8 @@ LEFT JOIN agent_question_card c ON c.task_id = t.id AND c.status = 'open'
 LEFT JOIN agent_plan pl ON pl.task_id = t.id AND pl.status = 'in_review'
 WHERE t.status = 'blocked'
   AND t.wait_reason = 'awaiting human answer'
-  AND (c.id IS NOT NULL OR pl.id IS NOT NULL)
+  AND ((c.id IS NOT NULL AND c.escalated_at IS NULL)
+       OR (pl.id IS NOT NULL AND pl.escalated_at IS NULL))
 ORDER BY COALESCE(c.created_at, pl.updated_at) ASC
 LIMIT $1;
 

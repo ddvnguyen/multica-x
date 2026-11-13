@@ -35,6 +35,7 @@
     "requested": "提问于 {{age}}",
     "answered": "答复于 {{age}}",
     "by": "{{actor}}",
+    "by_lead": "{{actor}}（代表 Owner）",
     "unknown_actor": "某位成员",
     "loading": "正在加载请求…",
     "error_title": "无法加载该请求",
