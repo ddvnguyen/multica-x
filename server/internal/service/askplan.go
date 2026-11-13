@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -175,14 +176,14 @@ func SettleParkedAskPlanForTasks(ctx context.Context, q *db.Queries, tasks []db.
 // answering it then fails the CAS, which is honest).
 func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQueue, workspaceID pgtype.UUID, contextText string, questions json.RawMessage) (db.AgentQuestionCard, error) {
 	card, err := s.Queries.CreateAgentQuestionCard(ctx, db.CreateAgentQuestionCardParams{
-		ID:                dbid.NewV7(),
-		WorkspaceID:       workspaceID,
-		IssueID:           task.IssueID,
-		TaskID:            task.ID,
-		AgentID:           task.AgentID,
-		Context:           pgtype.Text{String: contextText, Valid: contextText != ""},
-		Questions:         questions,
-		TriggerCommentID:  task.TriggerCommentID,
+		ID:               dbid.NewV7(),
+		WorkspaceID:      workspaceID,
+		IssueID:          task.IssueID,
+		TaskID:           task.ID,
+		AgentID:          task.AgentID,
+		Context:          pgtype.Text{String: contextText, Valid: contextText != ""},
+		Questions:        questions,
+		TriggerCommentID: task.TriggerCommentID,
 	})
 	if err != nil {
 		return db.AgentQuestionCard{}, fmt.Errorf("create question card: %w", err)
@@ -240,6 +241,17 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 	// Post-commit side effects mirror every other enqueue path.
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *resumeTask)
 	s.NotifyTaskEnqueued(ctx, *resumeTask)
+	// M-333: the answer closed the card, so its ask inbox rows are stale for
+	// every member. Archive them now (post-commit — a failure leaves them for
+	// the lazy sweep on list) with the parked task id, which also resolves the
+	// timeout-escalation row once M-332 lets the lead answer an escalated card.
+	if err := inbox.ArchiveResolvedAskPlan(ctx, s.Queries, s.Bus,
+		util.UUIDToString(card.WorkspaceID), util.UUIDToString(card.IssueID),
+		[]string{util.UUIDToString(card.TaskID)}); err != nil {
+		slog.Warn("ask answer: archive question inbox rows failed",
+			"card_id", util.UUIDToString(card.ID),
+			"issue_id", util.UUIDToString(card.IssueID), "error", err)
+	}
 	return card, resumeTask, nil
 }
 
@@ -397,6 +409,17 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 	}
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *resumeTask)
 	s.NotifyTaskEnqueued(ctx, *resumeTask)
+	// M-333: the verdict moved the plan out of in_review, so its plan_review
+	// inbox rows are stale for every member. Archive them post-commit with the
+	// parked task id, which also resolves the plan's timeout-escalation row.
+	// A failure leaves the rows for the lazy sweep on list.
+	if err := inbox.ArchiveResolvedAskPlan(ctx, s.Queries, s.Bus,
+		util.UUIDToString(plan.WorkspaceID), util.UUIDToString(plan.IssueID),
+		[]string{util.UUIDToString(plan.TaskID)}); err != nil {
+		slog.Warn("plan verdict: archive plan inbox rows failed",
+			"plan_id", util.UUIDToString(plan.ID),
+			"issue_id", util.UUIDToString(plan.IssueID), "error", err)
+	}
 	return plan, resumeTask, promoted, nil
 }
 

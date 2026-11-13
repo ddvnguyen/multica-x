@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -202,6 +203,18 @@ func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// M-333: archive the reader's ask/plan inbox rows whose card/plan already
+	// resolved without its archive event (older deploys, missed events) before
+	// listing, so a resolved ask never renders. Best-effort: a failure logs
+	// and lists anyway. The helper publishes inbox:batch-archived for this
+	// recipient so the reader's other clients drop the rows too.
+	if err := inbox.ArchiveStaleAskPlanForMember(r.Context(), h.Queries, h.Bus,
+		workspaceID, userID); err != nil {
+		slog.Warn("lazy archive of resolved ask/plan inbox rows failed",
+			"workspace_id", workspaceID, "recipient_id", userID, "error", err)
+	}
+
 	items, err := h.Queries.ListInboxItems(r.Context(), db.ListInboxItemsParams{
 		WorkspaceID:      wsUUID,
 		RecipientType:    "member",

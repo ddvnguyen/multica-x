@@ -214,6 +214,78 @@ UPDATE inbox_item SET archived = true
 WHERE workspace_id = $1 AND issue_id = $2 AND type = $3 AND archived = false
 RETURNING recipient_type, recipient_id;
 
+-- name: ArchiveResolvedAskPlanInbox :many
+-- M-333: an ask/plan card that resolves — answered, withdrawn, cancelled,
+-- verdicted — must take its inbox rows with it. The rows to archive are
+-- identified by the evidence id each carries in details ('agent_question'
+-- rows carry card_id, 'plan_review' rows carry plan_id), so a second open
+-- card or plan on the same issue is never archived by this query: only rows
+-- whose OWN evidence left 'open' / 'in_review' match.
+--
+-- The expiry-escalation rows carry only the parked task id (no card/plan id),
+-- so they never match here; ArchiveResolvedAskPlanEscalationInbox owns them,
+-- and only the answer/verdict path may call it.
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = @workspace_id AND i.issue_id = @issue_id AND i.archived = false
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status <> 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status <> 'in_review'))
+  )
+RETURNING i.recipient_type, i.recipient_id;
+
+-- name: ArchiveResolvedAskPlanEscalationInbox :many
+-- M-333: the ask/plan timeout escalation (askplan_expiry) delivers an
+-- 'agent_question' row whose details carry only the parked task id. That row
+-- resolves when the underlying ask/plan itself is answered or verdicted — the
+-- answer/verdict path calls this post-commit with that task id. The cancel
+-- paths must NOT: the expiry escalation creates its row AFTER the settle that
+-- withdraws the card, so at cancel time there is nothing to archive, and the
+-- row stays as the lead's pointer to the expired ask until someone answers it.
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = @workspace_id AND i.issue_id = @issue_id AND i.archived = false
+  AND i.details->>'task_id' = ANY(@task_ids::text[])
+  AND (
+       (i.type = 'agent_question' AND NOT EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.task_id::text = i.details->>'task_id'
+              AND c.status = 'open'))
+    OR (i.type = 'plan_review' AND NOT EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.task_id::text = i.details->>'task_id'
+              AND p.status IN ('draft', 'in_review', 'changes_requested')))
+  )
+RETURNING i.recipient_type, i.recipient_id;
+
+-- name: ArchiveStaleAskPlanInboxForMember :many
+-- M-333: rows created before their resolution was archived — a missed event,
+-- an older deploy, a crash between commit and archive — resolve lazily on
+-- list: when the member reads the inbox, rows whose evidence is no longer
+-- open are archived first, so the list never shows a resolved ask. Same
+-- evidence predicate as ArchiveResolvedAskPlanInbox. Rows without evidence
+-- details (the pre-ask task:message questions) match nothing by construction.
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = @workspace_id
+  AND i.recipient_type = 'member'
+  AND i.recipient_id = @recipient_id
+  AND i.archived = false
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status <> 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status <> 'in_review'))
+  )
+RETURNING i.recipient_id;
+
 -- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item i
 WHERE i.workspace_id = sqlc.arg('workspace_id')
