@@ -441,6 +441,23 @@ describe("mountIsland", () => {
     });
   });
 
+  // M-330: a list-and-detail page renders its resize edge only inside a
+  // `SidebarProvider`, and the island renders pages without the dashboard
+  // shell — so Inbox in MMX had no working handle while the web had one. The
+  // edge must be there, and the widths must stay in the island's own store.
+  it("gives the inbox list column its resize edge inside the panel", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "inbox" } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Inbox");
+    });
+    expect(host.shadowRoot?.querySelector("[data-slot='space-panel-resize']")).not.toBeNull();
+    // The shell shares this origin, so the island must not write the bare key.
+    expect(localStorage.getItem("list_column_width")).toBeNull();
+  });
+
   // One row per rail entry: the island has to render each of the five views on
   // its own, inside the same shadow root, with nothing page-level in the shell.
   const entries: Array<{ entry: string; route: IslandRoute; text: string }> = [
