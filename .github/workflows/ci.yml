@@ -1547,3 +1547,24 @@ jobs:
 
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
+
+  # Top-level aggregate gate for the auto-merge setup (M-324): the one check
+  # branch protection on multica-moct requires, whatever a change touched.
+  # Path-scoped jobs and the frontend/backend aggregates skip by design, so
+  # only a failure or a cancellation fails this check. Docs-only changes still
+  # report here because `changes` always runs and this job needs it.
+  ci:
+    needs: [changes, frontend, backend, mmx-firewall]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check aggregate job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          JOB_SCOPES: '{"frontend":"frontend","backend":"backend","mmx-firewall":"self_hosted"}'
+        run: node scripts/ci-scope.mjs gate
+
