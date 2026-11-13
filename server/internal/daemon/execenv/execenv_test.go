@@ -2320,6 +2320,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			for _, want := range []string{
 				"Final results are delivered via `multica issue comment add` when there is a real update",
 				"does NOT see your terminal output",
+				"multica issue checkin",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s: Output warning missing %q", tc.name, want)

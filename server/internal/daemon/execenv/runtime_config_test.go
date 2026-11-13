@@ -679,6 +679,7 @@ func TestOutputForbidsMidRunProgressComments(t *testing.T) {
 		"Post at most ONE comment per run",
 		"only when there is a real update",
 		"Do NOT post progress updates",
+		"A run with no real update checks in",
 	}
 	issueCtxs := map[string]TaskContextForEnv{
 		"assignment": {IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},

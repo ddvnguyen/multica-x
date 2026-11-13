@@ -218,8 +218,10 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 		"with the `--parent` value it gives you for THIS turn",
 		"never one from an earlier turn",
 		// M-304 silence-by-default: the brief only promises a new top-level
-		// comment when there IS a real update.
+		// comment when there IS a real update; the no-update path names the
+		// task-level check-in that skips the fallback comment.
 		"With no triggering comment and a real update, post a new top-level comment",
+		"multica issue checkin",
 		// The no-write default that makes the un-routed workflow safe: a
 		// turn that moved nothing writes nothing (MUL-6300 → MUL-6417).
 		"questions, discussion, and acknowledgements never touch status",
