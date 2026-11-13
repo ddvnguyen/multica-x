@@ -753,7 +753,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	if ctx.IsSquadLeader {
 		b.WriteString("4. **Post your final results as a comment** (unless your outcome is `no_action` — see the no_action rule in your Squad Operating Protocol): post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). When the per-turn user message carries a triggering comment, reply in its thread with the `--parent` value it gives you for THIS turn (never one from an earlier turn); when it lists several threads, post one reply per thread. With no triggering comment, post a new top-level comment. Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n")
 	} else {
-		b.WriteString("4. **Post your final results as a comment** when there is a real update — a decision/verdict, a plan, an evidence block, a blocker, a PR or deploy state change, or a new question for a named person. Post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). When the per-turn user message carries a triggering comment, reply in its thread with the `--parent` value it gives you for THIS turn (never one from an earlier turn); when it lists several threads, post one reply per thread. With no triggering comment and a real update, post a new top-level comment. No trigger comment and no update = no comment: end the run with `multica issue checkin <issue-id> --note \"<what you checked>\"`, which skips the fallback comment. `## Output` states why this call is the only delivery channel.\n")
+		b.WriteString("4. **Post your final results as a comment** when there is a real update — a decision/verdict, a plan, an evidence block, a blocker, or a PR or deploy state change. Human questions go through the native `ask` tool (see `## Asking a human`), never as a comment. Post it with `multica issue comment add` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). When the per-turn user message carries a triggering comment, reply in its thread with the `--parent` value it gives you for THIS turn (never one from an earlier turn); when it lists several threads, post one reply per thread. With no triggering comment and a real update, post a new top-level comment. No trigger comment and no update = no comment: end the run with `multica issue checkin <issue-id> --note \"<what you checked>\"`, which skips the fallback comment. `## Output` states why this call is the only delivery channel.\n")
 	}
 	if ctx.HasProjectWorkflow {
 		b.WriteString("5. Before exiting, confirm the issue sits where things actually stand: you ran the matching command from `[Project workflow]`, or you left it at its current step on purpose because its work continues.\n\n")
@@ -808,6 +808,28 @@ func writeIssueStatusRulesForWorkflow(b *strings.Builder, ctx TaskContextForEnv)
 // The when-to-split rule stays in the brief rather than the skill: agents split
 // work without ever reaching for the skill, so a rule that only lives there is
 // read too late (MUL-8441).
+// writeAskPlanRule emits the native ask/plan rule (M-325/M-326): on an issue
+// task, human decisions and plans go through the native `ask` / `plan` tools
+// (MCP server `multica`) — never in a comment, chat text, or final output.
+// The fallback is capability-based: when the tools are not in the run's tool
+// list (runtime cannot carry MCP servers, or the task has no issue), the agent
+// sets the issue to `blocked` (or `wait_for_decision` where the workflow has
+// it) with ONE comment naming the missing tool and stating the question, then
+// stops. Chat sessions are live conversations: asking in the chat reply is
+// allowed there; the ban covers issue tasks only.
+func writeAskPlanRule(b *strings.Builder, kind taskKind) {
+	b.WriteString("## Asking a human\n\n")
+	if kind == kindChat {
+		b.WriteString("This is a chat session: a live conversation with the user. Ask in your chat reply when you need a human decision; there is no issue task to park and no `ask` card to file here.\n\n")
+		return
+	}
+	if !kind.hasIssueContext() {
+		return
+	}
+	b.WriteString("On an issue task, if you need a human decision, call the native `ask` tool (MCP server `multica`). Plans go through the native `plan` tool. Never ask a human in a comment, in chat text or in your final output. Never end a comment with a question to the Owner. A decision already covered by the approved plan or the Owner's recorded decisions is taken, not asked.\n\n")
+	b.WriteString("If `ask` / `plan` is not in your tool list (runtime cannot call it, task has no issue), do not ask in free text. Set the issue to `blocked` (or `wait_for_decision` where your workflow has it) and post ONE comment that names the missing tool and states the question. Stop.\n\n")
+}
+
 func writeSubIssueCreation(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Sub-issue Creation\n\n")
 	b.WriteString(desktopWorkflowCopy("Default to one issue, one PR. Split only when each piece can be merged and verified on its own — another repository, separate code, or a different owner such as a human step or another agent — and slice by user-visible behavior, never by layer: a backend / frontend split of one feature loses the discussion behind it and cannot be verified end to end until every piece lands. A PR that is large to review is not a reason to split; organize it into commits and give reviewers a guide in its description.\n\n", ctx.IsFreebuffDesktop))
@@ -1183,7 +1205,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		if ctx.IsSquadLeader {
 			b.WriteString("⚠️ **Final results MUST be delivered via `multica issue comment add`** — unless your outcome is `no_action`, which your Squad Operating Protocol states in full. For every other outcome (`action`, `failed`) a comment is mandatory. The user does NOT see your terminal output or run logs — only comments on the issue.\n\n")
 		} else {
-			b.WriteString("⚠️ **Final results are delivered via `multica issue comment add` when there is a real update** (decision/verdict, plan, evidence block, blocker, PR or deploy state change, new question for a named person). The user does NOT see your terminal output or run logs — only comments on the issue. No trigger comment and no update = no comment; end the run with `multica issue checkin <issue-id> --note \"<what you checked>\"`, which skips the fallback comment.\n\n")
+			b.WriteString("⚠️ **Final results are delivered via `multica issue comment add` when there is a real update** (decision/verdict, plan, evidence block, blocker, PR or deploy state change). Human questions go through the native `ask` tool (see `## Asking a human`), never as a comment. The user does NOT see your terminal output or run logs — only comments on the issue. No trigger comment and no update = no comment; end the run with `multica issue checkin <issue-id> --note \"<what you checked>\"`, which skips the fallback comment.\n\n")
 		}
 		b.WriteString("**Post at most ONE comment per run — your final result, only when there is a real update, before this turn exits.** Do NOT post progress updates or plans along the way. With a trigger comment, reply with that turn's `--parent`. A run with no real update checks in: `multica issue wakeup checkin` inside a `[WAKEUP]` block, `multica issue checkin` otherwise.\n\n")
 		b.WriteString("Keep comments concise and natural — state the outcome, not the process.\n\n")
@@ -1267,6 +1289,10 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) (string, 
 		writeWorkflowAutopilot(&b)
 	case kindIssue:
 		writeWorkflowIssue(&b, ctx)
+	}
+
+	if kind == kindIssue || kind == kindChat {
+		writeAskPlanRule(&b, kind)
 	}
 
 	if kind.hasIssueContext() && ctx.IssueID != "" {
