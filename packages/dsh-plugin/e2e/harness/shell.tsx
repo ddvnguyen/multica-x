@@ -9,7 +9,7 @@ import type {
   SidebarRightLike,
   WorkspacesLike,
 } from "../../src/client/shell-link";
-import { installBackend } from "./backend";
+import { ISSUE_PROJECT_ID, installBackend } from "./backend";
 
 /**
  * M-159 harness: the board island against a stub shell bridge.
@@ -29,18 +29,19 @@ import { installBackend } from "./backend";
  *   renders as real DOM (`[data-sidebar-expanded]`), so a spec asserts the
  *   chosen path (`toggle` in place vs `reveal` the folder's Session first)
  *   against the record, not against internals.
- * - `selectSession` mirrors the shell's navigation: it names that Session the
- *   on-screen one and notifies the `mounted` subscribers, which is what a
- *   reveal waits on before it opens the column.
- *
  * `?hostPanel` puts card C on the face — the `hostPanel` opt-in and
  * `selectHostedSession` — which is what lets a press name the project's Session
- * and flip the column in place instead of revealing a Session. `?noName` leaves
- * only `hostPanel` on the face, the card C build before naming shipped;
- * `?otherSession` starts on a Session from another Workspace, so a press has to
- * retarget before it opens. `?noSurface` starts with no Session on screen, so a
- * press has to bring the bound one up first; `?noReveal` adds a shell whose
- * navigation never draws it, which is the timeout the press reports.
+ * and flip the column in place. Without it the toggle is disabled with the
+ * host's copy: nothing here navigates (M-316), so there is no face to press.
+ * `?noName` leaves only `hostPanel` on the face, the card C build before naming
+ * shipped; `?otherSession` starts on a Session from another Workspace, so a
+ * press has to retarget before it opens; `?noSurface` starts with no Session on
+ * screen, the state the hosted column's own writes reject.
+ *
+ * `?issue` opens the island on one issue instead of the board, and gives that
+ * issue a project (`ISSUE_PROJECT_ID`) whose `local_directory` resource names
+ * `/srv/issue-demo` — the Owner's M-316 case: the picker still says "All
+ * projects", the issue names the folder, and the toggle must work on it.
  */
 
 declare global {
@@ -60,13 +61,16 @@ const withoutName = params.has("noName");
 const onAnotherWorkspace = params.has("otherSession");
 const withoutSurface = params.has("noSurface");
 const withoutFolder = params.has("noFolder");
-// A shell that records the navigation but never draws the Session it was asked
-// for: the reveal's timeout, and the copy a press reports when it gives up.
-const withoutReveal = params.has("noReveal");
+const onIssue = params.has("issue");
 
 // The folder the "All projects" default addresses: the toggle reads it from
 // `/multica/config`, which this stub answers.
-installBackend({ workspaceFolder: withoutFolder ? "" : "/srv/demo" });
+installBackend({
+  workspaceFolder: withoutFolder ? "" : "/srv/demo",
+  ...(onIssue
+    ? { issueProject: { id: ISSUE_PROJECT_ID, folder: "/srv/issue-demo" } }
+    : {}),
+});
 
 window.__stubCalls = [];
 const calls = window.__stubCalls;
@@ -117,7 +121,7 @@ if (withHostPanel) {
     // controller names it: the stub moves its on-screen Session with the name.
     sidebarRight.selectHostedSession = (sessionId: string): (() => void) => {
       calls.push(`selectHostedSession ${sessionId}`);
-      if (!withoutReveal) window.__sessionSurfaceMounted = sessionId;
+      window.__sessionSurfaceMounted = sessionId;
       trigger();
       return () => { calls.push(`selectHostedSession-release ${sessionId}`); };
     };
@@ -148,17 +152,7 @@ const sessions: SessionsLike = {
   },
 };
 
-configureHostShell({
-  sidebarRight,
-  workspaces,
-  sessions,
-  daemonId: "",
-  selectSession: (sessionId: string): void => {
-    calls.push(`selectSession ${sessionId}`);
-    if (!withoutReveal) window.__sessionSurfaceMounted = sessionId;
-    trigger();
-  },
-});
+configureHostShell({ sidebarRight, workspaces, sessions, daemonId: "" });
 
 // The session the sidebar's writes act on; a spec clears this to reproduce
 // the no-session state a host without `hostPanel` reaches.
@@ -182,10 +176,10 @@ document.body.append(main);
 
 window.__islandHost = islandHost;
 
-// The board: the page whose header slot carries the toggle.
+// The board (or one issue): the page whose header slot carries the toggle.
 const Seat = createSeatComponent(createElement as never, {
   panelId: "multica",
-  route: BOARD_ROUTE,
+  route: onIssue ? { view: "issue", issueId: "MUL-1" } : BOARD_ROUTE,
 });
 createRoot(main).render(createElement(Seat as never));
 

@@ -6,7 +6,6 @@ import { FAMILY_ROOTS } from "./navigation";
 import { bindShell, startBoundSidebarAutoCollapse } from "./shell";
 import { configureHostShell } from "./shell-runtime";
 import type {
-  SessionNavigationLike,
   SessionsLike,
   SidebarRightLike,
   WorkspacesLike,
@@ -123,12 +122,9 @@ const FIRST_ORDER = 30;
  * ordering; the apply body still reads each one tolerantly, so a host built
  * without the right sidebar keeps the rail rows anyway.
  *
- * `uiWorkspace` is the same kind of edge one step further out: the service the
- * shell's own session lists call to put a Session on screen. It has to be
- * declared here because `ctx.get()` only answers for injected services — an
- * undeclared read is `undefined` even on a host that provides it, which turned
- * the toggle's "no Session on screen" fallback into "this dsh build cannot
- * select a session" on lane z (M-159).
+ * No session-navigation service is injected (M-316): the toggle opens the panel
+ * beside MMX or not at all, and selecting a Session is the shell's navigation —
+ * the one thing that would replace MMX with the dsh page.
  */
 export const inject = [
   "slots",
@@ -136,7 +132,6 @@ export const inject = [
   "sidebarRight",
   "workspaces",
   "sessions",
-  "uiWorkspace",
 ];
 
 let hostCreateElement: HostCreateElement | null = null;
@@ -170,22 +165,12 @@ export function apply(ctx: DshClientContext): void {
   const sidebarRight = (face(ctx, "sidebarRight") ?? null) as SidebarRightLike | null;
   const workspaces = (face(ctx, "workspaces") ?? null) as WorkspacesLike | null;
   const sessions = (face(ctx, "sessions") ?? null) as SessionsLike | null;
-  // Session selection is the shell's navigation (`uiWorkspace`), not a
-  // controller method. It is injected like the shell's own sidebar plugin
-  // injects it; the read stays tolerant so a host whose face lacks
-  // `openSession` still keeps the rail rows and only the reveal fallback
-  // reports the missing navigation.
-  const sessionNavigation = (face(ctx, "uiWorkspace") ?? null) as SessionNavigationLike | null;
   const layoutFace = ctx.layout ?? null;
   configureHostShell({
     sidebarRight,
     workspaces,
     sessions,
     daemonId: "",
-    selectSession:
-      typeof sessionNavigation?.openSession === "function"
-        ? (sessionId) => sessionNavigation.openSession(sessionId)
-        : null,
   });
 
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
@@ -194,8 +179,9 @@ export function apply(ctx: DshClientContext): void {
   // Hosting only keeps the column drawn: which Session's folder it edits is
   // named per press by the toggle's `retarget` plan, because the project (and
   // so the folder) changes while MMX stays in the main column. A face without
-  // `hostPanel` has to put a Session on screen instead — `reveal` — and the
-  // island's tabs survive leaving MMX through keep-alive.
+  // `hostPanel` has nowhere to draw the column without leaving MMX, so the
+  // toggle disables itself there (M-316) instead of putting a Session on
+  // screen.
   if (sidebarRight !== null && typeof sidebarRight.hostPanel === "function") {
     ctx.effect?.(() => {
       const disposers = MULTICA_ENTRIES.map((entry) =>

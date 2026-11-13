@@ -25,14 +25,6 @@ export interface ShellBridge {
   sessions: SessionsLike | null;
   /** The host's daemon id, used to filter `local_directory` refs; may be empty. */
   daemonId: string;
-  /**
-   * Session navigation, for the no-`hostPanel` case: the bound Session has to
-   * be the on-screen one before the Sidebar has anything to draw, and selecting
-   * a Session is the shell's navigation, not the controllers' (their selection
-   * lives outside them). Absent when the host has no workspace UI to navigate
-   * with.
-   */
-  selectSession: ((sessionId: string) => void) | null;
 }
 
 let bridge: ShellBridge | null = null;

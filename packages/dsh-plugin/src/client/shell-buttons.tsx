@@ -1,41 +1,47 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { PanelRight, PanelRightClose, projectResourcesOptions } from "../fork";
+import {
+  PanelRight,
+  PanelRightClose,
+  projectResourcesOptions,
+  useCanonicalIssue,
+  useViewStore,
+} from "../fork";
+import type { IslandRoute } from "./navigation";
 import { hostShell, type ShellBridge } from "./shell-runtime";
 import {
   boundSessionId,
   describe,
-  disabledTooltip,
   folderForSelection,
   folderOfProjectResources,
   isNoSessionSurfaceError,
   noSessionSurfaceError,
-  panelToggleTitle,
   planSidebarToggle,
   sessionSurfaceMounted,
-  waitForMountedSession,
+  toggleState,
   workspaceForFolder,
   type SidebarRightLike,
 } from "./shell-link";
 
 /**
- * The header's side-panel toggle (M-159): the dsh right Sidebar, opened from
- * MMX the way dsh's own session header opens it.
+ * The header's side-panel toggle (M-159, M-316): the dsh right Sidebar, opened
+ * from MMX the way dsh's own session header opens it.
  *
  * It is one icon button, not a control per sidebar view: the column owns its
  * tabs, its Start guide and its collapse, exactly as it does beside a
- * Conversation, so MMX has nothing to name beyond "show it". The folder it
- * addresses is the selected project's `local_directory` resource; "All
- * projects" addresses the host's `workspaceFolder`, which is empty on many
- * hosts. No folder means the button is disabled with the copy that says what
- * is missing.
+ * Conversation, so MMX has nothing to name beyond "show it". It sits in the
+ * header the island draws once for every view, so the folder it addresses is
+ * resolved per view (`folderForSelection`): the picked project, else the viewed
+ * issue's project, else the one project the board filter names, else the host's
+ * `workspaceFolder`. No folder means the button is disabled with the copy that
+ * says what is missing.
  *
- * A press either flips the column on screen (`toggle`), names the project's
- * Session for the column that is drawn beside MMX (`retarget`), or, when no
- * Session is on screen to draw it for, brings the folder's Session on screen
- * first (`reveal`). Card C's `hostPanel` opt-in — installed in `apply` — is what
- * lets the first two keep MMX where it is; a host without it has to reveal the
- * Session, which is the only place its Sidebar can be drawn.
+ * A press either flips the column on screen (`toggle`) or names the project's
+ * Session for the column that is drawn beside MMX (`retarget`). It never
+ * navigates: a host whose build cannot host the column beside MMX has the
+ * button disabled, because the only other place its Sidebar can be drawn is
+ * over an on-screen Session — which replaces MMX with the dsh page, the exact
+ * outcome the reader ruled out.
  *
  * The button renders only when `apply` installed a bridge — the one host fact
  * this island cannot know without the shell, so its absence is exactly the
@@ -47,11 +53,14 @@ export function ShellButtons({
   projects,
   projectId,
   workspaceFolder,
+  route,
 }: {
   workspaceId: string;
   projects: readonly { id: string }[] | undefined;
   projectId: string | null;
   workspaceFolder: string;
+  /** The tab on screen; the viewed issue's project is one rung of the chain. */
+  route: IslandRoute;
 }) {
   const shell = hostShell();
   if (shell === null || shell.sidebarRight === null) return null;
@@ -61,6 +70,7 @@ export function ShellButtons({
     projects={projects}
     projectId={projectId}
     workspaceFolder={workspaceFolder}
+    route={route}
   />;
 }
 
@@ -97,18 +107,40 @@ function readExpanded(sidebarRight: SidebarRightLike | null): boolean {
   }
 }
 
+/**
+ * One project's folder, or `undefined` while its resources are not known.
+ *
+ * `projectId === null` addresses nothing and the query stays disabled, so the
+ * header costs one request per distinct project a view actually names — and
+ * none for "All projects" on a board with no filter.
+ */
+function useProjectFolder(
+  workspaceId: string,
+  projectId: string | null,
+  daemonId: string,
+): string | null | undefined {
+  const { data } = useQuery({
+    ...projectResourcesOptions(workspaceId, projectId ?? ""),
+    enabled: projectId !== null,
+  });
+  if (projectId === null || data === undefined) return undefined;
+  return folderOfProjectResources(data, daemonId);
+}
+
 function SidePanelToggle({
   shell,
   workspaceId,
   projects,
   projectId,
   workspaceFolder,
+  route,
 }: {
   shell: ShellBridge;
   workspaceId: string;
   projects: readonly { id: string }[] | undefined;
   projectId: string | null;
   workspaceFolder: string;
+  route: IslandRoute;
 }) {
   const sidebarRight = shell.sidebarRight;
 
@@ -123,20 +155,53 @@ function SidePanelToggle({
     return observable.subscribe(() => setExpanded(observable.getSnapshot()));
   }, [sidebarRight]);
 
-  // The selected project's resources share the pages' query key, so this adds
-  // no request of its own once any project surface has loaded the list.
-  const { data: resources } = useQuery({
-    ...projectResourcesOptions(workspaceId, projectId ?? ""),
-    enabled: projectId !== null,
+  // The viewed issue's project is the second rung (M-316): an issue page whose
+  // picker still says "All projects" belongs to exactly one project, and the
+  // toggle must work there. The identifier resolution shares the detail page's
+  // own request, so this is one cache entry, not a second read.
+  const issueSegment = route.view === "issue" ? route.issueId : null;
+  const { issue } = useCanonicalIssue(workspaceId, issueSegment ?? "", {
+    enabled: issueSegment !== null,
   });
+  const issueProjectId = issueSegment === null ? null : (issue?.project_id ?? null);
+
+  // The board/list filter is the third rung: one project named by the filter is
+  // unambiguous context, more than one is not, and no other view has it.
+  const projectFilters = useViewStore((state) => state.projectFilters);
+  const viewProjectId =
+    route.view === "board" && projectFilters.length === 1
+      ? (projectFilters[0] ?? null)
+      : null;
+
+  const pickedFolder = useProjectFolder(workspaceId, projectId, shell.daemonId);
+  const issueProjectFolder = useProjectFolder(workspaceId, issueProjectId, shell.daemonId);
+  const viewProjectFolder = useProjectFolder(workspaceId, viewProjectId, shell.daemonId);
 
   const resolved = useMemo(() => {
-    const folderOf = (id: string): string | null | undefined => {
-      if (id !== projectId || resources === undefined) return undefined;
-      return folderOfProjectResources(resources, shell.daemonId);
-    };
-    return folderForSelection(projectId, projects, folderOf, workspaceFolder);
-  }, [projectId, projects, resources, workspaceFolder, shell.daemonId]);
+    // The picked project is set last: when two rungs name the same project, the
+    // picker's own resources answer for it.
+    const folders = new Map<string, string | null | undefined>();
+    if (issueProjectId !== null) folders.set(issueProjectId, issueProjectFolder);
+    if (viewProjectId !== null) folders.set(viewProjectId, viewProjectFolder);
+    if (projectId !== null) folders.set(projectId, pickedFolder);
+    return folderForSelection({
+      projectId,
+      projects,
+      resourceFor: (id) => folders.get(id),
+      workspaceFolder,
+      issueProjectId,
+      viewProjectId,
+    });
+  }, [
+    projectId,
+    projects,
+    workspaceFolder,
+    issueProjectId,
+    viewProjectId,
+    pickedFolder,
+    issueProjectFolder,
+    viewProjectFolder,
+  ]);
 
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -168,39 +233,23 @@ function SidePanelToggle({
         mountedSessionId: sidebarRight.mounted.getSnapshot(),
         boundSessionId: boundSessionId(sidebarRight.mounted.getSnapshot(), workspace),
       });
-      if (intent.kind === "toggle") {
-        sidebarRight.toggleExpanded();
-        setExpanded(readExpanded(sidebarRight));
-        setNote(null);
+      if (intent.kind === "unavailable") {
+        // The button is disabled for this host, so this only runs for a face
+        // that lost `hostPanel` since it rendered. Nothing to open beside MMX,
+        // and nothing here navigates. Let the next render disable it.
+        setNote(describe("host"));
         return;
-      }
-      let sessionId = intent.sessionId;
-      if (sessionId === null || sessionId === "") {
-        sessionId = await sessions.create({ workspaceId: workspace.workspaceId });
       }
       if (intent.kind === "retarget") {
         // The column is drawn beside MMX: name the project's Session so Files
         // and Terminal open on that folder, and flip the column in place. MMX
         // keeps the main column, so the board never leaves the screen.
+        let sessionId = intent.sessionId;
+        if (sessionId === null || sessionId === "") {
+          sessionId = await sessions.create({ workspaceId: workspace.workspaceId });
+        }
         nameHostedSession(sidebarRight, sessionId);
         if (!sessionSurfaceMounted(sidebarRight)) throw noSessionSurfaceError();
-        if (!readExpanded(sidebarRight)) sidebarRight.toggleExpanded();
-        setExpanded(readExpanded(sidebarRight));
-        setNote(null);
-        return;
-      }
-      // No Session on screen to draw the column for: bind the folder's own and
-      // reveal it. Selecting is the shell's navigation, and it puts that
-      // Session's Conversation in the main column, which is where a host
-      // without card C draws the Sidebar.
-      if (shell.selectSession === null) {
-        throw new Error(`this dsh build cannot select a session, so the side panel cannot open on ${folder}`);
-      }
-      shell.selectSession(sessionId);
-      if (!(await waitForMountedSession(sidebarRight, sessionId))) {
-        // The shell never drew the Session: the same state the face's own write
-        // rejects, so it reads with the same copy.
-        throw noSessionSurfaceError();
       }
       if (!readExpanded(sidebarRight)) sidebarRight.toggleExpanded();
       setExpanded(readExpanded(sidebarRight));
@@ -218,11 +267,14 @@ function SidePanelToggle({
     }
   }
 
-  const folder = resolved.folder;
-  const disabled = folder === null || busy;
-  const title = disabled
-    ? disabledTooltip(resolved.reason, folder)
-    : panelToggleTitle(expanded, folder);
+  const state = toggleState({
+    folder: resolved.folder,
+    reason: resolved.reason,
+    canHostPanel: typeof sidebarRight?.hostPanel === "function",
+    busy,
+    expanded,
+  });
+  const title = state.title;
   const glyph = expanded
     ? <PanelRightClose className="size-4" />
     : <PanelRight className="size-4" />;
@@ -234,7 +286,7 @@ function SidePanelToggle({
       data-shell-note={note ?? undefined}
       aria-label={note ?? title}
       aria-pressed={expanded}
-      disabled={disabled}
+      disabled={state.disabled}
       title={note ?? title}
       className={panelButtonClassName}
       onClick={() => void onToggle()}

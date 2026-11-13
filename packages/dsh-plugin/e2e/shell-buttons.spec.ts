@@ -1,17 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * M-159: the header's side-panel toggle click through with the shell bridge
- * behind it.
+ * M-159 and M-316: the header's side-panel toggle click through with the shell
+ * bridge behind it.
  *
  * jsdom can mount the button, but the press runs across a live sidebar face:
- * whether it flips the column in place (`toggleExpanded`), names the project's
- * Session for the column beside MMX first (`selectHostedSession`), or has to
- * reveal the folder's Session, and what the face rejects (`no session surface
- * is mounted`) are only observable in a real browser. The shell harness page
- * configures a stub bridge that records every face call and renders the shown
- * state, so the spec asserts behaviour through the record — the same
- * discipline the Comments bar and the tab strip specs use.
+ * whether it flips the column in place (`toggleExpanded`) or names the project's
+ * Session for the column beside MMX first (`selectHostedSession`), and what the
+ * face rejects (`no session surface is mounted`) are only observable in a real
+ * browser. The shell harness page configures a stub bridge that records every
+ * face call and renders the shown state, so the spec asserts behaviour through
+ * the record — the same discipline the Comments bar and the tab strip specs use.
+ *
+ * The record also carries the M-316 rule: a press never selects a Session. A
+ * host that cannot draw the column beside MMX gets a disabled button and no
+ * calls at all, because navigating to the dsh page is the outcome the reader
+ * ruled out.
  */
 
 const toggle = '[data-shell-button="toggle"]';
@@ -112,39 +116,54 @@ test("with card C, a press on another Workspace's Session retargets the column b
   await expectNoPageErrors(page);
 });
 
-test("without hostPanel and no session on screen, the press reveals the folder's session first", async ({
+test("without hostPanel the toggle is disabled: it never leaves MMX for the dsh page", async ({
   page,
 }) => {
+  // The pre-M-316 build's only other surface was over an on-screen Session,
+  // which replaces the board with a Conversation. The button says what this
+  // build cannot do instead, and no face is called.
   await openShell(page, "?noSurface");
 
-  // MMX owns the main column, so the column has nothing to draw for yet: the
-  // press has to bring the bound Session on screen, and only then open, because
-  // a write before that lands on nothing.
-  await page.locator(toggle).click();
-  await expect(page.locator("[data-sidebar-expanded]")).toHaveCount(1, {
-    timeout: 20_000,
-  });
-  expect(await stubCalls(page)).toEqual(["selectSession s-1", "toggleExpanded"]);
+  await expect(page.locator(toggle)).toBeDisabled();
+  await expect(page.locator(toggle)).toHaveAttribute(
+    "title",
+    "This dsh build cannot show the side panel next to MMX",
+  );
+  expect(await stubCalls(page)).toEqual([]);
 
   await expectNoPageErrors(page);
 });
 
-test("a reveal the shell never drew reports why instead of throwing", async ({
+test("on an issue page whose picker says All projects, the press uses the issue's project folder", async ({
   page,
 }) => {
-  await openShell(page, "?noSurface&noReveal");
+  // The Owner's M-316 flow: no project picked, one issue on screen, and the
+  // folder comes from that issue's project — not from the "All projects"
+  // default, which is `/srv/demo` here.
+  await openShell(page, "?issue&hostPanel");
 
-  // The press selected the Session and waited for the shell to draw it; it
-  // never did. Shell state, not a page error: the copy lands in the tooltip and
-  // the column stays closed.
-  await page.locator(toggle).click();
+  await expect(page.locator(toggle)).toBeEnabled();
   await expect(page.locator(toggle)).toHaveAttribute(
     "title",
-    "The dsh side panel needs a session in the project folder",
-    { timeout: 20_000 },
+    "Open the dsh side panel on /srv/issue-demo",
   );
-  await expect(page.locator(toggle)).toHaveAttribute("aria-pressed", "false");
-  await expect(page.locator("[data-sidebar-expanded]")).toHaveCount(0);
+
+  await page.locator(toggle).click();
+  await expect(page.locator("[data-sidebar-expanded]")).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  // The issue's folder is not a Workspace this host knows yet, so the press
+  // registers it (idempotent), creates its first Session, names that Session
+  // for the hosted column and flips it — in that order, and MMX keeps the main
+  // column throughout.
+  expect(await stubCalls(page)).toEqual([
+    "workspaces:create /srv/issue-demo",
+    "sessions:create w-1",
+    "selectHostedSession s-new",
+    "toggleExpanded",
+  ]);
+  await expect(page.locator("[data-sidebar]")).toHaveAttribute("data-session", "s-new");
+  expect((await stubCalls(page)).filter((call) => call.startsWith("selectSession"))).toEqual([]);
 
   await expectNoPageErrors(page);
 });
@@ -152,7 +171,7 @@ test("a reveal the shell never drew reports why instead of throwing", async ({
 test("no folder: the toggle is disabled and says what is missing", async ({
   page,
 }) => {
-  await openShell(page, "?noFolder");
+  await openShell(page, "?noFolder&hostPanel");
 
   await expect(page.locator(toggle)).toBeDisabled();
   await expect(page.locator(toggle)).toHaveAttribute("title", "Choose a project");

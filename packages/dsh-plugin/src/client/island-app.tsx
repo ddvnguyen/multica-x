@@ -544,6 +544,7 @@ export function IslandPages({
                 projects={projects}
                 projectId={projectId}
                 workspaceFolder={workspaceFolder}
+                route={route}
               />
             }
           />
