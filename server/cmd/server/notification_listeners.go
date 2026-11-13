@@ -294,6 +294,24 @@ func archiveStaleTaskFailedInbox(
 		"row_count", len(rows), "recipient_count", len(counts))
 }
 
+// archiveResolvedAskPlanInbox archives the ask/plan inbox rows a resolution
+// just made stale, through the shared inbox helper, and logs a failure the
+// same way archiveStaleTaskFailedInbox does: the rows stay stale and the lazy
+// sweep on list still cleans them up (M-333).
+func archiveResolvedAskPlanInbox(
+	ctx context.Context,
+	queries *db.Queries,
+	bus *events.Bus,
+	workspaceID string,
+	issueID string,
+	taskIDs []string,
+) {
+	if err := inbox.ArchiveResolvedAskPlan(ctx, queries, bus, workspaceID, issueID, taskIDs); err != nil {
+		slog.Warn("auto-archive resolved ask/plan inbox: archive failed",
+			"workspace_id", workspaceID, "issue_id", issueID, "error", err)
+	}
+}
+
 // notifySubscribers queries the subscriber table for an issue, excludes the
 // actor and any extra IDs, and creates inbox items for each remaining member
 // subscriber. Publishes an inbox:new event for each notification.
@@ -1080,6 +1098,30 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			exclude, "task_failed", "action_required",
 			issue.Title, "",
 			emptyDetails)
+
+		// M-333: a failed run that was parked on an ask/plan had its card
+		// withdrawn / plan cancelled in the same transaction, so those ask
+		// inbox rows are stale from the moment the failure lands. No task id:
+		// the timeout-escalation rows are not this path's business (they are
+		// created after the settle and stay until the ask is answered).
+		archiveResolvedAskPlanInbox(ctx, queries, bus, e.WorkspaceID, issueID, nil)
+	})
+
+	// task:cancelled — M-333: every cancel path settles its parked ask/plan
+	// (SettleParkedAskPlanForTasks) inside the cancel transaction, so by the
+	// time this post-commit event fires the card/plan is closed and the ask
+	// inbox rows are stale. Most cancelled tasks never parked; for those the
+	// query matches nothing by construction (no card/plan, no evidence row).
+	bus.Subscribe(protocol.EventTaskCancelled, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		issueID, _ := payload["issue_id"].(string)
+		if issueID == "" {
+			return
+		}
+		archiveResolvedAskPlanInbox(ctx, queries, bus, e.WorkspaceID, issueID, nil)
 	})
 
 	// task:message with type "question" — the run parked on an ask or a plan

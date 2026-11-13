@@ -188,6 +188,167 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 	return i, err
 }
 
+const archiveResolvedAskPlanEscalationInbox = `-- name: ArchiveResolvedAskPlanEscalationInbox :many
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = $1 AND i.issue_id = $2 AND i.archived = false
+  AND i.details->>'task_id' = ANY($3::text[])
+  AND (
+       (i.type = 'agent_question' AND NOT EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.task_id::text = i.details->>'task_id'
+              AND c.status = 'open'))
+    OR (i.type = 'plan_review' AND NOT EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.task_id::text = i.details->>'task_id'
+              AND p.status IN ('draft', 'in_review', 'changes_requested')))
+  )
+RETURNING i.recipient_type, i.recipient_id
+`
+
+type ArchiveResolvedAskPlanEscalationInboxParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	TaskIds     []string    `json:"task_ids"`
+}
+
+type ArchiveResolvedAskPlanEscalationInboxRow struct {
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+}
+
+// M-333: the ask/plan timeout escalation (askplan_expiry) delivers an
+// 'agent_question' row whose details carry only the parked task id. That row
+// resolves when the underlying ask/plan itself is answered or verdicted — the
+// answer/verdict path calls this post-commit with that task id. The cancel
+// paths must NOT: the expiry escalation creates its row AFTER the settle that
+// withdraws the card, so at cancel time there is nothing to archive, and the
+// row stays as the lead's pointer to the expired ask until someone answers it.
+func (q *Queries) ArchiveResolvedAskPlanEscalationInbox(ctx context.Context, arg ArchiveResolvedAskPlanEscalationInboxParams) ([]ArchiveResolvedAskPlanEscalationInboxRow, error) {
+	rows, err := q.db.Query(ctx, archiveResolvedAskPlanEscalationInbox, arg.WorkspaceID, arg.IssueID, arg.TaskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArchiveResolvedAskPlanEscalationInboxRow{}
+	for rows.Next() {
+		var i ArchiveResolvedAskPlanEscalationInboxRow
+		if err := rows.Scan(&i.RecipientType, &i.RecipientID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const archiveResolvedAskPlanInbox = `-- name: ArchiveResolvedAskPlanInbox :many
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = $1 AND i.issue_id = $2 AND i.archived = false
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status <> 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status <> 'in_review'))
+  )
+RETURNING i.recipient_type, i.recipient_id
+`
+
+type ArchiveResolvedAskPlanInboxParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+type ArchiveResolvedAskPlanInboxRow struct {
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+}
+
+// M-333: an ask/plan card that resolves — answered, withdrawn, cancelled,
+// verdicted — must take its inbox rows with it. The rows to archive are
+// identified by the evidence id each carries in details ('agent_question'
+// rows carry card_id, 'plan_review' rows carry plan_id), so a second open
+// card or plan on the same issue is never archived by this query: only rows
+// whose OWN evidence left 'open' / 'in_review' match.
+//
+// The expiry-escalation rows carry only the parked task id (no card/plan id),
+// so they never match here; ArchiveResolvedAskPlanEscalationInbox owns them,
+// and only the answer/verdict path may call it.
+func (q *Queries) ArchiveResolvedAskPlanInbox(ctx context.Context, arg ArchiveResolvedAskPlanInboxParams) ([]ArchiveResolvedAskPlanInboxRow, error) {
+	rows, err := q.db.Query(ctx, archiveResolvedAskPlanInbox, arg.WorkspaceID, arg.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArchiveResolvedAskPlanInboxRow{}
+	for rows.Next() {
+		var i ArchiveResolvedAskPlanInboxRow
+		if err := rows.Scan(&i.RecipientType, &i.RecipientID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const archiveStaleAskPlanInboxForMember = `-- name: ArchiveStaleAskPlanInboxForMember :many
+UPDATE inbox_item i SET archived = true
+WHERE i.workspace_id = $1
+  AND i.recipient_type = 'member'
+  AND i.recipient_id = $2
+  AND i.archived = false
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status <> 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status <> 'in_review'))
+  )
+RETURNING i.recipient_id
+`
+
+type ArchiveStaleAskPlanInboxForMemberParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+}
+
+// M-333: rows created before their resolution was archived — a missed event,
+// an older deploy, a crash between commit and archive — resolve lazily on
+// list: when the member reads the inbox, rows whose evidence is no longer
+// open are archived first, so the list never shows a resolved ask. Same
+// evidence predicate as ArchiveResolvedAskPlanInbox. Rows without evidence
+// details (the pre-ask task:message questions) match nothing by construction.
+func (q *Queries) ArchiveStaleAskPlanInboxForMember(ctx context.Context, arg ArchiveStaleAskPlanInboxForMemberParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, archiveStaleAskPlanInboxForMember, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var recipient_id pgtype.UUID
+		if err := rows.Scan(&recipient_id); err != nil {
+			return nil, err
+		}
+		items = append(items, recipient_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countUnreadInbox = `-- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item i
 WHERE i.workspace_id = $1
