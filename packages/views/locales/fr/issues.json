@@ -52,8 +52,7 @@
     "sent": "Réponse envoyée",
     "failed": "Impossible d'envoyer votre réponse. Réessayez.",
     "multiline_hint": "Entrée pour une nouvelle ligne. ⌘/Ctrl+Entrée envoie.",
-    "submit_shortcut": "⌘/Ctrl+Entrée envoie",
-    "characters_remaining": "{{count}} restants"
+    "submit_shortcut": "⌘/Ctrl+Entrée envoie"
   },
   "ask_plan": {
     "plan_draft": "L'agent prépare ce plan — il n'y a encore rien à relire.",

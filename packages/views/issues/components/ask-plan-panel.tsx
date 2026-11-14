@@ -39,21 +39,21 @@ export function AskPlanPanel({ issueId }: { issueId: string }) {
   // The server closed a card (answered, withdrawn, cancelled, expired): its
   // draft is spent. Prune on every re-read so a stale draft can never answer
   // a card that is already gone — or reappear for a card id the server
-  // reuses. Runs before the early returns: the open set is empty while the
-  // read is in flight, and pruning then would drop the draft of a card the
-  // server simply has not confirmed yet.
+  // reuses. Scoped to this issue (`pruneToOpen` keeps every other issue's
+  // drafts and all transcript keys): opening B never wipes A's form.
   // Keyed on the read object itself: a new fetch carries a new reference, and
   // the open set is derived from that same read, so there is nothing else to
   // depend on.
   useEffect(() => {
     if (data === undefined) return;
     useAskDraftStore.getState().pruneToOpen(
+      issueId,
       new Set([
         ...data.question_cards.map((card) => card.id),
         ...(data.plan ? [data.plan.id] : []),
       ]),
     );
-  }, [data]);
+  }, [data, issueId]);
   const threadIds = new Set((timeline ?? []).map((entry) => entry.id));
 
   // Reading `undefined` (still loading) and the empty state the same way keeps

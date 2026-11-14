@@ -132,8 +132,8 @@ export function AgentQuestionCard({
   // nothing, so clearing the form clears the draft for free.
   useEffect(() => {
     if (draftKey === undefined) return;
-    useAskDraftStore.getState().setAnswers(draftKey, drafts);
-  }, [draftKey, drafts]);
+    useAskDraftStore.getState().setAnswers(draftKey, issueId, drafts);
+  }, [draftKey, issueId, drafts]);
 
   const pick = (index: number, option: number, multiple: boolean, checked: boolean) => {
     setDrafts((current) => current.map((draft, at) => {

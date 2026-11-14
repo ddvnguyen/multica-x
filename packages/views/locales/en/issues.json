@@ -2037,8 +2037,7 @@
     "sent": "Answer sent",
     "failed": "Could not send your answer. Try again.",
     "multiline_hint": "Enter for a new line. ⌘/Ctrl+Enter sends.",
-    "submit_shortcut": "⌘/Ctrl+Enter sends",
-    "characters_remaining": "{{count}} left"
+    "submit_shortcut": "⌘/Ctrl+Enter sends"
   },
   "ask_plan": {
     "plan_draft": "The agent is preparing this plan — there is nothing to review yet.",

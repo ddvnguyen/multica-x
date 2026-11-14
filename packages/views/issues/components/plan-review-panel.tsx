@@ -479,11 +479,11 @@ export function PlanReviewPanel({
       if (store.getDraft(planDraftKey) !== undefined) store.clearDraft(planDraftKey);
       return;
     }
-    store.setPlanComments(planDraftKey, comments);
+    store.setPlanComments(planDraftKey, issueId, comments);
     if (draft !== (store.getDraft(planDraftKey)?.planNote ?? "")) {
-      store.setPlanNote(planDraftKey, draft);
+      store.setPlanNote(planDraftKey, issueId, draft);
     }
-  }, [comments, draft, planDraftKey]);
+  }, [comments, draft, planDraftKey, issueId]);
 
   const addFlatComment = (): void => {
     const text = draft.trim();
@@ -589,7 +589,6 @@ export function PlanReviewPanel({
                 value={replyText}
                 max={4000}
                 showCount
-                hint={t(($) => $.agent_question.multiline_hint)}
                 aria-label={t(($) => $.ask_plan.reply_placeholder)}
                 placeholder={t(($) => $.ask_plan.reply_placeholder)}
                 disabled={busy}
