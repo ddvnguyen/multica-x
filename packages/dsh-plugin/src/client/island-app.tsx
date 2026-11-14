@@ -37,6 +37,9 @@ import { UnreadReporter } from "./unread-reporter";
 import { SteerReporter } from "./steer-reporter";
 import { DecisionsBadgeReporter } from "./decisions-badge-reporter";
 import { IslandVersionBadge } from "./version-badge";
+import { SidePreviewCapability } from "./side-preview-opener";
+import { SidePreviewPortals } from "./side-preview-portals";
+import { hostShell } from "./shell-runtime";
 import {
   AgentDetailPage,
   AgentsPage,
@@ -46,7 +49,6 @@ import {
   createIssueViewStore,
   ErrorBoundary,
   InboxPage,
-  IssueOpeningCapabilityProvider,
   IssueDetailRoute,
   IssuesPage,
   mmxBuild,
@@ -559,15 +561,25 @@ export function IslandPages({
               Widths persist in the island's namespaced store, never the bare
               keys the shell's origin already holds. */}
           <SidebarProvider storage={storage} className="contents">
-          {/* M-330 interim: `Side preview` in MMX means dsh's right column, and
-              the plugin cannot render there until dsh ships a content slot.
-              Until it does the island supports tabs only: one open mode (`New
-              tab`), and no floating peek inside the MMX column (M-313: the
-              Owner rejected the peek as the Side preview). `supportsPeek` is
-              spelled out because the provider's default is `true` — the silent
-              default is what left both the peek host and the second open mode
-              in place after the island first declared tabs (M-330 review). */}
-          <IssueOpeningCapabilityProvider supportsTabs supportsPeek={false}>
+          {/* `Side preview` in MMX is dsh's right column (M-336): the plugin
+              registers a tab type there, and a peek-mode click opens the issue
+              into it. `supportsPeek` follows the host — a dsh build without the
+              tab registry has nowhere to preview, so the island offers `New
+              tab` alone (M-330's interim state) instead of an open mode that
+              cannot work. `openSidePreview` is spelled out because the
+              provider's default is `null`, and a silent default would put the
+              fork's floating peek back inside the MMX column, which the Owner
+              rejected as the Side preview (M-313). */}
+          <SidePreviewCapability
+            input={{
+              workspaceId,
+              projects: projects ?? undefined,
+              projectId,
+              workspaceFolder,
+              route,
+              daemonId: hostShell()?.daemonId ?? "",
+            }}
+          >
             <ScrollRestorationProvider adapter={restoration}>
             <ErrorBoundary
               resetKeys={[
@@ -611,7 +623,7 @@ export function IslandPages({
               </div>
             </ErrorBoundary>
             </ScrollRestorationProvider>
-          </IssueOpeningCapabilityProvider>
+          </SidePreviewCapability>
           </SidebarProvider>
           {/* The fork's pages ask for a dialog through `useModalStore` and one
               component renders whatever it names; the web and desktop layouts
@@ -625,6 +637,10 @@ export function IslandPages({
               portal container comes from `IslandApp`, so it renders into the
               island's shadow root and not the shell's document. */}
           <ModalRegistry />
+          {/* The side preview's content, portalled into the dsh tab's container
+              (M-336). It sits here, under every provider the side stack reads,
+              because the portal renders into another React tree's DOM. */}
+          <SidePreviewPortals />
           <SearchCommand />
           {/* The build stamp (M-155): a sibling of the route switch, so it
               survives page changes and renders even when the boundary shows

@@ -153,6 +153,30 @@ over an on-screen Session — which would replace MMX with the dsh page. An open
 column is closed where it is, and a press that cannot proceed reports why in
 the tooltip.
 
+## Side preview
+
+`Side preview` — the issue opening mode in Settings → Preferences — opens the
+issue into dsh's own right column, the same column the header toggle shows. It
+is a plugin page tab type (M-336): `apply` registers `multica-issue` in
+dsh's `sidebarRightTabs` and its body in the keyed `sidebar.right.pane.tab`
+slot, and a peek-mode click calls `openTab('multica-issue', { params: {
+issueId }, revealIfOpened: true })` after the column has a Session to act on.
+`revealIfOpened` is the point: a second press focuses the one preview tab and
+hands it the new issue instead of opening a copy.
+
+The body is an empty element the shell renders; the island portals the issue's
+side stack — Properties, Wakeups, Pull requests, Execution log — into a surface
+inside it, carrying the island's stylesheet in a shadow root of its own (a
+portal into the shell's light DOM would arrive unstyled). The chip is the
+generic `Issue`: dsh captures `title(address)` once per tab and a page type's
+only address is `sidebar://<kind>`, so the identifier follows in the body.
+
+A host without `sidebarRightTabs` (an older dsh) registers nothing, the island
+offers `New tab` alone, and no floating peek appears in MMX's column. A reload
+restores whatever tab dsh saved: if the plugin is not loaded yet, dsh renders
+its own "nothing can view this" notice for the tab, and once it loads a tab
+with no params shows the "No issue open" placeholder rather than an empty pane.
+
 ## Keeping the shell in step
 
 The rail and the strip are two views of one state, so the island tells the

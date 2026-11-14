@@ -88,6 +88,42 @@ export interface DshLayout {
   toggleSidebar(): void;
 }
 
+/**
+ * One page-tab type a shell plugin contributes (dsh's `sidebarRightTabs`).
+ *
+ * Stage one of dsh's two-stage tab registration: the static face — what the
+ * kind is called, what its chip says, and whether every open is its own page.
+ * Stage two is the keyed `sidebar.right.pane.tab` body registered under the
+ * same `id`. `title` is captured into the layout record when the tab opens and
+ * is never rewritten, so it names the kind, not the content.
+ */
+export interface DshSidebarRightTabDefinition {
+  /** This implementation's identity; the `key` its body registers under. */
+  id: string;
+  /** Type discriminator `openTab` names. */
+  kind: string;
+  /** Each open by kind creates independent content. */
+  multiple?: boolean;
+  /** Keep a visited body mounted through hiding and Session switches. */
+  keepMounted?: boolean;
+  /** Priority band; `extension` (the default) outranks shipped viewers. */
+  priority?: "extension" | "builtin" | "fallback";
+  /** The tab chip's text, captured at open time. */
+  title: (address: string) => string;
+}
+
+/**
+ * The shell's tab-type registry (dsh `ctx.sidebarRightTabs`).
+ *
+ * Absent on a host built before dsh published plugin tab types; every read of
+ * it in this plugin is tolerant, so such a host keeps the rail rows and offers
+ * `New tab` alone (M-336).
+ */
+export interface DshSidebarRightTabs {
+  /** Register one type for the caller's lifetime; returns its disposer. */
+  register(definition: DshSidebarRightTabDefinition): () => void;
+}
+
 /** The browser half of a dsh plugin's context. */
 export interface DshClientContext {
   slots: {
@@ -107,6 +143,12 @@ export interface DshClientContext {
    * reads as "no teardown surface", which only shortens hostPanel's cleanup.
    */
   effect?(fn: () => (() => void) | void, label: string): unknown;
+  /**
+   * dsh's tab-type registry, when the build ships one (0.2.2+). Absent on an
+   * older shell: the plugin then offers `New tab` alone rather than failing to
+   * mount, so it is read through the tolerant `face()` helper.
+   */
+  sidebarRightTabs?: DshSidebarRightTabs;
 }
 
 /** The module values every dsh client bundle hands to the shell's loader. */
