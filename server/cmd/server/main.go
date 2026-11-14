@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "time/tzdata"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
