@@ -311,6 +311,30 @@ describe("ThreadMinimap", () => {
     }
   });
 
+  it("follows the caller's reply order in the outline so a reversed page reads reversed", () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    try {
+      renderWithI18n(
+        <ThreadMinimap description={description}
+          threads={[thread(comment("c1", "Root opener"), [
+            reply("r-new", "Newer reply", "B"),
+            reply("r-old", "Older reply", "A"),
+          ])]}
+          scrollContainerEl={null} onJump={vi.fn()} />,
+      );
+      const nav = screen.getByRole("navigation", { name: "Quick navigation" });
+      fireEvent.pointerMove(nav, { clientY: 0 });
+      act(() => vi.advanceTimersByTime(180));
+      const list = screen.getByRole("list");
+      expect(within(list).getAllByRole("button").map((button) => button.getAttribute("aria-label")))
+        .toEqual(["Issue description", "Root opener", "B: Newer reply", "A: Older reply"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the outline open while moving onto it and jumps from any title", () => {
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
