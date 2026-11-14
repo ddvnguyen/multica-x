@@ -456,4 +456,27 @@ describe("PreferencesTab — Scope", () => {
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
     expect(preview).toHaveAttribute("aria-pressed", "true");
   });
+
+  // MMX declares tabs and no peek while dsh cannot host the side view (M-330),
+  // and a single open mode is what that has to look like: no in-place page and
+  // no preview to pick.
+  it("offers only New tab in a tabbed host without a peek (M-330)", () => {
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    function TabsOnlyWrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek={false}>
+            {children}
+          </IssueOpeningCapabilityProvider>
+        </I18nProvider>
+      );
+    }
+    render(<PreferencesTab />, { wrapper: TabsOnlyWrapper });
+    const group = screen.getByRole("group", { name: "Clicking a card or row opens" });
+    expect(
+      within(group)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["New tab"]);
+  });
 });

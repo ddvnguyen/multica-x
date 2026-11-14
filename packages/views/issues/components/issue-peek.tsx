@@ -114,6 +114,10 @@ function IssuePeekHostContent({ children }: { children: ReactNode }) {
       <IssuePeekIdContext.Provider value={openId}>
         <IssuePeekPositionContext.Provider value={position}>
           <div
+            // Marks the host itself, open or closed: a surface that declares
+            // no peek must not mount this at all, and `data-peek-open` only
+            // appears once one is open (M-330).
+            data-issue-peek-host=""
             data-peek-open={openId ? "" : undefined}
             className="group/peek relative flex min-h-0 flex-1 flex-col [--issue-peek-width:520px]"
             onPointerOver={(event) => {
