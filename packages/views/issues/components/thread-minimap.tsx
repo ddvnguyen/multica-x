@@ -108,7 +108,8 @@ export interface ThreadMinimapThread {
   /** Unique authors across the root and every nested reply, in first-seen order. */
   participants: TimelineEntry[];
   /**
-   * Live (non-deleted) replies in timeline order. Each gets a short tick and an
+   * Live (non-deleted) replies in display order (newest-first when the
+   * timeline is reversed). Each gets a short tick and an
    * outline row unless its resolved thread is folded in the outline; its
    * `comment-${id}` anchor exists only once the thread is expanded in the
    * timeline, which the caller's `onJump` takes care of.
