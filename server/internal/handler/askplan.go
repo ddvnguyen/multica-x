@@ -133,7 +133,8 @@ type planResponse struct {
 
 // planCommentResponse is one anchored comment as the plan page reads it.
 // `delivered_at` is the verdict that sent it; `resolved_at` is the human's
-// resolve, which never rewrites the agent's text.
+// resolve, which never rewrites the agent's text. `revision` is the plan
+// revision the comment was made on (M-348); nil = predates the label.
 type planCommentResponse struct {
 	ID               string  `json:"id"`
 	PlanID           string  `json:"plan_id"`
@@ -146,6 +147,7 @@ type planCommentResponse struct {
 	ResolvedBy       *string `json:"resolved_by,omitempty"`
 	DeliveredAt      *string `json:"delivered_at,omitempty"`
 	DeliveredVerdict *string `json:"delivered_verdict,omitempty"`
+	Revision         *int32  `json:"revision,omitempty"`
 	CreatedAt        string  `json:"created_at"`
 }
 
@@ -190,6 +192,10 @@ func planCommentToResponse(c db.AgentPlanComment) planCommentResponse {
 	if c.DeliveredVerdict.Valid {
 		s := c.DeliveredVerdict.String
 		resp.DeliveredVerdict = &s
+	}
+	if c.Revision.Valid {
+		v := c.Revision.Int32
+		resp.Revision = &v
 	}
 	return resp
 }
@@ -987,6 +993,9 @@ func (h *Handler) CreatePlanComment(w http.ResponseWriter, r *http.Request) {
 		Body:            body,
 		ParentCommentID: parent,
 		AuthorUserID:    parseUUID(requestUserID(r)),
+		// M-348: the write fence already compared base_revision to the row;
+		// persisting it labels the thread with the revision it saw.
+		Revision: pgtype.Int4{Int32: req.BaseRevision, Valid: true},
 	})
 	if err != nil {
 		slog.Warn("create plan comment failed", "error", err)
@@ -1171,6 +1180,110 @@ func (h *Handler) ListPlanSectionHistory(w http.ResponseWriter, r *http.Request)
 		"section_id": sectionID,
 		"revision":   plan.Revision,
 		"versions":   items,
+	})
+}
+
+// planRevisionSection is one section as it read at an older revision. A
+// section with no version at or before R predates the ledger: it renders a
+// placeholder row (`available: false`) instead of invented text.
+type planRevisionSection struct {
+	SectionID string `json:"section_id"`
+	Heading   string `json:"heading"`
+	Markdown  string `json:"markdown"`
+	Available bool   `json:"available"`
+}
+
+// GetPlanRevision handles
+// GET /api/workspaces/{id}/plans/{planId}/revisions/{revision}.
+//
+// M-348 read-old-revision: the plan's sections as they read at revision R —
+// per section the newest ledger version at or before R. 404 for R < 1, for
+// R past the current revision, and for a plan in another workspace. Read-only
+// member-visible like the rest of the plan read; no RequireHumanActor.
+func (h *Handler) GetPlanRevision(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	revision64, err := strconv.ParseInt(chi.URLParam(r, "revision"), 10, 32)
+	if err != nil || revision64 < 1 {
+		writeError(w, http.StatusNotFound, "revision not found")
+		return
+	}
+	revision := int32(revision64)
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	if revision > plan.Revision {
+		writeError(w, http.StatusNotFound, "revision not found")
+		return
+	}
+	versions, err := h.Queries.ListAgentPlanSectionVersionsUpto(r.Context(), db.ListAgentPlanSectionVersionsUptoParams{
+		PlanID:   planID,
+		Revision: revision,
+	})
+	if err != nil {
+		slog.Warn("list plan section versions upto failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load the plan revision")
+		return
+	}
+	bySection := make(map[string]db.AgentPlanSectionVersion, len(versions))
+	for _, v := range versions {
+		if _, seen := bySection[v.SectionID]; !seen {
+			bySection[v.SectionID] = v
+		}
+	}
+	var current []planSectionJSON
+	if err := json.Unmarshal(plan.Sections, &current); err != nil {
+		slog.Warn("parse plan sections failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load the plan revision")
+		return
+	}
+	seen := make(map[string]bool, len(current)+len(versions))
+	sections := make([]planRevisionSection, 0, len(current))
+	for _, s := range current {
+		seen[s.SectionID] = true
+		if v, found := bySection[s.SectionID]; found {
+			sections = append(sections, planRevisionSection{
+				SectionID: s.SectionID,
+				Heading:   v.Heading,
+				Markdown:  v.Markdown,
+				Available: true,
+			})
+		} else {
+			sections = append(sections, planRevisionSection{
+				SectionID: s.SectionID,
+				Heading:   s.Heading,
+				Markdown:  "",
+				Available: false,
+			})
+		}
+	}
+	for _, v := range versions {
+		if seen[v.SectionID] {
+			continue
+		}
+		seen[v.SectionID] = true
+		by := bySection[v.SectionID]
+		sections = append(sections, planRevisionSection{
+			SectionID: v.SectionID,
+			Heading:   by.Heading,
+			Markdown:  by.Markdown,
+			Available: true,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plan_id":  uuidToString(planID),
+		"revision": revision,
+		"current":  plan.Revision,
+		"status":   plan.Status,
+		"sections": sections,
 	})
 }
 

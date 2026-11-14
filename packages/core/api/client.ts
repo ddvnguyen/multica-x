@@ -280,6 +280,7 @@ import {
   type IssueAskPlan,
   type PlanComment,
   type PlanCommentBody,
+  type PlanRevisionRead,
   type PlanSectionVersion,
   type PlanSectionWriteBody,
   type PlanVerdictBody,
@@ -576,6 +577,7 @@ import {
   EMPTY_JOIN_SHARE_LINK_RESPONSE,
   AgentPlanSchema,
   IssueAskPlanSchema,
+  PlanRevisionReadSchema,
   PlanSectionHistorySchema,
   WorkspaceListItemSchema,
   WorkspacePinnedSchema,
@@ -3502,6 +3504,24 @@ export class ApiClient {
 			PlanSectionHistorySchema,
 			{ section_id: sectionId, revision: 0, versions: [] },
 			{ endpoint: "GET /api/workspaces/{id}/plans/{id}/sections/{id}/history" },
+		);
+	}
+
+	// M-348: one older plan revision, read-only. A 404 (unknown revision)
+	// throws through so the panel can report it instead of rendering blind.
+	async getPlanRevision(
+		workspaceId: string,
+		planId: string,
+		revision: number,
+	): Promise<PlanRevisionRead> {
+		const raw = await this.fetch<unknown>(
+			`/api/workspaces/${workspaceId}/plans/${planId}/revisions/${revision}`,
+		);
+		return parseWithFallback(
+			raw,
+			PlanRevisionReadSchema,
+			{ plan_id: planId, revision, current: 0, status: "", sections: [] },
+			{ endpoint: "GET /api/workspaces/{id}/plans/{id}/revisions/{revision}" },
 		);
 	}
 

@@ -1858,6 +1858,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/plans/{planId}/comments/{commentId}/resolve", h.ResolvePlanComment)
 					r.With(handler.RequireHumanActor).Put("/plans/{planId}/sections/{sectionId}", h.UpdatePlanSection)
 					r.Get("/plans/{planId}/sections/{sectionId}/history", h.ListPlanSectionHistory)
+					// M-348: read-old-revision. Member-visible like the rest of the
+					// plan read: the old text is already the member's to see.
+					r.Get("/plans/{planId}/revisions/{revision}", h.GetPlanRevision)
 					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
 					r.With(handler.RequireHumanActor).Post("/issues/{issueId}/decision-response", h.DecisionResponse)
 					r.Get("/decisions", h.ListDecisions)

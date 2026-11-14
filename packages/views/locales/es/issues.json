@@ -2035,7 +2035,15 @@
     "hide_resolved": "Ocultar resueltos",
     "pending_hint": "{{n}} comentario(s) de pasaje se enviarán al agente con tu veredicto.",
     "stale_notice": "El plan cambió desde que lo abriste. Arriba se muestra la revisión actual; inténtalo de nuevo.",
-    "unknown_author": "Un miembro"
+    "unknown_author": "Un miembro",
+    "revision_switcher": "Mostrar otra revisión",
+    "revision_viewing": "Viendo la revisión {{revision}} de {{current}} — solo lectura.",
+    "revision_back": "Volver a la actual",
+    "revision_unavailable": "{{heading}} en la revisión {{revision}} es anterior al historial registrado.",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "Comentar",
+    "comments_show": "Mostrar comentarios ({{n}})",
+    "comments_hide": "Ocultar comentarios"
   },
   "view_selector": {
     "trigger": "Views",

@@ -237,12 +237,12 @@ const createAgentPlanComment = `-- name: CreateAgentPlanComment :one
 
 INSERT INTO agent_plan_comment (
     id, workspace_id, plan_id, section_id, quote, body,
-    parent_comment_id, author_user_id
+    parent_comment_id, author_user_id, revision
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8
+    $7, $8, $9
 )
-RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at
+RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision
 `
 
 type CreateAgentPlanCommentParams struct {
@@ -254,6 +254,7 @@ type CreateAgentPlanCommentParams struct {
 	Body            string      `json:"body"`
 	ParentCommentID pgtype.UUID `json:"parent_comment_id"`
 	AuthorUserID    pgtype.UUID `json:"author_user_id"`
+	Revision        pgtype.Int4 `json:"revision"`
 }
 
 // M-275: the plan page's review threads and section history.
@@ -263,6 +264,8 @@ type CreateAgentPlanCommentParams struct {
 // it, which stamps delivered_at/delivered_verdict once. The flat
 // agent_plan_review.comments list keeps its contract: the plan page's
 // comments are appended to it as their bodies.
+// M-348: `revision` is the plan revision the comment was made on (the
+// write-time base_revision, now persisted). NULL = predates the label.
 func (q *Queries) CreateAgentPlanComment(ctx context.Context, arg CreateAgentPlanCommentParams) (AgentPlanComment, error) {
 	row := q.db.QueryRow(ctx, createAgentPlanComment,
 		arg.ID,
@@ -273,6 +276,7 @@ func (q *Queries) CreateAgentPlanComment(ctx context.Context, arg CreateAgentPla
 		arg.Body,
 		arg.ParentCommentID,
 		arg.AuthorUserID,
+		arg.Revision,
 	)
 	var i AgentPlanComment
 	err := row.Scan(
@@ -289,6 +293,7 @@ func (q *Queries) CreateAgentPlanComment(ctx context.Context, arg CreateAgentPla
 		&i.DeliveredAt,
 		&i.DeliveredVerdict,
 		&i.CreatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -517,7 +522,7 @@ func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, 
 }
 
 const getAgentPlanComment = `-- name: GetAgentPlanComment :one
-SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at FROM agent_plan_comment WHERE id = $1
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment WHERE id = $1
 `
 
 // A reply is validated against the plan it lands on before it is written.
@@ -538,6 +543,7 @@ func (q *Queries) GetAgentPlanComment(ctx context.Context, id pgtype.UUID) (Agen
 		&i.DeliveredAt,
 		&i.DeliveredVerdict,
 		&i.CreatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -667,7 +673,7 @@ func (q *Queries) GetOpenAgentPlanByIssue(ctx context.Context, issueID pgtype.UU
 }
 
 const listAgentPlanComments = `-- name: ListAgentPlanComments :many
-SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at FROM agent_plan_comment
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment
 WHERE plan_id = $1
 ORDER BY created_at ASC
 `
@@ -697,6 +703,7 @@ func (q *Queries) ListAgentPlanComments(ctx context.Context, planID pgtype.UUID)
 			&i.DeliveredAt,
 			&i.DeliveredVerdict,
 			&i.CreatedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -722,6 +729,53 @@ type ListAgentPlanSectionVersionsParams struct {
 // Newest first: the section history panel and the lazy seed's existence check.
 func (q *Queries) ListAgentPlanSectionVersions(ctx context.Context, arg ListAgentPlanSectionVersionsParams) ([]AgentPlanSectionVersion, error) {
 	rows, err := q.db.Query(ctx, listAgentPlanSectionVersions, arg.PlanID, arg.SectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPlanSectionVersion{}
+	for rows.Next() {
+		var i AgentPlanSectionVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PlanID,
+			&i.SectionID,
+			&i.Revision,
+			&i.Heading,
+			&i.Markdown,
+			&i.WriterType,
+			&i.WriterID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentPlanSectionVersionsUpto = `-- name: ListAgentPlanSectionVersionsUpto :many
+SELECT DISTINCT ON (plan_id, section_id) id, workspace_id, plan_id, section_id, revision, heading, markdown, writer_type, writer_id, created_at
+FROM agent_plan_section_version
+WHERE plan_id = $1 AND revision <= $2
+ORDER BY plan_id, section_id, revision DESC
+`
+
+type ListAgentPlanSectionVersionsUptoParams struct {
+	PlanID   pgtype.UUID `json:"plan_id"`
+	Revision int32       `json:"revision"`
+}
+
+// M-348 read-old-revision: every section's version at or before a revision,
+// newest per section first, so the handler keeps the first row per
+// section_id. DISTINCT ON picks per (plan_id, section_id) with the
+// revision ordering; the outer ORDER BY only stabilizes the scan.
+func (q *Queries) ListAgentPlanSectionVersionsUpto(ctx context.Context, arg ListAgentPlanSectionVersionsUptoParams) ([]AgentPlanSectionVersion, error) {
+	rows, err := q.db.Query(ctx, listAgentPlanSectionVersionsUpto, arg.PlanID, arg.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -870,7 +924,7 @@ func (q *Queries) ListParkedAskPlanSweepCandidates(ctx context.Context, limit in
 }
 
 const listUndeliveredAgentPlanComments = `-- name: ListUndeliveredAgentPlanComments :many
-SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at FROM agent_plan_comment
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment
 WHERE plan_id = $1 AND delivered_at IS NULL
 ORDER BY created_at ASC
 `
@@ -900,6 +954,7 @@ func (q *Queries) ListUndeliveredAgentPlanComments(ctx context.Context, planID p
 			&i.DeliveredAt,
 			&i.DeliveredVerdict,
 			&i.CreatedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -1000,7 +1055,7 @@ UPDATE agent_plan_comment
 SET resolved_at = now(),
     resolved_by = $3
 WHERE id = $1 AND plan_id = $2 AND resolved_at IS NULL
-RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at
+RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision
 `
 
 type ResolveAgentPlanCommentParams struct {
@@ -1028,6 +1083,7 @@ func (q *Queries) ResolveAgentPlanComment(ctx context.Context, arg ResolveAgentP
 		&i.DeliveredAt,
 		&i.DeliveredVerdict,
 		&i.CreatedAt,
+		&i.Revision,
 	)
 	return i, err
 }

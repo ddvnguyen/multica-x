@@ -127,6 +127,7 @@ type AgentPlanComment struct {
 	DeliveredAt      pgtype.Timestamptz `json:"delivered_at"`
 	DeliveredVerdict pgtype.Text        `json:"delivered_verdict"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	Revision         pgtype.Int4        `json:"revision"`
 }
 
 type AgentPlanReview struct {

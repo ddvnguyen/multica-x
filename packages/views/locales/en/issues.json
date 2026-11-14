@@ -2092,7 +2092,15 @@
     "hide_resolved": "Hide resolved",
     "pending_hint": "{{n}} passage comment(s) will be sent to the agent with your verdict.",
     "stale_notice": "The plan moved since you opened it. The current revision is shown above; try again.",
-    "unknown_author": "A member"
+    "unknown_author": "A member",
+    "revision_switcher": "Show another revision",
+    "revision_viewing": "Viewing revision {{revision}} of {{current}} — read-only.",
+    "revision_back": "Back to current",
+    "revision_unavailable": "{{heading}} at revision {{revision}} predates the recorded history.",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "Comment",
+    "comments_show": "Show comments ({{n}})",
+    "comments_hide": "Hide comments"
   },
   "view_selector": {
     "trigger": "Views",

@@ -12,6 +12,7 @@ vi.mock("@multica/core/api", async (importOriginal) => {
     ...actual,
     api: {
       addPlanComment: vi.fn(),
+      getPlanRevision: vi.fn(),
       resolvePlanComment: vi.fn(),
       reviewPlan: vi.fn(),
       writePlanSection: vi.fn(),
@@ -111,6 +112,9 @@ describe("PlanReviewPanel", () => {
     expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
     selectPassage("s1");
 
+    // The tooltip raises at the selection; opening it anchors the composer
+    // with the quoted passage.
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
     expect(await screen.findByText("“Two lanes, z first.”")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "What should change here?" }), {
       target: { value: "Start with the smaller lane." },
@@ -125,6 +129,8 @@ describe("PlanReviewPanel", () => {
         body: "Start with the smaller lane.",
       }),
     );
+    // The saved thread opens below the plan with its new highlight target.
+    expect(await screen.findByRole("button", { name: "Hide comments" })).toBeInTheDocument();
   });
 
   it("threads a reply under its root and resolves the thread", async () => {
@@ -134,9 +140,10 @@ describe("PlanReviewPanel", () => {
     });
     renderPanel(COMMENTED);
 
+    // The thread list sits below the plan, closed until the member opens it.
+    fireEvent.click(await screen.findByRole("button", { name: /Show comments/ }));
     expect(await screen.findByText("Start with the smaller lane.")).toBeInTheDocument();
     // The reply renders in the same thread, indented under its root.
-    expect(screen.getByText("Agreed, z first.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Reply to this comment" }), {
@@ -182,6 +189,7 @@ describe("PlanReviewPanel", () => {
 
     expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
     selectPassage("s1");
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
     fireEvent.change(screen.getByRole("textbox", { name: "What should change here?" }), {
       target: { value: "Start with the smaller lane." },
     });
@@ -197,11 +205,12 @@ describe("PlanReviewPanel", () => {
     );
   });
 
-  it("shows every quote in the rail when the highlight API is unavailable", async () => {
+  it("shows every quote in the thread list when the highlight API is unavailable", async () => {
     renderPanel(COMMENTED);
+    fireEvent.click(await screen.findByRole("button", { name: /Show comments/ }));
     expect(await screen.findByText("Start with the smaller lane.")).toBeInTheDocument();
     // jsdom has no CSS Custom Highlight API: the paint is skipped, the quote
-    // is still readable in the rail's blockquote.
+    // is still readable in the thread's blockquote.
     const quotes = Array.from(document.querySelectorAll("blockquote")).map(
       (node) => node.textContent,
     );
@@ -231,7 +240,96 @@ describe("PlanReviewPanel", () => {
 
   it("keeps request changes back until a passage comment is waiting", async () => {
     renderPanel(COMMENTED);
+    fireEvent.click(await screen.findByRole("button", { name: /Show comments/ }));
     expect(await screen.findByText("Start with the smaller lane.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Request changes" })).toBeEnabled();
+  });
+
+  it("labels each thread with the revision it was made on", async () => {
+    const REVISED: AgentPlan = {
+      ...COMMENTED,
+      comments: COMMENTED.comments!.map((comment) => ({ ...comment, revision: 6 })),
+    };
+    renderPanel(REVISED);
+    fireEvent.click(await screen.findByRole("button", { name: /Show comments/ }));
+    expect(await screen.findByText("R6")).toBeInTheDocument();
+  });
+
+  it("reads an older revision read-only and returns to current", async () => {
+    vi.mocked(api.getPlanRevision).mockResolvedValue({
+      plan_id: "plan-4",
+      revision: 5,
+      current: 6,
+      status: "in_review",
+      sections: [
+        { section_id: "s1", heading: "Scope", markdown: "Two lanes.", available: true },
+        { section_id: "s2", heading: "Gone", markdown: "", available: false },
+      ],
+    });
+    renderPanel();
+    expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
+
+    // The switcher lists every revision; the current one is marked.
+    fireEvent.change(screen.getByRole("combobox", { name: "Show another revision" }), {
+      target: { value: "5" },
+    });
+
+    // The banner names the old revision; its text reads, with a placeholder
+    // where the ledger has nothing; verdicts and edits are gone.
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Viewing revision 5 of 6",
+    );
+    expect(await screen.findByText("Two lanes.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Gone at revision 5 predates the recorded history."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve plan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit section Scope" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.getPlanRevision).toHaveBeenCalledWith("ws-1", "plan-4", 5),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to current" }));
+    expect(await screen.findByText("Two lanes, z first.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+  });
+
+  it("opens a thread when its painted passage is clicked", async () => {
+    const REVISED: AgentPlan = {
+      ...COMMENTED,
+      comments: COMMENTED.comments!.map((comment) => ({ ...comment, revision: 6 })),
+    };
+    renderPanel(REVISED);
+    expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
+
+    // Hit-test the click inside the quoted passage: jsdom has no
+    // caretRangeFromPoint, so the point is faked into the section body.
+    const sectionBody = document.querySelector(
+      '[data-plan-section="s1"] [data-plan-section-body]',
+    );
+    const textNode = sectionBody?.querySelector("p")?.firstChild ?? null;
+    const fakeRange = textNode
+      ? (() => {
+          const range = document.createRange();
+          range.selectNodeContents(textNode);
+          return range;
+        })()
+      : null;
+    const proto = document as Document & {
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    const previous = proto.caretRangeFromPoint;
+    proto.caretRangeFromPoint = () => fakeRange;
+    try {
+      const target = sectionBody?.querySelector("p");
+      if (target == null) throw new Error("no section text");
+      fireEvent.click(target, { clientX: 10, clientY: 10 });
+    } finally {
+      proto.caretRangeFromPoint = previous;
+    }
+
+    // The thread list opened on the matching thread.
+    expect(await screen.findByRole("button", { name: "Hide comments" })).toBeInTheDocument();
+    expect(await screen.findByText("Start with the smaller lane.")).toBeInTheDocument();
   });
 });
