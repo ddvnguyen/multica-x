@@ -458,6 +458,45 @@ describe("mountIsland", () => {
     expect(localStorage.getItem("list_column_width")).toBeNull();
   });
 
+  // M-330 interim, the other half: `Side preview` in MMX is dsh's right column,
+  // and the plugin cannot render there until dsh ships a content slot. With tabs
+  // and no peek there is exactly one open mode — but the provider defaults
+  // `supportsPeek` to true, so an omitted prop silently put `Full page` and
+  // `Side preview` back into Preferences.
+  it("offers one open mode in Preferences", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, { initialRoute: { view: "settings", query: "tab=preferences" } }),
+    );
+
+    const openModes = () =>
+      [
+        ...(host.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+          "[role='group'][aria-label='Clicking a card or row opens'] button",
+        ) ?? []),
+      ].map((button) => button.textContent?.trim());
+
+    await settle(() => {
+      expect(openModes()).toEqual(["New tab"]);
+    });
+  });
+
+  // ... and nothing floats inside the MMX column: the issue surface mounts the
+  // fork's peek host by default, which is the thing the Owner rejected as the
+  // Side preview (M-313). Only the explicit `supportsPeek={false}` keeps it out
+  // of the shadow root.
+  it("mounts no peek host inside the panel", async () => {
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+    });
+    expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
+  });
+
   // One row per rail entry: the island has to render each of the five views on
   // its own, inside the same shadow root, with nothing page-level in the shell.
   const entries: Array<{ entry: string; route: IslandRoute; text: string }> = [

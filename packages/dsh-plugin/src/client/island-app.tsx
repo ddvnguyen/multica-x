@@ -563,8 +563,11 @@ export function IslandPages({
               the plugin cannot render there until dsh ships a content slot.
               Until it does the island supports tabs only: one open mode (`New
               tab`), and no floating peek inside the MMX column (M-313: the
-              Owner rejected the peek as the Side preview). */}
-          <IssueOpeningCapabilityProvider supportsTabs>
+              Owner rejected the peek as the Side preview). `supportsPeek` is
+              spelled out because the provider's default is `true` — the silent
+              default is what left both the peek host and the second open mode
+              in place after the island first declared tabs (M-330 review). */}
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek={false}>
             <ScrollRestorationProvider adapter={restoration}>
             <ErrorBoundary
               resetKeys={[
