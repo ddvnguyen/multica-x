@@ -539,8 +539,11 @@
     "pull_requests_empty_title": "No linked pull requests."
   },
   "timeline": {
-    "loading": "Loading..."
-  },
+    "loading": "Loading...",
+    "jump_to_latest": "Jump to latest",
+    "order_oldest_first": "Oldest first",
+    "order_newest_first": "Newest first",
+    "order_toggle_hint": "Toggle timeline order"  },
   "activity": {
     "created": "created this issue",
     "self_assigned": "self-assigned this issue",

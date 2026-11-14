@@ -539,8 +539,11 @@
     "pull_requests_empty_title": "Aucune pull request associée."
   },
   "timeline": {
-    "loading": "Chargement..."
-  },
+    "loading": "Chargement...",
+    "jump_to_latest": "Aller au plus récent",
+    "order_oldest_first": "Plus anciens d'abord",
+    "order_newest_first": "Plus récents d'abord",
+    "order_toggle_hint": "Changer l'ordre de la chronologie"  },
   "activity": {
     "created": "a créé cette tâche",
     "self_assigned": "s'est assigné cette tâche",

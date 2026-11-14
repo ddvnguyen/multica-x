@@ -16,6 +16,8 @@ import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import {
   Archive,
+  ArrowDown,
+  ArrowUpDown,
   Calendar,
   CalendarClock,
   CalendarDays,
@@ -150,6 +152,7 @@ import {
   useResolvedExpandStore,
   useSubIssuesCollapseStore,
   useSubIssueDisplayStore,
+  useTimelineDisplayStore,
   SUB_ISSUE_ROW_PROPERTY_KEYS,
   type SubIssueRowProperties,
   type SubIssueRowPropertyKey,
@@ -182,6 +185,7 @@ import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useInPageFind } from "../hooks/use-in-page-find";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
+import { useJumpToLatest } from "../hooks/use-jump-to-latest";
 import { FindBar } from "./find-bar";
 import {
   AnimatedRightSidebar,
@@ -570,6 +574,43 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function JumpToLatestButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={onClick}
+      className="absolute bottom-full left-1/2 mb-6 -translate-x-1/2 rounded-full bg-background shadow-md dark:bg-background dark:hover:bg-muted"
+    >
+      <ArrowDown />
+      {label}
+    </Button>
+  );
+}
+
+// Reading-order toggle for the Activity timeline: oldest-first (default,
+// long-standing behaviour) vs newest-first for long-running issues where the
+// latest entry is what matters. Sits in the Activity section header so it is
+// visible exactly where the cost is paid.
+function TimelineOrderToggle({ t }: { t: ActivityT }) {
+  const order = useTimelineDisplayStore((s) => s.order);
+  const toggleOrder = useTimelineDisplayStore((s) => s.toggleOrder);
+  const newestFirst = order === "newest-first";
+  return (
+    <button
+      type="button"
+      onClick={toggleOrder}
+      aria-pressed={newestFirst}
+      title={t(($) => $.timeline.order_toggle_hint)}
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      <ArrowUpDown className="h-4 w-4" />
+      <span className="sr-only">{t(($) => newestFirst ? $.timeline.order_newest_first : $.timeline.order_oldest_first)}</span>
+    </button>
+  );
 }
 
 // Flat per-item shape consumed by <Virtuoso>. Virtuoso needs a flat array
@@ -1437,6 +1478,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // User preference: pin the bottom comment bar to the scroll viewport. Off
   // below `md` regardless of the preference — see the hook.
   const stickyComposer = useStickyComposer();
+  // Mobile only: desktop already reaches the latest entry through the
+  // ThreadMinimap rail, which is not rendered below `md`. Passing null keeps
+  // the hook's scroll and resize listeners off on desktop.
+  const jumpToLatest = useJumpToLatest(isMobile ? scrollContainerEl : null);
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -1743,9 +1788,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // changes (timeline events) or expandedResolved flips (user toggles a
   // resolved thread). Kept in a useMemo so Virtuoso's data identity is stable
   // across unrelated re-renders.
-  const items = useMemo<TimelineItem[]>(
+  //
+  // Newest-first reverses the top-level presentation only: grouping,
+  // coalescing, thread nesting and every id-based lookup keep working on the
+  // same rows, just in the opposite page order.
+  const chronologicalItems = useMemo<TimelineItem[]>(
     () => flattenGroups(timelineView.groups, expandedResolved),
     [timelineView.groups, expandedResolved],
+  );
+  const timelineNewestFirst = useTimelineDisplayStore((s) => s.order === "newest-first");
+  const items = useMemo<TimelineItem[]>(
+    () => timelineNewestFirst ? [...chronologicalItems].reverse() : chronologicalItems,
+    [chronologicalItems, timelineNewestFirst],
   );
 
   // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
@@ -3691,8 +3745,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {/* Activity / Comments */}
           <div>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
                 <h2 className="text-title-sm font-semibold">{t(($) => $.detail.activity_section)}</h2>
+                <TimelineOrderToggle t={t} />
               </div>
               <div className="flex items-center gap-2">
                 {/* A delegated subscription is one the user never opted into
@@ -3906,6 +3961,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               page background and is invisible), and pb-4 so the card floats
               off the viewport edge — with -mb-4 giving the padding back to
               the column's py-8 so the at-rest layout doesn't shift. */}
+          {/* "Jump to latest" (MUL-8324, mobile only) floats centered just above the
+              composer's top edge. With the sticky composer it rides the
+              composer itself; without it, a zero-height sticky anchor pins
+              it to the viewport bottom until the composer scrolls in. */}
+          {!stickyComposer && !timelineNewestFirst && jumpToLatest.visible && (
+            <div className="sticky bottom-0 z-10 h-0">
+              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+            </div>
+          )}
           <div
             ref={composerRef}
             className={cn(
@@ -3919,6 +3983,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 keeps the previous issue's in-memory content and the
                 next keystroke would flush it into the new issue's
                 draft key. */}
+            {stickyComposer && !timelineNewestFirst && jumpToLatest.visible && (
+              <JumpToLatestButton onClick={jumpToLatest.jump} label={t(($) => $.timeline.jump_to_latest)} />
+            )}
             <CommentInput
               key={id}
               issueId={id}
