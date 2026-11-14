@@ -188,6 +188,12 @@
       "after_run": "Start after this run",
       "hint": "Sets the default only. You can still change it for any message before sending."
     },
+    "timeline_order": {
+      "title": "Timeline order",
+      "hint": "Show issue activity newest-first or oldest-first.",
+      "oldest_first": "Oldest first",
+      "newest_first": "Newest first"
+    },
     "comments_title": "Comments & chat",
     "region_title": "Language & region",
     "issue_fields_title": "Fields shown when creating issues",
