@@ -105,6 +105,7 @@ import type {
   SkillSummary,
   SkillVersion,
   SkillVersionSummary,
+  ModelTier,
   Squad,
   TimelineEntry,
   User,
@@ -4154,6 +4155,41 @@ export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
   workspace_id: "",
   name: "",
   transport: "unknown",
+  created_at: "",
+  updated_at: "",
+};
+
+// Model tiers (M-350). `cost` is a plain decimal string on the wire; a
+// backend number parses through String(). `runtime_id` omits when unbound.
+export const ModelTierSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  name: z.string().default(""),
+  idx: z.number().int().default(99),
+  runtime_id: z.string().optional(),
+  provider: z.string().default(""),
+  model: z.string().default(""),
+  thinking_level: z.string().optional(),
+  service_tier: z.string().optional(),
+  cost: z.string().optional(),
+  quality: z.number().int().optional(),
+  provider_slots: z.number().int().default(1),
+  enabled: z.boolean().default(true),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
+export const ModelTierListSchema = z.array(ModelTierSchema);
+
+export const EMPTY_MODEL_TIER: ModelTier = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  idx: 99,
+  provider: "",
+  model: "",
+  provider_slots: 1,
+  enabled: true,
   created_at: "",
   updated_at: "",
 };

@@ -1441,6 +1441,24 @@ type MemberDelegationDay struct {
 	ActivityDate pgtype.Date `json:"activity_date"`
 }
 
+type ModelTier struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Name          string             `json:"name"`
+	Idx           int32              `json:"idx"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	Provider      string             `json:"provider"`
+	Model         string             `json:"model"`
+	ThinkingLevel pgtype.Text        `json:"thinking_level"`
+	ServiceTier   pgtype.Text        `json:"service_tier"`
+	Cost          pgtype.Numeric     `json:"cost"`
+	Quality       pgtype.Int4        `json:"quality"`
+	ProviderSlots int32              `json:"provider_slots"`
+	Enabled       bool               `json:"enabled"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type NativeQuestionAnswer struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

@@ -1,5 +1,5 @@
 import { DecisionDetailSchema, DecisionResponseReceiptSchema, DecisionsPageSchema, type DecisionDetail, type DecisionResponseReceipt, type DecisionsPage, type DecisionsParams } from "../decisions/schema";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 import { AgentRuntimeSchema, EMPTY_RUNTIME } from "../runtimes/schema";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters } from "../types/issue-wakeup";
@@ -70,6 +70,8 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceMcpServer,
+  ModelTier,
+  ModelTierInput,
   MemberWithUser,
   User,
   Skill,
@@ -568,6 +570,9 @@ import {
   PluginPreviewSchema,
   WorkspaceMcpServerListSchema,
   WorkspaceMcpServerSchema,
+  ModelTierListSchema,
+  ModelTierSchema,
+  EMPTY_MODEL_TIER,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
   ShareLinkInfoSchema,
@@ -3669,6 +3674,63 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/mcp-servers/${encodeURIComponent(serverId)}`,
       { method: "DELETE" },
     );
+  }
+
+  /** The workspace's model tiers, ordered by idx. Member-visible. */
+  async listModelTiers(workspaceId: string): Promise<ModelTier[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers`);
+    const parsed = parseWithFallback<{ tiers: ModelTier[] } | null>(raw, z.object({ tiers: ModelTierListSchema }), null, {
+      endpoint: "GET /api/workspaces/{id}/tiers",
+    });
+    if (!parsed) throw new Error("Invalid tiers response");
+    return parsed.tiers;
+  }
+
+  /** Adds a tier (admin). */
+  async createModelTier(workspaceId: string, input: ModelTierInput): Promise<ModelTier> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback(raw, ModelTierSchema, EMPTY_MODEL_TIER, {
+      endpoint: "POST /api/workspaces/{id}/tiers",
+    });
+  }
+
+  /** Edits a tier (admin). Omitted fields keep their value. */
+  async updateModelTier(
+    workspaceId: string,
+    tierId: string,
+    input: ModelTierInput,
+  ): Promise<ModelTier> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, ModelTierSchema, EMPTY_MODEL_TIER, {
+      endpoint: "PUT /api/workspaces/{id}/tiers/{tierId}",
+    });
+  }
+
+  /** Removes a tier (admin). */
+  async deleteModelTier(workspaceId: string, tierId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Replaces the tier order (admin). Position in ids becomes the new idx. */
+  async reorderModelTiers(workspaceId: string, ids: string[]): Promise<ModelTier[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/reorder`, {
+      method: "PUT",
+      body: JSON.stringify({ ids }),
+    });
+    const parsed = parseWithFallback<{ tiers: ModelTier[] } | null>(raw, z.object({ tiers: ModelTierListSchema }), null, {
+      endpoint: "PUT /api/workspaces/{id}/tiers/reorder",
+    });
+    if (!parsed) throw new Error("Invalid tiers response");
+    return parsed.tiers;
   }
 
   /** The workspace MCP servers assigned to this agent, with their toggles. */

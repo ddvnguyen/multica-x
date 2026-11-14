@@ -451,7 +451,7 @@ describe("SettingsPage host-supplied groups and hidden pages", () => {
   });
 
   it("drops a subgroup and a group that hidden pages emptied", () => {
-    renderWithI18n(<SettingsPage hiddenTabs={["code", "channels", "mcp"]} />);
+    renderWithI18n(<SettingsPage hiddenTabs={["code", "channels", "mcp", "tiers"]} />);
 
     // The nav lists each subgroup as its own labelled section.
     expect(

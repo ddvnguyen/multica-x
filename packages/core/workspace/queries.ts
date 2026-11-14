@@ -19,6 +19,7 @@ export const workspaceKeys = {
   squadMemberStatus: (wsId: string, squadId: string) =>
     ["workspaces", wsId, "squads", squadId, "members-status"] as const,
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
+  tiers: (wsId: string) => ["workspaces", wsId, "tiers"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
 };
@@ -237,5 +238,18 @@ export function agentMcpServersOptions(agentId: string) {
     queryKey: ["agents", agentId, "mcp-servers"] as const,
     queryFn: () => api.listAgentMcpServers(agentId),
     enabled: agentId !== "",
+  });
+}
+
+/**
+ * The workspace's model tiers (M-350), ordered by idx. Fetched for plain
+ * members too — M-351 agent pickers need the list, and it names runtimes
+ * and models only.
+ */
+export function modelTiersOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.tiers(wsId),
+    queryFn: () => api.listModelTiers(wsId),
+    enabled: wsId !== "",
   });
 }
