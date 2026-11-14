@@ -89,8 +89,26 @@ export function ModelPicker({
   );
   const canCreate = trimmedSearch.length > 0 && !exactMatch;
 
-  const triggerLabel = value || t(($) => $.pickers.model_default);
-  const triggerTitle = t(($) => $.pickers.model_tooltip, { value: triggerLabel });
+  // Show the catalog's name for the selected model, not the raw id: a Freebuff
+  // Desktop catalog is a list of opaque ids (`m-096e75164d`) whose only human
+  // meaning is the label beside them, and the inspector is where an already
+  // configured agent is inspected — "Default" or a hash tells the reader
+  // nothing about which engine will actually run. With nothing selected, name
+  // the model the runtime advertises as its default, which is what a run with
+  // no --model uses. The id stays in the tooltip and in each row's subtitle.
+  const selectedModel = value ? models.find((m) => m.id === value) : undefined;
+  const defaultModel = models.find((m) => m.default);
+  const selectedLabel = value
+    ? (selectedModel?.label ?? value)
+    : t(($) => $.pickers.model_default);
+  const triggerLabel =
+    !value && defaultModel ? `${selectedLabel} · ${defaultModel.label}` : selectedLabel;
+  const triggerTitle = t(($) => $.pickers.model_tooltip, {
+    value:
+      value && selectedModel && selectedModel.label !== value
+        ? `${selectedModel.label} · ${value}`
+        : triggerLabel,
+  });
 
   const select = async (id: string) => {
     setOpen(false);

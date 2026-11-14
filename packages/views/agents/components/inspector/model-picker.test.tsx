@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { RuntimeModelsResult } from "@multica/core/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +45,7 @@ vi.mock("@multica/core/runtimes", () => ({
     mockRefreshRuntimeModels(...args),
 }));
 
-function renderPicker() {
+function renderPicker(props: { value?: string; variant?: "chip" | "field" } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -56,7 +56,8 @@ function renderPicker() {
         <ModelPicker
           runtimeId="rt-claude"
           runtimeOnline
-          value=""
+          value={props.value ?? ""}
+          variant={props.variant ?? "chip"}
           onChange={onChange}
         />
       </QueryClientProvider>
@@ -116,6 +117,33 @@ describe("ModelPicker (inspector)", () => {
     expect(
       screen.queryByText(enAgents.pickers.model_unavailable_heading),
     ).toBeNull();
+  });
+
+  // A Freebuff Desktop catalog is opaque ids (`m-096e75164d`), so echoing the
+  // stored id leaves the inspector unable to say which model the agent runs.
+  it("labels the selected model with its catalog name, not its id", async () => {
+    const { container } = renderPicker({ value: "claude-fable-5" });
+
+    const trigger = container.querySelector("button");
+    await waitFor(() => expect(trigger?.textContent).toContain("Fable"));
+    expect(trigger?.textContent).not.toContain("claude-fable-5");
+  });
+
+  it("names the runtime default when no model is selected", async () => {
+    discovery = async () => ({
+      models: [
+        { id: "m-096e75164d", label: "DeepSeek V4.1 Flash", default: true },
+        { id: "m-9a7e098cc1", label: "Solar Pro 4" },
+      ],
+      supported: true,
+    });
+
+    const { container } = renderPicker();
+    const trigger = container.querySelector("button");
+    await screen.findByText(/DeepSeek V4\.1 Flash/);
+
+    expect(trigger?.textContent).toContain(enAgents.pickers.model_default);
+    expect(trigger?.textContent).toContain("DeepSeek V4.1 Flash");
   });
 
   it("exposes the live-catalog refresh from the inspector picker", async () => {
