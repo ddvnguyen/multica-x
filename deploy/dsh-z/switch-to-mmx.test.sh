@@ -29,7 +29,13 @@ cat > "$STUB/systemctl" <<'EOF'
 printf '%s\n' "$*" >> "$MMX_TEST_SYSTEMCTL_LOG"
 EOF
 
-chmod +x "$STUB/podman" "$STUB/systemctl"
+# curl stub: health check always succeeds.
+cat > "$STUB/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
+chmod +x "$STUB/podman" "$STUB/systemctl" "$STUB/curl"
 export PATH="$STUB:$PATH"
 
 export LANE_ROOT="$SANDBOX/lane"
@@ -38,7 +44,7 @@ export MMX_LANE_ROOT="$LANE_ROOT"
 export MMX_LANE_RUNTIME_ENV="$LANE_RUNTIME_ENV"
 export MMX_TEST_SYSTEMCTL_LOG="$SANDBOX/systemctl.log"
 mkdir -p "$LANE_ROOT/multica-be" "$LANE_ROOT/data"
-printf 'LOCAL_UPLOAD_DIR=/mnt/workspace/clouds/dsh-z/uploads-old\n' > "$LANE_ROOT/multica-be/env"
+printf 'PORT=4390\nJWT_SECRET=lane-jwt-secret\nDATABASE_URL=postgres://multica_z:old-secret@127.0.0.1:5432/multica_z?sslmode=disable\nLOCAL_UPLOAD_DIR=/mnt/workspace/clouds/dsh-z/uploads-old\n' > "$LANE_ROOT/multica-be/env"
 printf 'MULTICA_Z_DB_PASSWORD=old-secret\n' > "$LANE_RUNTIME_ENV"
 export MULTICA_Z_DB_CONTAINER=infra-postgres
 export MULTICA_Z_DB_NAME=multica_z
@@ -108,5 +114,26 @@ fi
 grep -q 'MULTICA_Z_DB_PASSWORD=old-secret' "$LANE_RUNTIME_ENV" \
   || fail "runtime env modified despite dump failure"
 unset MMX_TEST_DUMP_FAIL
+
+# --- 6: a successful switch rewrites the lane env and never echoes the password
+: > "$MMX_TEST_SYSTEMCTL_LOG"
+out="$(bash "$SCRIPT")"
+grep -q "switch complete" <<<"$out" || fail "switch run failed: $out"
+if grep -q "secret" <<<"$out"; then fail "switch output echoed the password"; fi
+grep -q "DATABASE_URL=postgres://multica:secret@127.0.0.1:55434/multica_mmx?sslmode=disable" "$LANE_ROOT/multica-be/env" \
+  || fail "lane env DATABASE_URL not rewritten: $(grep '^DATABASE_URL=' "$LANE_ROOT/multica-be/env")"
+grep -q "LOCAL_UPLOAD_DIR=$SANDBOX/uploads" "$LANE_ROOT/multica-be/env" \
+  || fail "lane env LOCAL_UPLOAD_DIR not rewritten"
+grep -q "JWT_SECRET=lane-jwt-secret" "$LANE_ROOT/multica-be/env" \
+  || fail "lane JWT_SECRET not preserved"
+grep -q "PORT=4390" "$LANE_ROOT/multica-be/env" || fail "PORT not preserved"
+grep -q "MULTICA_Z_DB_PASSWORD=secret" "$LANE_RUNTIME_ENV" \
+  || fail "runtime env password not updated"
+if [ ! -s "$OVERRIDE" ]; then fail "override file missing"; fi
+[ "$(stat -c %a "$OVERRIDE")" = "600" ] || fail "override not mode 600"
+[ "$(stat -c %a "$LANE_ROOT/multica-be/env")" = "600" ] || fail "lane env not mode 600"
+[ "$(stat -c %a "$LANE_RUNTIME_ENV")" = "600" ] || fail "runtime env not mode 600"
+grep -q "restart multica-be-z.service" "$MMX_TEST_SYSTEMCTL_LOG" \
+  || fail "switch did not restart the backend unit"
 
 echo "PASS"

@@ -147,6 +147,19 @@ sed -i '/^MULTICA_Z_DB_PASSWORD=/d' "$LANE_RUNTIME_ENV"
 printf 'MULTICA_Z_DB_PASSWORD=%s\n' "$PG17_PW" >> "$LANE_RUNTIME_ENV"
 chmod 600 "$LANE_RUNTIME_ENV"
 
+# Rewrite the lane server env: DATABASE_URL and LOCAL_UPLOAD_DIR move to the
+# override target; everything else (JWT secret, dev code, public URL, port)
+# stays exactly as it is. deploy.sh regenerates this file from the same
+# override on future runs; the switch must not depend on a deploy rerun.
+MMX_DSN="postgres://$PG17_ROLE:$PG17_PW@$PG17_HOST:$PG17_PORT/$PG17_DB?sslmode=disable"
+sed -i "s#^DATABASE_URL=.*#DATABASE_URL=$MMX_DSN#" "$LANE_ROOT/multica-be/env"
+if grep -q '^LOCAL_UPLOAD_DIR=' "$LANE_ROOT/multica-be/env"; then
+  sed -i "s#^LOCAL_UPLOAD_DIR=.*#LOCAL_UPLOAD_DIR=$PG17_UPLOADS#" "$LANE_ROOT/multica-be/env"
+else
+  printf 'LOCAL_UPLOAD_DIR=%s\n' "$PG17_UPLOADS" >> "$LANE_ROOT/multica-be/env"
+fi
+chmod 600 "$LANE_ROOT/multica-be/env"
+
 # Restart backend
 systemctl --user restart "$MULTICA_BE_Z_UNIT"
 sleep 2
