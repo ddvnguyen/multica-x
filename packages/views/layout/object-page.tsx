@@ -9,7 +9,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { usePanelRef } from "react-resizable-panels";
 import { ChevronRight, PanelRight, type IconComponent } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -22,6 +22,7 @@ import {
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
+import { useSavedLayout } from "./use-saved-layout";
 import { ActionShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useT } from "../i18n";
 import {
@@ -68,7 +69,7 @@ interface ObjectPageProps {
 export function ObjectPage({ segments, leaf, actions, panel, layoutId, children, scrollRef }: ObjectPageProps) {
   const { t } = useT("layout");
   const isMobile = useIsMobile();
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({ id: layoutId });
+  const { defaultLayout, onLayoutChanged } = useSavedLayout(layoutId);
   const panelRef = usePanelRef();
   const shortcutTargetRef = useRef<HTMLDivElement | null>(null);
   // Desktop and mobile keep separate state: a mobile sheet that shared the

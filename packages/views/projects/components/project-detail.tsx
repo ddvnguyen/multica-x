@@ -2,7 +2,8 @@
 
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useRegisterCommandBarContext } from "../../search/register-context";
-import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { usePanelRef } from "react-resizable-panels";
+import { useSavedLayout } from "../../layout/use-saved-layout";
 import { Check, ChevronRight, FileQuestion, Link2, PanelRight, Pencil, Pin, PinOff, Trash2, UserMinus } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
@@ -174,9 +175,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [descriptionOpen, setDescriptionOpen] = useState(true);
 
   // Sidebar panel
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "multica_project_detail_layout",
-  });
+  const { defaultLayout, onLayoutChanged } = useSavedLayout("multica_project_detail_layout");
   const sidebarRef = usePanelRef();
   const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const desktopSidebarInitialOpen = getAnimatedRightSidebarInitialOpen(

@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
+import { resetDeviceStorage, setDeviceStorage } from "../platform/device-storage";
 import {
   columnWidthKey,
   readColumnWidths,
@@ -123,5 +124,25 @@ describe("column width storage", () => {
     expect(readColumnWidths("k", 1)).toBeNull();
     writeColumnWidths("k", [90]);
     expect(readColumnWidths("k", 1)).toEqual([90]);
+  });
+
+  // The island shares dsh's origin, so the widths must follow the adapter the
+  // host installed instead of writing the bare key there (M-336, phase 2).
+  it("follows the host's device storage when one is installed", () => {
+    const values = new Map<string, string>();
+    setDeviceStorage({
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => void values.set(key, value),
+      removeItem: (key) => void values.delete(key),
+    });
+    try {
+      const key = columnWidthKey(model);
+      writeColumnWidths(key, [140, 260]);
+      expect(readColumnWidths(key, 2)).toEqual([140, 260]);
+      expect(values.has("multica:rich-table-widths")).toBe(true);
+      expect(window.localStorage.getItem("multica:rich-table-widths")).toBeNull();
+    } finally {
+      resetDeviceStorage();
+    }
   });
 });

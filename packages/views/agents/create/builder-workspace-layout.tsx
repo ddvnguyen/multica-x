@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { useDefaultLayout } from "react-resizable-panels";
+import { useSavedLayout } from "../../layout/use-saved-layout";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@multica/ui/components/ui/resizable";
@@ -16,9 +16,7 @@ export function BuilderWorkspaceLayout({ conversation, configuration, footer }: 
   const isMobile = useIsMobile();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "multica_agent_builder_layout",
-  });
+  const { defaultLayout, onLayoutChanged } = useSavedLayout("multica_agent_builder_layout");
 
   // The breakpoint resolves after hydration. Do not briefly mount a desktop
   // group on phones and persist its constrained sizes over the desktop layout.

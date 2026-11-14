@@ -5,6 +5,7 @@ import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
 import { mathFromMarkdown } from "mdast-util-math";
 import { gfmTable } from "micromark-extension-gfm-table";
 import { math } from "micromark-extension-math";
+import { deviceStorage, type DeviceStorage } from "../platform/device-storage";
 
 type ElementWithChildren = ReactElement<{ children?: ReactNode }>;
 
@@ -146,16 +147,7 @@ interface StoredWidths {
   usedAt: number;
 }
 
-function getStorage(): Storage | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function readStore(storage: Storage): Record<string, StoredWidths> {
+function readStore(storage: DeviceStorage): Record<string, StoredWidths> {
   try {
     const parsed: unknown = JSON.parse(storage.getItem(WIDTHS_STORAGE_KEY) ?? "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -191,14 +183,14 @@ export function columnWidthKey(model: Pick<RichTableModel, "headerText" | "rowTe
 }
 
 export function readColumnWidths(key: string, columnCount: number): number[] | null {
-  const storage = getStorage();
+  const storage = deviceStorage();
   if (!storage || columnCount === 0) return null;
   const widths = readStore(storage)[key]?.widths;
   return isWidthList(widths, columnCount) ? widths : null;
 }
 
 export function writeColumnWidths(key: string, widths: number[] | null): void {
-  const storage = getStorage();
+  const storage = deviceStorage();
   if (!storage) return;
   const store = readStore(storage);
   if (widths) store[key] = { widths, usedAt: Date.now() };

@@ -12,7 +12,8 @@ import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useCallback, useMemo, useRef, useId, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { usePanelRef } from "react-resizable-panels";
+import { useSavedLayout } from "../../layout/use-saved-layout";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import { OpenQuestionsSection } from "./open-questions-section";
@@ -1426,9 +1427,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // later save). It still needs the failure toast, or a failed upload just
   // erases its own placeholder and the file disappears unexplained.
   const { uploadWithToast } = useEditorUpload();
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: layoutId,
-  });
+  const { defaultLayout, onLayoutChanged } = useSavedLayout(layoutId);
   const sidebarRef = usePanelRef();
   const isMobile = useIsMobile();
   const desktopSidebarInitialOpen = getAnimatedRightSidebarInitialOpen(

@@ -525,6 +525,29 @@ describe("mountIsland", () => {
     expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
   });
 
+  // The split layouts are device state too (M-336, phase 2): `react-resizable-
+  // panels` saves a group under `react-resizable-panels:<id>`, and on dsh's
+  // origin that key belongs in the island's namespaced store, never bare.
+  it("reads saved split layouts through the island's storage", async () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem");
+    try {
+      stubBackend({ issues: [ISSUE] });
+      const host = hostElement();
+      act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+      await settle(() => {
+        expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+      });
+      const keys = getItem.mock.calls.map(([key]) => String(key));
+      expect(keys.some((key) => key.startsWith("multica.dsh.react-resizable-panels:"))).toBe(true);
+      // A bare read is the library's own `localStorage` default, which would
+      // mean the page bypassed the adapter the island installed.
+      expect(keys.some((key) => key.startsWith("react-resizable-panels:"))).toBe(false);
+    } finally {
+      getItem.mockRestore();
+    }
+  });
+
   // On a dsh too old to publish the seam there is no column to open, so the
   // fork's floating peek is the preview (M-336, Owner decision 4).
   it("falls back to the floating peek without the tab seam", async () => {

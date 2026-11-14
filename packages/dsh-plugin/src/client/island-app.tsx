@@ -62,6 +62,7 @@ import {
   projectListOptions,
   RESOURCES,
   setCurrentWorkspace,
+  setDeviceStorage,
   SettingsPage,
   SkillDetailPage,
   SkillsPage,
@@ -405,6 +406,11 @@ export function IslandPages({
   attached?: boolean;
 }) {
   const storage = useMemo(() => createIslandStorage(), []);
+  // The fork's device state that is not a zustand store — the panel splits'
+  // saved layouts and the rich table's column widths — is read while a page
+  // renders, so the adapter has to be installed before the first child does,
+  // not in an effect a frame later. `storage` is stable for this tree's life.
+  setDeviceStorage(storage);
   // One workspace, one tab set (M-173): the persisted key no longer varies by
   // slug, so switching the host's slug can never strand a second history.
   const tabsStore = useMemo(() => createTabsStore(storage, slug), [storage, slug]);

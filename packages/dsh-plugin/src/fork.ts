@@ -52,6 +52,14 @@ export { createIssueViewStore } from "@multica/core/issues/stores/view-store";
 // than a rival one.
 export { ScrollRestorationProvider } from "@multica/views/platform";
 export type { ScrollRestorationAdapter, ScrollRestorationEntry } from "@multica/views/platform";
+// M-336 phase 2: the fork's non-store device state — the panel splits' saved
+// layouts and the rich table's column widths — resolves through this adapter.
+// `SidebarProvider` already takes the island's storage for the column widths;
+// these writes are not on that prop's path, so the island installs the same
+// namespaced store here rather than letting them write bare keys into the
+// origin it shares with dsh.
+export { setDeviceStorage } from "@multica/views/platform";
+export type { DeviceStorage } from "@multica/views/platform";
 
 // The five surfaces the sidebar menu opens, plus their detail depth.
 export {

@@ -1,4 +1,11 @@
 export { useImmersiveMode } from "./use-immersive-mode";
+export {
+  deviceStorage,
+  deviceStorageOverride,
+  resetDeviceStorage,
+  setDeviceStorage,
+  type DeviceStorage,
+} from "./device-storage";
 export { useDesktopUnreadBadge } from "./use-desktop-unread-badge";
 export { DragStrip } from "./drag-strip";
 export {
