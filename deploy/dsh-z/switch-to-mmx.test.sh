@@ -36,7 +36,13 @@ exit 0
 EOF
 
 chmod +x "$STUB/podman" "$STUB/systemctl" "$STUB/curl"
+export PATH="$STUB:$PATH"
 
+export LANE_ROOT="$SANDBOX/lane"
+export LANE_RUNTIME_ENV="$SANDBOX/lane-runtime.env"
+export MMX_LANE_ROOT="$LANE_ROOT"
+export MMX_LANE_RUNTIME_ENV="$LANE_RUNTIME_ENV"
+export MMX_TEST_SYSTEMCTL_LOG="$SANDBOX/systemctl.log"
 # Stub lane release: the switch runs <current>/bin/migrate up.
 mkdir -p "$LANE_ROOT/multica-be/current/bin"
 cat > "$LANE_ROOT/multica-be/current/bin/migrate" <<'EOF'
@@ -46,13 +52,6 @@ echo "migrate up (stub)"
 EOF
 chmod +x "$LANE_ROOT/multica-be/current/bin/migrate"
 export MMX_TEST_MIGRATE_LOG="$SANDBOX/migrate.log"
-export PATH="$STUB:$PATH"
-
-export LANE_ROOT="$SANDBOX/lane"
-export LANE_RUNTIME_ENV="$SANDBOX/lane-runtime.env"
-export MMX_LANE_ROOT="$LANE_ROOT"
-export MMX_LANE_RUNTIME_ENV="$LANE_RUNTIME_ENV"
-export MMX_TEST_SYSTEMCTL_LOG="$SANDBOX/systemctl.log"
 mkdir -p "$LANE_ROOT/multica-be" "$LANE_ROOT/data"
 printf 'PORT=4390\nJWT_SECRET=lane-jwt-secret\nDATABASE_URL=postgres://multica_z:old-secret@127.0.0.1:5432/multica_z?sslmode=disable\nLOCAL_UPLOAD_DIR=/mnt/workspace/clouds/dsh-z/uploads-old\n' > "$LANE_ROOT/multica-be/env"
 printf 'MULTICA_Z_DB_PASSWORD=old-secret\n' > "$LANE_RUNTIME_ENV"
