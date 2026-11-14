@@ -49,7 +49,10 @@
     "send": "回答",
     "sending": "发送中…",
     "sent": "回答已发送",
-    "failed": "回答发送失败，请重试。"
+    "failed": "回答发送失败，请重试。",
+    "multiline_hint": "回车换行,⌘/Ctrl+回车发送。",
+    "submit_shortcut": "⌘/Ctrl+回车发送",
+    "characters_remaining": "还剩 {{count}} 字"
   },
   "ask_plan": {
     "plan_draft": "智能体正在准备该计划，暂时没有可审阅的内容。",

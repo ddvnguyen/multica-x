@@ -49,7 +49,10 @@
     "send": "回答する",
     "sending": "送信中…",
     "sent": "回答を送信しました",
-    "failed": "回答を送信できませんでした。もう一度お試しください。"
+    "failed": "回答を送信できませんでした。もう一度お試しください。",
+    "multiline_hint": "改行はEnter。⌘/Ctrl+Enterで送信。",
+    "submit_shortcut": "⌘/Ctrl+Enterで送信",
+    "characters_remaining": "残り{{count}}文字"
   },
   "ask_plan": {
     "plan_draft": "エージェントがこの計画を準備中です。まだレビューできる段階ではありません。",

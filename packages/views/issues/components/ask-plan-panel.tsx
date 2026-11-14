@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAnswerQuestionCard } from "@multica/core/issues/mutations";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import type { AgentAnswerDraft } from "@multica/core/issues/agent-question";
 import { issueAskPlanOptions, issueTimelineOptions } from "@multica/core/issues/queries";
 import {
@@ -34,6 +36,24 @@ export function AskPlanPanel({ issueId }: { issueId: string }) {
   const { data } = useQuery(issueAskPlanOptions(wsId, issueId));
   const answer = useAnswerQuestionCard(issueId);
   const { data: timeline } = useQuery(issueTimelineOptions(issueId));
+  // The server closed a card (answered, withdrawn, cancelled, expired): its
+  // draft is spent. Prune on every re-read so a stale draft can never answer
+  // a card that is already gone — or reappear for a card id the server
+  // reuses. Runs before the early returns: the open set is empty while the
+  // read is in flight, and pruning then would drop the draft of a card the
+  // server simply has not confirmed yet.
+  // Keyed on the read object itself: a new fetch carries a new reference, and
+  // the open set is derived from that same read, so there is nothing else to
+  // depend on.
+  useEffect(() => {
+    if (data === undefined) return;
+    useAskDraftStore.getState().pruneToOpen(
+      new Set([
+        ...data.question_cards.map((card) => card.id),
+        ...(data.plan ? [data.plan.id] : []),
+      ]),
+    );
+  }, [data]);
   const threadIds = new Set((timeline ?? []).map((entry) => entry.id));
 
   // Reading `undefined` (still loading) and the empty state the same way keeps
@@ -116,6 +136,7 @@ export function AskPlanQuestionForm({
         issueId={card.issue_id}
         taskId={card.task_id}
         questions={questions}
+        draftKey={`ask:${card.id}`}
         submit={async (drafts) => {
           await onAnswer({ cardId: card.id, answers: draftsToCardAnswers(drafts) });
         }}
