@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
+import { useHostStorage } from "@multica/ui/components/ui/host-storage";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@multica/ui/components/ui/resizable";
 import { useT } from "../../i18n";
@@ -17,7 +18,10 @@ export function BuilderWorkspaceLayout({ conversation, configuration, footer }: 
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    // A host on a shared origin (the dsh island) keeps the layout in its own
+    // namespaced store; `undefined` keeps the library's `localStorage` default.
     id: "multica_agent_builder_layout",
+    storage: useHostStorage(),
   });
 
   // The breakpoint resolves after hydration. Do not briefly mount a desktop

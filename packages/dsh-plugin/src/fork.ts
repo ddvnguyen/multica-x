@@ -43,6 +43,10 @@ export { PageChromeProvider } from "@multica/views/layout";
 // shell's own origin.
 export { SidebarProvider } from "@multica/ui/components/ui/sidebar";
 export type { WidthStorage } from "@multica/ui/components/ui/sidebar";
+// M-360: the same store backs the other width owners the pages render — the
+// `react-resizable-panels` split layouts and rich-table column widths — so no
+// bare key reaches the origin the shell shares.
+export { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";

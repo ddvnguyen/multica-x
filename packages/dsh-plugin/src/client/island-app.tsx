@@ -58,6 +58,7 @@ import {
   NavigationProvider,
   PortalContainerProvider,
   ScrollRestorationProvider,
+  HostStorageProvider,
   SidebarProvider,
   projectListOptions,
   RESOURCES,
@@ -535,6 +536,11 @@ export function IslandPages({
 
   return (
     <ViewStoreProvider store={viewStore}>
+      {/* Every page's width owner reads through one store: the sidebar widths
+          (M-330), the resizable split layouts and the rich-table columns
+          (M-360). `storage` is the island's namespaced adapter, so none of
+          them touch the bare keys the shell's origin already holds. */}
+      <HostStorageProvider storage={storage}>
       <NavigationProvider value={navigation}>
         <PageChromeProvider titleInHostChrome projectId={projectId}>
           <DecisionsBadgeReporter workspaceId={workspaceId} projectId={projectId} />
@@ -653,6 +659,7 @@ export function IslandPages({
           <IslandVersionBadge />
         </PageChromeProvider>
       </NavigationProvider>
+      </HostStorageProvider>
     </ViewStoreProvider>
   );
 }

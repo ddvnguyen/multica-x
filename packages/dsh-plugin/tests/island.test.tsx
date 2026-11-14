@@ -518,6 +518,53 @@ describe("mountIsland", () => {
     expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
   });
 
+  // M-360: the issue detail's resizable split (and every other
+  // `react-resizable-panels` page — object pages, the agent builder) saves its
+  // layout through `useDefaultLayout`, which defaults to bare `localStorage`
+  // keys on the origin the shell shares. The island supplies its namespaced
+  // store, so a saved layout is read back from there and the bare key stays
+  // untouched.
+  it("keeps the issue detail split layout in the island's store", async () => {
+    localStorage.clear();
+    // A saved layout with the sidebar collapsed at 0%: honoring it is visible
+    // as the sidebar panel's flex growth, which is unset without a layout.
+    localStorage.setItem(
+      "multica.dsh.react-resizable-panels:multica_issue_detail_layout",
+      JSON.stringify({ content: 70, sidebar: 0 }),
+    );
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+    });
+    const sidebar = host.shadowRoot?.querySelector<HTMLElement>('[data-testid="sidebar"]');
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.style.flexGrow).toBe("0");
+    // The shell shares this origin, so the island must not read or write the
+    // bare key the web layout uses.
+    expect(localStorage.getItem("react-resizable-panels:multica_issue_detail_layout")).toBeNull();
+
+    // A layout change commits to the island's store, still not the bare key.
+    const separator = host.shadowRoot?.querySelector<HTMLElement>('[role="separator"]');
+    expect(separator).not.toBeNull();
+    await act(async () => {
+      separator!.focus();
+      separator!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    await settle(() => {
+      expect(
+        localStorage.getItem("multica.dsh.react-resizable-panels:multica_issue_detail_layout"),
+      ).not.toBeNull();
+    });
+    expect(localStorage.getItem("react-resizable-panels:multica_issue_detail_layout")).toBeNull();
+    localStorage.clear();
+  });
+
   // One row per rail entry: the island has to render each of the five views on
   // its own, inside the same shadow root, with nothing page-level in the shell.
   const entries: Array<{ entry: string; route: IslandRoute; text: string }> = [
