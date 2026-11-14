@@ -160,6 +160,13 @@ else
 fi
 chmod 600 "$LANE_ROOT/multica-be/env"
 
+# Apply pending migrations to the target copy (idempotent; deploy.sh phase 4
+# runs the same step). The restarted backend refuses readiness until the
+# schema matches its bundled migrations, so this runs before the restart.
+if ! ( cd "$LANE_ROOT/multica-be/current" && DATABASE_URL="$MMX_DSN" ./bin/migrate up ); then
+  die "migrate up against $PG17_DB failed"
+fi
+
 # Restart backend
 systemctl --user restart "$MULTICA_BE_Z_UNIT"
 sleep 2

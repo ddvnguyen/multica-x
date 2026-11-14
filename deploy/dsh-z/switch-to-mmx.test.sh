@@ -36,6 +36,16 @@ exit 0
 EOF
 
 chmod +x "$STUB/podman" "$STUB/systemctl" "$STUB/curl"
+
+# Stub lane release: the switch runs <current>/bin/migrate up.
+mkdir -p "$LANE_ROOT/multica-be/current/bin"
+cat > "$LANE_ROOT/multica-be/current/bin/migrate" <<'EOF'
+#!/usr/bin/env bash
+printf 'DATABASE_URL=%s\n' "${DATABASE_URL:-}" >> "$MMX_TEST_MIGRATE_LOG"
+echo "migrate up (stub)"
+EOF
+chmod +x "$LANE_ROOT/multica-be/current/bin/migrate"
+export MMX_TEST_MIGRATE_LOG="$SANDBOX/migrate.log"
 export PATH="$STUB:$PATH"
 
 export LANE_ROOT="$SANDBOX/lane"
@@ -135,5 +145,7 @@ if [ ! -s "$OVERRIDE" ]; then fail "override file missing"; fi
 [ "$(stat -c %a "$LANE_RUNTIME_ENV")" = "600" ] || fail "runtime env not mode 600"
 grep -q "restart multica-be-z.service" "$MMX_TEST_SYSTEMCTL_LOG" \
   || fail "switch did not restart the backend unit"
+grep -q "DATABASE_URL=postgres://multica:secret@127.0.0.1:55434/multica_mmx" "$MMX_TEST_MIGRATE_LOG" \
+  || fail "switch did not run migrate up against multica_mmx"
 
 echo "PASS"
