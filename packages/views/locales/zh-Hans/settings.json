@@ -190,6 +190,12 @@
       "after_run": "本轮结束后开始",
       "hint": "只决定默认选项，每条消息发送前仍可单独修改。"
     },
+    "timeline_order": {
+      "title": "时间线顺序",
+      "hint": "按最新在前或最早在前显示任务动态。",
+      "oldest_first": "最早在前",
+      "newest_first": "最新在前"
+    },
     "comments_title": "评论与聊天",
     "region_title": "语言与地区",
     "appearance_title": "外观",

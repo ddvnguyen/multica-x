@@ -692,6 +692,7 @@ function ActivityBlock({
   truncateOlder,
   showOlder,
   onToggleShowOlder,
+  newestFirst,
   getActorName,
   resolveStatusLabel,
   resolveStatusCategory,
@@ -710,6 +711,10 @@ function ActivityBlock({
   truncateOlder: boolean;
   showOlder: boolean;
   onToggleShowOlder: () => void;
+  // Page-level reading order. When newest-first, the block's entries render
+  // newest-first and the "Show N more" affordance moves to the block's
+  // trailing end (the older side), mirroring the top-level reversal.
+  newestFirst: boolean;
   getActorName: (type: string, id: string) => string;
   resolveStatusLabel: (statusKey: string) => string;
   resolveStatusCategory: (statusKey: string) => IssueStatusCategory;
@@ -742,6 +747,10 @@ function ActivityBlock({
       : 0;
   const visibleEntries =
     hiddenOlderCount > 0 ? entries.slice(-LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT) : entries;
+  // In newest-first mode the block reads newest-first like the rest of the
+  // page; the entries themselves are stored oldest-first, so reverse the
+  // rendered slice (the slice still keeps the most recent N).
+  const orderedVisibleEntries = newestFirst ? [...visibleEntries].reverse() : visibleEntries;
   // Hide the "v N activities" collapse header while we're in the truncated
   // default state. The "Show N more" link is the only control users need
   // when they're glancing at recent activity — stacking two chevron rows
@@ -761,7 +770,7 @@ function ActivityBlock({
           <span>{t(($) => $.activity.activity_count, { count: entries.length })}</span>
         </button>
       )}
-      {hiddenOlderCount > 0 && (
+      {hiddenOlderCount > 0 && !newestFirst && (
         <button
           type="button"
           onClick={onToggleShowOlder}
@@ -771,7 +780,7 @@ function ActivityBlock({
           <span>{t(($) => $.activity.show_more_activities, { count: hiddenOlderCount })}</span>
         </button>
       )}
-      {visibleEntries.map((entry) => {
+      {orderedVisibleEntries.map((entry) => {
         const details = (entry.details ?? {}) as Record<string, string>;
         // Duplicate rows replace the status rows of the same write, so they
         // carry the status glyph those rows would have had.
@@ -861,6 +870,16 @@ function ActivityBlock({
           </div>
         );
       })}
+      {hiddenOlderCount > 0 && newestFirst && (
+        <button
+          type="button"
+          onClick={onToggleShowOlder}
+          className="flex items-center gap-1.5 text-label text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRight className="h-3 w-3 shrink-0" />
+          <span>{t(($) => $.activity.show_more_activities, { count: hiddenOlderCount })}</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -3175,6 +3194,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         truncateOlder={truncateOlder}
         showOlder={showOlder}
         onToggleShowOlder={() => showOlderActivities(item.id)}
+        newestFirst={timelineNewestFirst}
         getActorName={getActorName}
         resolveStatusLabel={resolveStatusLabel}
         resolveStatusCategory={resolveStatusCategory}
