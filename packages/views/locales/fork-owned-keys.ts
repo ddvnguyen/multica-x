@@ -226,6 +226,8 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
     "preferences.appearance_title",
     "preferences.theme",
     "preferences.timeline_order",
+    "page.tabs.tiers",
+    "tiers",
   ],
   skills: [
     "actions.clear_selection",

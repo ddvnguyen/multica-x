@@ -8,6 +8,7 @@ import {
   FolderGit2,
   Keyboard,
   KeyRound,
+  Layers,
   ListPlus,
   Lock,
   MessagesSquare,
@@ -52,6 +53,7 @@ import { QuickActionsTab } from "./quick-actions-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
+import { TiersTab } from "./tiers-tab";
 import { BillingTab } from "./billing-tab";
 import {
   SETTINGS_ANCHOR_ATTR,
@@ -309,6 +311,10 @@ export function SettingsPage({
               ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
               : []),
             entry("mcp", t(($) => $.page.tabs.mcp), Server, <McpTab />, {
+              adminOnly: true,
+            }),
+            entry("tiers", t(($) => $.page.tabs.tiers), Layers, <TiersTab />, {
+              wide: true,
               adminOnly: true,
             }),
             ...(pluginsEnabled
