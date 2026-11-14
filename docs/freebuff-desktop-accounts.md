@@ -144,3 +144,10 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
   account on the daemon host with the previous build, ~0.15 GB with the slimmer
   build. Remove idle accounts to free their process; `any`-mode agents do not
   need every account live.
+- Idle auto-close (M-254): a managed Desktop orchestrator with no task
+  reservation for 5 minutes (`freebuffDesktopIdleTimeout`) is stopped and
+  removed from `registry.json`; the account state on disk and the server-side
+  `connected` record are kept. The next task restarts it transparently. Only
+  task start→end reservations refresh the idle clock — status polls and model
+  discovery do not. Reserved, logging-in (`requested`/`awaiting_login`), busy,
+  or `Active` accounts are never closed.

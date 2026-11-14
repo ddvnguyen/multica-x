@@ -493,8 +493,9 @@ type Daemon struct {
 	freebuffDesktopLogins       sync.Map // runtime/account key -> context.CancelFunc
 	freebuffDesktopInstances    sync.Map // runtime/account key -> *freebuffDesktopInstance
 	freebuffDesktopInstanceMu   sync.Mutex
-	freebuffDesktopReservations map[string]int    // guarded by freebuffDesktopInstanceMu
-	freebuffDesktopFailedPins   map[string]string // guarded by freebuffDesktopInstanceMu
+	freebuffDesktopReservations map[string]int                     // guarded by freebuffDesktopInstanceMu
+	freebuffDesktopFailedPins   map[string]string                  // guarded by freebuffDesktopInstanceMu
+	freebuffDesktopIdleAccounts map[string]freebuffDesktopIdleInfo // guarded by freebuffDesktopInstanceMu (M-254)
 
 	// dshInstallInFlight is true while an automatic DSH profile install is
 	// running. Read when a verdict becomes an offline reason, so the server can
