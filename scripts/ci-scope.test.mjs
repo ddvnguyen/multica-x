@@ -257,9 +257,10 @@ test("the CLI exits nonzero on a failed top-level gate", (t) => {
   assert.match(run.stderr, /frontend/);
 });
 
-test("the backend gate owns the three-platform installer matrix", () => {
+test("the backend gate owns the Linux-only installer job", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /^        os: \[ubuntu-latest, macos-latest, windows-latest\]$/m);
+  assert.match(jobs.installer, /^    runs-on: ubuntu-latest$/m);
+  assert.doesNotMatch(jobs.installer, /macos-latest|windows-latest/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });
 
