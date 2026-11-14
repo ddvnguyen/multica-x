@@ -181,13 +181,23 @@ export function useIssuePeekClick() {
       if (event) event.preventDefault();
       return capability.openIssueInTab(tabIssueId);
     }
-    if (target === "peek" && peek) {
-      event?.preventDefault();
-      // A plain click opens (or keeps open) the issue. Shift+Click is the
-      // explicit preview gesture and toggles it closed again, like Space.
-      if (event?.shiftKey) peek.toggle(issueId);
-      else peek.open(issueId);
-      return true;
+    if (target === "peek") {
+      // A host that owns the side column (MMX, M-336) draws the preview there;
+      // its column is the preview, so the fork's in-view peek never mounts.
+      const opened = capability.openSidePreview?.(issueId) === true;
+      if (opened) {
+        event?.preventDefault();
+        return true;
+      }
+      if (peek) {
+        event?.preventDefault();
+        // A plain click opens (or keeps open) the issue. Shift+Click is the
+        // explicit preview gesture and toggles it closed again, like Space.
+        if (event?.shiftKey) peek.toggle(issueId);
+        else peek.open(issueId);
+        return true;
+      }
+      return false;
     }
     if (target === "page" && event?.shiftKey) {
       // Shift+Click in preview mode opens the full page in place. Left alone,

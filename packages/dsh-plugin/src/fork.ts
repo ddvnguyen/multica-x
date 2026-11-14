@@ -58,6 +58,10 @@ export {
   IssuesPage,
   IssueDetailRoute,
 } from "@multica/views/issues/components";
+// The issue's side stack — Properties, Wakeups, Pull requests, Execution log —
+// which the side preview tab renders in dsh's right column (M-336). It is the
+// issue page's own composition, not a second one.
+export { IssueSideStack } from "@multica/views/issues/components";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
 // The agent page's extension point, so a host-supplied section (the MOCT
 // Memory tab) rides the fork's own layout instead of a second design.
@@ -134,6 +138,10 @@ export { projectResourcesOptions } from "@multica/core/projects";
 // the header reads the same cache entries the page it sits above already fills.
 export { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 export { useViewStore } from "@multica/core/issues/stores/view-store-context";
+// The side preview's body header (M-336) names the issue it shows; the
+// workspace pointer is the fork's own page-scope hook, the same one the side
+// stack below the header reads.
+export { useWorkspaceId } from "@multica/core/hooks";
 export type { Project } from "@multica/core/types/project";
 export type { ProjectResource } from "@multica/core/types/project";
 
