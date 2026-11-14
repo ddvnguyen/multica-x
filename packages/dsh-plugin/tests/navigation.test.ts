@@ -63,6 +63,31 @@ describe("parseIslandRoute", () => {
     });
   });
 
+  it("reads the runtime detail depth the Runtimes rows push (M-349)", () => {
+    // The shared Runtimes page pushes workspace paths, not the settings
+    // query the device tab itself lives at; without these the island refuses
+    // the click and the row does nothing.
+    expect(parseIslandRoute("/demo/runtimes")).toEqual({
+      view: "settings",
+      query: "tab=runtimes",
+    });
+    expect(parseIslandRoute("/demo/runtimes/ddv-server")).toEqual({
+      view: "runtime",
+      machineId: "ddv-server",
+    });
+    expect(parseIslandRoute("/demo/runtimes/qoder")).toEqual({
+      view: "runtime",
+      machineId: "qoder",
+    });
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime/rt-2")).toEqual({
+      view: "runtime-settings",
+      machineId: "machine-1",
+      runtimeId: "rt-2",
+    });
+    expect(parseIslandRoute("/demo/runtimes/machine-1/extra")).toBeNull();
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime")).toBeNull();
+  });
+
   it("keeps the query the pages address their state with", () => {
     expect(parseIslandRoute("/demo/chat?session=abc")).toEqual({
       view: "chat",
@@ -96,6 +121,12 @@ describe("islandPath", () => {
       { view: "decisions" as const },
       { view: "chat" as const, query: "session=abc" },
       { view: "inbox" as const, query: "view=archived" },
+      { view: "runtime" as const, machineId: "ddv-server" },
+      {
+        view: "runtime-settings" as const,
+        machineId: "machine-1",
+        runtimeId: "rt-2",
+      },
       { view: "settings" as const },
       { view: "settings" as const, query: "tab=moct-connection" },
     ];
@@ -116,6 +147,18 @@ describe("islandPath", () => {
     expect(islandPathname("demo", FAMILY_ROOTS.chat)).toBe("/demo/chat");
     expect(islandPathname("demo", FAMILY_ROOTS.settings)).toBe("/demo/settings");
   });
+
+  it("renders runtime detail at the web app's own paths", () => {
+    expect(
+      islandPathname("demo", { view: "runtime", machineId: "ddv-server" }),
+    ).toBe("/demo/runtimes/ddv-server");
+    expect(
+      islandPathname(
+        "demo",
+        { view: "runtime-settings", machineId: "m", runtimeId: "r" },
+      ),
+    ).toBe("/demo/runtimes/m/runtime/r");
+  });
 });
 
 describe("islandParent", () => {
@@ -123,6 +166,14 @@ describe("islandParent", () => {
     expect(islandParent({ view: "issue", issueId: "MUL-1" })).toEqual(BOARD_ROUTE);
     expect(islandParent({ view: "agent", agentId: "a" })).toEqual(FAMILY_ROOTS.agents);
     expect(islandParent({ view: "skill", skillId: "s" })).toEqual(FAMILY_ROOTS.skills);
+    // Runtime detail returns to the Runtimes settings tab, not a rail root.
+    expect(islandParent({ view: "runtime", machineId: "m" })).toEqual({
+      view: "settings",
+      query: "tab=runtimes",
+    });
+    expect(
+      islandParent({ view: "runtime-settings", machineId: "m", runtimeId: "r" }),
+    ).toEqual({ view: "settings", query: "tab=runtimes" });
     for (const root of Object.values(FAMILY_ROOTS)) {
       expect(islandParent(root)).toBeNull();
     }
@@ -142,8 +193,14 @@ describe("islandRouteKey", () => {
         islandRouteKey(FAMILY_ROOTS.inbox),
         islandRouteKey(FAMILY_ROOTS.chat),
         islandRouteKey(FAMILY_ROOTS.settings),
+        islandRouteKey({ view: "runtime", machineId: "m" }),
+        islandRouteKey({
+          view: "runtime-settings",
+          machineId: "m",
+          runtimeId: "r",
+        }),
       ]).size,
-    ).toBe(9);
+    ).toBe(11);
   });
 });
 
