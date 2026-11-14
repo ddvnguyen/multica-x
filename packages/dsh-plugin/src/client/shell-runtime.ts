@@ -25,6 +25,12 @@ export interface ShellBridge {
   sessions: SessionsLike | null;
   /** The host's daemon id, used to filter `local_directory` refs; may be empty. */
   daemonId: string;
+  /**
+   * The tab kind `Side preview` opens, or `null` when this shell is too old to
+   * publish plugin tab types (M-336). The island offers `New tab` alone in that
+   * case, so the second open mode follows the host and not a guess.
+   */
+  sidePreviewKind: string | null;
 }
 
 let bridge: ShellBridge | null = null;
