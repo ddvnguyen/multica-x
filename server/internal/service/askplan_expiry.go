@@ -159,6 +159,189 @@ func (s *TaskService) EscalateParkedAskPlanTask(ctx context.Context, taskID pgty
 	return true, nil
 }
 
+// errParkedAskPlanNotRemindable aborts the reminder transaction as a no-op,
+// never a failure: the row is gone, no longer parked as an ask/plan, its
+// evidence is no longer open, or it was already reminded. Callers map it to
+// (false, nil).
+var errParkedAskPlanNotRemindable = errors.New("parked ask/plan is not remindable")
+
+// RemindParkedAskPlanTask fires the M-362 mid-timeout reminder for one parked
+// ask/plan: one transaction — task re-check, the evidence row locked, and a
+// once-only CAS that stamps reminded_at — then post-commit one inbox bump per
+// workspace member reusing the park's type and evidence details, with
+// details stamped `reminder: true`. The card stays open, the plan stays in
+// review, the parked task stays 'blocked'. M-131 is untouched: escalation
+// keeps its own stamp and path.
+//
+// Returns (true, nil) when this call reminded, (false, nil) when the row was
+// not a remindable park (including "already answered" and "already
+// reminded"), and an error only for real failures.
+func (s *TaskService) RemindParkedAskPlanTask(ctx context.Context, taskID pgtype.UUID, timeoutSeconds int) (bool, error) {
+	var task db.AgentTaskQueue
+	var isPlan bool
+	var cardID, planID string
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		loaded, err := qtx.GetAgentTask(ctx, taskID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errParkedAskPlanNotRemindable
+		}
+		if err != nil {
+			return fmt.Errorf("load parked task: %w", err)
+		}
+		if loaded.Status != "blocked" || !loaded.WaitReason.Valid || loaded.WaitReason.String != WaitReasonAskPlan {
+			return errParkedAskPlanNotRemindable
+		}
+		if !loaded.TriggerEvidenceKind.Valid || !loaded.TriggerEvidenceRefID.Valid {
+			slog.Warn("ask/plan reminder skipped: parked task carries no evidence ref",
+				"task_id", util.UUIDToString(loaded.ID), "issue_id", util.UUIDToString(loaded.IssueID))
+			return errParkedAskPlanNotRemindable
+		}
+		switch loaded.TriggerEvidenceKind.String {
+		case EvidenceQuestionAnswer:
+			card, err := qtx.GetAgentQuestionCardForUpdate(ctx, loaded.TriggerEvidenceRefID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errParkedAskPlanNotRemindable
+			}
+			if err != nil {
+				return fmt.Errorf("lock parked question card: %w", err)
+			}
+			if card.Status != "open" {
+				return errParkedAskPlanNotRemindable
+			}
+			if card.RemindedAt.Valid {
+				return errParkedAskPlanNotRemindable
+			}
+			if _, err := qtx.RemindAgentQuestionCard(ctx, card.ID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return errParkedAskPlanNotRemindable
+				}
+				return fmt.Errorf("remind question card: %w", err)
+			}
+			cardID = util.UUIDToString(card.ID)
+		case EvidencePlanVerdict:
+			plan, err := qtx.GetAgentPlanForUpdate(ctx, loaded.TriggerEvidenceRefID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errParkedAskPlanNotRemindable
+			}
+			if err != nil {
+				return fmt.Errorf("lock parked plan: %w", err)
+			}
+			if plan.Status != "in_review" {
+				return errParkedAskPlanNotRemindable
+			}
+			if plan.RemindedAt.Valid {
+				return errParkedAskPlanNotRemindable
+			}
+			if _, err := qtx.RemindAgentPlan(ctx, plan.ID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return errParkedAskPlanNotRemindable
+				}
+				return fmt.Errorf("remind plan: %w", err)
+			}
+			isPlan = true
+			planID = util.UUIDToString(plan.ID)
+		default:
+			slog.Warn("ask/plan reminder skipped: unknown evidence kind",
+				"task_id", util.UUIDToString(loaded.ID), "kind", loaded.TriggerEvidenceKind.String)
+			return errParkedAskPlanNotRemindable
+		}
+		task = loaded
+		return nil
+	})
+	if errors.Is(err, errParkedAskPlanNotRemindable) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("remind parked ask/plan: %w", err)
+	}
+	s.remindAskPlanMembers(ctx, task, isPlan, cardID, planID, timeoutSeconds)
+	return true, nil
+}
+
+// remindAskPlanMembers delivers the reminder bump post-commit: one inbox row
+// per workspace member, reusing the park's type and evidence details with
+// `reminder: true` stamped in, so the row renders like the original ask but
+// never collides with its evidence identity. Best-effort like every inbox
+// housekeeping path: a failure logs and the stamp stands (the Owner can still
+// answer from the original row).
+func (s *TaskService) remindAskPlanMembers(ctx context.Context, task db.AgentTaskQueue, isPlan bool, cardID, planID string, timeoutSeconds int) {
+	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		slog.Warn("ask/plan reminder: load issue failed",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", err)
+		return
+	}
+	members, err := s.Queries.ListMembers(ctx, issue.WorkspaceID)
+	if err != nil {
+		slog.Warn("ask/plan reminder: list members failed",
+			"issue_id", util.UUIDToString(issue.ID), "error", err)
+		return
+	}
+	notifType := "agent_question"
+	detailsMap := map[string]any{"card_id": cardID, "reminder": true}
+	title := "Reminder: the agent is still waiting for your answer"
+	if isPlan {
+		notifType = "plan_review"
+		detailsMap = map[string]any{"plan_id": planID, "reminder": true}
+		title = "Reminder: the agent is still waiting for your plan verdict"
+	}
+	details, err := json.Marshal(detailsMap)
+	if err != nil {
+		slog.Warn("ask/plan reminder: details encode failed", "error", err)
+		return
+	}
+	detailsJSON := json.RawMessage(details)
+	for _, m := range members {
+		item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
+			ID:            dbid.NewV7(),
+			WorkspaceID:   issue.WorkspaceID,
+			RecipientType: "member",
+			RecipientID:   m.UserID,
+			Type:          notifType,
+			Severity:      "action_required",
+			IssueID:       issue.ID,
+			Title:         title,
+			Body:          pgtype.Text{String: "waiting with no answer yet", Valid: true},
+			ActorType:     pgtype.Text{String: "system", Valid: true},
+			Details:       detailsJSON,
+		})
+		if err != nil {
+			slog.Warn("ask/plan reminder: inbox creation failed",
+				"issue_id", util.UUIDToString(issue.ID), "error", err)
+			continue
+		}
+		if inserted && s.Bus != nil {
+			s.Bus.Publish(events.Event{
+				Type:        protocol.EventInboxNew,
+				WorkspaceID: util.UUIDToString(issue.WorkspaceID),
+				ActorType:   "system",
+				Payload: map[string]any{"item": map[string]any{
+					"id":             util.UUIDToString(item.ID),
+					"workspace_id":   util.UUIDToString(item.WorkspaceID),
+					"recipient_type": item.RecipientType,
+					"recipient_id":   util.UUIDToString(item.RecipientID),
+					"type":           item.Type,
+					"severity":       item.Severity,
+					"issue_id":       util.UUIDToPtr(item.IssueID),
+					"title":          item.Title,
+					"body":           util.TextToPtr(item.Body),
+					"read":           item.Read,
+					"archived":       item.Archived,
+					"created_at":     util.TimestampToString(item.CreatedAt),
+					"actor_type":     util.TextToPtr(item.ActorType),
+					"actor_id":       util.UUIDToPtr(item.ActorID),
+					"details":        json.RawMessage(item.Details),
+				}},
+			})
+		}
+	}
+	slog.Info("parked ask/plan reminded",
+		"task_id", util.UUIDToString(task.ID),
+		"issue_id", util.UUIDToString(task.IssueID),
+		"timeout_seconds", timeoutSeconds,
+	)
+}
+
 // escalateAskPlanToLead posts the durable system comment and triggers the
 // project lead (M-332). Every trigger here is best-effort: the comment is the
 // record, and a logged failure never un-escalates anything.
