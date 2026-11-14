@@ -1830,6 +1830,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
+					// Model tiers (M-350) — member-visible so agent owners can
+					// see what is available to pick in M-351. Writes stay
+					// admin-only below.
+					r.Get("/tiers", h.ListModelTiers)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1894,6 +1898,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/mcp-servers", h.CreateWorkspaceMcpServer)
 					r.Put("/mcp-servers/{serverId}", h.UpdateWorkspaceMcpServer)
 					r.Delete("/mcp-servers/{serverId}", h.DeleteWorkspaceMcpServer)
+					// Model tiers (M-350). Curating the tier list is an admin
+					// action; agents pick from it in M-351.
+					r.Post("/tiers", h.CreateModelTier)
+					r.Put("/tiers/reorder", h.ReorderModelTiers)
+					r.Put("/tiers/{tierId}", h.UpdateModelTier)
+					r.Delete("/tiers/{tierId}", h.DeleteModelTier)
 					r.Post("/share-links", h.CreateShareLink)
 					r.Delete("/share-links/{linkId}", h.RevokeShareLink)
 					r.Get("/share-links", h.ListShareLinks)
