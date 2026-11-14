@@ -1,5 +1,5 @@
 import { createElement as bundledCreateElement } from "react";
-import type { DshClientContext } from "../dsh";
+import type { DshClientContext, DshSidebarRightTabs } from "../dsh";
 import { startIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 import { FAMILY_ROOTS } from "./navigation";
@@ -19,6 +19,13 @@ import {
 } from "./seat";
 import { startUnreadPoll } from "./unread-store";
 import { createSteerComposer, STEER_COMPOSER_ENTRY } from "./steer-composer";
+import {
+  SIDE_PREVIEW_KIND,
+  SIDE_PREVIEW_TAB_ID,
+  SIDE_PREVIEW_TITLE,
+  canOpenSidePreview,
+} from "./side-preview";
+import { createIssuePreviewBody } from "./side-preview-tab";
 
 /**
  * Browser face of the Multica panel.
@@ -165,12 +172,20 @@ export function apply(ctx: DshClientContext): void {
   const sidebarRight = (face(ctx, "sidebarRight") ?? null) as SidebarRightLike | null;
   const workspaces = (face(ctx, "workspaces") ?? null) as WorkspacesLike | null;
   const sessions = (face(ctx, "sessions") ?? null) as SessionsLike | null;
+  const tabTypes = (face(ctx, "sidebarRightTabs") ?? null) as DshSidebarRightTabs | null;
   const layoutFace = ctx.layout ?? null;
+  // The side preview needs three things from the host: a tab registry to
+  // register the kind in, `openTab` to open it with, and an effect scope for
+  // the registration's lifetime. A build missing any of them cannot show the
+  // preview, and the island then offers `New tab` alone (M-336).
+  const sidePreviewReady =
+    typeof ctx.effect === "function" && canOpenSidePreview(sidebarRight, tabTypes !== null);
   configureHostShell({
     sidebarRight,
     workspaces,
     sessions,
     daemonId: "",
+    sidePreviewKind: sidePreviewReady ? SIDE_PREVIEW_KIND : null,
   });
 
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
@@ -218,6 +233,32 @@ export function apply(ctx: DshClientContext): void {
   }
 
   const createElement = hostCreateElement ?? (bundledCreateElement as HostCreateElement);
+
+  // The side preview's tab type (M-336): one page type in dsh's own right
+  // column, with `Side preview` opening an issue into it. Both stages of dsh's
+  // registration live inside `ctx.effect` — the disposer is the plugin's — and
+  // an older shell that publishes no registry keeps the rail rows and offers
+  // `New tab` alone, because neither branch runs.
+  if (tabTypes !== null && sidePreviewReady) {
+    ctx.effect?.(
+      () =>
+        tabTypes.register({
+          id: SIDE_PREVIEW_TAB_ID,
+          kind: SIDE_PREVIEW_KIND,
+          // The chip names the kind, not one issue: dsh captures it when the
+          // tab opens and never rewrites it, and a reveal hands the same tab
+          // another issue. The identifier belongs in the body's header.
+          title: () => SIDE_PREVIEW_TITLE,
+        }),
+      "multica: sidebarRightTabs.register for the side preview",
+    );
+    ctx.slots.inject("sidebar.right.pane.tab", () =>
+      ctx.slots.register(
+        { name: "sidebar.right.pane.tab", key: SIDE_PREVIEW_TAB_ID },
+        createIssuePreviewBody(createElement),
+      ),
+    );
+  }
 
   // The dsh chat's composer for an MMX-owned session (M-136).
   //

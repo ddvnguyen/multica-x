@@ -419,6 +419,15 @@ export interface SidebarRightLike {
    * while MMX keeps the main column.
    */
   selectHostedSession?(sessionId: string): () => void;
+  /**
+   * dsh's page-tab navigation (0.2.2+): open a registered kind, or reveal the
+   * tab already showing it and hand it `params`. Absent on an older build,
+   * which is exactly "this host cannot show a plugin page in its column".
+   */
+  openTab?(
+    kind: string,
+    options?: { params?: Record<string, unknown>; revealIfOpened?: boolean },
+  ): void;
 }
 
 /** Structural subset of the dsh `workspaces` face the bridge uses. */

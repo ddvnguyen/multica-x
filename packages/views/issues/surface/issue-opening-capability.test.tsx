@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
 import {
   IssueOpeningCapabilityProvider,
   useIssueOpeningCapability,
 } from "./issue-opening-capability";
+import { useIssuePeekClick } from "./peek-context";
 
 vi.mock("../../navigation", () => ({
   useNavigation: () => ({
@@ -30,6 +32,7 @@ function Probe() {
       data-open-mode={capability.openMode}
       data-supports-tabs={capability.supportsTabs ? "yes" : "no"}
       data-supports-peek={capability.supportsPeek ? "yes" : "no"}
+      data-side-preview={capability.openSidePreview === null ? "none" : "host"}
     />
   );
 }
@@ -42,9 +45,70 @@ function renderDefaultProvider() {
   );
 }
 
+/** A card-shaped target: the click handler the views give every issue link. */
+function ClickProbe({ onOpened }: { onOpened: (issueId: string) => boolean }) {
+  return (
+    <IssueOpeningCapabilityProvider supportsTabs supportsPeek openSidePreview={onOpened}>
+      <IssueLink />
+    </IssueOpeningCapabilityProvider>
+  );
+}
+
+/** Inside the provider on purpose: the hook reads the capability it is given. */
+function IssueLink() {
+  const click = useIssuePeekClick();
+  return (
+    <button data-testid="issue-link" onClick={(event) => click("issue-1", event)}>
+      M-1
+    </button>
+  );
+}
+
 beforeEach(() => {
   useIssueOpeningStore.persist.clearStorage();
   useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: false });
+});
+
+/**
+ * The MMX wiring (M-336): the island shows both open modes and supplies the
+ * host's own column as where a Side preview lands.
+ */
+describe("host-owned side preview", () => {
+  beforeEach(() => {
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
+    });
+  });
+
+  it("offers Side preview and exposes the host opener", () => {
+    render(
+      <IssueOpeningCapabilityProvider supportsTabs supportsPeek openSidePreview={() => true}>
+        <Probe />
+      </IssueOpeningCapabilityProvider>,
+    );
+    const probe = screen.getByTestId("capability");
+    expect(probe).toHaveAttribute("data-open-mode", "peek");
+    expect(probe).toHaveAttribute("data-supports-peek", "yes");
+    expect(probe).toHaveAttribute("data-side-preview", "host");
+  });
+
+  it("sends a plain click to the host column instead of an in-view peek", () => {
+    const open = vi.fn(() => true);
+    render(<ClickProbe onOpened={open} />);
+    const link = screen.getByTestId("issue-link");
+    fireEvent.click(link);
+    expect(open).toHaveBeenCalledWith("issue-1");
+  });
+
+  it("leaves the click alone when the host cannot open the column", () => {
+    const open = vi.fn(() => false);
+    render(<ClickProbe onOpened={open} />);
+    const link = screen.getByTestId("issue-link");
+    const event = fireEvent.click(link);
+    expect(open).toHaveBeenCalledWith("issue-1");
+    // Unhandled: the press keeps whatever meaning the host gives it.
+    expect(event).toBe(true);
+  });
 });
 
 /**

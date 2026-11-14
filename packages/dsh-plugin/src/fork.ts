@@ -58,6 +58,10 @@ export {
   IssuesPage,
   IssueDetailRoute,
 } from "@multica/views/issues/components";
+// The issue's side stack — Properties, Wakeups, Pull requests, Execution log —
+// which the side preview tab renders in dsh's right column (M-336). It is the
+// issue page's own composition, not a second one.
+export { IssueSideStack } from "@multica/views/issues/components";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
 // The agent page's extension point, so a host-supplied section (the MOCT
 // Memory tab) rides the fork's own layout instead of a second design.
