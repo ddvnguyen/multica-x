@@ -225,6 +225,7 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
     "mmx",
     "preferences.appearance_title",
     "preferences.theme",
+    "preferences.timeline_order",
   ],
   skills: [
     "actions.clear_selection",

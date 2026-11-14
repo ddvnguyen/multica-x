@@ -3894,6 +3894,72 @@ describe("IssueDetail (shared)", () => {
     expect(useTimelineDisplayStore.getState().order).toBe("oldest-first");
   });
 
+  // M-290 follow-up: the newest-first reversal used to stop at the group
+  // boundary, so entries inside an activity-group block still read
+  // oldest-first while the page around them read newest-first.
+  it("renders activity-group entries newest-first inside the block when the preference is newest-first", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity", id: "act-old", actor_type: "member", actor_id: "user-1",
+        action: "title_changed", details: { from: "Old title", to: "Older title" },
+        created_at: "2026-01-17T00:00:00Z", updated_at: "2026-01-17T00:00:00Z",
+      },
+      {
+        type: "activity", id: "act-new", actor_type: "member", actor_id: "user-1",
+        action: "description_updated", details: {},
+        created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z",
+      },
+    ]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("updated the description");
+
+    const html = container.innerHTML;
+    expect(html.indexOf("updated the description")).toBeLessThan(html.indexOf("Older title"));
+  });
+
+  // M-290 follow-up: the "Show N more" affordance folds the older end of the
+  // trailing block, so in newest-first mode it belongs at the block's
+  // trailing (older) end, not ahead of the newest entries.
+  it.each([
+    { order: "oldest-first" as const, linkBeforeEntries: true },
+    { order: "newest-first" as const, linkBeforeEntries: false },
+  ])("places the show-more link on the older end of the block ($order)", async ({ order, linkBeforeEntries }) => {
+    useTimelineDisplayStore.setState({ order });
+    mockApiObj.listTimeline.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => (
+        i % 2 === 0
+          ? {
+            type: "activity", id: `act-${i}`, actor_type: "member", actor_id: "user-1",
+            action: "title_changed", details: { from: `T${i}`, to: `U${i}` },
+            created_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+            updated_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+          }
+          : {
+            type: "activity", id: `act-${i}`, actor_type: "member", actor_id: "user-1",
+            action: "description_updated", details: {},
+            created_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+            updated_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+          }
+      )),
+    );
+    const { container } = renderIssueDetail();
+    // 10 entries, limit 8 → the 2 oldest fold behind the link.
+    await screen.findByText("Show 2 more activities");
+
+    const html = container.innerHTML;
+    const linkPos = html.indexOf("Show 2 more activities");
+    // Newest-first renders entries 9..2, so the last rendered entry is U2;
+    // oldest-first renders 2..9, so the first rendered entry is U2.
+    const edgePos = html.indexOf("U2");
+    expect(edgePos).toBeGreaterThan(-1);
+    if (linkBeforeEntries) {
+      expect(linkPos).toBeLessThan(edgePos);
+    } else {
+      expect(linkPos).toBeGreaterThan(edgePos);
+    }
+  });
+
 });
 
 describe("groupSubIssuesByStage", () => {
