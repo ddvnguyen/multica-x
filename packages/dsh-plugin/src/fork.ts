@@ -36,6 +36,13 @@ export {
 } from "@multica/views/layout";
 export type { TabPresentationResult } from "@multica/views/layout";
 export { PageChromeProvider } from "@multica/views/layout";
+// M-330: the island mounts the same width owner the dashboard does, so its
+// list-and-detail pages (Inbox, Chat) get the resize edge and the shared column
+// widths the web has. `storage` hands those widths the island's namespaced
+// adapter instead of the bare `localStorage` keys, which would collide with the
+// shell's own origin.
+export { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+export type { WidthStorage } from "@multica/ui/components/ui/sidebar";
 export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";

@@ -69,28 +69,63 @@ function clampListColumnWidth(width: number) {
   return Math.max(LIST_COLUMN_WIDTH_MIN, Math.min(LIST_COLUMN_WIDTH_MAX, width))
 }
 
+/**
+ * Where a committed column width is kept.
+ *
+ * The web app and the desktop write `localStorage` directly, which is correct
+ * there: it is their own origin. A host that shares its origin with another app
+ * must not: the dsh island lives beside the shell's own storage, so it passes a
+ * namespaced adapter instead of letting `sidebar_width` leak into a key the
+ * shell (and any later Multica page on that origin) would read. Passing nothing
+ * uses `localStorage`; passing `null` keeps the width for this page only.
+ */
+export interface WidthStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+function browserWidthStorage(): WidthStorage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage
+  } catch {
+    return null
+  }
+}
+
 function useStoredWidth(
   storageKey: string,
   defaultWidth: number,
-  clamp: (width: number) => number
+  clamp: (width: number) => number,
+  storage?: WidthStorage | null
 ) {
+  const store = storage === undefined ? browserWidthStorage() : storage
   const [width, setWidth] = React.useState(defaultWidth)
   React.useEffect(() => {
-    const stored = localStorage.getItem(storageKey)
+    let stored: string | null = null
+    try {
+      stored = store?.getItem(storageKey) ?? null
+    } catch {
+      // A blocked store costs the preference, never the panel.
+      stored = null
+    }
     if (stored) {
       const storedWidth = Number(stored)
       if (Number.isFinite(storedWidth)) {
         setWidth(clamp(storedWidth))
       }
     }
-  }, [storageKey, clamp])
+  }, [storageKey, clamp, store])
   const commit = React.useCallback(
     (w: number) => {
       const clamped = clamp(w)
       setWidth(clamped)
-      localStorage.setItem(storageKey, String(clamped))
+      try {
+        store?.setItem(storageKey, String(clamped))
+      } catch {
+        // See the read above.
+      }
     },
-    [storageKey, clamp]
+    [storageKey, clamp, store]
   )
   return [width, commit] as const
 }
@@ -158,6 +193,7 @@ function SidebarProvider({
   open: openProp,
   onOpenChange: setOpenProp,
   hasExternalTrigger = false,
+  storage,
   className,
   style,
   children,
@@ -166,6 +202,13 @@ function SidebarProvider({
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /**
+   * Where the column widths persist. Omit for `localStorage` (the web and the
+   * desktop); a host on a shared origin passes its own adapter. See
+   * `WidthStorage`. The identity must be stable across renders: a fresh object
+   * each render re-reads the stored width on every commit.
+   */
+  storage?: WidthStorage | null
   /**
    * Declare that this shell keeps its own always-reachable `SidebarTrigger`
    * outside the page chrome. See `SidebarContextProps.hasExternalTrigger`.
@@ -182,12 +225,14 @@ function SidebarProvider({
   const [width, commitWidth] = useStoredWidth(
     SIDEBAR_WIDTH_STORAGE_KEY,
     SIDEBAR_WIDTH_DEFAULT,
-    clampSidebarWidth
+    clampSidebarWidth,
+    storage
   )
   const [listWidth, commitListWidth] = useStoredWidth(
     LIST_COLUMN_WIDTH_STORAGE_KEY,
     LIST_COLUMN_WIDTH_DEFAULT,
-    clampListColumnWidth
+    clampListColumnWidth,
+    storage
   )
 
   // This is the internal state of the sidebar.

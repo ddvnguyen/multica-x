@@ -76,6 +76,43 @@ describe("ListColumn", () => {
     localStorage.clear();
   });
 
+  // M-330: the dsh island has no `localStorage` of its own — it shares the
+  // shell's origin — so it mounts the provider with a namespaced store. The
+  // edge must render there (the Owner's report was that Inbox in MMX had none)
+  // and the committed width must land in that store, never in the bare key.
+  it("renders its edge and keeps the width in a host-supplied store", () => {
+    localStorage.clear();
+    const stored = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      },
+    };
+    const { container } = renderWithI18n(
+      <SidebarProvider storage={storage}>
+        <AppShellProvider>
+          <ListColumn width="list">list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+    const column = container.querySelector<HTMLElement>("[data-slot='list-column']")!;
+    const handle = container.querySelector<HTMLElement>("[data-slot='space-panel-resize']");
+    expect(handle).not.toBeNull();
+
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    fireEvent.pointerDown(handle!, { button: 0, isPrimary: true, pointerId: 7, clientX: 320 });
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 7, clientX: 420 }));
+    });
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 7, clientX: 420 }));
+    });
+
+    expect(stored.get("list_column_width")).toBe("420");
+    expect(localStorage.getItem("list_column_width")).toBeNull();
+  });
+
   it("renders without a resize edge outside the shell", () => {
     const { container } = renderWithI18n(<ListColumn>list</ListColumn>);
     expect(container.querySelector("[data-slot='space-panel-resize']")).toBeNull();

@@ -56,6 +56,7 @@ import {
   NavigationProvider,
   PortalContainerProvider,
   ScrollRestorationProvider,
+  SidebarProvider,
   projectListOptions,
   RESOURCES,
   setCurrentWorkspace,
@@ -548,7 +549,22 @@ export function IslandPages({
               />
             }
           />
-          <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+          {/* M-330: the island had no width owner, so every split sized through
+              `--sidebar-width` / `--list-column-width` lost its resize edge
+              (`ListColumn` renders none without a `SidebarProvider`) — the
+              Inbox list column the Owner reported. The provider carries the
+              two widths and the drag commit; `contents` keeps the pages as
+              direct children of the island's flex column, and inheritance of
+              the custom properties follows the DOM tree, not the box tree.
+              Widths persist in the island's namespaced store, never the bare
+              keys the shell's origin already holds. */}
+          <SidebarProvider storage={storage} className="contents">
+          {/* M-330 interim: `Side preview` in MMX means dsh's right column, and
+              the plugin cannot render there until dsh ships a content slot.
+              Until it does the island supports tabs only: one open mode (`New
+              tab`), and no floating peek inside the MMX column (M-313: the
+              Owner rejected the peek as the Side preview). */}
+          <IssueOpeningCapabilityProvider supportsTabs>
             <ScrollRestorationProvider adapter={restoration}>
             <ErrorBoundary
               resetKeys={[
@@ -593,6 +609,7 @@ export function IslandPages({
             </ErrorBoundary>
             </ScrollRestorationProvider>
           </IssueOpeningCapabilityProvider>
+          </SidebarProvider>
           {/* The fork's pages ask for a dialog through `useModalStore` and one
               component renders whatever it names; the web and desktop layouts
               mount it, and the island had no equivalent, so every dialog in the
