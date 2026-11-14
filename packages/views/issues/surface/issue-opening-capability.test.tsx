@@ -6,7 +6,7 @@ import {
   IssueOpeningCapabilityProvider,
   useIssueOpeningCapability,
 } from "./issue-opening-capability";
-import { useIssuePeekClick } from "./peek-context";
+import { IssuePeekActionsContext, useIssuePeekClick } from "./peek-context";
 
 vi.mock("../../navigation", () => ({
   useNavigation: () => ({
@@ -108,6 +108,46 @@ describe("host-owned side preview", () => {
     expect(open).toHaveBeenCalledWith("issue-1");
     // Unhandled: the press keeps whatever meaning the host gives it.
     expect(event).toBe(true);
+  });
+});
+
+/**
+ * The island on a dsh too old to publish the tab seam (M-330, M-336): both open
+ * modes stay on offer and `Side preview` is the fork's floating peek, because
+ * there is no host column to open it in.
+ */
+describe("host without a side column", () => {
+  beforeEach(() => {
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
+    });
+  });
+
+  it("keeps Side preview and exposes no host opener", () => {
+    render(
+      <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+        <Probe />
+      </IssueOpeningCapabilityProvider>,
+    );
+    const probe = screen.getByTestId("capability");
+    expect(probe).toHaveAttribute("data-open-mode", "peek");
+    expect(probe).toHaveAttribute("data-supports-peek", "yes");
+    expect(probe).toHaveAttribute("data-side-preview", "none");
+  });
+
+  it("routes the click to the in-view peek", () => {
+    const open = vi.fn();
+    render(
+      <IssuePeekActionsContext.Provider
+        value={{ open, toggle: vi.fn(), close: vi.fn(), publishColumns: vi.fn() }}
+      >
+        <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+          <IssueLink />
+        </IssueOpeningCapabilityProvider>
+      </IssuePeekActionsContext.Provider>,
+    );
+    fireEvent.click(screen.getByTestId("issue-link"));
+    expect(open).toHaveBeenCalledWith("issue-1");
   });
 });
 

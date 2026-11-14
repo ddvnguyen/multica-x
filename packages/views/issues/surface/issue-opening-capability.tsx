@@ -57,11 +57,10 @@ export function IssueOpeningCapabilityProvider({
   useEffect(() => {
     if (!supportsTabs) return;
     // The tabbed island (MMX) has no in-place full page: the full-page
-    // experience is a new header tab. Its side preview is dsh's own right
-    // column, not the fork's peek inside the MMX column (M-313), and that
-    // column cannot host plugin content yet — so the island declares tabs only
-    // until it can (M-330). A stored "Full page" therefore becomes "New tab",
-    // and a stored peek choice does too, because there is nowhere to peek.
+    // experience is a new header tab (M-313), so a stored "Full page" becomes
+    // "New tab". A stored peek choice stays one — the island always has a
+    // preview to offer, dsh's right column where the shell publishes the tab
+    // seam and the fork's floating peek where it does not (M-336).
     if (supportsPeek) {
       if (mode === "page") setOpenMode("tab");
       else if (!hasUserChoice && mode !== "tab") setDefaultOpenMode("tab");

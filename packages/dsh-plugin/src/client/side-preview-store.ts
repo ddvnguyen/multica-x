@@ -102,8 +102,8 @@ function syncTheme(): void {
 }
 
 function publish(): void {
+  let changed = false;
   const next: SidePreviewTarget[] = [];
-  let changed = snapshot.length !== 0;
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i]!;
     // A closed tab removes its element without telling us; the element going
@@ -124,6 +124,7 @@ function publish(): void {
     if (
       previous === undefined ||
       previous.key !== entry.key ||
+      previous.surface !== entry.surface ||
       previous.issueId !== entry.issueId
     ) {
       changed = true;

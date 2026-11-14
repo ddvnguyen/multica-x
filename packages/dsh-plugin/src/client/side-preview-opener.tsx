@@ -15,8 +15,9 @@ import { useSidebarFolder, type SidebarFolderInput } from "./sidebar-folder";
  * the same second must not race two Session creations.
  *
  * `available` is the host fact the capability needs: a build without dsh's tab
- * registry has no column to preview in, and the island then offers `New tab`
- * alone instead of an open mode that cannot work.
+ * registry has no column to open a preview in, and the island then falls back
+ * to the fork's floating peek inside the MMX column. `Side preview` is offered
+ * either way (M-330); only where it lands depends on the host.
  */
 export function useSidePreview(input: SidebarFolderInput): {
   available: boolean;
@@ -67,6 +68,13 @@ export function useSidePreview(input: SidebarFolderInput): {
  * A component rather than a hook call at the call site because the folder
  * chain reads the view store, and that store's provider wraps the page tree:
  * the hook has to run below it, and so does this.
+ *
+ * `supportsPeek` stays on in both branches. With dsh's tab registry the preview
+ * is the host's column and `openSidePreview` is what lands the click there —
+ * `IssuePeekHost` sees it and stays down, so the floating panel never mounts
+ * beside a column that already shows the same issue. Without the registry there
+ * is no column to open, `openSidePreview` is `null`, and the fork's floating
+ * peek is the preview (M-336, Owner decision 4).
  */
 export function SidePreviewCapability({
   input,
@@ -79,8 +87,8 @@ export function SidePreviewCapability({
   return (
     <IssueOpeningCapabilityProvider
       supportsTabs
-      supportsPeek={preview.available}
-      openSidePreview={preview.open}
+      supportsPeek
+      openSidePreview={preview.available ? preview.open : null}
     >
       {children}
     </IssueOpeningCapabilityProvider>

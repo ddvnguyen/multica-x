@@ -563,13 +563,11 @@ export function IslandPages({
           <SidebarProvider storage={storage} className="contents">
           {/* `Side preview` in MMX is dsh's right column (M-336): the plugin
               registers a tab type there, and a peek-mode click opens the issue
-              into it. `supportsPeek` follows the host — a dsh build without the
-              tab registry has nowhere to preview, so the island offers `New
-              tab` alone (M-330's interim state) instead of an open mode that
-              cannot work. `openSidePreview` is spelled out because the
-              provider's default is `null`, and a silent default would put the
-              fork's floating peek back inside the MMX column, which the Owner
-              rejected as the Side preview (M-313). */}
+              into it. A dsh build without the tab registry has no column to
+              open, so there the floating peek is the preview instead of a
+              second mode that cannot work (M-330). The choice is the
+              capability's, not the click's: `openSidePreview` non-null keeps
+              `IssuePeekHost` down, so the two previews never both exist. */}
           <SidePreviewCapability
             input={{
               workspaceId,

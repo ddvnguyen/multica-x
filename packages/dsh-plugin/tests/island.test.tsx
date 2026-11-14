@@ -16,6 +16,8 @@ import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
 import { useModalStore } from "../src/fork";
 import { resetIslandConfig } from "../src/client/config";
+import { configureHostShell, resetHostShell } from "../src/client/shell-runtime";
+import type { SidebarRightLike } from "../src/client/shell-link";
 import { zoomStore } from "../src/client/zoom-store";
 
 // The agent list virtualizes its rows; jsdom has no scroll viewport, so render
@@ -57,6 +59,7 @@ afterEach(() => {
   calls.length = 0;
   // The host config is read once per page; these tests are many pages.
   resetIslandConfig();
+  resetHostShell();
   vi.unstubAllGlobals();
 });
 
@@ -267,6 +270,32 @@ function hostElement(): HTMLElement {
   return host;
 }
 
+/** A right-sidebar face with only the members the preview and toggle read. */
+function sidebarRight(): SidebarRightLike {
+  return {
+    mounted: { getSnapshot: () => undefined, subscribe: () => () => {} },
+    toggleExpanded: () => {},
+    isExpanded: () => false,
+    hostPanel: () => () => {},
+    selectHostedSession: () => () => {},
+    openTab: () => {},
+  };
+}
+
+/**
+ * The bridge `apply` normally installs. `sidePreviewKind` is the host fact under
+ * test: `null` stands for a dsh build without the plugin tab registry.
+ */
+function installShell({ sidePreviewKind }: { sidePreviewKind: string | null }) {
+  configureHostShell({
+    sidebarRight: sidebarRight(),
+    workspaces: null,
+    sessions: null,
+    daemonId: "",
+    sidePreviewKind,
+  });
+}
+
 /** A `main` cell: an empty element the shell hands the island. */
 function seatElement(): HTMLElement {
   const seat = document.createElement("div");
@@ -458,12 +487,10 @@ describe("mountIsland", () => {
     expect(localStorage.getItem("list_column_width")).toBeNull();
   });
 
-  // M-330 interim, the other half: `Side preview` in MMX is dsh's right column,
-  // and the plugin cannot render there until dsh ships a content slot. With tabs
-  // and no peek there is exactly one open mode — but the provider defaults
-  // `supportsPeek` to true, so an omitted prop silently put `Full page` and
-  // `Side preview` back into Preferences.
-  it("offers one open mode in Preferences", async () => {
+  // M-330 gave MMX one open mode while the side preview had nowhere to go;
+  // M-336 corrected that. Both modes are on offer again, and `Side preview`
+  // always has an implementation — the host's column, or the fork's peek below.
+  it("offers both open modes in Preferences", async () => {
     stubBackend();
     const host = hostElement();
     act(() =>
@@ -478,15 +505,16 @@ describe("mountIsland", () => {
       ].map((button) => button.textContent?.trim());
 
     await settle(() => {
-      expect(openModes()).toEqual(["New tab"]);
+      expect(openModes()).toEqual(["New tab", "Side preview"]);
     });
   });
 
-  // ... and nothing floats inside the MMX column: the issue surface mounts the
-  // fork's peek host by default, which is the thing the Owner rejected as the
-  // Side preview (M-313). Only the explicit `supportsPeek={false}` keeps it out
-  // of the shadow root.
-  it("mounts no peek host inside the panel", async () => {
+  // With dsh's tab seam the column is the preview, so nothing floats beside it:
+  // the issue surface mounts the fork's peek host by default, and a second
+  // preview of the same issue inside the MMX column is what the Owner rejected
+  // (M-313). The host opener is what keeps it out of the shadow root.
+  it("mounts no peek host when the host owns the column", async () => {
+    installShell({ sidePreviewKind: "multica-issue" });
     stubBackend({ issues: [ISSUE] });
     const host = hostElement();
     act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
@@ -495,6 +523,20 @@ describe("mountIsland", () => {
       expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
     });
     expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
+  });
+
+  // On a dsh too old to publish the seam there is no column to open, so the
+  // fork's floating peek is the preview (M-336, Owner decision 4).
+  it("falls back to the floating peek without the tab seam", async () => {
+    installShell({ sidePreviewKind: null });
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+    });
+    expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).not.toBeNull();
   });
 
   // One row per rail entry: the island has to render each of the five views on
