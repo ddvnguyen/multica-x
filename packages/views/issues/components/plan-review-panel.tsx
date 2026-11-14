@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,14 +24,15 @@ import {
   useReviewPlan,
   useWritePlanSection,
 } from "@multica/core/issues/mutations";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import { issueKeys, planRevisionOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { Button } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
 import { ClipboardList, Loader2, Plus, X } from "@multica/ui/icons";
 import { ReadonlyContent } from "../../editor";
 import { useT, useTimeAgo } from "../../i18n";
+import { AskFreeText, AskSubmitHint } from "./ask-free-text";
 import {
   commentThreads,
   docQuote,
@@ -94,8 +94,17 @@ export function PlanReviewPanel({
   const [commentText, setCommentText] = useState("");
   const [replyTo, setReplyTo] = useState<PlanComment | null>(null);
   const [replyText, setReplyText] = useState("");
-  const [comments, setComments] = useState<readonly string[]>([]);
-  const [draft, setDraft] = useState("");
+  const planDraftKey = `plan:${plan.id}` as const;
+  // Seed from the persisted draft when one exists (navigation, reload,
+  // island detach/attach) — same flash-avoidance as the ask card.
+  const [comments, setComments] = useState<readonly string[]>(() => {
+    const stored = useAskDraftStore.getState().getDraft(planDraftKey);
+    return stored?.planComments ?? [];
+  });
+  const [draft, setDraft] = useState(() => {
+    const stored = useAskDraftStore.getState().getDraft(planDraftKey);
+    return stored?.planNote ?? "";
+  });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Cancelling frees the issue for a new plan and is not undoable, so the
@@ -443,7 +452,10 @@ export function PlanReviewPanel({
       { planId: plan.id, verdict: planVerdictBody(plan, verdict, comments) },
       {
         onSuccess: () => {
+          // The verdict is recorded: the staged comments are spent.
+          useAskDraftStore.getState().clearDraft(planDraftKey);
           setComments([]);
+          setDraft("");
           onRecorded?.();
         },
         onError: (cause) => {
@@ -457,6 +469,21 @@ export function PlanReviewPanel({
       },
     );
   };
+
+  // Persist the staged comments + the in-progress line for restore after
+  // navigation, reload, or island detach/attach. Runs on this panel's own
+  // state rather than the store subscription so typing never loops.
+  useEffect(() => {
+    const store = useAskDraftStore.getState();
+    if (comments.length === 0 && draft.trim() === "") {
+      if (store.getDraft(planDraftKey) !== undefined) store.clearDraft(planDraftKey);
+      return;
+    }
+    store.setPlanComments(planDraftKey, issueId, comments);
+    if (draft !== (store.getDraft(planDraftKey)?.planNote ?? "")) {
+      store.setPlanNote(planDraftKey, issueId, draft);
+    }
+  }, [comments, draft, planDraftKey, issueId]);
 
   const addFlatComment = (): void => {
     const text = draft.trim();
@@ -555,20 +582,30 @@ export function PlanReviewPanel({
               submitReply();
             }}
           >
-            <Input
-              autoFocus
-              value={replyText}
-              maxLength={4000}
-              aria-label={t(($) => $.ask_plan.reply_placeholder)}
-              placeholder={t(($) => $.ask_plan.reply_placeholder)}
-              className="h-8 text-caption"
-              onChange={(event) => setReplyText(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                event.preventDefault();
-                submitReply();
-              }}
-            />
+            <div className="min-w-0 flex-1">
+              <AskFreeText
+                id={`${planDraftKey}-reply:${replyTo?.id ?? "new"}`}
+                autoFocus
+                value={replyText}
+                max={4000}
+                showCount
+                aria-label={t(($) => $.ask_plan.reply_placeholder)}
+                placeholder={t(($) => $.ask_plan.reply_placeholder)}
+                disabled={busy}
+                onChange={(event) => setReplyText(event.currentTarget.value)}
+                onSubmit={submitReply}
+                onKeyDown={(event) => {
+                  // The reply is a one-line row: plain Enter sends, matching
+                  // the Input it replaced. Multi-line replies go through the
+                  // button (or paste), where Cmd/Ctrl+Enter still applies.
+                  if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                  if (event.metaKey || event.ctrlKey || !event.shiftKey) {
+                    event.preventDefault();
+                    submitReply();
+                  }
+                }}
+              />
+            </div>
             <Button size="xs" variant="outline" type="submit" disabled={replyText.trim() === ""}>
               {t(($) => $.ask_plan.reply_send)}
             </Button>
@@ -831,28 +868,23 @@ export function PlanReviewPanel({
             <p className="mt-1 text-caption text-muted-foreground">
               {sectionHeading(composer.sectionId)}
             </p>
-            <textarea
+            <AskFreeText
+              id={`${planDraftKey}-passage:${composer.sectionId}`}
               autoFocus
               aria-label={t(($) => $.ask_plan.comment_on_passage)}
               placeholder={t(($) => $.ask_plan.comment_on_passage)}
               value={commentText}
-              rows={2}
-              maxLength={4000}
+              max={4000}
+              showCount
+              hint={t(($) => $.ask_plan.comment_shortcut)}
               disabled={busy}
               onChange={(event) => setCommentText(event.currentTarget.value)}
-              onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  submitComment();
-                }
+              onSubmit={submitComment}
+              onKeyDown={(event) => {
                 if (event.key === "Escape") clearComposer();
               }}
-              className="mt-1 w-full resize-none rounded-xs border-0 bg-transparent p-0 text-caption text-foreground outline-none"
             />
             <div className="mt-1 flex items-center justify-end gap-2">
-              <span className="mr-auto text-caption text-muted-foreground">
-                {t(($) => $.ask_plan.comment_shortcut)}
-              </span>
               <Button
                 size="xs"
                 variant="default"
@@ -966,19 +998,20 @@ export function PlanReviewPanel({
           )}
 
           <div className="mt-1.5 flex items-start gap-1.5">
-            <Input
-              value={draft}
-              maxLength={4000}
-              placeholder={t(($) => $.ask_plan.comment_placeholder)}
-              aria-label={t(($) => $.ask_plan.comment_placeholder)}
-              className="h-8 text-caption"
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                event.preventDefault();
-                addFlatComment();
-              }}
-            />
+            <div className="min-w-0 flex-1">
+              <AskFreeText
+                id={`${planDraftKey}-note`}
+                value={draft}
+                max={4000}
+                showCount
+                hint={t(($) => $.agent_question.multiline_hint)}
+                placeholder={t(($) => $.ask_plan.comment_placeholder)}
+                aria-label={t(($) => $.ask_plan.comment_placeholder)}
+                disabled={busy}
+                onChange={(event) => setDraft(event.currentTarget.value)}
+                onSubmit={addFlatComment}
+              />
+            </div>
             <Button
               size="xs"
               variant="outline"
@@ -1003,6 +1036,7 @@ export function PlanReviewPanel({
           )}
 
           <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
+            {error === null && <AskSubmitHint id={`${planDraftKey}-submit`} />}
             <Button
               size="xs"
               variant="outline"

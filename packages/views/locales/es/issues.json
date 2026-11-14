@@ -1978,7 +1978,9 @@
     "send": "Answer",
     "sending": "Sending...",
     "sent": "Answer sent",
-    "failed": "Could not send your answer. Try again."
+    "failed": "Could not send your answer. Try again.",
+    "multiline_hint": "Intro para una línea nueva. ⌘/Ctrl+Intro envía.",
+    "submit_shortcut": "⌘/Ctrl+Intro envía"
   },
   "ask_plan": {
     "plan_draft": "The agent is preparing this plan — there is nothing to review yet.",

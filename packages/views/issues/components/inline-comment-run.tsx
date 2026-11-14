@@ -12,6 +12,7 @@ import { useCancelIssueRun, useRetryIssueRun } from "@multica/core/issues/mutati
 import { issueTimelineOptions } from "@multica/core/issues/queries";
 import { isAgentQuestionPending, latestAgentQuestion } from "@multica/core/issues/agent-question";
 import { commentSupplementReceipts, isSteerableTask } from "@multica/core/issues/run-steering";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import { dispatchReasonCode } from "@multica/core/api";
 import type { AgentTask, TimelineEntry } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -139,6 +140,13 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
     steers.map((steer) => steer.deliveredAt),
   );
   const output = !hasReply ? commentRunOutput(task) : null;
+  // The ask stopped being pending (answered, moved on, run ended): the draft
+  // is spent. The Decisions pane mounts the same question under the same key,
+  // so this clear lands in both surfaces at once.
+  useEffect(() => {
+    if (askPending || ask === null) return;
+    useAskDraftStore.getState().clearDraft(`ask:${task.id}:${ask.seq}`);
+  }, [askPending, ask, task.id]);
   const latest = steps.findLast((step) => step.kind !== "text" || step.item.content?.trim());
   const pendingCall = steps.findLast((step) => isCallStep(step) && !step.result);
   const current = pendingCall ?? latest;
@@ -252,6 +260,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
             taskId={task.id}
             questionSeq={ask.seq}
             questions={ask.questions}
+            draftKey={`ask:${task.id}:${ask.seq}`}
           />
         )}
         {output && <div className="mt-2 text-body"><ReadonlyContent content={redactSecrets(output)} /></div>}

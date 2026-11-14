@@ -1863,7 +1863,9 @@
     "send": "回答",
     "sending": "發送中…",
     "sent": "回答已發送",
-    "failed": "回答發送失敗，請重試。"
+    "failed": "回答發送失敗，請重試。",
+    "multiline_hint": "Enter 換行,⌘/Ctrl+Enter 發送。",
+    "submit_shortcut": "⌘/Ctrl+Enter 發送"
   },
   "ask_plan": {
     "plan_draft": "智慧體正在準備該計畫，暫時沒有可審閱的內容。",
