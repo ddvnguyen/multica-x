@@ -1920,7 +1920,15 @@
     "hide_resolved": "隱藏已解決",
     "pending_hint": "{{n}} 條段落留言將隨你的結論一併送出給智能代理。",
     "stale_notice": "你開啟後計畫已變更。上方已顯示目前版本，請重試。",
-    "unknown_author": "成員"
+    "unknown_author": "成員",
+    "revision_switcher": "顯示其他修訂版本",
+    "revision_viewing": "正在檢視第 {{revision}} 版（共 {{current}} 版）— 唯讀。",
+    "revision_back": "返回目前版本",
+    "revision_unavailable": "修訂版本 {{revision}} 時的{{heading}}早於已記錄的歷史。",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "評論",
+    "comments_show": "顯示評論 ({{n}})",
+    "comments_hide": "隱藏評論"
   },
   "unread_filter_error": {
     "title": "無法載入未讀任務"

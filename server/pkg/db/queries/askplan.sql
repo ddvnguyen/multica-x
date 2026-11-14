@@ -236,13 +236,15 @@ SELECT * FROM agent_plan WHERE id = $1 FOR UPDATE;
 -- agent_plan_review.comments list keeps its contract: the plan page's
 -- comments are appended to it as their bodies.
 
+-- M-348: `revision` is the plan revision the comment was made on (the
+-- write-time base_revision, now persisted). NULL = predates the label.
 -- name: CreateAgentPlanComment :one
 INSERT INTO agent_plan_comment (
     id, workspace_id, plan_id, section_id, quote, body,
-    parent_comment_id, author_user_id
+    parent_comment_id, author_user_id, revision
 ) VALUES (
     @id, @workspace_id, @plan_id, @section_id, @quote, @body,
-    sqlc.narg('parent_comment_id'), @author_user_id
+    sqlc.narg('parent_comment_id'), @author_user_id, sqlc.narg('revision')
 )
 RETURNING *;
 
@@ -300,6 +302,16 @@ ON CONFLICT (plan_id, section_id, revision) DO NOTHING;
 SELECT * FROM agent_plan_section_version
 WHERE plan_id = $1 AND section_id = $2
 ORDER BY revision DESC;
+
+-- name: ListAgentPlanSectionVersionsUpto :many
+-- M-348 read-old-revision: every section's version at or before a revision,
+-- newest per section first, so the handler keeps the first row per
+-- section_id. DISTINCT ON picks per (plan_id, section_id) with the
+-- revision ordering; the outer ORDER BY only stabilizes the scan.
+SELECT DISTINCT ON (plan_id, section_id) *
+FROM agent_plan_section_version
+WHERE plan_id = $1 AND revision <= $2
+ORDER BY plan_id, section_id, revision DESC;
 
 -- name: UpdateAgentPlanSection :one
 -- The Human's edit: rewrite the whole sections array and bump the revision,

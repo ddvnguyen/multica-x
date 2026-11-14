@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { normalizeIssueStatusCategory } from "../issues/config/status";
-import type { IssueAskPlan, PlanSectionVersion } from "../issues/ask-plan";
+import type {
+  IssueAskPlan,
+  PlanRevisionSection,
+  PlanSectionVersion,
+} from "../issues/ask-plan";
 import type {
   AppCatalogResponse,
   AppsOverview,
@@ -3138,6 +3142,9 @@ export const PlanCommentSchema = z
     resolved_by: z.string().nullish(),
     delivered_at: z.string().nullish(),
     delivered_verdict: z.string().nullish(),
+    // M-348: the revision the comment was made on. Nullish = predates the
+    // label, so an unknown revision parses to no badge instead of failing.
+    revision: z.number().nullish(),
     created_at: z.string().catch(""),
   })
   .loose();
@@ -3180,6 +3187,32 @@ export const PlanSectionHistorySchema: z.ZodType<{
     section_id: z.string(),
     revision: z.number().catch(0),
     versions: z.array(PlanSectionVersionSchema).catch([]),
+  })
+  .loose();
+
+// M-348: an older plan revision (`GET .../revisions/{revision}`).
+export const PlanRevisionSectionSchema = z
+  .object({
+    section_id: z.string(),
+    heading: z.string().catch(""),
+    markdown: z.string().catch(""),
+    available: z.boolean().catch(true),
+  })
+  .loose();
+
+export const PlanRevisionReadSchema: z.ZodType<{
+  plan_id: string;
+  revision: number;
+  current: number;
+  status: string;
+  sections: PlanRevisionSection[];
+}> = z
+  .object({
+    plan_id: z.string(),
+    revision: z.number(),
+    current: z.number().catch(0),
+    status: z.string().catch(""),
+    sections: z.array(PlanRevisionSectionSchema).catch([]),
   })
   .loose();
 

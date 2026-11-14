@@ -106,7 +106,15 @@
     "hide_resolved": "解決済みを非表示",
     "pending_hint": "篇章コメント {{n}} 件が判断とともにエージェントに送信されます。",
     "stale_notice": "開いた後にプランが更新されました。上に現在のリビジョンを表示しています。もう一度お試しください。",
-    "unknown_author": "メンバー"
+    "unknown_author": "メンバー",
+    "revision_switcher": "別のリビジョンを表示",
+    "revision_viewing": "リビジョン {{current}} 中の {{revision}} を表示中 — 読み取り専用。",
+    "revision_back": "最新に戻る",
+    "revision_unavailable": "リビジョン {{revision}} 時点の{{heading}}は記録された履歴より前のものです。",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "コメント",
+    "comments_show": "コメントを表示（{{n}}）",
+    "comments_hide": "コメントを非表示"
   },
   "working_filter_error": {
     "title": "エージェントが作業中のタスクを読み込めませんでした"

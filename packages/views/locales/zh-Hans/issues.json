@@ -106,7 +106,15 @@
     "hide_resolved": "隐藏已解决",
     "pending_hint": "{{n}} 条段落评论将随你的结论一并发送给智能体。",
     "stale_notice": "你打开后计划已变更。上方已显示当前版本，请重试。",
-    "unknown_author": "成员"
+    "unknown_author": "成员",
+    "revision_switcher": "显示其他修订版本",
+    "revision_viewing": "正在查看第 {{revision}} 版（共 {{current}} 版）— 只读。",
+    "revision_back": "返回当前版本",
+    "revision_unavailable": "修订版本 {{revision}} 时的{{heading}}早于已记录的历史。",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "评论",
+    "comments_show": "显示评论 ({{n}})",
+    "comments_hide": "隐藏评论"
   },
   "working_filter_error": {
     "title": "无法加载智能体正在处理的任务"

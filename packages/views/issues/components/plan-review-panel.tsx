@@ -8,13 +8,14 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   isPlanVerdictable,
   planVerdictBody,
   type AgentPlan,
   type AskPlanSection,
   type PlanComment,
+  type PlanRevisionRead,
   type PlanSectionVersion,
   type PlanVerdict,
 } from "@multica/core/issues/ask-plan";
@@ -24,7 +25,7 @@ import {
   useReviewPlan,
   useWritePlanSection,
 } from "@multica/core/issues/mutations";
-import { issueKeys } from "@multica/core/issues/queries";
+import { issueKeys, planRevisionOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { Button } from "@multica/ui/components/ui/button";
@@ -81,7 +82,15 @@ export function PlanReviewPanel({
   const writeSection = useWritePlanSection(issueId);
   const { getActorName, hasActor } = useActorName();
 
-  const [selection, setSelection] = useState<{ sectionId: string; quote: string }>();
+  // The floating tooltip: a selection inside one section, with the viewport
+  // position it was picked at. Opening the composer keeps the anchor while
+  // the tooltip (which the composer replaces) goes away.
+  const [tooltip, setTooltip] = useState<
+    { sectionId: string; quote: string; x: number; y: number } | undefined
+  >();
+  const [composer, setComposer] = useState<
+    { sectionId: string; quote: string; x: number; y: number } | undefined
+  >();
   const [commentText, setCommentText] = useState("");
   const [replyTo, setReplyTo] = useState<PlanComment | null>(null);
   const [replyText, setReplyText] = useState("");
@@ -95,6 +104,10 @@ export function PlanReviewPanel({
   const [editing, setEditing] = useState<{ sectionId: string; baseMarkdown: string }>();
   const [historyFor, setHistoryFor] = useState<string>();
   const [showResolved, setShowResolved] = useState(false);
+  // An older revision under review: undefined is the current plan.
+  const [viewedRevision, setViewedRevision] = useState<number>();
+  // The thread list sits below the plan, closed until the member opens it.
+  const [commentsOpen, setCommentsOpen] = useState(false);
 
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +119,10 @@ export function PlanReviewPanel({
   const resolvedCount = threads.filter(({ root }) => isPlanCommentResolved(root)).length;
   const verdictable = isPlanVerdictable(plan);
   const final = plan.status === "approved" || plan.status === "cancelled";
+  const viewingOld = viewedRevision !== undefined && viewedRevision !== plan.revision;
+  // Old revisions and final plans are read-only: no edits, no comments, no
+  // verdicts. The switcher, the banner and the thread list stay.
+  const readOnly = final || viewingOld;
   const busy =
     review.isPending ||
     addComment.isPending ||
@@ -127,10 +144,15 @@ export function PlanReviewPanel({
     [getActorName, hasActor, t],
   );
 
-  // A selection inside one section becomes the comment draft's anchor. A
-  // collapsed or cross-section selection leaves the current anchor alone, so
-  // focusing the comment box (which collapses the page selection) keeps it.
+  // A selection inside one current-revision section raises the comment
+  // tooltip, parked at the selection's viewport rect. A collapsed or
+  // cross-section selection leaves the tooltip alone; read-only views (an
+  // older revision, a final plan) never raise it.
   useEffect(() => {
+    if (readOnly) {
+      setTooltip(undefined);
+      return;
+    }
     const capture = (): void => {
       const body = bodyRef.current;
       const current = typeof document === "undefined" ? null : document.getSelection();
@@ -156,18 +178,56 @@ export function PlanReviewPanel({
       const quote = docQuote(current.toString());
       const sectionId = anchor.dataset["planSection"];
       if (quote === "" || sectionId === undefined) return;
-      setSelection({ sectionId, quote });
+      // An open composer owns its quote: typing in it collapses the page
+      // selection, which must not re-raise the tooltip over it.
+      if (composer !== undefined) return;
+      const atRange = current.getRangeAt(0);
+      // jsdom (and collapsed-then-restored picks) has no rect: park at the
+      // viewport origin instead of throwing.
+      const rect =
+        typeof atRange.getBoundingClientRect === "function"
+          ? atRange.getBoundingClientRect()
+          : { left: 8, top: 48 };
+      const x = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 120));
+      const y = Math.max(8, rect.top - 40);
+      setTooltip({ sectionId, quote, x, y });
     };
     document.addEventListener("selectionchange", capture);
     return () => {
       document.removeEventListener("selectionchange", capture);
     };
-  }, []);
+  }, [composer, readOnly]);
+
+  // The tooltip parks at the picking point; scrolling the plan away from
+  // under it dismisses it, like the annotation bubble it mirrors.
+  useEffect(() => {
+    if (tooltip === undefined) return;
+    const dismiss = (): void => setTooltip(undefined);
+    window.addEventListener("scroll", dismiss, true);
+    return () => {
+      window.removeEventListener("scroll", dismiss, true);
+    };
+  }, [tooltip]);
 
   // Paint each open comment's passage where the text still holds it. The
   // highlight is a CSS Custom Highlight over the rendered Markdown, so the
   // Markdown DOM itself is never rewritten; browsers without the API skip it
-  // and the rail still shows every quote.
+  // and the thread list still shows every quote. On an older revision only
+  // that revision's threads (and unlabelled ones, which predate the label)
+  // paint; the thread list below always shows them all.
+  const highlightRoots = useMemo(
+    () =>
+      planComments.filter(
+        (comment) =>
+          (comment.parent_comment_id ?? null) === null &&
+          !isPlanCommentResolved(comment) &&
+          comment.quote !== "" &&
+          (viewingOld !== true ||
+            comment.revision == null ||
+            comment.revision === viewedRevision),
+      ),
+    [planComments, viewedRevision, viewingOld],
+  );
   useEffect(() => {
     const body = bodyRef.current;
     const registry =
@@ -182,25 +242,53 @@ export function PlanReviewPanel({
       typeof CSS !== "undefined" && typeof CSS.escape === "function"
         ? CSS.escape(value)
         : value.replace(/["\\]/g, "\\$&");
-    const ranges = planComments
-      .filter(
-        (comment) =>
-          (comment.parent_comment_id ?? null) === null &&
-          !isPlanCommentResolved(comment) &&
-          comment.quote !== "",
-      )
-      .flatMap((comment) => {
-        const section = body.querySelector(
-          `[data-plan-section="${escaped(comment.section_id)}"] [data-plan-section-body]`,
-        );
-        const range = section === null ? undefined : quoteRange(section, comment.quote);
-        return range === undefined ? [] : [range];
-      });
+    const ranges = highlightRoots.flatMap((comment) => {
+      const section = body.querySelector(
+        `[data-plan-section="${escaped(comment.section_id)}"] [data-plan-section-body]`,
+      );
+      const range = section === null ? undefined : quoteRange(section, comment.quote);
+      return range === undefined ? [] : [range];
+    });
     registry.set(PLAN_COMMENT_HIGHLIGHT, new HighlightType(...ranges));
     return () => {
       registry.delete(PLAN_COMMENT_HIGHLIGHT);
     };
-  }, [planComments, editing]);
+  }, [highlightRoots, editing]);
+
+  // A click on a painted passage opens its thread: the point is hit-tested
+  // against each painted quote, and the thread list opens on the match. CSS
+  // highlights are not DOM nodes, so there is nothing else to click.
+  const openThreadAtPoint = (clientX: number, clientY: number): boolean => {
+    const body = bodyRef.current;
+    if (body === null || typeof document === "undefined") return false;
+    const caret =
+      typeof document.caretRangeFromPoint === "function"
+        ? document.caretRangeFromPoint(clientX, clientY)
+        : null;
+    if (caret === null) return false;
+    const hit = highlightRoots.find((comment) => {
+      const section = body.querySelector(
+        `[data-plan-section="${CSS.escape(comment.section_id)}"] [data-plan-section-body]`,
+      );
+      const range = section === null ? undefined : quoteRange(section, comment.quote);
+      if (range === undefined) return false;
+      const point = caret.cloneRange();
+      point.collapse(true);
+      return (
+        range.compareBoundaryPoints(Range.START_TO_START, point) <= 0 &&
+        range.compareBoundaryPoints(Range.END_TO_END, point) >= 0
+      );
+    });
+    if (hit === undefined) return false;
+    setCommentsOpen(true);
+    setReplyTo(null);
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-plan-comment="${hit.id}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+    return true;
+  };
 
   const handleWriteError = useCallback(
     (cause: unknown): void => {
@@ -223,14 +311,15 @@ export function PlanReviewPanel({
     [issueId, onRejected, queryClient, t, wsId],
   );
 
-  const clearSelection = (): void => {
-    setSelection(undefined);
+  const clearComposer = (): void => {
+    setTooltip(undefined);
+    setComposer(undefined);
     setCommentText("");
     if (typeof window !== "undefined") window.getSelection()?.removeAllRanges();
   };
 
   const submitComment = (): void => {
-    if (selection === undefined || busy) return;
+    if (composer === undefined || busy) return;
     const body = commentText.trim();
     if (body === "") return;
     setError(null);
@@ -240,16 +329,17 @@ export function PlanReviewPanel({
         planId: plan.id,
         comment: {
           base_revision: plan.revision,
-          section_id: selection.sectionId,
-          quote: selection.quote,
+          section_id: composer.sectionId,
+          quote: composer.quote,
           body,
         },
       },
       {
         onSuccess: () => {
-          setCommentText("");
-          setSelection(undefined);
-          if (typeof window !== "undefined") window.getSelection()?.removeAllRanges();
+          clearComposer();
+          // The new thread lands in the list below: open it so the member
+          // sees the highlight and the saved comment together.
+          setCommentsOpen(true);
         },
         onError: handleWriteError,
       },
@@ -304,6 +394,15 @@ export function PlanReviewPanel({
       },
     );
   };
+
+  // The older revision under view, if any. Keyed per revision, so each one
+  // fetches once and stays cached; disabled on the current revision, which
+  // the island read already carries.
+  const revisionRead = useQuery({
+    ...planRevisionOptions(wsId, plan.id, viewedRevision ?? 0),
+    enabled: viewingOld === true && !!wsId && (viewedRevision ?? 0) > 0,
+  });
+  const oldRevision: PlanRevisionRead | undefined = revisionRead.data;
 
   const saveSection = (
     sectionId: string,
@@ -387,6 +486,13 @@ export function PlanReviewPanel({
               {sectionHeading(comment.section_id)}
             </span>
           )}
+          {/* M-348: the revision the thread was made on. Unlabelled threads
+              predate the label and show no badge. */}
+          {!reply && comment.revision != null && (
+            <span className="rounded-full border border-border px-1.5 text-caption text-muted-foreground">
+              {t(($) => $.ask_plan.comment_revision, { revision: comment.revision })}
+            </span>
+          )}
           {!reply && resolved ? (
             <span className="ml-auto rounded-full px-1.5 text-caption text-muted-foreground">
               {t(($) => $.ask_plan.resolved_badge)}
@@ -411,7 +517,7 @@ export function PlanReviewPanel({
         </p>
         {!reply && (
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            {!resolved && !final && (
+            {!resolved && !readOnly && (
               <Button
                 size="xs"
                 variant="ghost"
@@ -421,7 +527,7 @@ export function PlanReviewPanel({
                 {t(($) => $.ask_plan.resolve)}
               </Button>
             )}
-            {!final && (
+            {!readOnly && (
               <Button
                 size="xs"
                 variant="ghost"
@@ -441,7 +547,7 @@ export function PlanReviewPanel({
             )}
           </div>
         )}
-        {!reply && replyTo?.id === comment.id && (
+        {!reply && !readOnly && replyTo?.id === comment.id && (
           <form
             className="mt-1.5 flex items-start gap-1.5"
             onSubmit={(event) => {
@@ -488,8 +594,41 @@ export function PlanReviewPanel({
           <ClipboardList aria-hidden className="size-3.5 shrink-0 text-info" />
           <span className="min-w-0 break-words">{plan.title}</span>
         </p>
+        {/* M-348: the revision switcher. One revision means nothing to pick,
+            so the label stays plain text; more earns a dropdown. */}
         <span className="ml-auto shrink-0 text-caption text-muted-foreground">
-          {t(($) => $.ask_plan.revision, { revision: plan.revision })}
+          {plan.revision <= 1 ? (
+            t(($) => $.ask_plan.revision, { revision: plan.revision })
+          ) : (
+            <label className="inline-flex items-center gap-1">
+              <span className="sr-only">{t(($) => $.ask_plan.revision_switcher)}</span>
+              <select
+                aria-label={t(($) => $.ask_plan.revision_switcher)}
+                value={viewingOld === true ? viewedRevision : plan.revision}
+                disabled={busy}
+                onChange={(event) => {
+                  const picked = Number(event.currentTarget.value);
+                  setViewedRevision(picked === plan.revision ? undefined : picked);
+                  setTooltip(undefined);
+                  setComposer(undefined);
+                  setEditing(undefined);
+                  setHistoryFor(undefined);
+                }}
+                className="rounded-xs border border-border bg-background px-1 py-0.5 text-caption text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {Array.from({ length: plan.revision }, (_, index) => index + 1).map(
+                  (revision) => (
+                    <option key={revision} value={revision}>
+                      {t(($) => $.ask_plan.revision, { revision })}
+                      {revision === plan.revision
+                        ? ` ${t(($) => $.ask_plan.history_current)}`
+                        : ""}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+          )}
         </span>
       </div>
 
@@ -499,128 +638,248 @@ export function PlanReviewPanel({
         </p>
       )}
 
-      <div className="mt-2 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)]">
-        <article ref={bodyRef} aria-label={plan.title} className="min-w-0">
-          {plan.sections.length === 0 && (
-            <p className="text-caption text-muted-foreground">
-              {t(($) => $.ask_plan.sections_empty)}
-            </p>
-          )}
-          {plan.sections.map((section) => (
-            <PlanSection
-              key={section.sectionId}
-              section={section}
-              busy={busy}
-              final={final}
-              editing={editing?.sectionId === section.sectionId}
-              baseMarkdown={editing?.baseMarkdown ?? ""}
-              saving={writeSection.isPending}
-              historyOpen={historyFor === section.sectionId}
-              onEdit={() =>
-                setEditing({ sectionId: section.sectionId, baseMarkdown: section.markdown })
-              }
-              onSave={(heading, markdown) =>
-                saveSection(section.sectionId, heading, markdown, true)
-              }
-              onCancelEdit={() => setEditing(undefined)}
-              onToggleHistory={() =>
-                setHistoryFor((current) =>
-                  current === section.sectionId ? undefined : section.sectionId,
-                )
-              }
-            />
-          ))}
-        </article>
+      {/* M-348: an older revision reads read-only under this banner, with one
+          action back to the current revision. */}
+      {viewingOld === true && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-background px-2.5 py-2">
+          <p role="status" className="min-w-0 flex-1 text-caption text-muted-foreground">
+            {t(($) => $.ask_plan.revision_viewing, {
+              revision: viewedRevision,
+              current: plan.revision,
+            })}
+          </p>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              setViewedRevision(undefined);
+              setTooltip(undefined);
+              setComposer(undefined);
+            }}
+          >
+            {t(($) => $.ask_plan.revision_back)}
+          </Button>
+        </div>
+      )}
 
-        <aside aria-label={t(($) => $.ask_plan.comments_threads)} className="min-w-0">
-          {historyFor !== undefined && (
-            <div className="mb-2">
-              <PlanSectionHistory
-                planId={plan.id}
-                sectionId={historyFor}
-                heading={sectionHeading(historyFor)}
-                revision={plan.revision}
-                restoring={writeSection.isPending}
-                onClose={() => setHistoryFor(undefined)}
-                {...(final
-                  ? {}
-                  : {
-                      onRestore: (version: PlanSectionVersion) =>
-                        restoreVersion(historyFor, version),
-                    })}
-              />
-            </div>
-          )}
+      {viewingOld === true && revisionRead.isPending && (
+        <p role="status" className="mt-2 text-caption text-muted-foreground">
+          {t(($) => $.ask_plan.history_loading)}
+        </p>
+      )}
+      {viewingOld === true && revisionRead.isError && (
+        <p role="alert" className="mt-2 text-caption text-destructive">
+          {t(($) => $.ask_plan.history_failed)}
+        </p>
+      )}
 
-          {!final &&
-            (selection === undefined ? (
-              <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-caption text-muted-foreground">
-                {t(($) => $.ask_plan.selection_hint)}
+      <article
+        ref={bodyRef}
+        aria-label={plan.title}
+        className="mt-2 min-w-0"
+        onClick={(event) => {
+          // A painted passage opens its thread. Only plain left clicks on
+          // text count: edits, buttons and links keep their own behavior.
+          if (
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey ||
+            (event.target instanceof HTMLElement &&
+              event.target.closest("button, a, input, textarea, select"))
+          ) {
+            return;
+          }
+          openThreadAtPoint(event.clientX, event.clientY);
+        }}
+      >
+        {viewingOld === true ? (
+          <OldRevisionSections
+            read={oldRevision}
+            revision={viewedRevision ?? plan.revision}
+            tRevisionUnavailable={(heading) =>
+              t(($) => $.ask_plan.revision_unavailable, {
+                revision: viewedRevision,
+                heading,
+              })
+            }
+          />
+        ) : (
+          <>
+            {plan.sections.length === 0 && (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.ask_plan.sections_empty)}
               </p>
-            ) : (
-              <form
-                data-plan-comment-box={selection.sectionId}
-                className="rounded-md border border-border bg-background px-2.5 py-2"
-                onSubmit={(event) => {
+            )}
+            {plan.sections.map((section) => (
+              <PlanSection
+                key={section.sectionId}
+                section={section}
+                busy={busy}
+                final={readOnly}
+                editing={editing?.sectionId === section.sectionId}
+                baseMarkdown={editing?.baseMarkdown ?? ""}
+                saving={writeSection.isPending}
+                historyOpen={historyFor === section.sectionId}
+                onEdit={() =>
+                  setEditing({ sectionId: section.sectionId, baseMarkdown: section.markdown })
+                }
+                onSave={(heading, markdown) =>
+                  saveSection(section.sectionId, heading, markdown, true)
+                }
+                onCancelEdit={() => setEditing(undefined)}
+                onToggleHistory={() =>
+                  setHistoryFor((current) =>
+                    current === section.sectionId ? undefined : section.sectionId,
+                  )
+                }
+              />
+            ))}
+          </>
+        )}
+      </article>
+
+      {historyFor !== undefined && viewingOld !== true && (
+        <div className="mt-2">
+          <PlanSectionHistory
+            planId={plan.id}
+            sectionId={historyFor}
+            heading={sectionHeading(historyFor)}
+            revision={plan.revision}
+            restoring={writeSection.isPending}
+            onClose={() => setHistoryFor(undefined)}
+            {...(readOnly
+              ? {}
+              : {
+                  onRestore: (version: PlanSectionVersion) =>
+                    restoreVersion(historyFor, version),
+                })}
+          />
+        </div>
+      )}
+
+      {/* M-348: the selection tooltip. Fixed at the picking point, flipped
+          above the selection; scrolling dismisses it (see the scroll effect).
+          The composer replaces it, anchored at the same point. */}
+      {tooltip !== undefined && composer === undefined && viewingOld !== true && (
+        <div
+          role="dialog"
+          aria-label={t(($) => $.ask_plan.comment_on_passage)}
+          className="fixed z-50 w-max max-w-[calc(100vw-16px)] rounded-md border border-border bg-background px-2 py-1.5 shadow-md"
+          style={{ left: tooltip.x, top: tooltip.y }}
+        >
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="xs"
+              variant="default"
+              autoFocus
+              disabled={busy}
+              onClick={() => {
+                setComposer({
+                  sectionId: tooltip.sectionId,
+                  quote: tooltip.quote,
+                  x: tooltip.x,
+                  y: tooltip.y,
+                });
+                setTooltip(undefined);
+              }}
+            >
+              {t(($) => $.ask_plan.comment_on_selection)}
+            </Button>
+            <button
+              type="button"
+              aria-label={t(($) => $.ask_plan.clear_selection)}
+              title={t(($) => $.ask_plan.clear_selection)}
+              onClick={clearComposer}
+              className="shrink-0 rounded-xs p-0.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <X aria-hidden className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+      {composer !== undefined && viewingOld !== true && (
+        <div
+          role="dialog"
+          aria-label={t(($) => $.ask_plan.comment_on_passage)}
+          className="fixed z-50 w-72 max-w-[calc(100vw-16px)] rounded-md border border-border bg-background px-2.5 py-2 shadow-md"
+          style={{ left: composer.x, top: composer.y }}
+        >
+          <form
+            data-plan-comment-box={composer.sectionId}
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitComment();
+            }}
+          >
+            <div className="flex items-start gap-1.5">
+              <blockquote className="min-w-0 flex-1 border-l-2 border-border pl-2 text-caption text-muted-foreground">
+                {t(($) => $.ask_plan.selection_quote, { quote: composer.quote })}
+              </blockquote>
+              <button
+                type="button"
+                aria-label={t(($) => $.ask_plan.clear_selection)}
+                title={t(($) => $.ask_plan.clear_selection)}
+                disabled={busy}
+                onClick={clearComposer}
+                className="shrink-0 rounded-xs p-0.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <X aria-hidden className="size-3.5" />
+              </button>
+            </div>
+            <p className="mt-1 text-caption text-muted-foreground">
+              {sectionHeading(composer.sectionId)}
+            </p>
+            <textarea
+              autoFocus
+              aria-label={t(($) => $.ask_plan.comment_on_passage)}
+              placeholder={t(($) => $.ask_plan.comment_on_passage)}
+              value={commentText}
+              rows={2}
+              maxLength={4000}
+              disabled={busy}
+              onChange={(event) => setCommentText(event.currentTarget.value)}
+              onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.preventDefault();
                   submitComment();
-                }}
+                }
+                if (event.key === "Escape") clearComposer();
+              }}
+              className="mt-1 w-full resize-none rounded-xs border-0 bg-transparent p-0 text-caption text-foreground outline-none"
+            />
+            <div className="mt-1 flex items-center justify-end gap-2">
+              <span className="mr-auto text-caption text-muted-foreground">
+                {t(($) => $.ask_plan.comment_shortcut)}
+              </span>
+              <Button
+                size="xs"
+                variant="default"
+                type="submit"
+                disabled={busy || commentText.trim() === ""}
               >
-                <div className="flex items-start gap-1.5">
-                  <blockquote className="min-w-0 flex-1 border-l-2 border-border pl-2 text-caption text-muted-foreground">
-                    {t(($) => $.ask_plan.selection_quote, { quote: selection.quote })}
-                  </blockquote>
-                  <button
-                    type="button"
-                    aria-label={t(($) => $.ask_plan.clear_selection)}
-                    title={t(($) => $.ask_plan.clear_selection)}
-                    disabled={busy}
-                    onClick={clearSelection}
-                    className="shrink-0 rounded-xs p-0.5 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    <X aria-hidden className="size-3.5" />
-                  </button>
-                </div>
-                <p className="mt-1 text-caption text-muted-foreground">
-                  {sectionHeading(selection.sectionId)}
-                </p>
-                <textarea
-                  aria-label={t(($) => $.ask_plan.comment_on_passage)}
-                  placeholder={t(($) => $.ask_plan.comment_on_passage)}
-                  value={commentText}
-                  rows={2}
-                  maxLength={4000}
-                  disabled={busy}
-                  onChange={(event) => setCommentText(event.currentTarget.value)}
-                  onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
-                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                      event.preventDefault();
-                      submitComment();
-                    }
-                    if (event.key === "Escape") clearSelection();
-                  }}
-                  className="mt-1 w-full resize-none rounded-xs border-0 bg-transparent p-0 text-caption text-foreground outline-none"
-                />
-                <div className="mt-1 flex items-center justify-end gap-2">
-                  <span className="mr-auto text-caption text-muted-foreground">
-                    {t(($) => $.ask_plan.comment_shortcut)}
-                  </span>
-                  <Button
-                    size="xs"
-                    variant="default"
-                    type="submit"
-                    disabled={busy || commentText.trim() === ""}
-                  >
-                    {t(($) => $.ask_plan.add_passage_comment)}
-                  </Button>
-                </div>
-              </form>
-            ))}
-
-          <div className="mt-2">
-            <p className="text-caption font-medium text-foreground">
-              {t(($) => $.ask_plan.comments_threads)}
-            </p>
+                {t(($) => $.ask_plan.add_passage_comment)}
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+      {/* M-348: the thread list sits below the plan, closed by default, so it
+          never narrows the reading column. */}
+      <div className="mt-2.5 border-t border-border pt-2">
+        <button
+          type="button"
+          aria-expanded={commentsOpen}
+          onClick={() => setCommentsOpen((current) => !current)}
+          className="flex w-full items-center gap-1.5 rounded-xs text-caption font-medium text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          {commentsOpen
+            ? t(($) => $.ask_plan.comments_hide)
+            : t(($) => $.ask_plan.comments_show, { n: planComments.length })}
+        </button>
+        {commentsOpen && (
+          <div className="mt-1">
             {planComments.length === 0 ? (
               <p className="mt-0.5 text-caption text-muted-foreground">
                 {t(($) => $.ask_plan.comments_threads_empty)}
@@ -657,15 +916,19 @@ export function PlanReviewPanel({
               </button>
             )}
           </div>
-        </aside>
+        )}
       </div>
 
-      {!verdictable ? (
-        <p className="mt-2.5 text-caption text-muted-foreground">
-          {plan.status === "changes_requested"
-            ? t(($) => $.ask_plan.plan_changes_requested)
-            : t(($) => $.ask_plan.plan_draft)}
-        </p>
+      {!verdictable || viewingOld === true ? (
+        // An older revision shows no verdict row and no draft line: the
+        // banner above is its whole status.
+        viewingOld !== true && (
+          <p className="mt-2.5 text-caption text-muted-foreground">
+            {plan.status === "changes_requested"
+              ? t(($) => $.ask_plan.plan_changes_requested)
+              : t(($) => $.ask_plan.plan_draft)}
+          </p>
+        )
       ) : (
         <>
           <p className="mt-3 text-caption font-medium text-foreground">
@@ -785,6 +1048,71 @@ export function PlanReviewPanel({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * One older revision's sections, read-only (M-348). Sections the ledger has
+ * no version for at that revision render a placeholder row — the endpoint
+ * marks them `available: false` instead of inventing text.
+ */
+function OldRevisionSections({
+  read,
+  revision,
+  tRevisionUnavailable,
+}: {
+  read: PlanRevisionRead | undefined;
+  revision: number;
+  tRevisionUnavailable: (heading: string) => string;
+}) {
+  const { t } = useT("issues");
+  if (read === undefined) return null;
+  if (read.sections.length === 0) {
+    return (
+      <p className="text-caption text-muted-foreground">
+        {t(($) => $.ask_plan.sections_empty)}
+      </p>
+    );
+  }
+  return (
+    <>
+      {read.sections.map((section) => (
+        <section
+          key={section.section_id}
+          className="mb-3 last:mb-0"
+          data-plan-section={section.section_id}
+          aria-labelledby={`plan-section-${section.section_id}-r${revision}`}
+        >
+          <p
+            id={`plan-section-${section.section_id}-r${revision}`}
+            className="min-w-0 break-words text-body font-medium text-foreground"
+          >
+            {section.heading}
+          </p>
+          {section.available ? (
+            section.markdown.trim() === "" ? (
+              <p
+                data-plan-section-body
+                className="mt-0.5 text-caption text-muted-foreground"
+              >
+                {t(($) => $.ask_plan.section_empty)}
+              </p>
+            ) : (
+              <div data-plan-section-body className="mt-0.5 text-body">
+                <ReadonlyContent content={section.markdown} />
+              </div>
+            )
+          ) : (
+            <p
+              data-plan-section-body
+              className="mt-0.5 text-caption text-muted-foreground"
+            >
+              {tRevisionUnavailable(section.heading)}
+            </p>
+          )}
+        </section>
+      ))}
+    </>
   );
 }
 
