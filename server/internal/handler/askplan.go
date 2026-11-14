@@ -655,7 +655,7 @@ func (h *Handler) AnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answeredBy := parseUUID(requestUserID(r))
-	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), cardID, workspaceID, answeredBy, answersJSON)
+	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), cardID, workspaceID, answeredBy, service.AnsweredByMember, answersJSON)
 	if errors.Is(err, service.ErrQuestionCardClosed) {
 		writeErrorCode(w, http.StatusConflict, "card_closed", "the question card is no longer open")
 		return
@@ -666,6 +666,129 @@ func (h *Handler) AnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("answer question card failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record the answer")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"card":        cardToResponse(answered),
+		"resume_task": uuidToString(resumeTask.ID),
+	})
+}
+
+// leadAnswerCard resolves the card and refuses unless the task-token caller is
+// the issue project's agent lead in the card's workspace. Shared by the read and
+// the answer route so the two can never disagree about who the lead is. The
+// bool is false once the response has been written.
+func (h *Handler) leadAnswerCard(w http.ResponseWriter, r *http.Request) (db.AgentQuestionCard, db.AgentTaskQueue, bool) {
+	cardID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "cardId"), "card_id")
+	if !ok {
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "answering on the Owner's behalf requires an agent task token")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	task, ok := h.taskFromRequestHeader(r)
+	if !ok || !task.AgentID.Valid {
+		writeError(w, http.StatusForbidden, "answering on the Owner's behalf requires an agent task token")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	card, err := h.Queries.GetAgentQuestionCard(r.Context(), cardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if h.resolveWorkspaceID(r) != uuidToString(card.WorkspaceID) {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	issue, err := h.Queries.GetIssue(r.Context(), card.IssueID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if !issue.ProjectID.Valid {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID:          issue.ProjectID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if !project.LeadType.Valid || project.LeadType.String != "agent" || !project.LeadID.Valid || project.LeadID != task.AgentID {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	return card, task, true
+}
+
+// GetQuestionCardForLead handles GET /api/question-cards/{cardId} (M-332): the
+// lead reads the card it was escalated to, so it can see the questions and the
+// labels before answering (or see that the Owner already answered it).
+func (h *Handler) GetQuestionCardForLead(w http.ResponseWriter, r *http.Request) {
+	card, _, ok := h.leadAnswerCard(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, cardToResponse(card))
+}
+
+// LeadAnswerQuestionCard handles POST /api/question-cards/{cardId}/lead-answer
+// (M-332): the project lead answering an escalated ask on the Owner's behalf.
+//
+// Gates, all of them fail-closed:
+//
+//   - a task token (X-Actor-Source is server-set by the auth middleware), never
+//     a member session — the point is that this is an agent's call recorded as
+//     an agent's call;
+//   - the caller's agent must BE the issue project's lead (lead_type 'agent',
+//     lead_id = the task's agent), in the card's workspace;
+//   - the card must have been escalated (escalated_at set) — the ladder has to
+//     reach the lead before the lead may stand in for the Owner;
+//   - the first-answer-wins CAS in the service is unchanged, so a lead racing
+//     the Owner (or a second lead run) still loses with card_closed.
+//
+// The answer resumes the original parked run exactly as a member's answer does;
+// only the stored provenance (answered_by_type='agent') and the run's handoff
+// note differ.
+func (h *Handler) LeadAnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
+	card, task, ok := h.leadAnswerCard(w, r)
+	if !ok {
+		return
+	}
+	var req questionAnswerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !card.EscalatedAt.Valid {
+		writeErrorCode(w, http.StatusConflict, "card_not_escalated", "the card has not reached the lead yet; the Owner answers it first")
+		return
+	}
+	if err := validateCardAnswers(card.Questions, req.Answers); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	answersJSON, err := json.Marshal(req.Answers)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode answers")
+		return
+	}
+	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), card.ID, card.WorkspaceID, task.AgentID, service.AnsweredByAgent, answersJSON)
+	if errors.Is(err, service.ErrQuestionCardClosed) {
+		writeErrorCode(w, http.StatusConflict, "card_closed", "the question card is no longer open")
+		return
+	}
+	if errors.Is(err, service.ErrDuplicatePendingTask) {
+		writeErrorCode(w, http.StatusConflict, "run_already_queued", "a run is already queued for this issue; the answer was not recorded")
+		return
+	}
+	if err != nil {
+		slog.Warn("lead answer question card failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to record the answer")
 		return
 	}

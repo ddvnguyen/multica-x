@@ -64,6 +64,14 @@ var planningStatuses = map[string]bool{
 // WaitReasonAskPlan is the short hint parked tasks carry next to their status.
 const WaitReasonAskPlan = "awaiting human answer"
 
+// Who decided a question card (agent_question_card.answered_by_type).
+// AnsweredByAgent is the project lead answering on the Owner's behalf after
+// the M-332 escalation; everything else is a member's own answer.
+const (
+	AnsweredByMember = "member"
+	AnsweredByAgent  = "agent"
+)
+
 // ErrQuestionCardClosed / ErrPlanClosed / ErrPlanStaleRevision are business
 // outcomes, never 500s: the card was already answered, the plan already final,
 // or the caller fenced on an older revision (port of team-room's
@@ -196,16 +204,25 @@ func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQ
 // the card as answered with no continuation, and a half-committed resume
 // (enqueued, answer lost) would resurrect a session the human never steered.
 // The CAS on 'open' makes a second answer ErrQuestionCardClosed → 409.
-func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceID, answeredBy pgtype.UUID, answers json.RawMessage) (db.AgentQuestionCard, *db.AgentTaskQueue, error) {
+//
+// answeredByType is "member" for the Owner (or any workspace member) and
+// "agent" for the project lead answering on the Owner's behalf after the
+// M-332 escalation. It travels to the row so the resumed run and the Decisions
+// surfaces never present a lead's pick as the Owner's own.
+func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceID, answeredBy pgtype.UUID, answeredByType string, answers json.RawMessage) (db.AgentQuestionCard, *db.AgentTaskQueue, error) {
+	if answeredByType != AnsweredByAgent {
+		answeredByType = AnsweredByMember
+	}
 	var (
 		card       db.AgentQuestionCard
 		resumeTask *db.AgentTaskQueue
 	)
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		answered, err := qtx.AnswerAgentQuestionCard(ctx, db.AnswerAgentQuestionCardParams{
-			ID:         cardID,
-			Answers:    answers,
-			AnsweredBy: answeredBy,
+			ID:             cardID,
+			Answers:        answers,
+			AnsweredBy:     answeredBy,
+			AnsweredByType: answeredByType,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrQuestionCardClosed
@@ -223,7 +240,18 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 		if err != nil {
 			return fmt.Errorf("load issue: %w", err)
 		}
-		note := renderQuestionAnswerHandoff(card, answers)
+		narrator := ""
+		if card.AnsweredByType == AnsweredByAgent {
+			// A lead's answer is the lead's, not the Owner's: naming it in the
+			// handoff is what keeps the resumed run from treating an inference
+			// as a recorded Owner decision.
+			if agent, err := qtx.GetAgent(ctx, card.AnsweredBy); err == nil {
+				narrator = agent.Name
+			} else {
+				narrator = "the project lead"
+			}
+		}
+		note := renderQuestionAnswerHandoff(card, answers, narrator)
 		txService := &TaskService{Queries: qtx}
 		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
 		if err != nil {
@@ -533,14 +561,20 @@ type planSection struct {
 
 // renderQuestionAnswerHandoff is what the resumed run reads: the member's
 // answers, one line per question, in question order (the port of team-room's
-// decisionAnswersText — labels plus quoted free text).
-func renderQuestionAnswerHandoff(card db.AgentQuestionCard, answers json.RawMessage) string {
+// decisionAnswersText — labels plus quoted free text). byAgent is non-empty
+// when the project lead answered on the Owner's behalf (M-332): the run is told
+// who decided, so it can weigh a lead's call differently from the Owner's own.
+func renderQuestionAnswerHandoff(card db.AgentQuestionCard, answers json.RawMessage, byAgent string) string {
 	var qs []askPlanQuestion
 	var as []askPlanAnswer
 	_ = json.Unmarshal(card.Questions, &qs)
 	_ = json.Unmarshal(answers, &as)
 	var b strings.Builder
-	b.WriteString("Your question was answered by a human. This run resumes the session that asked it; treat the answers below as the human's reply and continue the task accordingly.\n\n")
+	if strings.TrimSpace(byAgent) != "" {
+		fmt.Fprintf(&b, "Your question was answered by %s, the project lead, on the Owner's behalf: the Owner did not answer it directly. This run resumes the session that asked it; treat the answers below as the decision to continue with, and say in your result that the lead decided it on the Owner's behalf.\n\n", strings.TrimSpace(byAgent))
+	} else {
+		b.WriteString("Your question was answered by a human. This run resumes the session that asked it; treat the answers below as the human's reply and continue the task accordingly.\n\n")
+	}
 	if card.Context.Valid && strings.TrimSpace(card.Context.String) != "" {
 		b.WriteString("Context you provided: ")
 		b.WriteString(strings.TrimSpace(card.Context.String))

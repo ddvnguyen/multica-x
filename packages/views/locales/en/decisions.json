@@ -35,6 +35,7 @@
     "requested": "Asked {{age}}",
     "answered": "Answered {{age}}",
     "by": "{{actor}}",
+    "by_lead": "{{actor}} on the Owner's behalf",
     "unknown_actor": "A member",
     "loading": "Loading the request…",
     "error_title": "This request could not be loaded",

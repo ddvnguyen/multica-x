@@ -35,6 +35,7 @@
     "requested": "Preguntado {{age}}",
     "answered": "Respondido {{age}}",
     "by": "{{actor}}",
+    "by_lead": "{{actor}} en nombre del propietario",
     "unknown_actor": "Un miembro",
     "loading": "Cargando la solicitud…",
     "error_title": "No se ha podido cargar esta solicitud",

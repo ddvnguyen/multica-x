@@ -35,6 +35,7 @@
     "requested": "Demandé {{age}}",
     "answered": "Répondu {{age}}",
     "by": "{{actor}}",
+    "by_lead": "{{actor}} au nom du propriétaire",
     "unknown_actor": "Un membre",
     "loading": "Chargement de la demande…",
     "error_title": "Impossible de charger cette demande",

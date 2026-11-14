@@ -35,6 +35,7 @@
     "requested": "提問於 {{age}}",
     "answered": "回覆於 {{age}}",
     "by": "{{actor}}",
+    "by_lead": "{{actor}}（代表 Owner）",
     "unknown_actor": "某位成員",
     "loading": "正在載入請求…",
     "error_title": "無法載入此請求",

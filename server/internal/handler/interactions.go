@@ -8,13 +8,13 @@ package handler
 // everyone except a workspace owner or admin.
 //
 // Three deliberate limits, all of them the card's:
-//
-//   - The interaction wait is stored, surfaced, and ENFORCED by the sweeper
-//     M-131 adds: nothing in this file cancels a parked run or writes the
-//     notice a reader would get — the sweeper reaps a park past
-//     EffectiveAskPlanTimeoutSeconds and escalates to the project lead. The
-//     resolver lives here (and is exported) because the settings surfaces and
-//     the sweeper must agree on one number and one source.
+//	//   - The interaction wait is stored, surfaced, and ENFORCED by the sweeper
+	//     M-131 adds: nothing in this file cancels a parked run or writes the
+	//     notice a reader would get — the sweeper escalates a park past
+	//     EffectiveAskPlanTimeoutSeconds to the project lead (M-332: once, and
+	//     the card stays open afterwards). The resolver lives here (and is
+	//     exported) because the settings surfaces and the sweeper must agree on
+	//     one number and one source.
 //   - The values live in the existing `workspace.settings` / `project.settings`
 //     objects under their own keys rather than in a new column: every existing
 //     reader treats those objects as open sets, and an absent key falls back to
@@ -42,9 +42,12 @@ import (
 )
 
 const (
-	// interactionsDefaultTimeoutSeconds is the shipped ask/plan wait: ten
-	// minutes, the value the card names.
-	interactionsDefaultTimeoutSeconds = 600
+	// interactionsDefaultTimeoutSeconds is the shipped ask/plan wait: five
+	// minutes (Owner decision on M-325, 2026-11-13). After it the card escalates
+	// once to the project lead and then waits for the Owner as long as it takes
+	// — this number bounds the silence before the lead is told, not the life of
+	// the card. A workspace or project may still override it.
+	interactionsDefaultTimeoutSeconds = 300
 	// The bounds are the validation the card asks for. A minute is below any
 	// useful human answer; a day is above any run that still wants resuming.
 	interactionsMinTimeoutSeconds = 60

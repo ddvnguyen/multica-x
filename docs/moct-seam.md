@@ -201,9 +201,36 @@ The values live in the existing `workspace.settings` / `project.settings`
 objects under `moct_memory_inject` and `ask_plan_timeout_seconds`, one key per
 request (`SetWorkspaceSetting` / `SetProjectSetting`) so two admins editing
 different keys cannot overwrite each other. `ask_plan_timeout_seconds` is
-bounded to 60–86400 seconds and defaults to 600; it is **stored and surfaced
-only** — no route here cancels a parked run or resumes one, and a cleared key
-falls back to the compiled-in default rather than pinning today's value.
+bounded to 60–86400 seconds and defaults to 300; no route here cancels a parked
+run or resumes one, and a cleared key falls back to the compiled-in default
+rather than pinning today's value.
+
+### Escalation ladder (M-332)
+
+When the wait runs out the sweeper **escalates once** and never cancels: the
+card stays open (a plan stays `in_review`), the parked run stays `blocked`, and
+the evidence row is stamped `escalated_at` so later rounds leave it alone. The
+escalation posts one system comment stating the rule and triggers the project
+lead — a queued run for an agent lead, an action-required inbox row for a member
+lead.
+
+The lead may answer an escalated card on the Owner's behalf only when the
+approved plan or the Owner's recorded decisions cover the decision, or it is
+reversible; otherwise it leaves the card and says so in one reply.
+
+| Route | Who | Meaning |
+|---|---|---|
+| `GET /api/question-cards/{id}` | lead agent (task token) | read an escalated card and its options |
+| `POST /api/question-cards/{id}/lead-answer` | lead agent (task token) | `{answers:[{selected,text}]}`, stored with `answered_by_type='agent'` |
+
+Both routes are outside the workspace path the way `/api/questions/{id}/answer`
+is: the lead's run is handed the card id by the escalation comment. They refuse
+a member session, an agent that is not the issue project's lead, and a card that
+has not been escalated (`card_not_escalated`). The answer keeps the human
+route's first-answer-wins CAS: whoever answers second gets `card_closed`, and
+the original parked run resumes with a handoff that names the lead as deciding
+on the Owner's behalf. A plan verdict still has no lead path — it stays the
+Owner's alone, and the escalation comment records that gap.
 
 ## Scope semantics (search / get)
 

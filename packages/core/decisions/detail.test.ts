@@ -56,6 +56,24 @@ describe("decision detail readers", () => {
     });
     expect(detail?.answers).toEqual([{ selected: [0], text: "because it ships" }]);
     expect(detail?.answeredBy).toBe("member-1");
+    // A row written before the column existed (or by a member) reads as the
+    // Owner's own answer.
+    expect(detail?.answeredByType).toBe("member");
+  });
+
+  it("keeps a lead's answer distinguishable from the Owner's (M-332)", () => {
+    const detail = parseDecisionQuestion({
+      id: "card-1",
+      issue_id: "issue-1",
+      status: "answered",
+      questions: [{ prompt: "Which store?", multiple: false, options: [{ label: "Postgres" }] }],
+      answers: [{ selected: [0] }],
+      answered_by: "agent-9",
+      answered_by_type: "agent",
+      answered_at: "2026-11-13T10:00:00Z",
+    });
+    expect(detail?.answeredBy).toBe("agent-9");
+    expect(detail?.answeredByType).toBe("agent");
   });
 
   it("refuses a body that is not a card, rather than rendering an empty one", () => {

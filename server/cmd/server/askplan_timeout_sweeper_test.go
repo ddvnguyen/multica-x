@@ -1,22 +1,27 @@
 package main
 
-// M-131 — ask/plan timeout sweeper tests.
+// M-131/M-332 — ask/plan timeout sweeper tests.
 //
 // Each fixture parks one task with live evidence (an open card or an in_review
 // plan) aged past (or inside) its effective timeout, then drives
 // sweepExpiredAskPlanParks directly: the round function is the sweeper's whole
 // behavior — the 30s ticker around it is already covered by
-// TestPeriodicSweepStopsWithItsContext. The assertions name the three
-// contracts the card and the Architect's verdict pin:
+// TestPeriodicSweepStopsWithItsContext. The assertions name the contracts the
+// M-332 ladder pins:
 //
-//  1. expiry cancels the PARKED row only, through the same settle as a human
-//     cancel, and never writes a resume — the run itself is never cancelled
-//     outright and gets no "[TIMEOUT]" notice;
-//  2. first answer wins, including the amendment-2 guarantee that a racing
-//     answer loses its CAS (ErrQuestionCardClosed) after the sweep commits;
-//  3. escalation is one durable system comment plus exactly one trigger:
-//     a mention task for an agent lead, an action-required inbox row for a
-//     member lead, nothing invented when no lead is set — and no Triage bypass.
+//  1. the deadline ESCALATES, it does not cancel: the parked task stays
+//     'blocked', the card stays open / the plan stays in review, and nothing is
+//     resumed by the sweep itself;
+//  2. escalation happens once — a second round posts no second comment and
+//     triggers no second lead run;
+//  3. escalation is one durable system comment that states the lead's rule, plus
+//     exactly one trigger: a mention task for an agent lead, an action-required
+//     inbox row for a member lead, nothing invented when no lead is set — and no
+//     Triage bypass;
+//  4. first answer wins, whoever answers: the Owner's answer after an escalation
+//     still resumes the original parked run, a lead's answer does the same and is
+//     recorded as the lead's (answered_by_type='agent'), and whichever lands
+//     second loses with ErrQuestionCardClosed.
 
 import (
 	"context"
@@ -27,6 +32,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -37,7 +43,7 @@ type askPlanSweepOpts struct {
 	// plan parks on an in_review plan instead of an open question card.
 	plan bool
 	// answered leaves the card already answered — a park whose human replied
-	// before any sweep saw it. Never a candidate, never reaped.
+	// before any sweep saw it. Never a candidate, never escalated.
 	answered bool
 	parkAge  time.Duration
 	// workspaceSettings / projectSettings are raw JSONB carrying (or omitting)
@@ -182,8 +188,8 @@ func setupAskPlanSweepFixture(t *testing.T, opts askPlanSweepOpts) askPlanSweepF
 			INSERT INTO agent_question_card (id, workspace_id, issue_id, task_id, agent_id,
 				status, questions, answers, answered_by, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6,
-			        '[{"id":"q1","header":"Scope","question":"Pick one?"}]'::jsonb,
-			        CASE WHEN $6 = 'answered' THEN '[{"id":"q1","answer":"the other one"}]'::jsonb ELSE NULL END,
+			        '[{"prompt":"Pick one?","options":[{"label":"Thursday"},{"label":"Friday"}]}]'::jsonb,
+			        CASE WHEN $6 = 'answered' THEN '[{"selected":[1]}]'::jsonb ELSE NULL END,
 			        CASE WHEN $6 = 'answered' THEN $7::uuid ELSE NULL END,
 			        now() - make_interval(secs => $8),
 			        now() - make_interval(secs => $8))
@@ -210,11 +216,15 @@ func sweepAskPlanRound(t *testing.T) int {
 	t.Helper()
 	queries := db.New(testPool)
 	taskSvc := service.NewTaskService(queries, testPool, nil, events.New())
-	expired, err := sweepExpiredAskPlanParks(context.Background(), queries, taskSvc)
+	escalated, err := sweepExpiredAskPlanParks(context.Background(), queries, taskSvc)
 	if err != nil {
 		t.Fatalf("sweepExpiredAskPlanParks: %v", err)
 	}
-	return expired
+	return escalated
+}
+
+func askPlanTaskService() *service.TaskService {
+	return service.NewTaskService(db.New(testPool), testPool, nil, events.New())
 }
 
 func askPlanTaskStatus(t *testing.T, taskID string) (status, cancelledBy string) {
@@ -244,6 +254,18 @@ func askPlanSystemComment(t *testing.T, issueID string) string {
 		t.Fatalf("read system comment: %v", err)
 	}
 	return content
+}
+
+func askPlanSystemCommentCount(t *testing.T, issueID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'system' AND type = 'system'
+	`, issueID).Scan(&n); err != nil {
+		t.Fatalf("count system comments: %v", err)
+	}
+	return n
 }
 
 // askPlanQueuedFor returns (task_id, trigger_comment_id) for every queued task
@@ -281,28 +303,50 @@ func askPlanInboxCount(t *testing.T, issueID, recipientID string) int {
 	return n
 }
 
-// Overdue ask, no overrides, agent lead: the whole happy path in one row —
-// parked task system-cancelled, card withdrawn, one durable comment that names
-// the built-in default as the governing number, and exactly one queued run for
-// the lead whose trigger is that comment. The parked agent gets no resume: the
-// run was not restarted with a notice, it simply stays stopped.
-func TestAskPlanTimeoutSweep_OverdueAskEscalatesToAgentLead(t *testing.T) {
+// askPlanResumeTask is the resume run enqueued for the parked agent ("" when
+// none exists) plus its handoff note.
+func askPlanResumeTask(t *testing.T, issueID, parkedTaskID string) (resumeID, note string) {
+	t.Helper()
+	var id string
+	var handoff pgtype.Text
+	err := testPool.QueryRow(context.Background(), `
+		SELECT id::text, handoff_note FROM agent_task_queue
+		WHERE issue_id = $1 AND rerun_of_task_id = $2
+	`, issueID, parkedTaskID).Scan(&id, &handoff)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ""
+	}
+	if err != nil {
+		t.Fatalf("read resume task: %v", err)
+	}
+	return id, handoff.String
+}
+
+// Overdue ask, no overrides, agent lead: the deadline escalates once — the card
+// stays open, the parked task stays blocked, one durable comment names the
+// built-in default and the lead's rule, and exactly one run is queued for the
+// lead whose trigger is that comment. A second round does nothing at all.
+func TestAskPlanEscalation_OverdueAskEscalatesOnceAndKeepsCardOpen(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		parkAge:  700 * time.Second, // default timeout is 600s
+		parkAge:  320 * time.Second, // default timeout is 300s
 		leadType: "agent",
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1", escalated)
 	}
-	if status, by := askPlanTaskStatus(t, fx.taskID); status != "cancelled" || by != "system" {
-		t.Fatalf("task status = %q by %q, want cancelled/system", status, by)
+	if status, by := askPlanTaskStatus(t, fx.taskID); status != "blocked" || by != "" {
+		t.Fatalf("task status = %q by %q, want blocked and NOT cancelled", status, by)
 	}
 	var cardStatus string
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM agent_question_card WHERE id = $1`, fx.cardID).Scan(&cardStatus); err != nil {
+	var escalatedAt *time.Time
+	if err := testPool.QueryRow(context.Background(), `SELECT status, escalated_at FROM agent_question_card WHERE id = $1`, fx.cardID).Scan(&cardStatus, &escalatedAt); err != nil {
 		t.Fatalf("read card: %v", err)
 	}
-	if cardStatus != "withdrawn" {
-		t.Fatalf("card status = %q, want withdrawn", cardStatus)
+	if cardStatus != "open" {
+		t.Fatalf("card status = %q, want open (the Owner still has to answer)", cardStatus)
+	}
+	if escalatedAt == nil {
+		t.Fatal("card escalated_at is NULL after the sweep")
 	}
 	comment := askPlanSystemComment(t, fx.issueID)
 	if comment == "" {
@@ -310,6 +354,12 @@ func TestAskPlanTimeoutSweep_OverdueAskEscalatesToAgentLead(t *testing.T) {
 	}
 	if !contains(comment, "built-in default") {
 		t.Fatalf("comment must name the governing source, got:\n%s", comment)
+	}
+	if !contains(comment, "stays open") || !contains(comment, "stays parked") {
+		t.Fatalf("comment must say nothing was cancelled, got:\n%s", comment)
+	}
+	if !contains(comment, "multica question-card answer") {
+		t.Fatalf("comment must hand the lead the command, got:\n%s", comment)
 	}
 	if !contains(comment, "Escalated to the project lead") {
 		t.Fatalf("comment must name the escalation, got:\n%s", comment)
@@ -327,17 +377,31 @@ func TestAskPlanTimeoutSweep_OverdueAskEscalatesToAgentLead(t *testing.T) {
 	if queued[0][1] == "" {
 		t.Fatal("lead run must carry the escalation comment as its trigger")
 	}
+	if resumeID, _ := askPlanResumeTask(t, fx.issueID, fx.taskID); resumeID != "" {
+		t.Fatal("the sweep must not resume the parked run")
+	}
+
+	// Second round: already escalated, so it is no longer a candidate.
+	if escalated := sweepAskPlanRound(t); escalated != 0 {
+		t.Fatalf("second round escalated = %d, want 0", escalated)
+	}
+	if n := askPlanSystemCommentCount(t, fx.issueID); n != 1 {
+		t.Fatalf("system comments = %d, want 1 (escalation happens once)", n)
+	}
+	if q := askPlanQueuedFor(t, fx.issueID); len(q) != 1 {
+		t.Fatalf("queued tasks after the second round = %d, want 1", len(q))
+	}
 }
 
 // A park inside its timeout is nobody's business: untouched row, open card,
 // no comment, no trigger.
-func TestAskPlanTimeoutSweep_FreshAskUntouched(t *testing.T) {
+func TestAskPlanEscalation_FreshAskUntouched(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
 		parkAge:  10 * time.Second,
 		leadType: "agent",
 	})
-	if expired := sweepAskPlanRound(t); expired != 0 {
-		t.Fatalf("expired = %d, want 0", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 0 {
+		t.Fatalf("escalated = %d, want 0", escalated)
 	}
 	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "blocked" {
 		t.Fatalf("task status = %q, want blocked", status)
@@ -352,141 +416,148 @@ func TestAskPlanTimeoutSweep_FreshAskUntouched(t *testing.T) {
 
 // First answer wins at the candidate level: an answered park sits 'blocked'
 // forever in this schema, so the live-evidence join must not see it, and a
-// direct expiry call must leave it alone too.
-func TestAskPlanTimeoutSweep_AnsweredParkIsNeverReaped(t *testing.T) {
+// direct escalation call must leave it alone too.
+func TestAskPlanEscalation_AnsweredParkIsNeverEscalated(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		parkAge:  700 * time.Second,
+		parkAge:  320 * time.Second,
 		answered: true,
 		leadType: "agent",
 	})
-	if expired := sweepAskPlanRound(t); expired != 0 {
-		t.Fatalf("expired = %d, want 0 (answered parks are not candidates)", expired)
-	}
-	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "blocked" {
-		t.Fatalf("task status = %q, want blocked", status)
+	if escalated := sweepAskPlanRound(t); escalated != 0 {
+		t.Fatalf("escalated = %d, want 0 (answered parks are not candidates)", escalated)
 	}
 	// Direct call too: the gate reads the evidence row and refuses.
-	queries := db.New(testPool)
-	taskSvc := service.NewTaskService(queries, testPool, nil, events.New())
-	done, err := taskSvc.ExpireParkedAskPlanTask(context.Background(), parseUUID(fx.taskID), 600, "built-in default")
+	done, err := askPlanTaskService().EscalateParkedAskPlanTask(context.Background(), parseUUID(fx.taskID), 300, "built-in default")
 	if err != nil {
-		t.Fatalf("ExpireParkedAskPlanTask: %v", err)
+		t.Fatalf("EscalateParkedAskPlanTask: %v", err)
 	}
 	if done {
-		t.Fatal("answered park must not expire")
+		t.Fatal("answered park must not escalate")
 	}
 	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "blocked" {
-		t.Fatalf("task status = %q, want blocked after refused expiry", status)
+		t.Fatalf("task status = %q, want blocked after refused escalation", status)
 	}
 	if comment := askPlanSystemComment(t, fx.issueID); comment != "" {
-		t.Fatalf("refused expiry must not escalate, got:\n%s", comment)
+		t.Fatalf("refused escalation must not comment, got:\n%s", comment)
 	}
 }
 
-// The amendment-2 guarantee, stated as behavior: after the sweep commits, the
-// human's answer loses its status='open' CAS with the business conflict, and
-// no resume run exists — first (the deadline) wins cleanly, never twice.
-func TestAskPlanTimeoutSweep_AnswerAfterExpiryLosesItsCAS(t *testing.T) {
+// Rung 3, the Owner answers late: after the escalation the card is still open, so
+// the Owner's answer records and resumes the ORIGINAL parked run — the run the
+// lead never got to.
+func TestAskPlanEscalation_OwnerAnswerAfterEscalationResumesTheParkedRun(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		parkAge:  700 * time.Second,
+		parkAge:  320 * time.Second,
 		leadType: "agent",
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1", escalated)
 	}
-	queries := db.New(testPool)
-	taskSvc := service.NewTaskService(queries, testPool, nil, events.New())
-	_, _, err := taskSvc.AnswerQuestionCard(
+	card, resume, err := askPlanTaskService().AnswerQuestionCard(
 		context.Background(),
 		parseUUID(fx.cardID),
 		parseUUID(testWorkspaceID),
 		parseUUID(testUserID),
-		json.RawMessage(`[{"id":"q1","answer":"too late"}]`),
+		service.AnsweredByMember,
+		json.RawMessage(`[{"selected":[0],"text":""}]`),
 	)
-	if !errors.Is(err, service.ErrQuestionCardClosed) {
-		t.Fatalf("answer after expiry: err = %v, want ErrQuestionCardClosed", err)
+	if err != nil {
+		t.Fatalf("AnswerQuestionCard after escalation: %v", err)
 	}
-	// No resume run anywhere on the issue: one queued task at most, and that
-	// is the lead's escalation.
-	for _, q := range askPlanQueuedFor(t, fx.issueID) {
-		if q[0] == fx.taskID {
-			t.Fatal("the cancelled parked task must not be requeued")
-		}
+	if card.Status != "answered" || card.AnsweredByType != service.AnsweredByMember {
+		t.Fatalf("card = status %q by-type %q, want answered/member", card.Status, card.AnsweredByType)
 	}
-	var resumeCount int
-	if err := testPool.QueryRow(context.Background(), `
-		SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND rerun_of_task_id = $2
-	`, fx.issueID, fx.taskID).Scan(&resumeCount); err != nil {
-		t.Fatalf("count resumes: %v", err)
+	if resume.RerunOfTaskID != parseUUID(fx.taskID) {
+		t.Fatal("the resume run must rerun the original parked task")
 	}
-	if resumeCount != 0 {
-		t.Fatalf("resume tasks = %d, want 0", resumeCount)
+	if _, note := askPlanResumeTask(t, fx.issueID, fx.taskID); strings.Contains(note, "on the Owner's behalf") {
+		t.Fatalf("a member's answer must not be described as the lead's:\n%s", note)
 	}
 }
 
-// Overdue plan: cancelled plan, cancelled parked task, comment that says plan —
-// and with no project lead, only the comment: nothing invented (verdict on open
-// question 1).
-func TestAskPlanTimeoutSweep_OverduePlanCancelledNoLeadCommentOnly(t *testing.T) {
+// Rung 2: the lead answers on the Owner's behalf. The answer is stored as the
+// lead's (never laundered into the Owner's), the original parked run resumes,
+// and the handoff note tells that run who decided.
+func TestAskPlanEscalation_LeadAnswerResumesTheParkedRunAsTheLead(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		plan:    true,
-		parkAge: 700 * time.Second,
+		parkAge:  320 * time.Second,
+		leadType: "agent",
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1", escalated)
 	}
-	var planStatus string
-	if err := testPool.QueryRow(context.Background(), `SELECT status FROM agent_plan WHERE id = $1`, fx.planID).Scan(&planStatus); err != nil {
-		t.Fatalf("read plan: %v", err)
+	card, resume, err := askPlanTaskService().AnswerQuestionCard(
+		context.Background(),
+		parseUUID(fx.cardID),
+		parseUUID(testWorkspaceID),
+		parseUUID(fx.leadAgentID),
+		service.AnsweredByAgent,
+		json.RawMessage(`[{"selected":[1],"text":""}]`),
+	)
+	if err != nil {
+		t.Fatalf("lead AnswerQuestionCard: %v", err)
 	}
-	if planStatus != "cancelled" {
-		t.Fatalf("plan status = %q, want cancelled", planStatus)
+	if card.Status != "answered" || card.AnsweredByType != service.AnsweredByAgent {
+		t.Fatalf("card = status %q by-type %q, want answered/agent", card.Status, card.AnsweredByType)
 	}
-	if status, by := askPlanTaskStatus(t, fx.taskID); status != "cancelled" || by != "system" {
-		t.Fatalf("task status = %q by %q, want cancelled/system", status, by)
+	if card.AnsweredBy != parseUUID(fx.leadAgentID) {
+		t.Fatal("answered_by must be the lead agent")
 	}
-	comment := askPlanSystemComment(t, fx.issueID)
-	if !contains(comment, "plan") || !contains(comment, "No project lead is set") {
-		t.Fatalf("comment must say plan + no-lead, got:\n%s", comment)
+	if resume.RerunOfTaskID != parseUUID(fx.taskID) {
+		t.Fatal("the lead's answer must resume the original parked run")
 	}
-	if queued := askPlanQueuedFor(t, fx.issueID); len(queued) != 0 {
-		t.Fatalf("queued tasks = %d, want 0", len(queued))
+	_, note := askPlanResumeTask(t, fx.issueID, fx.taskID)
+	if !contains(note, "Integration Test Agent") || !contains(note, "on the Owner's behalf") {
+		t.Fatalf("handoff note must name the lead and the Owner's behalf, got:\n%s", note)
 	}
-	if n := askPlanInboxCount(t, fx.issueID, testUserID); n != 0 {
-		t.Fatalf("inbox items = %d, want 0", n)
+	if !contains(note, "Friday") {
+		t.Fatalf("handoff note must carry the chosen label, got:\n%s", note)
+	}
+
+	// Whoever answers second loses: the Owner's own answer is refused.
+	_, _, err = askPlanTaskService().AnswerQuestionCard(
+		context.Background(),
+		parseUUID(fx.cardID),
+		parseUUID(testWorkspaceID),
+		parseUUID(testUserID),
+		service.AnsweredByMember,
+		json.RawMessage(`[{"selected":[0],"text":""}]`),
+	)
+	if !errors.Is(err, service.ErrQuestionCardClosed) {
+		t.Fatalf("second answer: err = %v, want ErrQuestionCardClosed", err)
 	}
 }
 
 // Resolution order, amendment 1 wired end to end: a project override of 60s
-// expires a 120s park even when the workspace says 86400, and the comment
-// names the override as the source that governed.
-func TestAskPlanTimeoutSweep_ProjectOverrideGoverns(t *testing.T) {
+// escalates a 120s park even when the workspace says 86400, and the comment
+// names the override as the source that governed — while the task stays parked.
+func TestAskPlanEscalation_ProjectOverrideGoverns(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
 		parkAge:           120 * time.Second,
 		workspaceSettings: `{"ask_plan_timeout_seconds": 86400}`,
 		projectSettings:   `{"ask_plan_timeout_seconds": 60}`,
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1 (project override 60s governs)", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1 (project override 60s governs)", escalated)
 	}
 	comment := askPlanSystemComment(t, fx.issueID)
 	if !contains(comment, "project override") {
 		t.Fatalf("comment must name the project override as the source, got:\n%s", comment)
 	}
-	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "cancelled" {
-		t.Fatalf("task status = %q, want cancelled", status)
+	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "blocked" {
+		t.Fatalf("task status = %q, want blocked", status)
 	}
 }
 
 // The mirror: same 120s park, workspace default 86400 and no override — the
-// park lives, because the workspace value is the effective timeout.
-func TestAskPlanTimeoutSweep_WorkspaceDefaultSparesThePark(t *testing.T) {
+// park waits, because the workspace value is the effective timeout.
+func TestAskPlanEscalation_WorkspaceDefaultSparesThePark(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
 		parkAge:           120 * time.Second,
 		workspaceSettings: `{"ask_plan_timeout_seconds": 86400}`,
 	})
-	if expired := sweepAskPlanRound(t); expired != 0 {
-		t.Fatalf("expired = %d, want 0 (workspace default 86400s)", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 0 {
+		t.Fatalf("escalated = %d, want 0 (workspace default 86400s)", escalated)
 	}
 	if status, _ := askPlanTaskStatus(t, fx.taskID); status != "blocked" {
 		t.Fatalf("task status = %q, want blocked", status)
@@ -497,14 +568,14 @@ func TestAskPlanTimeoutSweep_WorkspaceDefaultSparesThePark(t *testing.T) {
 }
 
 // Member lead: an action-required inbox row addressed to them, no task queued
-// for anyone, comment names them.
-func TestAskPlanTimeoutSweep_MemberLeadGetsInboxNotTask(t *testing.T) {
+// for anyone, comment names them — and the card still waits, open.
+func TestAskPlanEscalation_MemberLeadGetsInboxNotTask(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		parkAge:  700 * time.Second,
+		parkAge:  320 * time.Second,
 		leadType: "member",
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1", escalated)
 	}
 	if n := askPlanInboxCount(t, fx.issueID, testUserID); n != 1 {
 		t.Fatalf("member lead inbox items = %d, want 1", n)
@@ -515,25 +586,79 @@ func TestAskPlanTimeoutSweep_MemberLeadGetsInboxNotTask(t *testing.T) {
 	if comment := askPlanSystemComment(t, fx.issueID); !contains(comment, "Escalated to the project lead") {
 		t.Fatalf("comment must record the escalation, got:\n%s", comment)
 	}
+	var cardStatus string
+	if err := testPool.QueryRow(context.Background(), `SELECT status FROM agent_question_card WHERE id = $1`, fx.cardID).Scan(&cardStatus); err != nil {
+		t.Fatalf("read card: %v", err)
+	}
+	if cardStatus != "open" {
+		t.Fatalf("card status = %q, want open", cardStatus)
+	}
 }
 
-// Triage (verdict on open question 2): the comment is still delivered, but the
-// agent-lead task is refused by the triage guard — OriginDerived, not
-// OriginNamed, so the guard is not bypassed.
-func TestAskPlanTimeoutSweep_TriageHoldsTheAgentLeadTask(t *testing.T) {
+// Triage: the comment is still delivered, but the agent-lead task is refused by
+// the triage guard — OriginDerived, not OriginNamed, so the guard is not
+// bypassed. The escalation is still recorded once.
+func TestAskPlanEscalation_TriageHoldsTheAgentLeadTask(t *testing.T) {
 	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
-		parkAge:  700 * time.Second,
+		parkAge:  320 * time.Second,
 		leadType: "agent",
 		triage:   true,
 	})
-	if expired := sweepAskPlanRound(t); expired != 1 {
-		t.Fatalf("expired = %d, want 1 (the park still expires)", expired)
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1 (the park still escalates)", escalated)
 	}
 	if comment := askPlanSystemComment(t, fx.issueID); comment == "" {
 		t.Fatal("comment must be posted even in triage")
 	}
 	if queued := askPlanQueuedFor(t, fx.issueID); len(queued) != 0 {
 		t.Fatalf("queued tasks = %d, want 0 (triage guard holds the lead task)", len(queued))
+	}
+}
+
+// Overdue plan: it stays in review, the run stays parked, the comment says plan
+// and "the Owner's verdict resumes it" — and with no project lead, only the
+// comment: nothing invented.
+func TestAskPlanEscalation_OverduePlanStaysInReview(t *testing.T) {
+	fx := setupAskPlanSweepFixture(t, askPlanSweepOpts{
+		plan:    true,
+		parkAge: 320 * time.Second,
+	})
+	if escalated := sweepAskPlanRound(t); escalated != 1 {
+		t.Fatalf("escalated = %d, want 1", escalated)
+	}
+	var planStatus string
+	var escalatedAt *time.Time
+	if err := testPool.QueryRow(context.Background(), `SELECT status, escalated_at FROM agent_plan WHERE id = $1`, fx.planID).Scan(&planStatus, &escalatedAt); err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	if planStatus != "in_review" {
+		t.Fatalf("plan status = %q, want in_review (waits for the Owner)", planStatus)
+	}
+	if escalatedAt == nil {
+		t.Fatal("plan escalated_at is NULL after the sweep")
+	}
+	if status, by := askPlanTaskStatus(t, fx.taskID); status != "blocked" || by != "" {
+		t.Fatalf("task status = %q by %q, want blocked and NOT cancelled", status, by)
+	}
+	comment := askPlanSystemComment(t, fx.issueID)
+	if !contains(comment, "plan") || !contains(comment, "No project lead is set") {
+		t.Fatalf("comment must say plan + no-lead, got:\n%s", comment)
+	}
+	if !contains(comment, "the Owner's verdict") {
+		t.Fatalf("comment must say the Owner's verdict resumes it, got:\n%s", comment)
+	}
+	if !contains(comment, "no lead verdict path") {
+		t.Fatalf("comment must record the plan-verdict gap, got:\n%s", comment)
+	}
+	if queued := askPlanQueuedFor(t, fx.issueID); len(queued) != 0 {
+		t.Fatalf("queued tasks = %d, want 0", len(queued))
+	}
+	if n := askPlanInboxCount(t, fx.issueID, testUserID); n != 0 {
+		t.Fatalf("inbox items = %d, want 0", n)
+	}
+	// A second round leaves the escalated plan alone.
+	if escalated := sweepAskPlanRound(t); escalated != 0 {
+		t.Fatalf("second round escalated = %d, want 0", escalated)
 	}
 }
 

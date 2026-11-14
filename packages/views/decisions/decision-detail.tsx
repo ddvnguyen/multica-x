@@ -200,7 +200,8 @@ function SourceBody({
           <StoredAnswers
             questions={parsed.questions}
             answers={parsed.answers}
-            actor={actorLabel(parsed.answeredBy)}
+            actor={actorLabel(parsed.answeredBy, parsed.answeredByType)}
+            onBehalfOfOwner={parsed.answeredByType === "agent"}
             at={parsed.answeredAt}
             hint={t(($) => $.detail.answered_hint)}
           />
@@ -426,13 +427,13 @@ function QuestionForm({
  * falls back to the translated generic rather than an English "Unknown" or the
  * raw id.
  */
-function useActorLabel(): (id: string | null) => string | null {
+function useActorLabel(): (id: string | null, type?: "member" | "agent") => string | null {
   const { t } = useT("decisions");
   const { getActorName, hasActor } = useActorName();
-  return (id) => {
+  return (id, type = "member") => {
     if (id === null) return null;
-    return hasActor("member", id) === true
-      ? getActorName("member", id)
+    return hasActor(type, id) === true
+      ? getActorName(type, id)
       : t(($) => $.detail.unknown_actor);
   };
 }
@@ -518,12 +519,19 @@ function StoredAnswers({
   questions,
   answers,
   actor,
+  onBehalfOfOwner = false,
   at,
   hint,
 }: {
   questions: readonly AgentQuestion[];
   answers: readonly AgentAnswerDraft[];
   actor: string | null;
+  /**
+   * The project lead answered an escalated card on the Owner's behalf (M-332).
+   * Saying so is the whole point of storing who decided: an agent's call must
+   * never read back as the Owner's own.
+   */
+  onBehalfOfOwner?: boolean;
   at: string | null;
   hint: string;
 }) {
@@ -580,8 +588,10 @@ function StoredAnswers({
         })}
       </ol>
       {actor !== null && (
-        <p className="text-caption text-muted-foreground">
-          {t(($) => $.detail.by, { actor })}
+        <p className="text-caption text-muted-foreground" data-answered-on-behalf={onBehalfOfOwner ? "" : undefined}>
+          {onBehalfOfOwner
+            ? t(($) => $.detail.by_lead, { actor })
+            : t(($) => $.detail.by, { actor })}
         </p>
       )}
       <p className="text-caption text-muted-foreground">{hint}</p>

@@ -24,10 +24,11 @@ const (
 	askPlanTimeoutSweepBatch = 50
 )
 
-// runAskPlanTimeoutSweeper is M-131: it reaps parked ask/plan tasks whose
-// effective timeout has passed and escalates each to the project lead. Started
-// beside the other background sweepers, bound to sweepCtx so shutdown cancels
-// it like the rest.
+// runAskPlanTimeoutSweeper is M-131/M-332: it escalates each parked ask/plan
+// whose effective timeout has passed to the project lead, once, and then leaves
+// the card open and the task parked until the Owner answers. Started beside the
+// other background sweepers, bound to sweepCtx so shutdown cancels it like the
+// rest.
 func runAskPlanTimeoutSweeper(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
 	runPeriodicSweep(ctx, askPlanTimeoutSweepInterval, func() {
 		expired, err := sweepExpiredAskPlanParks(ctx, queries, taskSvc)
@@ -36,17 +37,19 @@ func runAskPlanTimeoutSweeper(ctx context.Context, queries *db.Queries, taskSvc 
 			return
 		}
 		if expired > 0 {
-			slog.Info("ask/plan timeout sweeper: escalated expired parks", "count", expired)
-		}
+				slog.Info("ask/plan timeout sweeper: escalated overdue parks", "count", expired)
+			}
 	})
 }
 
-// sweepExpiredAskPlanParks is one round: candidates with live evidence, oldest
-// park first, each judged against its own project's effective timeout —
-// resolved by the same handler.EffectiveAskPlanTimeoutSeconds the settings
-// surfaces answer, so what the panel shows is exactly what expires here.
-// A row that fails is logged and left for the next tick; it never aborts the
-// round.
+// sweepExpiredAskPlanParks is one round: candidates with live, not-yet-escalated
+// evidence, oldest park first, each judged against its own project's effective
+// timeout — resolved by the same handler.EffectiveAskPlanTimeoutSeconds the
+// settings surfaces answer, so what the panel shows is exactly what escalates
+// here. A row that fails is logged and left for the next tick; it never aborts
+// the round. Escalating does not remove the park from the workspace — it only
+// marks the evidence row, so the next round sees it as already escalated and
+// leaves it for the Owner.
 func sweepExpiredAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) (int, error) {
 	candidates, err := queries.ListParkedAskPlanSweepCandidates(ctx, askPlanTimeoutSweepBatch)
 	if err != nil {
@@ -64,7 +67,7 @@ func sweepExpiredAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc 
 		if now.Sub(c.ParkedAt.Time) < time.Duration(seconds)*time.Second {
 			continue
 		}
-		done, err := taskSvc.ExpireParkedAskPlanTask(ctx, c.TaskID, seconds, source.String())
+		done, err := taskSvc.EscalateParkedAskPlanTask(ctx, c.TaskID, seconds, source.String())
 		if err != nil {
 			slog.Warn("ask/plan timeout sweeper: expire failed",
 				"task_id", util.UUIDToString(c.TaskID),
