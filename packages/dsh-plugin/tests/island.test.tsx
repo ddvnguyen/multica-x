@@ -109,6 +109,24 @@ const ISSUE = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
+const RUNTIME = {
+  id: "runtime-1",
+  workspace_id: "ws-1",
+  daemon_id: "daemon-1",
+  name: "Claude (ddv-server)",
+  runtime_mode: "local",
+  provider: "claude",
+  launch_header: "",
+  status: "online",
+  device_info: "ddv-server · claude 1.0.0",
+  metadata: {},
+  owner_id: "user-1",
+  visibility: "private",
+  last_seen_at: "2026-01-01T00:00:00Z",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
 const AGENT = {
   id: "agent-1",
   workspace_id: "ws-1",
@@ -246,6 +264,9 @@ function stubBackend(
     }
     if (url.includes("assignee-frequency") || url.includes("/members")) {
       return json([]);
+    }
+    if (url.includes("/api/runtimes")) {
+      return json([RUNTIME]);
     }
     // Object-shaped singletons the board reads on mount.
     if (url.startsWith("/multica/api/config") || url.startsWith("/multica/api/onboarding")) {
@@ -529,6 +550,54 @@ describe("mountIsland", () => {
       expect(document.querySelector("style[data-multica-styles]")).toBeNull();
     });
   }
+
+  // M-349: the Runtimes settings tab lists the workspace's machines, and a
+  // row click pushes `/<slug>/runtimes/<machine>` — which the island used to
+  // refuse, so the row did nothing. The click must open the fork's detail.
+  it("opens the runtime detail when a Runtimes row is clicked", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, {
+        initialRoute: { view: "settings", query: "tab=runtimes" },
+      }),
+    );
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("ddv-server");
+    });
+
+    const row = [...(host.shadowRoot?.querySelectorAll("[data-row-id]") ?? [])].find(
+      (el) => (el.textContent ?? "").includes("ddv-server"),
+    );
+    expect(row).toBeDefined();
+    act(() => {
+      row?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+
+    await settle(() => {
+      const persisted = localStorage.getItem("multica.dsh.tabs.v1");
+      expect(persisted).not.toBeNull();
+      const state = JSON.parse(persisted ?? "{}").state as {
+        tabs: Array<{ id: string; url: string }>;
+        activeId: string;
+      };
+      const active = state.tabs.find((tab) => tab.id === state.activeId);
+      // The machine id is daemon-scoped (`local:<daemon-id>`): the row links by
+      // machine, not by runtime, and the id survives the URL encoding.
+      expect(active?.url).toBe("/demo/runtimes/local%3Adaemon-1");
+    });
+
+    // And the fork's detail page is what the tab shows: the machine title in
+    // the identity block, not the list again.
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).not.toContain("Connecting to Multica");
+      expect(
+        host.shadowRoot?.querySelector("[data-island-page-root]")?.textContent ?? "",
+      ).toContain("ddv-server");
+    });
+  });
 
   it("opens settings with the MOCT group and without the surfaces this panel hides", async () => {
     stubBackend();

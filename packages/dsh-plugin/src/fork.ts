@@ -168,7 +168,11 @@ export { PortalContainerProvider } from "@multica/ui/components/ui/portal-contai
 // so the island's Settings can manage what the workspace actually runs on
 // instead of only what it stores. The desktop's own wrapper adds daemon state
 // its shell owns; a dsh panel has no local daemon, so the props stay unset.
-export { RuntimesPage } from "@multica/views/runtimes";
+export {
+  RuntimesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
+} from "@multica/views/runtimes";
 
 // The stamped build identity (M-155): one string for one build, injected by
 // this package's vite config, so the island's badge, the Settings row and the
