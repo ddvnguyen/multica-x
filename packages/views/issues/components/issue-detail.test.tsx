@@ -3738,6 +3738,68 @@ describe("IssueDetail (shared)", () => {
     expect(useTimelineDisplayStore.getState().order).toBe("oldest-first");
   });
 
+  // M-290 rail follow-up: toggling the order re-anchors the viewport on the
+  // latest entry instead of restoring a stale offset from the other geometry.
+  it("re-anchors the viewport on the latest entry when the order toggles", async () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      writable: true,
+      value: scrollTo,
+    });
+    try {
+      renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      fireEvent.click(screen.getByTitle("Toggle timeline order"));
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+
+      scrollTo.mockClear();
+      fireEvent.click(screen.getByTitle("Toggle timeline order"));
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+      expect(scrollTo.mock.calls[0]?.[0]).toMatchObject({ behavior: "auto" });
+    } finally {
+      // jsdom ships no scrollTo; restore the hole so other tests keep the guard path.
+      delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+    }
+  });
+
+  // M-290 rail follow-up: replies read newest-first under their root in
+  // newest-first mode, so the page and the rail agree top-to-bottom.
+  it("renders thread replies newest-first under the root when the preference is newest-first", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    const root = { ...mockTimeline[0]!, id: "thread-root", parent_id: null, content: "Root" };
+    const replyOld = { ...mockTimeline[1]!, id: "reply-old", parent_id: root.id, content: "Older reply",
+      created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
+    const replyNew = { ...mockTimeline[1]!, id: "reply-new", parent_id: root.id, content: "Newer reply",
+      created_at: "2026-01-17T00:02:00Z", updated_at: "2026-01-17T00:02:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([root, replyOld, replyNew]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Newer reply");
+
+    const rendered = Array.from(container.querySelectorAll("[id^='comment-']")).map((el) => el.id)
+      .filter((id) => ["comment-thread-root", "comment-reply-old", "comment-reply-new"].includes(id));
+    expect(rendered).toEqual(["comment-thread-root", "comment-reply-new", "comment-reply-old"]);
+  });
+
+  // M-290 rail follow-up: the folded-replies bar parks at the thread's
+  // trailing end in newest-first mode, mirroring the activity blocks.
+  it("places the folded-replies bar after the resolution in newest-first mode", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    const root = { ...mockTimeline[0]!, id: "fold-root", parent_id: null, content: "Root" };
+    const older = { ...mockTimeline[1]!, id: "fold-older", parent_id: root.id, content: "Older reply",
+      created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
+    const resolution = { ...mockTimeline[1]!, id: "fold-resolution", parent_id: root.id, content: "Resolution reply",
+      created_at: "2026-01-17T00:02:00Z", updated_at: "2026-01-17T00:02:00Z", resolved_at: "2026-01-17T00:03:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([root, older, resolution]);
+    const { container } = renderIssueDetail();
+    await screen.findByText(/comment from/);
+
+    const html = container.innerHTML;
+    expect(html.indexOf("comment-fold-resolution")).toBeGreaterThan(-1);
+    expect(html.indexOf("comment-fold-resolution")).toBeLessThan(html.indexOf("comment from"));
+  });
+
   // M-290 follow-up: the newest-first reversal used to stop at the group
   // boundary, so entries inside an activity-group block still read
   // oldest-first while the page around them read newest-first.

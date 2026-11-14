@@ -1820,6 +1820,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     () => timelineNewestFirst ? [...chronologicalItems].reverse() : chronologicalItems,
     [chronologicalItems, timelineNewestFirst],
   );
+  // Toggling the reading order re-anchors the viewport on the latest entry:
+  // newest-first puts it at the top, oldest-first at the bottom. Without
+  // this, a stored offset from the other geometry restores mid-list and the
+  // toggle looks like it lost the user's place. Mount-skipped: the initial
+  // value only feeds Virtuoso's initialScrollTop / the flat restore path.
+  const prevNewestFirstRef = useRef(timelineNewestFirst);
+  useEffect(() => {
+    if (prevNewestFirstRef.current === timelineNewestFirst) return;
+    prevNewestFirstRef.current = timelineNewestFirst;
+    const el = scrollContainerEl;
+    // jsdom has no Element.scrollTo; the toggle path is a no-op there.
+    if (!el || typeof el.scrollTo !== "function") return;
+    el.scrollTo({ top: timelineNewestFirst ? 0 : el.scrollHeight, behavior: "auto" });
+  }, [timelineNewestFirst, scrollContainerEl]);
 
   // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
   // triggers a match recompute when comments are added/removed; text edits
@@ -1884,6 +1898,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       items.flatMap((it) => {
         if (it.kind === "activity-group" || !it.entry) return [];
         const replies = timelineView.threadReplies.get(it.id) ?? EMPTY_REPLIES;
+        const liveReplies = replies.filter((reply) => !isDeletedComment(reply));
         const resolution = deriveThreadResolution(it.entry, replies);
         return [
           {
@@ -1891,13 +1906,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             entry: it.entry,
             resolved: resolution.kind !== "none",
             participants: collectThreadParticipants(it.entry, replies),
-            // Tombstones render no row, so they get no tick either.
-            replies: replies.filter((reply) => !isDeletedComment(reply)),
+            // Tombstones render no row, so they get no tick either. Replies
+            // follow the page order: newest-first reverses them so the rail's
+            // top-to-bottom order equals the page order.
+            replies: timelineNewestFirst ? [...liveReplies].reverse() : liveReplies,
             resolutionReplyId: resolution.kind === "reply" ? resolution.resolutionId : null,
           },
         ];
       }),
-    [items, timelineView.threadReplies],
+    [items, timelineView.threadReplies, timelineNewestFirst],
   );
 
   // When the timeline renders flat (deep-link or in-page find), there is no
@@ -3174,6 +3191,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
+            newestFirst={timelineNewestFirst}
           />
         </div>
       );
