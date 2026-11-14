@@ -1077,6 +1077,7 @@ jobs:
 
       - name: Scan Go vulnerabilities
         working-directory: server
+        run: go tool govulncheck ./...
 
   installer:
     # Stub-driven shell tests for scripts/install.sh (Linux-only since M-324;
