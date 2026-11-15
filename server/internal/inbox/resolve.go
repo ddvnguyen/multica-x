@@ -22,6 +22,11 @@ import (
 //     rows carry the same evidence id plus `reminder: true`, so they match
 //     the same predicate and resolve with the original row.
 //   - Timeout-escalation rows (askplan_expiry), whose details carry only the
+//     parked task id: archived only when taskIDs names a task whose evidence
+//     is no longer open — i.e. the ask/plan itself was answered or verdicted.
+//     The cancel paths pass no task ids on purpose: the expiry escalation
+//     creates its row AFTER the settle that withdraws the card, and that row
+//     stays as the lead's pointer to the expired ask until it is answered.
 //
 // Best-effort by contract, like every inbox housekeeping path: callers log a
 // failure and the rows stay stale, and the lazy sweep on list

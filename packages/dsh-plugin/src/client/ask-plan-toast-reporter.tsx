@@ -30,9 +30,9 @@ export function AskPlanToastReporter(): null {
       const key = item.id;
       if (!key || seen.current.has(key)) return;
       seen.current.add(key);
-      const target = item.issue_id ?? item.id;
+      const issueID = item.issue_id;
       const label = item.type === "plan_review" ? "Review plan" : "Answer";
-      if (!target) {
+      if (!issueID) {
         toast(item.title, { description: item.body ?? undefined });
         return;
       }
@@ -40,7 +40,7 @@ export function AskPlanToastReporter(): null {
         description: item.body ?? undefined,
         action: {
           label,
-          onClick: () => intentNavigate(`issues/${target}`, "push"),
+          onClick: () => intentNavigate(`issues/${issueID}`, "push"),
         },
       });
     },
