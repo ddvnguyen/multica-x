@@ -41,6 +41,7 @@ interface IslandHandle {
   root: Root;
   theme: MutationObserver | null;
   appearanceCleanup: (() => void) | null;
+  seatRebuiltCleanup: (() => void) | null;
   /** The seat overlays render into: the shell's layer, or the island's own. */
   seat: PopupSeat;
   /** Where portals render, so a later render can address the same container. */
@@ -143,6 +144,13 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
 
   const appearanceCleanup = mountAppearanceIsland(host, shadow, seat);
 
+  const offRebuilt = seat.onRebuilt((newSeat) => {
+    const dark = shellPrefersDark(doc);
+    newSeat.classList.toggle("dark", dark);
+    const sh = newSeat.shadowRoot;
+    if (sh) applyAppearanceTo(newSeat, sh);
+  });
+
   swallowShellShortcuts(rootElement);
   // A dialog is not a child of the page that opened it: it is portalled into
   // this container, which sits outside the island's root (in the popup seat it
@@ -165,6 +173,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     root,
     theme,
     appearanceCleanup,
+    seatRebuiltCleanup: offRebuilt,
     seat,
     portalHost,
     route,
@@ -331,6 +340,7 @@ export function unmountIsland(host: HTMLElement): void {
   if (keepAlive === host) keepAlive = null;
   handle.theme?.disconnect();
   handle.appearanceCleanup?.();
+  handle.seatRebuiltCleanup?.();
   handle.root.unmount();
   // The seat sits outside this host's shadow root — in the shell's overlay
   // layer or on the document — so nothing else would ever remove it.

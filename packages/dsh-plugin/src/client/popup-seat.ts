@@ -63,7 +63,7 @@ export function shadowAppearanceCss(css: string): string {
     .replace(/html(\[[^\]]*\])/g, ":host$1")
     .replace(/:root(\.[A-Za-z0-9_-]+)/g, ":host($1)")
     .replace(/html(\.[A-Za-z0-9_-]+)/g, ":host($1)")
-    .replace(/(^|[^\w.])\.theme-(light|dark)\b/g, "$1:host(.theme-$2)")
+    .replace(/(^|[^\w.(])\.theme-(light|dark)\b/g, "$1:host(.theme-$2)")
     .replace(/:root\b/g, ":host")
     .replace(/\bhtml\b/g, ":host");
 }
@@ -118,6 +118,8 @@ export interface PopupSeat {
   element: HTMLElement;
   /** Remove the seat and stop waiting for a layer. */
   dispose(): void;
+  /** Subscribe to seat rebuilds (e.g. when the shell overlay layer appears). */
+  onRebuilt(listener: (seat: HTMLElement) => void): () => void;
 }
 
 /** One seat element, with its own copy of the island's stylesheet. */
@@ -180,6 +182,7 @@ export function createPopupSeat(doc: Document): PopupSeat {
   let seat: HTMLElement | null = null;
   let observer: MutationObserver | null = null;
   let settled = false;
+  const rebuildListeners = new Set<(seat: HTMLElement) => void>();
 
   const place = (layer: HTMLElement | null): void => {
     const next = buildSeat(doc, layer !== null);
@@ -187,6 +190,7 @@ export function createPopupSeat(doc: Document): PopupSeat {
     (layer ?? doc.body ?? doc.documentElement).append(next.seat);
     seat?.remove();
     seat = next.seat;
+    rebuildListeners.forEach((cb) => cb(next.seat));
     if (layer === null) return;
     // In the layer: nothing left to wait for. Held by the shell's stacking
     // context from here on.
@@ -220,6 +224,10 @@ export function createPopupSeat(doc: Document): PopupSeat {
       seat?.remove();
       seat = null;
       portalHost.remove();
+    },
+    onRebuilt(listener) {
+      rebuildListeners.add(listener);
+      return () => rebuildListeners.delete(listener);
     },
   };
 }
