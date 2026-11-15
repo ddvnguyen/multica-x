@@ -2643,8 +2643,8 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, fire_at, id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    workflow_step, fire_at, id
 )
 SELECT
     $1, $2, $3,
@@ -2859,8 +2859,8 @@ INSERT INTO agent_task_queue (
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at,
-    workflow_step, id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    workflow_step, id
 )
 SELECT
     $1, $2, $3, 'deferred', $4, $5,
@@ -2885,13 +2885,13 @@ SELECT
     $21,
     $22,
     $23,
-    -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
-    (SELECT i.status FROM issue i WHERE i.id = $3),
-    COALESCE($24::uuid, gen_random_uuid()),
+    $24::text,
     $25::text,
     $26::text,
-    $27::text,
-    $28::uuid
+    $27::uuid,
+    -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
+    (SELECT i.status FROM issue i WHERE i.id = $3),
+    COALESCE($28::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id
 `
@@ -2920,11 +2920,11 @@ type CreateDeferredChannelIssueTaskParams struct {
 	TriggerEvidenceKind   pgtype.Text        `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID  pgtype.UUID        `json:"trigger_evidence_ref_id"`
 	FireAt                pgtype.Timestamptz `json:"fire_at"`
-	ID                    pgtype.UUID        `json:"id"`
 	ModelOverride         pgtype.Text        `json:"model_override"`
 	ThinkingLevelOverride pgtype.Text        `json:"thinking_level_override"`
 	ServiceTierOverride   pgtype.Text        `json:"service_tier_override"`
 	TierID                pgtype.UUID        `json:"tier_id"`
+	ID                    pgtype.UUID        `json:"id"`
 }
 
 // Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -2959,11 +2959,11 @@ func (q *Queries) CreateDeferredChannelIssueTask(ctx context.Context, arg Create
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.FireAt,
-		arg.ID,
 		arg.ModelOverride,
 		arg.ThinkingLevelOverride,
 		arg.ServiceTierOverride,
 		arg.TierID,
+		arg.ID,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -3161,8 +3161,8 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    id
 )
 SELECT
     $1, $2, NULL, 'queued', $3, $4,
@@ -3173,11 +3173,11 @@ SELECT
     $9,
     $10,
     $11,
-    COALESCE($12::uuid, gen_random_uuid()),
+    $12::text,
     $13::text,
     $14::text,
-    $15::text,
-    $16::uuid
+    $15::uuid,
+    COALESCE($16::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id
 `
@@ -3194,11 +3194,11 @@ type CreateQuickCreateTaskParams struct {
 	OriginatorSource      pgtype.Text `json:"originator_source"`
 	TriggerEvidenceKind   pgtype.Text `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID  pgtype.UUID `json:"trigger_evidence_ref_id"`
-	ID                    pgtype.UUID `json:"id"`
 	ModelOverride         pgtype.Text `json:"model_override"`
 	ThinkingLevelOverride pgtype.Text `json:"thinking_level_override"`
 	ServiceTierOverride   pgtype.Text `json:"service_tier_override"`
 	TierID                pgtype.UUID `json:"tier_id"`
+	ID                    pgtype.UUID `json:"id"`
 }
 
 // Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -3224,11 +3224,11 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 		arg.OriginatorSource,
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
-		arg.ID,
 		arg.ModelOverride,
 		arg.ThinkingLevelOverride,
 		arg.ServiceTierOverride,
 		arg.TierID,
+		arg.ID,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -7032,6 +7032,208 @@ func (q *Queries) ListRunningTasksForRuntime(ctx context.Context, runtimeID pgty
 	for rows.Next() {
 		var i ListRunningTasksForRuntimeRow
 		if err := rows.Scan(&i.ID, &i.WorkDir, &i.SessionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRuntimelessTierTasks = `-- name: ListRuntimelessTierTasks :many
+SELECT DISTINCT ON (atq.agent_id) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE atq.status = 'queued'
+  AND atq.runtime_id IS NULL
+  AND atq.tier_id IS NULL
+  AND a.use_tiers
+ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC
+`
+
+// M-351: runtime-less queued rows a tier enqueue left behind when no tier had
+// capacity. One row per (agent) per pass, oldest first, so a single sweep
+// cannot starve one agent behind another's backlog. The caller resolves and
+// stamps via RestampQueuedTierTask, then wakes the stamped runtime's daemon.
+func (q *Queries) ListRuntimelessTierTasks(ctx context.Context) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listRuntimelessTierTasks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.CommentThreadID,
+			&i.CancelledByType,
+			&i.CancelledByID,
+			&i.CancelledByName,
+			&i.IssueSnapshot,
+			&i.WorkflowStep,
+			&i.AccountID,
+			&i.ModelOverride,
+			&i.ThinkingLevelOverride,
+			&i.ServiceTierOverride,
+			&i.TierID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRuntimelessTierTasksForWorkspace = `-- name: ListRuntimelessTierTasksForWorkspace :many
+SELECT DISTINCT ON (atq.agent_id) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE atq.status = 'queued'
+  AND atq.runtime_id IS NULL
+  AND atq.tier_id IS NULL
+  AND a.use_tiers
+  AND a.workspace_id = $1
+ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC
+`
+
+// M-351: workspace-scoped variant of the restamp sweep, run on
+// offline->online flips (heartbeat recovery). Same one-per-agent oldest-first
+// shape; the caller filters nothing else.
+func (q *Queries) ListRuntimelessTierTasksForWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listRuntimelessTierTasksForWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.CommentThreadID,
+			&i.CancelledByType,
+			&i.CancelledByID,
+			&i.CancelledByName,
+			&i.IssueSnapshot,
+			&i.WorkflowStep,
+			&i.AccountID,
+			&i.ModelOverride,
+			&i.ThinkingLevelOverride,
+			&i.ServiceTierOverride,
+			&i.TierID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

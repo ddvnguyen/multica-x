@@ -834,11 +834,16 @@ func (h *Handler) NotifyRuntimeGone(runtimeID string) {
 // NotifyRuntimeRecovered republishes the workspace-scoped daemon:register
 // lifecycle event after a heartbeat restored a runtime from offline. Runtime
 // details are intentionally omitted from the payload.
-func (h *Handler) NotifyRuntimeRecovered(_ context.Context, workspaceID string) {
+// M-351: an offline->online flip may free provider slots, so it also runs
+// the runtime-less tier restamp sweep for this workspace.
+func (h *Handler) NotifyRuntimeRecovered(ctx context.Context, workspaceID string) {
 	if h == nil || workspaceID == "" {
 		return
 	}
 	h.PublishRuntimeRefresh(workspaceID, "system", "", "heartbeat_recovery")
+	if h.TaskService != nil {
+		h.TaskService.RestampRuntimelessTierTasksForWorkspace(ctx, workspaceID)
+	}
 }
 
 // publishChat is publish() plus the chat session routing hints. actorID must

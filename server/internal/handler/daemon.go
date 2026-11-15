@@ -5151,7 +5151,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
-	h.TaskService.NotifyTaskFinished(*task)
+	h.TaskService.NotifyTaskFinishedAndRestampTiers(r.Context(), *task)
 
 	// Best-effort revoke of any agent task token minted at claim time.
 	// The token would naturally expire at the 24h watermark and is also
@@ -5902,7 +5902,7 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 		return
 	}
 	routerDecision := h.TaskService.DecideFailedIssueRun(r.Context(), *task)
-	h.TaskService.NotifyTaskFinished(*task)
+	h.TaskService.NotifyTaskFinishedAndRestampTiers(r.Context(), *task)
 
 	// Best-effort revoke of the mat_ task token minted at claim. Same
 	// rationale as CompleteTask — eager deletion shrinks the post-

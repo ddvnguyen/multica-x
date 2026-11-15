@@ -3253,7 +3253,7 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 
 	// Broadcast cancellation as a task:failed event so frontends clear the live card
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
-	s.NotifyTaskFinished(task)
+	s.NotifyTaskFinishedAndRestampTiers(ctx, task)
 
 	return &CancelTaskResult{
 		Task:                 task,
@@ -3304,7 +3304,7 @@ func (s *TaskService) CancelQueuedChatTasks(ctx context.Context, sessionID, agen
 	for _, task := range tasks {
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
 	}
-	s.notifyTasksFinished(tasks)
+	s.notifyTasksFinishedAndRestampTiers(ctx, tasks)
 	return nil
 }
 
@@ -4675,6 +4675,61 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 	return stamped, true
 }
 
+// RestampRuntimelessTierTasks is the M-351 capacity-freed sweep: every
+// runtime-less queued row a tier enqueue left behind (no tier had capacity)
+// gets one re-resolve per pass, oldest first, one per agent. Stamped rows are
+// broadcast + daemon-woken like any fresh enqueue; still-full rows stay
+// queued for the next trigger. Returns the stamped rows for tests.
+func (s *TaskService) RestampRuntimelessTierTasks(ctx context.Context) []db.AgentTaskQueue {
+	pending, err := s.Queries.ListRuntimelessTierTasks(ctx)
+	if err != nil {
+		slog.Warn("tier restamp sweep: list failed", "error", err)
+		return nil
+	}
+	var stamped []db.AgentTaskQueue
+	for _, task := range pending {
+		row, ok := s.restampQueuedTierTask(ctx, task)
+		if !ok {
+			continue
+		}
+		stamped = append(stamped, row)
+		slog.Info("tier restamp sweep: task stamped",
+			"task_id", util.UUIDToString(row.ID),
+			"runtime_id", util.UUIDToString(row.RuntimeID),
+			"agent_id", util.UUIDToString(row.AgentID),
+		)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, row)
+		s.NotifyTaskEnqueued(ctx, row)
+	}
+	return stamped
+}
+
+// RestampRuntimelessTierTasksForWorkspace is the workspace-scoped sweep,
+// run on offline->online flips. Shares the per-row path with the global
+// sweep so both triggers stamp identically.
+func (s *TaskService) RestampRuntimelessTierTasksForWorkspace(ctx context.Context, workspaceID string) []db.AgentTaskQueue {
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return nil
+	}
+	pending, qerr := s.Queries.ListRuntimelessTierTasksForWorkspace(ctx, wsUUID)
+	if qerr != nil {
+		slog.Warn("tier restamp sweep: workspace list failed", "error", qerr)
+		return nil
+	}
+	var stamped []db.AgentTaskQueue
+	for _, task := range pending {
+		row, ok := s.restampQueuedTierTask(ctx, task)
+		if !ok {
+			continue
+		}
+		stamped = append(stamped, row)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, row)
+		s.NotifyTaskEnqueued(ctx, row)
+	}
+	return stamped
+}
+
 // maybeLogClaimSlow emits one structured log per ClaimTask call when its total
 // latency exceeds 300ms, so the prod tail can be diagnosed without flooding
 // logs at normal poll rates. Called via defer so it captures the full path
@@ -5769,6 +5824,9 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 	// because its child reports the eventual terminal outcome.
 	s.broadcastTaskFailedEvent(ctx, task, errMsg, failureReason, retried != nil)
 
+	// M-351: failing frees a provider slot — same restamp trigger as complete.
+	s.RestampRuntimelessTierTasks(ctx)
+
 	return &task, true, nil
 }
 
@@ -6721,7 +6779,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 	for _, agentID := range affectedAgents {
 		s.ReconcileAgentStatus(ctx, agentID)
 	}
-	s.notifyTasksFinished(tasks)
+	s.notifyTasksFinishedAndRestampTiers(ctx, tasks)
 	return retried
 }
 
@@ -7254,16 +7312,13 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryCovered, err
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
-		// M-351: same tier resolution as every other enqueue path. A full tier
-		// set here resolves to queuedOnly, which this recovery path treats as
-		// "still pending": return covered without a task so the next sweep
-		// retries once a slot frees.
-		recRuntimeID, recModel, recThinking, recService, recTierID, recQueuedOnly, recErr := s.applyTierResolution(ctx, target.agent)
+		// M-351: same tier resolution as every other enqueue path. A full
+		// tier set resolves to queuedOnly: the row is still inserted (queued,
+		// runtime-less) and the capacity-freed sweep restamps it when a slot
+		// frees — the recovery is not lost, only parked.
+		recRuntimeID, recModel, recThinking, recService, recTierID, _, recErr := s.applyTierResolution(ctx, target.agent)
 		if recErr != nil {
 			return delegatedFailureRecoveryCovered, recErr
-		}
-		if recQueuedOnly {
-			return delegatedFailureRecoveryCovered, nil
 		}
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                    dbid.NewV7(),
@@ -7298,7 +7353,10 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 				"coordinator_agent_id", util.UUIDToString(target.agent.ID),
 			)
 			s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
-			s.NotifyTaskEnqueued(ctx, task)
+			if task.RuntimeID.Valid {
+				s.NotifyTaskEnqueued(ctx, task)
+			}
+			// M-351: a runtime-less row waits for the capacity-freed sweep.
 			return delegatedFailureRecoveryReplayed, nil
 		}
 		if !isDuplicatePendingTaskErr(err) {
@@ -7779,6 +7837,15 @@ func (s *TaskService) NotifyTaskFinished(task db.AgentTaskQueue) {
 	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
 }
 
+// NotifyTaskFinishedAndRestampTiers is NotifyTaskFinished plus the M-351
+// capacity-freed trigger: a task reaching a terminal state frees a provider
+// slot, which may unblock a runtime-less queued tier task. Terminal paths
+// with a ctx call this; the sweep is best-effort after commit.
+func (s *TaskService) NotifyTaskFinishedAndRestampTiers(ctx context.Context, task db.AgentTaskQueue) {
+	s.NotifyTaskFinished(task)
+	s.RestampRuntimelessTierTasks(ctx)
+}
+
 // NotifyRuntimeCapacityChanged wakes a runtime's daemon after its
 // runtime-wide concurrency cap was raised or removed (GitHub #9626), since
 // queued work held back by the old cap may now be claimable.
@@ -7790,6 +7857,15 @@ func (s *TaskService) NotifyRuntimeCapacityChanged(runtimeID pgtype.UUID) {
 // moved onto it outside an enqueue, such as an agent runtime switch.
 func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
 	s.notifyRuntimeMayHaveWork(runtimeID, "")
+}
+
+// notifyTasksFinishedAndRestampTiers is the batch form plus the M-351
+// capacity-freed trigger: terminal transitions may free provider slots.
+func (s *TaskService) notifyTasksFinishedAndRestampTiers(ctx context.Context, tasks []db.AgentTaskQueue) {
+	s.notifyTasksFinished(tasks)
+	if len(tasks) > 0 {
+		s.RestampRuntimelessTierTasks(ctx)
+	}
 }
 
 // notifyTasksFinished is the batch form used by bulk terminal transitions.

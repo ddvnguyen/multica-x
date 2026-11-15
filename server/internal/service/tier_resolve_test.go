@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -224,4 +226,121 @@ func TestIsRuntimeClaimable(t *testing.T) {
 	if isRuntimeClaimable(zero) {
 		t.Errorf("zero timestamps: got true want false")
 	}
+}
+
+// TestTierSweep_BothFullThenSlotFrees is the M-351 acceptance flow end to
+// end at the service layer: both tiers full -> enqueue yields a queued row
+// with no runtime -> free a slot -> RestampRuntimelessTierTasks stamps the
+// row on the freed tier, and the row is claim-shaped (runtime + tier set).
+func TestTierSweep_BothFullThenSlotFrees(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, rtA, _, _, tierA := tierTestSetup(t, 1)
+	svc := &TaskService{Queries: qq}
+
+	// Occupy both tiers: one active row on each tier runtime.
+	tierBRow, err := qq.GetAgentRuntime(ctx, agent.RuntimeID)
+	_ = tierBRow
+	_ = err
+	selections, err := qq.ListAgentTiers(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("list tiers: %v", err)
+	}
+	if len(selections) != 2 {
+		t.Fatalf("want 2 tiers, got %d", len(selections))
+	}
+	// Shrink tier B to 1 slot as well (fixture default is 99).
+	for _, sel := range selections {
+		if _, err := qq.UpdateModelTier(ctx, db.UpdateModelTierParams{
+			ID: sel.ID, Name: sel.Name, Idx: sel.Idx, RuntimeID: sel.RuntimeID,
+			Provider: sel.Provider, Model: sel.Model,
+			ThinkingLevel: sel.ThinkingLevel, ServiceTier: sel.ServiceTier,
+			Cost: sel.Cost, Quality: sel.Quality,
+			ProviderSlots: 1, Enabled: sel.Enabled,
+		}); err != nil {
+			t.Fatalf("set slots: %v", err)
+		}
+	}
+	var blockers []pgtype.UUID
+	for _, sel := range selections {
+		var bid pgtype.UUID
+		if err := pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, agent.ID, sel.RuntimeID).Scan(&bid); err != nil {
+			t.Fatalf("insert blocker: %v", err)
+		}
+		blockers = append(blockers, bid)
+	}
+	t.Cleanup(func() {
+		for _, bid := range blockers {
+			_, _ = qq.CancelAgentTask(context.Background(), bid)
+		}
+	})
+
+	// Enqueue with both tiers full: the row stays queued with no runtime.
+	fxIssueID := util.MustParseUUID(newTierTestIssue(t, pool, agent))
+	issueRow, err := qq.GetIssue(ctx, fxIssueID)
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	task, err := svc.enqueueIssueTask(ctx, issueRow, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	if err != nil {
+		t.Fatalf("enqueue with full tiers: %v", err)
+	}
+	if task.Status != "queued" {
+		t.Fatalf("status = %s, want queued", task.Status)
+	}
+	if task.RuntimeID.Valid {
+		t.Fatalf("runtime stamped despite full tiers: %s", util.UUIDToString(task.RuntimeID))
+	}
+	if task.TierID.Valid {
+		t.Fatalf("tier stamped despite full tiers")
+	}
+
+	// Free tier A's slot, then run the sweep.
+	if _, err := qq.CancelAgentTask(ctx, blockers[0]); err != nil {
+		t.Fatalf("free slot: %v", err)
+	}
+	blockers = blockers[1:]
+	stamped := svc.RestampRuntimelessTierTasks(ctx)
+	if len(stamped) != 1 {
+		t.Fatalf("sweep stamped %d rows, want 1", len(stamped))
+	}
+	got := stamped[0]
+	if got.ID != task.ID {
+		t.Fatalf("sweep stamped %s, want %s", util.UUIDToString(got.ID), util.UUIDToString(task.ID))
+	}
+	if util.UUIDToString(got.RuntimeID) != rtA {
+		t.Errorf("stamped runtime = %s, want tier-A %s", util.UUIDToString(got.RuntimeID), rtA)
+	}
+	if util.UUIDToString(got.TierID) != tierA {
+		t.Errorf("stamped tier = %s, want %s", util.UUIDToString(got.TierID), tierA)
+	}
+	if !got.ModelOverride.Valid || got.ModelOverride.String != "model-a" {
+		t.Errorf("modelOverride = %+v, want model-a", got.ModelOverride)
+	}
+	// Still-full sweep is a no-op: re-block tier A, sweep, nothing stamped.
+	var reblock pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, agent.ID, util.MustParseUUID(rtA)).Scan(&reblock); err != nil {
+		t.Fatalf("re-block: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = qq.CancelAgentTask(context.Background(), reblock)
+	})
+	if again := svc.RestampRuntimelessTierTasks(ctx); len(again) != 0 {
+		t.Fatalf("sweep with full tiers stamped %d rows, want 0", len(again))
+	}
+}
+
+// newTierTestIssue inserts a minimal issue assigned to the agent for enqueue tests.
+func newTierTestIssue(t *testing.T, pool *pgxpool.Pool, agent db.Agent) string {
+	t.Helper()
+	var id string
+	err := pool.QueryRow(context.Background(), `INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, assignee_id, number, position) VALUES ($1, 'tier sweep issue', 'todo', 'none', 'member', $2, $3, (SELECT COALESCE(MAX(number),0)+1 FROM issue WHERE workspace_id = $1), 0) RETURNING id`,
+		agent.WorkspaceID, agent.OwnerID, agent.ID).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(id))
+	})
+	return id
 }

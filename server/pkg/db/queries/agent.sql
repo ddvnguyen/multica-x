@@ -362,8 +362,8 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, fire_at, id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    workflow_step, fire_at, id
 )
 SELECT
     $1, $2, $3,
@@ -541,8 +541,8 @@ INSERT INTO agent_task_queue (
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at,
-    workflow_step, id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    workflow_step, id
 )
 SELECT
     $1, $2, $3, 'deferred', $4, sqlc.narg(trigger_comment_id),
@@ -567,13 +567,13 @@ SELECT
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     @fire_at,
-    -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
-    (SELECT i.status FROM issue i WHERE i.id = $3),
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     sqlc.narg('model_override')::text,
     sqlc.narg('thinking_level_override')::text,
     sqlc.narg('service_tier_override')::text,
-    sqlc.narg('tier_id')::uuid
+    sqlc.narg('tier_id')::uuid,
+    -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
+    (SELECT i.status FROM issue i WHERE i.id = $3),
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
 
@@ -613,8 +613,8 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    id,
-    model_override, thinking_level_override, service_tier_override, tier_id
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    id
 )
 SELECT
     $1, $2, NULL, 'queued', $3, $4,
@@ -625,11 +625,11 @@ SELECT
     sqlc.narg(originator_source),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
-    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     sqlc.narg('model_override')::text,
     sqlc.narg('thinking_level_override')::text,
     sqlc.narg('service_tier_override')::text,
-    sqlc.narg('tier_id')::uuid
+    sqlc.narg('tier_id')::uuid,
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;
 
@@ -3122,3 +3122,31 @@ WHERE id = @id
   AND runtime_id IS NULL
   AND tier_id IS NULL
 RETURNING *;
+
+-- M-351: runtime-less queued rows a tier enqueue left behind when no tier had
+-- capacity. One row per (agent) per pass, oldest first, so a single sweep
+-- cannot starve one agent behind another's backlog. The caller resolves and
+-- stamps via RestampQueuedTierTask, then wakes the stamped runtime's daemon.
+-- name: ListRuntimelessTierTasks :many
+SELECT DISTINCT ON (atq.agent_id) atq.*
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE atq.status = 'queued'
+  AND atq.runtime_id IS NULL
+  AND atq.tier_id IS NULL
+  AND a.use_tiers
+ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC;
+
+-- M-351: workspace-scoped variant of the restamp sweep, run on
+-- offline->online flips (heartbeat recovery). Same one-per-agent oldest-first
+-- shape; the caller filters nothing else.
+-- name: ListRuntimelessTierTasksForWorkspace :many
+SELECT DISTINCT ON (atq.agent_id) atq.*
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE atq.status = 'queued'
+  AND atq.runtime_id IS NULL
+  AND atq.tier_id IS NULL
+  AND a.use_tiers
+  AND a.workspace_id = $1
+ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC;
