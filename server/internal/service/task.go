@@ -1155,18 +1155,18 @@ func taskErrorType(reason string) string {
 // the agent's fallback runtime left NULL so no daemon can claim it, and the
 // next capacity change re-runs the resolver via promotion. Tier selection
 // errors fail the enqueue: unlike full tiers, they are not backpressure.
-func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, queuedOnly bool, err error) {
+func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, parked pgtype.Bool, queuedOnly bool, err error) {
 	if !agent.UseTiers {
-		return agent.RuntimeID, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, false, nil
+		return agent.RuntimeID, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, nil
 	}
 	res, rerr := s.resolveAgentTier(ctx, agent)
 	if rerr == nil {
-		return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, false, nil
+		return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, pgtype.Bool{}, false, nil
 	}
 	if errors.Is(rerr, errNoTierCapacity) {
-		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, true, nil
+		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{Bool: true, Valid: true}, true, nil
 	}
-	return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, false, rerr
+	return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, rerr
 }
 
 // notifyTierQueuedOnly wakes the runtime-less queued task's watchers through
@@ -1356,7 +1356,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	// first selected tier with a free provider slot. Full tiers are
 	// backpressure: the row is still inserted (queued) but carries no
 	// runtime, so no daemon can claim it until promotion re-resolves.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1369,6 +1369,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		ThinkingLevelOverride: tierThinking,
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
+		TierParked:            tierParked,
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1553,7 +1554,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1566,6 +1567,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		ThinkingLevelOverride: tierThinking,
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
+		TierParked:            tierParked,
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1775,7 +1777,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1788,6 +1790,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		ThinkingLevelOverride: tierThinking,
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
+		TierParked:            tierParked,
 		Priority:              priorityToInt("high"),
 		Context:               contextJSON,
 		OriginatorUserID:      requesterID,
@@ -2231,7 +2234,7 @@ func (s *TaskService) enqueueChatTaskTx(
 
 	// M-351: use_tiers agents resolve via the service-level resolver (pool
 	// queries; qtx shares the pool snapshot for reads).
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, _, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolution(ctx, agent)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -2243,6 +2246,7 @@ func (s *TaskService) enqueueChatTaskTx(
 		ThinkingLevelOverride: tierThinking,
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
+		TierParked:            tierParked,
 		Priority:              2,
 		ChatSessionID:         chatSession.ID,
 		InitiatorUserID:       initiatorUserID,
@@ -2591,7 +2595,7 @@ func (s *TaskService) sendDirectChatMessage(
 		// M-351: same tier resolution as every other enqueue path. Uses the
 		// pool (not qtx) for the capacity reads; the insert below still runs
 		// in this tx so the row is atomic with the rest of the send.
-		tierRuntimeID, tierModel, tierThinking, tierService, tierID, _, tierErr := s.applyTierResolution(ctx, carrier)
+		tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolution(ctx, carrier)
 		if tierErr != nil {
 			return tierErr
 		}
@@ -2603,6 +2607,7 @@ func (s *TaskService) sendDirectChatMessage(
 			ThinkingLevelOverride: tierThinking,
 			ServiceTierOverride:   tierService,
 			TierID:                tierID,
+			TierParked:            tierParked,
 			Priority:              2, // medium priority for chat; matches EnqueueChatTask
 			ChatSessionID:         session.ID,
 			InitiatorUserID:       initiatorUserID,
@@ -7316,7 +7321,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		// tier set resolves to queuedOnly: the row is still inserted (queued,
 		// runtime-less) and the capacity-freed sweep restamps it when a slot
 		// frees — the recovery is not lost, only parked.
-		recRuntimeID, recModel, recThinking, recService, recTierID, _, recErr := s.applyTierResolution(ctx, target.agent)
+		recRuntimeID, recModel, recThinking, recService, recTierID, recParked, _, recErr := s.applyTierResolution(ctx, target.agent)
 		if recErr != nil {
 			return delegatedFailureRecoveryCovered, recErr
 		}
@@ -7328,6 +7333,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ThinkingLevelOverride: recThinking,
 			ServiceTierOverride:   recService,
 			TierID:                recTierID,
+			TierParked:            recParked,
 			IssueID:               target.issue.ID,
 			Priority:              priorityToInt(target.issue.Priority),
 			TriggerCommentID:      target.comment.ID,

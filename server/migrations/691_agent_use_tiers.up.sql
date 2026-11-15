@@ -25,4 +25,19 @@ ALTER TABLE agent_task_queue
     ADD COLUMN model_override TEXT,
     ADD COLUMN thinking_level_override TEXT,
     ADD COLUMN service_tier_override TEXT,
-    ADD COLUMN tier_id UUID;
+    ADD COLUMN tier_id UUID,
+    -- M-351 parked marker: a use_tiers enqueue with no free provider slot
+    -- parks the row as queued with no runtime. The 251 CHECK (active rows
+    -- need a runtime) is amended below to admit exactly this shape; the
+    -- capacity-freed sweep clears the marker when it stamps the row.
+    ADD COLUMN tier_parked BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Admit the parked shape: queued + tier_parked rows wait on provider
+-- capacity, not on a runtime. Everything else still fails closed.
+ALTER TABLE agent_task_queue
+    DROP CONSTRAINT IF EXISTS agent_task_queue_active_requires_runtime;
+ALTER TABLE agent_task_queue
+    ADD CONSTRAINT agent_task_queue_active_requires_runtime
+    CHECK (runtime_id IS NOT NULL OR completed_at IS NOT NULL
+           OR (status = 'queued' AND tier_parked))
+    NOT VALID;

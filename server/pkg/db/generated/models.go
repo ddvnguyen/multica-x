@@ -283,6 +283,7 @@ type AgentTaskQueue struct {
 	ThinkingLevelOverride     pgtype.Text `json:"thinking_level_override"`
 	ServiceTierOverride       pgtype.Text `json:"service_tier_override"`
 	TierID                    pgtype.UUID `json:"tier_id"`
+	TierParked                bool        `json:"tier_parked"`
 }
 
 type AgentTier struct {

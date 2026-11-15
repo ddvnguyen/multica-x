@@ -437,6 +437,19 @@ deleted_agent_skills AS (
     WHERE agent_id IN (SELECT id FROM ws_agents)
        OR skill_id IN (SELECT id FROM ws_skills)
 ),
+deleted_agent_tiers AS (
+    -- M-351: the Use-tiers join. No FKs per repo rule; teardown owns it.
+    -- agent_task_queue rows referencing tiers go through DeleteTaskBatch
+    -- first (tier_id rides the task row, cleared with it).
+    DELETE FROM agent_tier
+    WHERE agent_id IN (SELECT id FROM ws_agents)
+),
+deleted_model_tiers AS (
+    -- M-350 follow-up: workspace-owned tiers. Deleted after the join so no
+    -- concurrent reader sees a tier vanish under its selection mid-teardown.
+    DELETE FROM model_tier
+    WHERE workspace_id = $1
+),
 deleted_skill_files AS (
     DELETE FROM skill_file
     WHERE skill_id IN (SELECT id FROM ws_skills)

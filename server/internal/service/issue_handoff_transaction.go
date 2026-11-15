@@ -14,10 +14,11 @@ import (
 // PreparedIssueHandoff contains network-dependent data prepared before the
 // caller locks the issue. Its target must still be validated in the transaction.
 type PreparedIssueHandoff struct {
-	agent   db.Agent
-	attr    attribution.Result
-	overlay runtimeMCPOverlayData
-	head    pgtype.Text
+	agent      db.Agent
+	attr       attribution.Result
+	overlay    runtimeMCPOverlayData
+	head       pgtype.Text
+	tierParked pgtype.Bool
 	// M-351: enqueue-time tier resolution, computed in Prepare (pool reads)
 	// and stamped in the tx insert. queuedOnly marks full tiers: the caller
 	// inserts a runtime-less queued row promotion later re-resolves.
@@ -47,7 +48,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 	}
 	// M-351: resolve tiers outside the tx (pool capacity reads); the tx
 	// insert below only stamps.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
 	if tierErr != nil {
 		return PreparedIssueHandoff{}, tierErr
 	}
@@ -57,6 +58,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 		head:          headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 		tierRuntimeID: tierRuntimeID, tierModel: tierModel, tierThinking: tierThinking,
 		tierService: tierService, tierID: tierID, tierQueuedOnly: tierQueuedOnly,
+		tierParked: tierParked,
 	}, nil
 }
 
@@ -82,7 +84,8 @@ func (s *TaskService) EnqueuePreparedIssueHandoffInTx(ctx context.Context, q *db
 		ID: dbid.NewV7(), AgentID: agent.ID, RuntimeID: prepared.tierRuntimeID, IssueID: issue.ID,
 		ModelOverride: prepared.tierModel, ThinkingLevelOverride: prepared.tierThinking,
 		ServiceTierOverride: prepared.tierService, TierID: prepared.tierID,
-		Priority: priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
+		TierParked: prepared.tierParked,
+		Priority:   priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
 		SquadID: squadID, OriginatorUserID: prepared.attr.UserID, AccountableUserID: prepared.attr.AccountableUserID,
 		RuleVersionID: prepared.attr.RuleVersionID, RuntimeMcpOverlay: prepared.overlay.Overlay,
 		RuntimeConnectedApps: prepared.overlay.ConnectedApps, OriginatorSource: source,
