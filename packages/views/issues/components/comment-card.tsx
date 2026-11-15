@@ -1357,6 +1357,37 @@ function CommentCardImpl({
     </VirtualThreadRow>;
   });
 
+  // Reply box. Defined once so it can sit at either end of the thread:
+  // newest-first parks it directly under the root (the new reply lands
+  // right below the box), oldest-first keeps it at the trailing end.
+  // The draft lives in the draft store under `reply:${issueId}:${entry.id}`,
+  // so moving the box never loses typed text.
+  const replyBox = (
+    <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+      <ReplyInput
+        handleRef={replyBoxRef}
+        issueId={issueId}
+        parentId={replyTargetId}
+        targetMissing={replyTargetMissing}
+        annotationComposer={annotation.composer}
+        placeholder={t(($) => $.reply.placeholder)}
+        size="sm"
+        avatarType="member"
+        avatarId={currentUserId ?? ""}
+        draftKey={`reply:${issueId}:${entry.id}`}
+        onEditAnnotation={(id) => annotation.editAnnotation(id, true)}
+        steerByDefault={steerThreadRunByDefault}
+        onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => {
+          // The popup can save the first annotation and submit in the same event.
+          const targetId = useCommentDraftStore.getState().drafts[`reply:${issueId}:${entry.id}`]?.replyTarget?.commentId ?? entry.id;
+          return isReplyTargetMissing(targetId) ? Promise.resolve(false)
+            : onReply(targetId, content, attachmentIds, suppressAgentIds, steerTaskIds);
+        }}
+        onAccepted={onReplyAccepted}
+      />
+    </div>
+  );
+
   // Pin the root comment's header to the timeline's scroll parent while the
   // thread is open, so a LONG root comment keeps its author + actions visible
   // as you scroll its body (overflow-clip on the Card anchors this to the
@@ -1691,33 +1722,13 @@ function CommentCardImpl({
                   {t(($) => $.comment.resolve.collapse)}
                 </button>
               )}
+              {/* Reply input sits directly under the root in newest-first so
+                  the box is adjacent to where the new reply lands; the
+                  oldest-first box stays at the thread's trailing end. */}
+              {newestFirst && replyBox}
               {/* Replies follow the selected thread order. */}
               {renderRows()}
-
-              {/* Reply input */}
-              <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
-                <ReplyInput
-                  handleRef={replyBoxRef}
-                  issueId={issueId}
-                  parentId={replyTargetId}
-                  targetMissing={replyTargetMissing}
-                  annotationComposer={annotation.composer}
-                  placeholder={t(($) => $.reply.placeholder)}
-                  size="sm"
-                  avatarType="member"
-                  avatarId={currentUserId ?? ""}
-                  draftKey={`reply:${issueId}:${entry.id}`}
-                  onEditAnnotation={(id) => annotation.editAnnotation(id, true)}
-                  steerByDefault={steerThreadRunByDefault}
-                  onSubmit={(content, attachmentIds, suppressAgentIds, steerTaskIds) => {
-                    // The popup can save the first annotation and submit in the same event.
-                    const targetId = useCommentDraftStore.getState().drafts[`reply:${issueId}:${entry.id}`]?.replyTarget?.commentId ?? entry.id;
-                    return isReplyTargetMissing(targetId) ? Promise.resolve(false)
-                      : onReply(targetId, content, attachmentIds, suppressAgentIds, steerTaskIds);
-                  }}
-                  onAccepted={onReplyAccepted}
-                />
-              </div>
+              {!newestFirst && replyBox}
             </>
           )}
           </>
