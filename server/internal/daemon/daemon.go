@@ -8521,6 +8521,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if strings.TrimSpace(d.cfg.MoctBaseURL) != "" {
 				taskLog.Warn("moct: MCP server not added; running without memory tools")
 			}
+		} else if !agent.SupportsTaskMCP(provider, resolvedVersion, !usesCustomProfileCommand) {
+			taskLog.Warn("moct: MCP server not added; runtime cannot carry MCP servers", "provider", provider)
 		} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, moctConfig); mergeErr != nil {
 			taskLog.Warn("moct: could not merge MCP server; running without memory tools", "error", mergeErr)
 		} else {

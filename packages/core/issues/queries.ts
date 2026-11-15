@@ -829,4 +829,3 @@ export function issueAttachmentsOptions(issueId: string) {
     queryFn: () => api.listAttachments(issueId),
   });
 }
-
