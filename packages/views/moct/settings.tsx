@@ -1,32 +1,25 @@
+// These screens are an existing English-only MOCT surface moved into views;
+// preserve its copy and behavior during the shared-package migration.
+/* eslint-disable i18next/no-literal-string, no-restricted-syntax */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  SettingsCard,
-  SettingsRow,
-  SettingsSection,
-  SettingsTab,
-  Switch,
-  type ExtraSettingsGroup,
-} from "../fork";
-import { ISLAND_API_BASE } from "./config";
-import { MoctMemoryTab } from "./moct-memory";
+import { Input } from "@multica/ui/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
+import { Switch } from "@multica/ui/components/ui/switch";
+import { SettingsCard, SettingsRow, SettingsSection, SettingsTab } from "../settings";
+import type { ExtraSettingsGroup } from "../settings";
+import { MoctMemoryTab } from "./memory";
 import {
   ActionButton,
   callJson,
   Failure,
-  MOCT_STATUS_PATH,
+  moctStatusPath,
   parseMoctStatus,
   RefreshButton,
   Status,
   useSeamRead,
   type Load,
   type MoctConnection,
-} from "./moct-seam";
+} from "./seam";
 
 /**
  * The MOCT group in the settings page.
@@ -34,12 +27,13 @@ import {
  * S2-B puts the fork's real `SettingsPage` in this panel's seventh rail row. The
  * page is the web app's, so almost every group in it is about Multica itself;
  * this module adds the one group that only exists in dsh — the memory plane the
- * panel reaches through `/moct` (S2-A's closed seam) and the two policies that
+ * panel reaches the authenticated server routes through its host API base and
+ * the two policies that
  * shape how a run talks to a human.
  *
  * Three tabs, three planes:
  *
- * - Memory (S2-D) is the workspace's memory overview, in `./moct-memory`: the
+ * - Memory (S2-D) is the workspace's memory overview, in `./memory`: the
  *   plane's health and budget, the records themselves, and the two decisions a
  *   human makes about a pending one. Its own module because it is a page, not a
  *   setting.
@@ -113,12 +107,12 @@ export interface MoctProjectOption {
  * summary and the board: the host attaches the token, so the browser never
  * holds a Multica credential and no request is CORS-shaped.
  */
-export function moctApiPaths(workspaceId: string) {
-  const workspace = `${ISLAND_API_BASE}/api/workspaces/${encodeURIComponent(workspaceId)}`;
+export function moctApiPaths(connection: MoctConnection) {
+  const workspace = `${connection.apiBasePath}/api/workspaces/${encodeURIComponent(connection.workspaceId)}`;
   return {
     interactions: `${workspace}/interactions`,
     memory: `${workspace}/moct`,
-    projects: `${ISLAND_API_BASE}/api/projects`,
+    projects: `${connection.apiBasePath}/api/projects`,
   };
 }
 
@@ -220,8 +214,8 @@ export function secondsFromMinutes(input: string): number | null {
  * second source of truth in the browser.
  */
 export function MoctConnectionTab({ connection }: { connection: MoctConnection }) {
-  const [status, reloadStatus] = useSeamRead(MOCT_STATUS_PATH, parseMoctStatus);
-  const paths = useMemo(() => moctApiPaths(connection.workspaceId), [connection.workspaceId]);
+  const [status, reloadStatus] = useSeamRead(moctStatusPath(connection), parseMoctStatus);
+  const paths = useMemo(() => moctApiPaths(connection), [connection]);
   const [settings, setSettings] = useState<Load<MoctMemorySettings>>({ state: "loading" });
   const [failure, setFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -303,7 +297,7 @@ export function MoctConnectionTab({ connection }: { connection: MoctConnection }
             />
           </SettingsRow>
           <SettingsRow label="Realtime channel">
-            <Status value={connection.wsPath} />
+            <Status value={connection.wsPath || "Managed by this host"} />
           </SettingsRow>
           <SettingsRow label="Workspace folder">
             <Status
@@ -470,7 +464,7 @@ function TimeoutEditor({
  * place to read it from.
  */
 export function MoctInteractionsTab({ connection }: { connection: MoctConnection }) {
-  const paths = useMemo(() => moctApiPaths(connection.workspaceId), [connection.workspaceId]);
+  const paths = useMemo(() => moctApiPaths(connection), [connection]);
   const [interactions, setInteractions] = useState<Load<MoctInteractions>>({ state: "loading" });
   const [projects, setProjects] = useState<MoctProjectOption[]>([]);
   const [selected, setSelected] = useState("");

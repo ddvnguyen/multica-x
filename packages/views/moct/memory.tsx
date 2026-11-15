@@ -1,23 +1,17 @@
+// These screens are an existing English-only MOCT surface moved into views;
+// preserve its copy and behavior during the shared-package migration.
+/* eslint-disable i18next/no-literal-string, no-restricted-syntax */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  SettingsCard,
-  SettingsRow,
-  SettingsSection,
-  SettingsTab,
-} from "../fork";
-import { ISLAND_API_BASE } from "./config";
+import { Input } from "@multica/ui/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
+import { SettingsCard, SettingsRow, SettingsSection, SettingsTab } from "../settings";
 import {
   ActionButton,
   callJson,
   Failure,
-  MOCT_STATUS_PATH,
-  MOCT_USAGE_PATH,
+  moctStatusPath,
+  moctUsagePath,
+  moctWorkspacePath,
   parseMoctStatus,
   parseMoctUsage,
   RefreshButton,
@@ -27,7 +21,7 @@ import {
   wholeNumber,
   type Load,
   type MoctConnection,
-} from "./moct-seam";
+} from "./seam";
 
 /**
  * The Memory entry of the MOCT group (S2-D): the workspace's memory records,
@@ -39,7 +33,7 @@ import {
  * pending record). It is not an editor: no title, body, home or pin is
  * editable, because a record's text is the writer's, not the reader's. And it
  * is not a second authority: every listing, version row and decision is
- * moct-be's answer, relayed through the host's `/moct` prefix, which owns the
+ * moct-be's answer, relayed through the authenticated workspace API, which owns the
  * workspace and the acting human's ref. The browser still chooses nothing but
  * the filters.
  */
@@ -181,7 +175,9 @@ export const MEMORY_DEFAULT_FILTERS: MemoryFilters = {
   agent: "",
 };
 
-export const MOCT_MEMORY_PATH = "/moct/team/v1/memory";
+export function moctMemoryPath(connection: MoctConnection): string {
+  return `${moctWorkspacePath(connection)}/team/v1/memory`;
+}
 
 /** The labels a reader sees, keyed by the value moct stores. */
 const TYPE_LABELS: Record<string, string> = {
@@ -382,7 +378,7 @@ export function parseMemoryVersions(body: unknown): MemoryVersion[] {
 }
 
 /** The list URL for one filter set and page. */
-export function memoryListPath(filters: MemoryFilters, cursor: string | null): string {
+export function memoryListPath(filters: MemoryFilters, cursor: string | null, connection: MoctConnection): string {
   const params = new URLSearchParams({ limit: String(MEMORY_PAGE_SIZE) });
   const q = filters.q.trim();
   if (q !== "") params.set("q", q);
@@ -390,24 +386,24 @@ export function memoryListPath(filters: MemoryFilters, cursor: string | null): s
   if (filters.home !== "") params.set("homes", filters.home);
   params.set("status", filters.status);
   if (cursor !== null && cursor !== "") params.set("cursor", cursor);
-  return `${MOCT_MEMORY_PATH}?${params.toString()}`;
+  return `${moctMemoryPath(connection)}?${params.toString()}`;
 }
 
-export function memoryRecordPath(id: string): string {
-  return `${MOCT_MEMORY_PATH}/${encodeURIComponent(id)}`;
+export function memoryRecordPath(id: string, connection: MoctConnection): string {
+  return `${moctMemoryPath(connection)}/${encodeURIComponent(id)}`;
 }
 
-export function memoryGetPath(): string {
-  return `${MOCT_MEMORY_PATH}/get`;
+export function memoryGetPath(connection: MoctConnection): string {
+  return `${moctMemoryPath(connection)}/get`;
 }
 
-export function memoryVersionsPath(id: string): string {
-  return `${memoryRecordPath(id)}/versions`;
+export function memoryVersionsPath(id: string, connection: MoctConnection): string {
+  return `${memoryRecordPath(id, connection)}/versions`;
 }
 
 /** `approve` or `retract` — the seam's two decisions, and its only two verbs. */
-export function memoryDecisionPath(id: string, verb: "approve" | "retract"): string {
-  return `${memoryRecordPath(id)}/${verb}`;
+export function memoryDecisionPath(id: string, verb: "approve" | "retract", connection: MoctConnection): string {
+  return `${memoryRecordPath(id, connection)}/${verb}`;
 }
 
 /** An agent's ref as moct writes it: the profile a record can be homed on. */
@@ -471,7 +467,7 @@ function parseDirectory(body: unknown, entries: (value: unknown) => unknown[]): 
  * refs shown as moct sent them — a missing label is not a reason to hide a
  * record, and neither list is authoritative for anything on this page.
  */
-export function useMemoryDirectory(workspaceId: string, workspaceSlug: string): MemoryDirectory {
+export function useMemoryDirectory(workspaceId: string, workspaceSlug: string, apiBasePath: string): MemoryDirectory {
   const [directory, setDirectory] = useState<MemoryDirectory>({
     agents: [],
     projects: [],
@@ -487,10 +483,10 @@ export function useMemoryDirectory(workspaceId: string, workspaceSlug: string): 
     };
     void Promise.all([
       read(
-        `${ISLAND_API_BASE}/api/agents?workspace_id=${encodeURIComponent(workspaceId)}`,
+        `${apiBasePath}/api/agents?workspace_id=${encodeURIComponent(workspaceId)}`,
         (body) => parseDirectory(body, () => []),
       ),
-      read(`${ISLAND_API_BASE}/api/projects`, (body) =>
+      read(`${apiBasePath}/api/projects`, (body) =>
         parseDirectory(body, (value) => list(asRecord(value)["projects"])),
       ),
     ]).then(([agents, projects]) => {
@@ -501,7 +497,7 @@ export function useMemoryDirectory(workspaceId: string, workspaceSlug: string): 
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [workspaceId, apiBasePath]);
 
   return directory;
 }
@@ -558,12 +554,16 @@ function RecordDetail({
   id,
   summary,
   directory,
+  connection,
+  canManage,
   onBack,
   onDecided,
 }: {
   id: string;
   summary: MemoryRecord;
   directory: MemoryDirectory;
+  connection: MoctConnection;
+  canManage: boolean;
   onBack: () => void;
   onDecided: (record: MemoryRecord) => void;
 }) {
@@ -580,7 +580,7 @@ function RecordDetail({
   useEffect(() => {
     let cancelled = false;
     setVersions({ state: "loading" });
-    void callJson(memoryVersionsPath(id), parseMemoryVersions).then((answer) => {
+    void callJson(memoryVersionsPath(id, connection), parseMemoryVersions).then((answer) => {
       if (cancelled) return;
       setVersions(
         answer.ok && answer.parsed !== null
@@ -588,7 +588,7 @@ function RecordDetail({
           : { state: "error", message: answer.message ?? "the server did not answer" },
       );
     });
-    void callJson(memoryGetPath(), parseMemoryGet, {
+    void callJson(memoryGetPath(connection), parseMemoryGet, {
       method: "POST",
       body: { ids: [id] },
     }).then((answer) => {
@@ -601,7 +601,7 @@ function RecordDetail({
     return () => {
       cancelled = true;
     };
-  }, [id, attempt]);
+  }, [id, attempt, connection]);
 
   const decide = useCallback(
     async (verb: "approve" | "retract") => {
@@ -611,7 +611,7 @@ function RecordDetail({
       // The base version is the one the reader was shown; a record that moved
       // underneath is moct's 409, and the reload below is what fixes it.
       const answer = await callJson(
-        memoryDecisionPath(id, verb),
+        memoryDecisionPath(id, verb, connection),
         parseMemoryRecord,
         { method: "POST", body: { baseVersion: record.version } },
       );
@@ -627,7 +627,7 @@ function RecordDetail({
       onDecided(decided);
       reload();
     },
-    [id, record.version, onDecided, reload],
+    [id, record.version, onDecided, reload, connection],
   );
 
   const title = record.title ?? "Untitled record";
@@ -635,7 +635,7 @@ function RecordDetail({
   // A record that belongs to no workspace is shared knowledge, read from many
   // workspaces: deciding it from this one would decide it for all of them, and
   // the seam refuses it. So the button is not offered at all.
-  const decidable = pending && record.workspaceId !== null;
+  const decidable = canManage && pending && record.workspaceId !== null;
 
   return (
     <SettingsTab
@@ -657,7 +657,18 @@ function RecordDetail({
           {record.flag === null ? null : <Chip label="Flag" value={record.flag} />}
         </span>
       }
-      actions={<RefreshButton onClick={reload} />}
+      actions={
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="rounded-md px-2 py-1 text-label font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+          >
+            Back to Memory
+          </button>
+          <RefreshButton onClick={reload} />
+        </div>
+      }
     >
       <SettingsSection
         title={pending ? "Decision" : "Decided"}
@@ -1009,9 +1020,10 @@ function Filters({
  * that before reading an empty list as "no memory".
  */
 export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
-  const [status, reloadStatus] = useSeamRead(MOCT_STATUS_PATH, parseMoctStatus);
-  const [usage, reloadUsage] = useSeamRead(MOCT_USAGE_PATH, parseMoctUsage);
-  const directory = useMemoryDirectory(connection.workspaceId, connection.workspaceSlug);
+  const canManage = connection.canManageMemory;
+  const [status, reloadStatus] = useSeamRead(moctStatusPath(connection), parseMoctStatus);
+  const [usage, reloadUsage] = useSeamRead(moctUsagePath(connection), parseMoctUsage);
+  const directory = useMemoryDirectory(connection.workspaceId, connection.workspaceSlug, connection.apiBasePath);
 
   const [filters, setFilters] = useState<MemoryFilters>(MEMORY_DEFAULT_FILTERS);
   const [records, setRecords] = useState<MemoryRecord[]>([]);
@@ -1022,7 +1034,7 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
   const [open, setOpen] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
 
-  const path = memoryListPath(filters, null);
+  const path = useMemo(() => memoryListPath(filters, null, connection), [filters, connection]);
 
   /**
    * Read page one again. One effect for the whole first page keeps the filter
@@ -1052,7 +1064,7 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
   const loadMore = useCallback(async () => {
     if (cursor === null) return;
     setFailure(null);
-    const answer = await callJson(memoryListPath(filters, cursor), parseMemoryPage);
+    const answer = await callJson(memoryListPath(filters, cursor, connection), parseMemoryPage);
     if (!answer.ok || answer.parsed === null) {
       setFailure(answer.message ?? "the server did not answer");
       return;
@@ -1065,7 +1077,7 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
     });
     setTotal(answer.parsed.total);
     setCursor(answer.parsed.nextCursor);
-  }, [cursor, filters]);
+  }, [cursor, filters, connection]);
 
   const shown = useMemo(() => visibleRecords(records, filters.agent), [records, filters.agent]);
 
@@ -1090,6 +1102,8 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
         id={open}
         summary={openRecord}
         directory={directory}
+        connection={connection}
+        canManage={canManage}
         onBack={() => setOpen(null)}
         onDecided={onDecided}
       />

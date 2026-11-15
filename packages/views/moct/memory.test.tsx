@@ -18,8 +18,8 @@ import {
   statusLabel,
   typeLabel,
   visibleRecords,
-} from "../src/client/moct-memory";
-import type { MoctConnection } from "../src/client/moct-seam";
+} from "./memory";
+import type { MoctConnection } from "./seam";
 
 /**
  * The S2-D memory page, driven the way the settings page mounts it: over a
@@ -37,6 +37,8 @@ const AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const CONNECTION: MoctConnection = {
+  apiBasePath: "/multica",
+  canManageMemory: true,
   workspaceSlug: "demo",
   workspaceId: WORKSPACE_ID,
   wsPath: "/multica/ws",
@@ -72,7 +74,8 @@ function ok(body: unknown): Responder {
  */
 function stubSeam(routes: Record<string, Responder>) {
   const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
+    const rawUrl = typeof input === "string" ? input : input.toString();
+    const url = rawUrl.replace(`/multica/api/workspaces/${WORKSPACE_ID}/moct`, "/moct");
     const method = init?.method ?? "GET";
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
     const call: Call = { url, method, body };
@@ -233,12 +236,13 @@ describe("parsers", () => {
 
 describe("paths", () => {
   it("asks moct for the page and the filters it was given", () => {
-    expect(memoryListPath(MEMORY_DEFAULT_FILTERS, null)).toBe(
-      "/moct/team/v1/memory?limit=20&status=pending",
+    expect(memoryListPath(MEMORY_DEFAULT_FILTERS, null, CONNECTION)).toBe(
+      `/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?limit=20&status=pending`,
     );
     const filtered = memoryListPath(
       { q: "  card.tsx ", type: "rule", status: "all", home: "expert", agent: AGENT_ID },
       "20",
+      CONNECTION,
     );
     const query = new URLSearchParams(filtered.split("?")[1]);
     expect(query.get("q")).toBe("card.tsx");
@@ -248,15 +252,16 @@ describe("paths", () => {
     expect(query.get("cursor")).toBe("20");
     // The agent filter is the page's own: moct never sees it.
     expect(query.get("agent")).toBeNull();
-    expect(filtered.startsWith("/moct/team/v1/memory?")).toBe(true);
+    expect(filtered.startsWith(`/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?`)).toBe(true);
   });
 
   it("addresses one record's reads and its two decisions", () => {
-    expect(memoryVersionsPath("mem_1")).toBe("/moct/team/v1/memory/mem_1/versions");
-    expect(memoryGetPath()).toBe("/moct/team/v1/memory/get");
-    expect(memoryDecisionPath("mem_1", "approve")).toBe("/moct/team/v1/memory/mem_1/approve");
-    expect(memoryDecisionPath("mem_1", "retract")).toBe("/moct/team/v1/memory/mem_1/retract");
-    expect(memoryVersionsPath("mem 1/../x")).toBe("/moct/team/v1/memory/mem%201%2F..%2Fx/versions");
+    const base = `/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory`;
+    expect(memoryVersionsPath("mem_1", CONNECTION)).toBe(`${base}/mem_1/versions`);
+    expect(memoryGetPath(CONNECTION)).toBe(`${base}/get`);
+    expect(memoryDecisionPath("mem_1", "approve", CONNECTION)).toBe(`${base}/mem_1/approve`);
+    expect(memoryDecisionPath("mem_1", "retract", CONNECTION)).toBe(`${base}/mem_1/retract`);
+    expect(memoryVersionsPath("mem 1/../x", CONNECTION)).toBe(`${base}/mem%201%2F..%2Fx/versions`);
   });
 });
 
