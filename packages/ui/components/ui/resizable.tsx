@@ -1,13 +1,132 @@
 "use client"
 
+import * as React from "react"
 import * as ResizablePrimitive from "react-resizable-panels"
 
 import { cn } from "@multica/ui/lib/utils"
 
-function ResizablePanelGroup({
-  className,
-  ...props
-}: ResizablePrimitive.GroupProps) {
+function layoutsEqual(a: ResizablePrimitive.Layout, b: ResizablePrimitive.Layout): boolean {
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  // Pixel-constrained panels round through the group's size, so compare with
+  // a tolerance instead of exact equality.
+  return keys.every((key) => Math.abs((a[key] ?? 0) - (b[key] ?? 0)) < 0.01)
+}
+
+/**
+ * Re-applies the saved `defaultLayout` once the group first measures non-zero.
+ *
+ * `react-resizable-panels` derives the mount layout from the measured group
+ * size: a group that mounts at 0px wide (the dsh island's shadow host before
+ * first layout) defers, then rebuilds the layout from the panels'
+ * `defaultSize` on the first real measurement and fires `onLayoutChanged` —
+ * overwriting the saved layout with the defaults (M-360). Re-applying the
+ * saved percentages once through the group ref puts the remembered widths
+ * back, and the same `onLayoutChanged` path writes them back to storage.
+ * A group mounted at full width matches without work, so web and desktop
+ * behaviour is unchanged, and a group with no saved layout is left alone.
+ */
+export function useDeferredLayoutRestore({
+  elementRef,
+  groupRef,
+  savedLayout,
+}: {
+  elementRef: React.RefObject<HTMLDivElement | null>
+  groupRef: React.RefObject<ResizablePrimitive.GroupImperativeHandle | null>
+  savedLayout: ResizablePrimitive.Layout | undefined
+}): void {
+  const savedRef = React.useRef(savedLayout)
+  const restoredRef = React.useRef(false)
+  React.useLayoutEffect(() => {
+    const saved = savedRef.current
+    // The saved layout is read once: a later change means another tab wrote
+    // storage, and clobbering the live layout with it would fight the user.
+    if (!saved || restoredRef.current) return
+    const element = elementRef.current
+    if (!element) return
+    const attempt = (): boolean => {
+      if (restoredRef.current) return true
+      const handle = groupRef.current
+      // The group's own observer has not measured yet; its `setLayout` is a
+      // no-op until then, so wait for the next notification.
+      if (!handle || element.getBoundingClientRect().width <= 0) return false
+      let before: ResizablePrimitive.Layout
+      try {
+        before = handle.getLayout()
+      } catch {
+        return false
+      }
+      if (layoutsEqual(before, saved)) {
+        restoredRef.current = true
+        return true
+      }
+      try {
+        handle.setLayout(saved)
+      } catch {
+        return false
+      }
+      // A successful call changes the layout (or it already matched); a
+      // still-deferred call changes nothing — keep waiting for that one.
+      try {
+        if (!layoutsEqual(handle.getLayout(), before)) restoredRef.current = true
+      } catch {
+        restoredRef.current = true
+      }
+      return restoredRef.current
+    }
+    if (attempt()) return
+    // Observer notifications are event-driven (one per resize), so an
+    // unrestored group retries without a polling loop; unmount disconnects.
+    const observer = new ResizeObserver(() => {
+      if (attempt()) observer.disconnect()
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [elementRef, groupRef])
+}
+
+function mergeElementRefs<T>(
+  ...refs: Array<React.Ref<T> | undefined>
+): React.RefCallback<T> {
+  return (value: T | null) => {
+    for (const ref of refs) {
+      if (typeof ref === "function") {
+        ref(value)
+      } else if (ref) {
+        ref.current = value
+      }
+    }
+  }
+}
+
+ function ResizablePanelGroup({
+   className,
+  elementRef: elementRefProp,
+  groupRef,
+  defaultLayout,
+   ...props
+ }: ResizablePrimitive.GroupProps) {
+  // The seam restores the saved layout itself: every page (issue detail,
+  // project detail, object pages, builder) fixes the deferred-mount overwrite
+  // without wiring anything at each call site.
+  const elementRef = React.useRef<HTMLDivElement | null>(null)
+  const groupHandleRef = React.useRef<ResizablePrimitive.GroupImperativeHandle | null>(null)
+  const [, forceUpdate] = React.useReducer((count: number) => count + 1, 0)
+  const handleGroupRef = React.useCallback(
+    (handle: ResizablePrimitive.GroupImperativeHandle | null) => {
+      groupHandleRef.current = handle
+      if (typeof groupRef === "function") {
+        groupRef(handle)
+      } else if (groupRef) {
+        groupRef.current = handle
+      }
+      // The imperative handle appears after mount; re-render so the restore
+      // hook below sees it.
+      forceUpdate()
+    },
+    [groupRef],
+  )
+  useDeferredLayoutRestore({ elementRef, groupRef: groupHandleRef, savedLayout: defaultLayout })
   return (
     <ResizablePrimitive.Group
       data-slot="resizable-panel-group"
@@ -17,6 +136,9 @@ function ResizablePanelGroup({
       // truthful, but it reads as a glitch. The handle carries `cursor-col-resize`
       // instead, which stays put.
       disableCursor
+      elementRef={mergeElementRefs(elementRef, elementRefProp)}
+      groupRef={handleGroupRef}
+      defaultLayout={defaultLayout}
       className={cn(
         "flex h-full w-full aria-[orientation=vertical]:flex-col",
         // A drag captures the pointer, which then travels across the panels —

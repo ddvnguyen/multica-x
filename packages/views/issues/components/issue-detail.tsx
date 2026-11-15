@@ -1398,7 +1398,12 @@ export function IssueDetailSkeleton({
   sidebar = true,
   layoutId = ISSUE_DETAIL_LAYOUT_ID,
 }: { leading?: ReactNode; trailing?: ReactNode; sidebar?: boolean; layoutId?: string } = {}) {
-  const { defaultLayout } = useDefaultLayout({ id: layoutId });
+  const { defaultLayout } = useDefaultLayout({
+    id: layoutId,
+    // A host on a shared origin (the dsh island) keeps the layout in its own
+    // namespaced store; `undefined` keeps the library's `localStorage` default.
+    storage: useHostStorage(),
+  });
   const sidebarOpen = sidebar && getAnimatedRightSidebarInitialOpen(true, defaultLayout);
 
   return (
