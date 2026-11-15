@@ -64,7 +64,7 @@ func TestPiRealSupplementReachesTheSameSession(t *testing.T) {
 	// Only this additional message carries the canary; the initial prompt
 	// cannot satisfy the assertion. A queued RPC response alone cannot pass.
 	canary := "PI_STEER_" + rand.Text()
-	if err := session.Supplement(ctx, "Preserve the original objective. Also create steered.txt containing exactly "+canary+" and include it in your final reply."); err != nil {
+	if err := session.Supplement(ctx, "Preserve the original objective. Also create steered.txt containing exactly "+canary+" and include it in your final reply.", "steer"); err != nil {
 		t.Fatalf("same-session supplement was not consumed: %v", err)
 	}
 	<-drained
