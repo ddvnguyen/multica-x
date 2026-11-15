@@ -9,8 +9,8 @@ consume, and how it is expected to diverge.
 
 | | |
 | --- | --- |
-| Upstream | `multica-ai/multica` at `v0.6.5` |
-| Fork base | `cbd75011` — `feat(issues): collapse board columns, add and rename lists from the board (M-24)` |
+| Upstream | `multica-ai/multica` at `v0.9.0` |
+| Fork base | `419062164` — `chore(sync): upstream v0.9.0 (PR #218)` |
 | Fork of record | this repository, target branch `multica-moct` |
 
 Both bases are recorded so a reader can tell two different questions apart: what
