@@ -6,6 +6,11 @@ import type { StorageAdapter } from "../types/storage";
  */
 let backing: StorageAdapter | null = null;
 
+// Paired module vars: the listeners module-scope persist stores registered,
+// and the pending-notification flag. Always set/cleared together.
+const _adapterListeners = new Set<() => void>();
+let _pendingAdapterNotify = false;
+
 /**
  * Point the default adapter at a host's own store.
  *
@@ -21,7 +26,38 @@ let backing: StorageAdapter | null = null;
 export function setDefaultStorage(adapter: StorageAdapter | null): void {
   // Passing `defaultStorage` itself means "back to the browser store" — it
   // must not be routed through the property, which would recurse.
-  backing = adapter === defaultStorage ? null : adapter;
+  const next = adapter === defaultStorage ? null : adapter;
+  if (backing === next) return;
+  backing = next;
+  // Deferred exactly like the workspace rehydrations (workspace-storage.ts):
+  // the swap runs inside CoreProvider's first render, and a rehydrate's
+  // setState must not land in the middle of it.
+  if (_pendingAdapterNotify) return;
+  _pendingAdapterNotify = true;
+  queueMicrotask(() => {
+    _pendingAdapterNotify = false;
+    for (const listener of _adapterListeners) listener();
+  });
+}
+
+/**
+ * Subscribe to a host installing (or resetting) the default adapter.
+ *
+ * Module-scope persist stores hydrate when their module evaluates — before any
+ * host has had a chance to supply its adapter — so a store built on
+ * `defaultStorage` reads the browser store first, and a host whose keys live
+ * elsewhere (the dsh island's `multica.dsh.*` namespace) leaves that first
+ * read empty. Registering here lets such a store re-read its persisted state
+ * the moment the adapter lands: the accommodation workspace-scoped stores
+ * already get from `registerForWorkspaceRehydration` (workspace-storage.ts).
+ *
+ * @returns an unsubscribe function.
+ */
+export function onDefaultStorageAdapterChanged(listener: () => void): () => void {
+  _adapterListeners.add(listener);
+  return () => {
+    _adapterListeners.delete(listener);
+  };
 }
 
 /** SSR-safe localStorage. Works in both Next.js (SSR) and Electron (always client). */

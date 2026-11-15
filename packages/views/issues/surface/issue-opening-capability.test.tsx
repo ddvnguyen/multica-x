@@ -1,7 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
+import {
+  defaultStorage,
+  setDefaultStorage,
+} from "@multica/core/platform";
+import type { StorageAdapter } from "@multica/core/types/storage";
 import {
   IssueOpeningCapabilityProvider,
   useIssueOpeningCapability,
@@ -223,5 +228,70 @@ describe("default issue opening capability (web/desktop wiring)", () => {
     });
     renderDefaultProvider();
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
+  });
+});
+
+/**
+ * Regression test for M-336's peek clobber: on the dsh island, CoreProvider
+ * installs the `multica.dsh.*` adapter after this module's persist hydration
+ * has already read (and missed) the bare origin. Before the fix, the
+ * capability's migration effect then saw the defaults and wrote "tab" over a
+ * Side preview choice it never read — the choice died on every reload.
+ */
+describe("late host adapter (the island's boot order)", () => {
+  const ISLAND_PREFIX = "multica.dsh.";
+
+  /** What the island's CoreProvider installs: a prefixed view of the origin. */
+  function islandAdapter(): StorageAdapter {
+    return {
+      getItem: (key) => localStorage.getItem(ISLAND_PREFIX + key),
+      setItem: (key, value) => {
+        localStorage.setItem(ISLAND_PREFIX + key, value);
+      },
+      removeItem: (key) => {
+        localStorage.removeItem(ISLAND_PREFIX + key);
+      },
+    };
+  }
+
+  afterEach(async () => {
+    setDefaultStorage(defaultStorage);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    localStorage.clear();
+  });
+
+  it("keeps a stored Side preview choice the migration never read", async () => {
+    localStorage.setItem(
+      ISLAND_PREFIX + "multica_issue_opening",
+      JSON.stringify({ state: { openMode: "peek" }, version: 0 }),
+    );
+    // CoreProvider's install; the store re-reads on the deferred notification.
+    await act(async () => {
+      setDefaultStorage(islandAdapter());
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useIssueOpeningStore.getState()).toMatchObject({
+      openMode: "peek",
+      hasUserChoice: true,
+    });
+
+    render(
+      <IssueOpeningCapabilityProvider supportsTabs supportsPeek openSidePreview={() => true}>
+        <Probe />
+      </IssueOpeningCapabilityProvider>,
+    );
+    expect(screen.getByTestId("capability")).toHaveAttribute(
+      "data-open-mode",
+      "peek",
+    );
+    // The migration effect ran and did not rewrite what it now has read.
+    expect(
+      JSON.parse(localStorage.getItem(ISLAND_PREFIX + "multica_issue_opening")!)
+        .state,
+    ).toEqual({ openMode: "peek" });
   });
 });
