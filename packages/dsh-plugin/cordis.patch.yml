@@ -24,7 +24,3 @@
         # (M-316). A picked project addresses its own local_directory resource
         # instead of this.
         workspaceFolder: ''
-        # moct-be, for the browser's memory seam (docs/moct-seam.md out-path 3).
-        # Leave empty and set MOCT_BASE_URL in the dsh process instead; with
-        # neither set, /moct answers 503 and the memory surfaces stay hidden.
-        moctUrl: ''
