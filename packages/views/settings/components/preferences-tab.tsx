@@ -356,8 +356,9 @@ function IssueOpeningRow() {
             ...(!capability.supportsTabs
               ? [["page", t(($) => $.issue.opening.page)] as const]
               : [["tab", t(($) => $.issue.opening.tab)] as const]),
-            // Side preview only where a peek exists. MMX has none until dsh
-            // can host the issue side view in its own column (M-330).
+            // Side preview wherever the host can preview: the column where
+            // the shell publishes one (MMX, M-336), the floating peek
+            // otherwise (M-330).
             ...(capability.supportsPeek
               ? [["peek", t(($) => $.issue.opening.peek)] as const]
               : []),

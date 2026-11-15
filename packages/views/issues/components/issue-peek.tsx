@@ -68,8 +68,11 @@ const ARROW_STEPS: Record<string, Step> = {
  * issue under the pointer, so mouse users need not Tab to it first.
  */
 export function IssuePeekHost({ children }: { children: ReactNode }) {
-  const { supportsPeek } = useIssueOpeningCapability();
-  if (!supportsPeek) return <>{children}</>;
+  const { supportsPeek, openSidePreview } = useIssueOpeningCapability();
+  // A host that owns the side column (MMX, M-336) already has somewhere to
+  // preview an issue: the fork's floating panel would be a second preview in
+  // the same column, so this host renders its children and nothing else.
+  if (!supportsPeek || openSidePreview !== null) return <>{children}</>;
   return <IssuePeekHostContent>{children}</IssuePeekHostContent>;
 }
 

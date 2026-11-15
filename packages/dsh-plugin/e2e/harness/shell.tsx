@@ -152,7 +152,15 @@ const sessions: SessionsLike = {
   },
 };
 
-configureHostShell({ sidebarRight, workspaces, sessions, daemonId: "" });
+// The harness has no tab-type registry: it exercises the header toggle and the
+// side preview's absent-seam case, not the shell's tab strip (M-336).
+configureHostShell({
+  sidebarRight,
+  workspaces,
+  sessions,
+  daemonId: "",
+  sidePreviewKind: null,
+});
 
 // The session the sidebar's writes act on; a spec clears this to reproduce
 // the no-session state a host without `hostPanel` reaches.
