@@ -976,7 +976,12 @@
     "include_children": "包含子任务",
     "loading": "正在加载运行记录...",
     "load_failed_retry": "无法加载运行记录，点击重试",
-    "empty": "此范围内暂无运行记录。"
+    "empty": "此范围内暂无运行记录。",
+    "memory_report": "注入的记忆",
+    "memory_loading": "正在加载记忆报告…",
+    "memory_load_failed": "无法加载记忆报告。",
+    "memory_retry": "重试",
+    "memory_empty": "未注入记忆。"
   },
   "runs_timeline": {
     "title": "运行记录",

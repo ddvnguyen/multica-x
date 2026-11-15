@@ -171,6 +171,18 @@ type PartReport struct {
 	// note is a report bug, not a small part: the reader cannot tell "nothing to
 	// say" from "we dropped it".
 	Note string `json:"note,omitempty"`
+	// Entries are the prompt-ready MOCT records actually injected for this run.
+	// Kept only on the memory part so the run report can explain its contents.
+	Entries []MemoryEntry `json:"entries,omitempty"`
+}
+
+// MemoryEntry is the user-visible content of one record in the pre-run inject.
+// It excludes bookkeeping fields that were not sent in the prompt.
+type MemoryEntry struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 // Envelope is the provider-side wrapper around the parts. It is priced

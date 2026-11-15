@@ -886,7 +886,12 @@
     "include_children": "包含子任務",
     "loading": "正在載入執行記錄...",
     "load_failed_retry": "無法載入執行記錄，點擊重試",
-    "empty": "此範圍內暫無執行記錄。"
+    "empty": "此範圍內暫無執行記錄。",
+    "memory_report": "注入的記憶",
+    "memory_loading": "正在載入記憶報告…",
+    "memory_load_failed": "無法載入記憶報告。",
+    "memory_retry": "重試",
+    "memory_empty": "未注入記憶。"
   },
   "runs_timeline": {
     "title": "執行記錄",

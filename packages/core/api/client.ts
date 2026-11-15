@@ -107,6 +107,7 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   TaskContextReceiptResponse,
+  TaskMemoryReport,
   Attachment,
   ChatSession,
   ChatPinnedAgent,
@@ -422,6 +423,7 @@ import {
   SubscribersListSchema,
   TaskMessageListSchema,
   TaskContextReceiptResponseSchema,
+  TaskMemoryReportSchema,
   TimelineEntriesSchema,
   UserSchema,
   WebhookDeliveryResponseSchema,
@@ -3224,6 +3226,17 @@ export class ApiClient {
       { receipt: null },
       { endpoint: "GET /api/tasks/:id/context-receipt" },
     );
+  }
+
+  async getIssueTaskMemoryReport(issueId: string, taskId: string): Promise<TaskMemoryReport> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/tasks/${taskId}/memory-report`,
+    );
+    return parseWithFallback<TaskMemoryReport>(raw, TaskMemoryReportSchema, {
+      task_id: taskId,
+      workspace_id: "",
+      memory: null,
+    }, { endpoint: "GET /api/issues/:id/tasks/:taskId/memory-report" });
   }
 
   async listTasksByIssue(issueId: string, includeDescendants = false, options?: { view: "timeline" }): Promise<AgentTask[]> {

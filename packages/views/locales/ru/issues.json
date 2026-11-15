@@ -978,7 +978,12 @@
     "more_runs_few": "Показать ещё {{count}}",
     "more_runs_many": "Показать ещё {{count}}",
     "queued_count_few": "В очереди: {{count}}",
-    "queued_count_many": "В очереди: {{count}}"
+    "queued_count_many": "В очереди: {{count}}",
+    "memory_report": "Внедрённая память",
+    "memory_loading": "Загрузка отчёта о памяти...",
+    "memory_load_failed": "Не удалось загрузить отчёт о памяти.",
+    "memory_retry": "Повторить",
+    "memory_empty": "Память не внедрялась."
   },
   "runs_timeline": {
     "title": "Запуски",

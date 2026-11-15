@@ -976,7 +976,12 @@
     "include_children": "하위 태스크 포함",
     "loading": "실행 기록 불러오는 중...",
     "load_failed_retry": "실행 기록을 불러올 수 없습니다. 다시 시도",
-    "empty": "이 범위에 실행 기록이 없습니다."
+    "empty": "이 범위에 실행 기록이 없습니다.",
+    "memory_report": "주입된 메모리",
+    "memory_loading": "메모리 보고서 불러오는 중...",
+    "memory_load_failed": "메모리 보고서를 불러오지 못했습니다.",
+    "memory_retry": "다시 시도",
+    "memory_empty": "주입된 메모리가 없습니다."
   },
   "runs_timeline": {
     "title": "실행 기록",

@@ -1014,7 +1014,12 @@
     "include_children": "Inclure les sous-tâches",
     "loading": "Chargement des exécutions...",
     "load_failed_retry": "Impossible de charger les exécutions. Réessayer",
-    "empty": "Aucune exécution dans ce périmètre."
+    "empty": "Aucune exécution dans ce périmètre.",
+    "memory_report": "Mémoire injectée",
+    "memory_loading": "Chargement du rapport mémoire...",
+    "memory_load_failed": "Impossible de charger le rapport mémoire.",
+    "memory_retry": "Réessayer",
+    "memory_empty": "Aucune mémoire n’a été injectée."
   },
   "runs_timeline": {
     "title": "Exécutions",

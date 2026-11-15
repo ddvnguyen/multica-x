@@ -125,6 +125,12 @@ func moctMemoryPart(block string, injection *moct.Injection) initctx.PartReport 
 		note += fmt.Sprintf("; %d records were deferred to the moct MCP tools", injection.Omitted)
 	}
 	part.Note = note
+	part.Entries = make([]initctx.MemoryEntry, 0, len(injection.Entries))
+	for _, entry := range injection.Entries {
+		part.Entries = append(part.Entries, initctx.MemoryEntry{
+			ID: entry.ID, Type: entry.Type, Title: entry.Title, Body: entry.Body,
+		})
+	}
 	return part
 }
 

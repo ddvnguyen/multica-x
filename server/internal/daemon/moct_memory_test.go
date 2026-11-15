@@ -180,6 +180,9 @@ func TestMoctInjectPromptFetchesAndRenders(t *testing.T) {
 	if part.Tokens <= 0 || part.Note == "" {
 		t.Errorf("memory part = %+v, want a measured size and a note", part)
 	}
+	if len(part.Entries) != 1 || part.Entries[0].ID != "rec-1" || part.Entries[0].Body != "From the stub." {
+		t.Errorf("memory entries = %+v, want the injected prompt-ready entry", part.Entries)
+	}
 	if gotQuery.Get("workspaceId") != "multica:ws:"+moctTestWorkspaceID {
 		t.Errorf("workspaceId = %q", gotQuery.Get("workspaceId"))
 	}
