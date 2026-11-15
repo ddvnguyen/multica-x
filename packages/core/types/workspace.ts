@@ -67,6 +67,12 @@ export interface ModelTier {
   quality?: number;
   provider_slots: number;
   enabled: boolean;
+  /**
+   * Provider-refusal cooldown deadline (M-352). Present only while a 429/quota
+   * failure has the tier out of the resolver's idx order; the Settings row
+   * renders it as "cooling down until HH:MM".
+   */
+  cooldown_until?: string;
   created_at: string;
   updated_at: string;
 }
