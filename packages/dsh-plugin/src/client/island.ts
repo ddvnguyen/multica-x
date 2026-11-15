@@ -11,6 +11,7 @@ import {
   type PopupSeat,
 } from "./popup-seat";
 import { installPropertyRules } from "./property-shim";
+import { mountAppearanceIsland } from "./appearance-island";
 import { swallowShellShortcuts } from "./shell-keys";
 
 /**
@@ -39,6 +40,7 @@ import { swallowShellShortcuts } from "./shell-keys";
 interface IslandHandle {
   root: Root;
   theme: MutationObserver | null;
+  appearanceCleanup: (() => void) | null;
   /** The seat overlays render into: the shell's layer, or the island's own. */
   seat: PopupSeat;
   /** Where portals render, so a later render can address the same container. */
@@ -105,11 +107,14 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
 
   const syncTheme = (): void => {
     const dark = shellPrefersDark(doc);
+    host.classList.toggle("dark", dark);
     surface.classList.toggle("dark", dark);
     // The popup seat lives outside this shadow root, so it must follow the
     // shell's theme itself: popups are children of the portal host, and the
     // `dark` class on that container is what the fork's utilities match on.
     portalHost.classList.toggle("dark", dark);
+    // seat host too
+    seat.element.classList.toggle("dark", dark);
   };
   syncTheme();
 
@@ -123,6 +128,13 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     attributes: true,
     attributeFilter: ["class", "data-theme"],
   });
+
+  const appearanceCleanup = mountAppearanceIsland(
+    host,
+    shadow,
+    seat.element,
+    seat.element.shadowRoot ?? undefined,
+  );
 
   swallowShellShortcuts(rootElement);
   // A dialog is not a child of the page that opened it: it is portalled into
@@ -145,6 +157,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   handles.set(host, {
     root,
     theme,
+    appearanceCleanup,
     seat,
     portalHost,
     route,
@@ -310,6 +323,7 @@ export function unmountIsland(host: HTMLElement): void {
   handles.delete(host);
   if (keepAlive === host) keepAlive = null;
   handle.theme?.disconnect();
+  handle.appearanceCleanup?.();
   handle.root.unmount();
   // The seat sits outside this host's shadow root — in the shell's overlay
   // layer or on the document — so nothing else would ever remove it.
