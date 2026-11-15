@@ -1148,6 +1148,35 @@ func taskErrorType(reason string) string {
 	}
 }
 
+// applyTierResolution rewrites an enqueue's runtime/stamp fields for a
+// use_tiers agent (M-351). A use_tiers=false agent returns its own runtime
+// with empty stamps: the legacy single-runtime path, untouched. When no
+// selected tier has capacity the task stays queued — the caller inserts with
+// the agent's fallback runtime left NULL so no daemon can claim it, and the
+// next capacity change re-runs the resolver via promotion. Tier selection
+// errors fail the enqueue: unlike full tiers, they are not backpressure.
+func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, queuedOnly bool, err error) {
+	if !agent.UseTiers {
+		return agent.RuntimeID, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, false, nil
+	}
+	res, rerr := s.resolveAgentTier(ctx, agent)
+	if rerr == nil {
+		return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, false, nil
+	}
+	if errors.Is(rerr, errNoTierCapacity) {
+		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, true, nil
+	}
+	return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, false, rerr
+}
+
+// notifyTierQueuedOnly wakes the runtime-less queued task's watchers through
+// the standard queued broadcast without notifying any daemon: no runtime was
+// stamped, so no daemon could claim it. Promotion on capacity change
+// re-resolves and stamps it then.
+func (s *TaskService) broadcastQueuedOnly(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+}
+
 // EnqueueTaskForIssue creates a queued task for an agent-assigned issue.
 // No context snapshot is stored — the agent fetches all data it needs at
 // runtime via the multica CLI.
@@ -1300,7 +1329,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid {
+	if !agent.RuntimeID.Valid && !agent.UseTiers {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
@@ -1323,29 +1352,41 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	// M-351: a use_tiers agent resolves its runtime + model stamp from the
+	// first selected tier with a free provider slot. Full tiers are
+	// backpressure: the row is still inserted (queued) but carries no
+	// runtime, so no daemon can claim it until promotion re-resolves.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	if tierErr != nil {
+		return db.AgentTaskQueue{}, tierErr
+	}
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	createParams := db.CreateAgentTaskParams{
-		ID:                   dbid.NewV7(),
-		AgentID:              issue.AssigneeID,
-		RuntimeID:            agent.RuntimeID,
-		IssueID:              issue.ID,
-		Priority:             priorityToInt(issue.Priority),
-		TriggerCommentID:     triggerCommentID,
-		CoalescedCommentIds:  coalescedCommentIDs,
-		TriggerSummary:       s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
-		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
-		HandoffNote:          pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
-		OriginatorUserID:     originatorUserID,
-		AccountableUserID:    attr.AccountableUserID,
-		RuleVersionID:        attr.RuleVersionID,
-		RerunOfTaskID:        rerunOfTaskID,
-		FreshRerun:           pgtype.Bool{Bool: freshRerun, Valid: true},
-		RuntimeMcpOverlay:    runtimeMCPOverlay.Overlay,
-		RuntimeConnectedApps: runtimeMCPOverlay.ConnectedApps,
-		OriginatorSource:     attrSource,
-		DelegatedFromTaskID:  attrDelegatedFrom,
-		TriggerEvidenceKind:  attrEvidenceKind,
-		TriggerEvidenceRefID: attrEvidenceRef,
+		ID:                    dbid.NewV7(),
+		AgentID:               issue.AssigneeID,
+		RuntimeID:             tierRuntimeID,
+		ModelOverride:         tierModel,
+		ThinkingLevelOverride: tierThinking,
+		ServiceTierOverride:   tierService,
+		TierID:                tierID,
+		IssueID:               issue.ID,
+		Priority:              priorityToInt(issue.Priority),
+		TriggerCommentID:      triggerCommentID,
+		CoalescedCommentIds:   coalescedCommentIDs,
+		TriggerSummary:        s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
+		ForceFreshSession:     pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
+		HandoffNote:           pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
+		OriginatorUserID:      originatorUserID,
+		AccountableUserID:     attr.AccountableUserID,
+		RuleVersionID:         attr.RuleVersionID,
+		RerunOfTaskID:         rerunOfTaskID,
+		FreshRerun:            pgtype.Bool{Bool: freshRerun, Valid: true},
+		RuntimeMcpOverlay:     runtimeMCPOverlay.Overlay,
+		RuntimeConnectedApps:  runtimeMCPOverlay.ConnectedApps,
+		OriginatorSource:      attrSource,
+		DelegatedFromTaskID:   attrDelegatedFrom,
+		TriggerEvidenceKind:   attrEvidenceKind,
+		TriggerEvidenceRefID:  attrEvidenceRef,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
@@ -1404,6 +1445,18 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	)
 	s.RecordHumanDelegation(ctx, attr)
 	if fireAt.Valid {
+		return task, nil
+	}
+	if tierQueuedOnly {
+		// M-351: no tier had capacity, so the row carries no runtime. Log and
+		// broadcast queued, but wake no daemon: promotion on the next capacity
+		// change re-resolves and stamps it then.
+		slog.Info("task enqueued without capacity: waiting for a tier slot",
+			"task_id", util.UUIDToString(task.ID),
+			"issue_id", util.UUIDToString(issue.ID),
+			"agent_id", util.UUIDToString(issue.AssigneeID),
+		)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 		return task, nil
 	}
 	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
@@ -1477,7 +1530,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid {
+	if !agent.RuntimeID.Valid && !agent.UseTiers {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
@@ -1499,31 +1552,40 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
+	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	if tierErr != nil {
+		return db.AgentTaskQueue{}, tierErr
+	}
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	params := db.CreateAgentTaskParams{
-		ID:                   dbid.NewV7(),
-		AgentID:              agentID,
-		RuntimeID:            agent.RuntimeID,
-		IssueID:              issue.ID,
-		Priority:             priorityToInt(issue.Priority),
-		TriggerCommentID:     triggerCommentID,
-		CoalescedCommentIds:  coalescedCommentIDs,
-		TriggerSummary:       s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
-		IsLeaderTask:         pgtype.Bool{Bool: isLeader, Valid: isLeader},
-		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
-		HandoffNote:          pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
-		SquadID:              squadID,
-		OriginatorUserID:     originatorUserID,
-		AccountableUserID:    attr.AccountableUserID,
-		RuleVersionID:        attr.RuleVersionID,
-		RerunOfTaskID:        rerunOfTaskID,
-		FreshRerun:           pgtype.Bool{Bool: freshRerun, Valid: true},
-		RuntimeMcpOverlay:    runtimeMCPOverlay.Overlay,
-		RuntimeConnectedApps: runtimeMCPOverlay.ConnectedApps,
-		OriginatorSource:     attrSource,
-		DelegatedFromTaskID:  attrDelegatedFrom,
-		TriggerEvidenceKind:  attrEvidenceKind,
-		TriggerEvidenceRefID: attrEvidenceRef,
+		ID:                    dbid.NewV7(),
+		AgentID:               agentID,
+		RuntimeID:             tierRuntimeID,
+		ModelOverride:         tierModel,
+		ThinkingLevelOverride: tierThinking,
+		ServiceTierOverride:   tierService,
+		TierID:                tierID,
+		IssueID:               issue.ID,
+		Priority:              priorityToInt(issue.Priority),
+		TriggerCommentID:      triggerCommentID,
+		CoalescedCommentIds:   coalescedCommentIDs,
+		TriggerSummary:        s.buildCommentTriggerSummary(ctx, issue.WorkspaceID, triggerCommentID),
+		IsLeaderTask:          pgtype.Bool{Bool: isLeader, Valid: isLeader},
+		ForceFreshSession:     pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
+		HandoffNote:           pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
+		SquadID:               squadID,
+		OriginatorUserID:      originatorUserID,
+		AccountableUserID:     attr.AccountableUserID,
+		RuleVersionID:         attr.RuleVersionID,
+		RerunOfTaskID:         rerunOfTaskID,
+		FreshRerun:            pgtype.Bool{Bool: freshRerun, Valid: true},
+		RuntimeMcpOverlay:     runtimeMCPOverlay.Overlay,
+		RuntimeConnectedApps:  runtimeMCPOverlay.ConnectedApps,
+		OriginatorSource:      attrSource,
+		DelegatedFromTaskID:   attrDelegatedFrom,
+		TriggerEvidenceKind:   attrEvidenceKind,
+		TriggerEvidenceRefID:  attrEvidenceRef,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
@@ -1550,6 +1612,12 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
 	s.RecordHumanDelegation(ctx, attr)
+	if tierQueuedOnly && !workflowHandoff {
+		// M-351: see enqueueIssueTaskWithCommentPlan — queued without a
+		// stamped runtime; promotion re-resolves when a slot frees.
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+		return task, nil
+	}
 	if workflowHandoff {
 		// Publish the durable waiting task before promotion can publish queued
 		// or the daemon can claim it. Existing promotion handles occupied slots.
@@ -1647,7 +1715,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	if agent.ArchivedAt.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid {
+	if !agent.RuntimeID.Valid && !agent.UseTiers {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
@@ -1706,20 +1774,29 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
+	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	if tierErr != nil {
+		return db.AgentTaskQueue{}, tierErr
+	}
 	taskID := dbid.NewV7()
 	createParams := db.CreateQuickCreateTaskParams{
-		ID:                   taskID,
-		AgentID:              agentID,
-		RuntimeID:            agent.RuntimeID,
-		Priority:             priorityToInt("high"),
-		Context:              contextJSON,
-		OriginatorUserID:     requesterID,
-		AccountableUserID:    attr.AccountableUserID,
-		RuntimeMcpOverlay:    runtimeMCPOverlay.Overlay,
-		RuntimeConnectedApps: runtimeMCPOverlay.ConnectedApps,
-		OriginatorSource:     attrSource,
-		TriggerEvidenceKind:  attrEvidenceKind,
-		TriggerEvidenceRefID: attrEvidenceRef,
+		ID:                    taskID,
+		AgentID:               agentID,
+		RuntimeID:             tierRuntimeID,
+		ModelOverride:         tierModel,
+		ThinkingLevelOverride: tierThinking,
+		ServiceTierOverride:   tierService,
+		TierID:                tierID,
+		Priority:              priorityToInt("high"),
+		Context:               contextJSON,
+		OriginatorUserID:      requesterID,
+		AccountableUserID:     attr.AccountableUserID,
+		RuntimeMcpOverlay:     runtimeMCPOverlay.Overlay,
+		RuntimeConnectedApps:  runtimeMCPOverlay.ConnectedApps,
+		OriginatorSource:      attrSource,
+		TriggerEvidenceKind:   attrEvidenceKind,
+		TriggerEvidenceRefID:  attrEvidenceRef,
 	}
 	var task db.AgentTaskQueue
 	if capture == nil {
@@ -1781,6 +1858,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// triggered" because the modal closes immediately and the task
 	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
 	s.RecordHumanDelegation(ctx, attr)
+	if tierQueuedOnly {
+		// M-351: no tier had capacity — broadcast queued, wake no daemon.
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+		return task, nil
+	}
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
@@ -2090,7 +2172,7 @@ func (s *TaskService) enqueueChatTaskTx(
 	if agent.ArchivedAt.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentArchived
 	}
-	if !agent.RuntimeID.Valid {
+	if !agent.RuntimeID.Valid && !agent.UseTiers {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
 
@@ -2147,22 +2229,32 @@ func (s *TaskService) enqueueChatTaskTx(
 		mediaPendingUntil = pgtype.Timestamptz{}
 	}
 
+	// M-351: use_tiers agents resolve via the service-level resolver (pool
+	// queries; qtx shares the pool snapshot for reads).
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, _, tierErr := s.applyTierResolution(ctx, agent)
+	if tierErr != nil {
+		return db.AgentTaskQueue{}, tierErr
+	}
 	task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
-		ID:                   dbid.NewV7(),
-		AgentID:              chatSession.AgentID,
-		RuntimeID:            agent.RuntimeID,
-		Priority:             2,
-		ChatSessionID:        chatSession.ID,
-		InitiatorUserID:      initiatorUserID,
-		FireAt:               mediaPendingUntil,
-		OriginatorUserID:     initiatorUserID,
-		AccountableUserID:    prepared.accountableUser,
-		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: true},
-		RuntimeMcpOverlay:    prepared.runtimeOverlay.Overlay,
-		RuntimeConnectedApps: prepared.runtimeOverlay.ConnectedApps,
-		OriginatorSource:     prepared.attrSource,
-		TriggerEvidenceKind:  prepared.attrEvidenceKind,
-		TriggerEvidenceRefID: chatSession.ID,
+		ID:                    dbid.NewV7(),
+		AgentID:               chatSession.AgentID,
+		RuntimeID:             tierRuntimeID,
+		ModelOverride:         tierModel,
+		ThinkingLevelOverride: tierThinking,
+		ServiceTierOverride:   tierService,
+		TierID:                tierID,
+		Priority:              2,
+		ChatSessionID:         chatSession.ID,
+		InitiatorUserID:       initiatorUserID,
+		FireAt:                mediaPendingUntil,
+		OriginatorUserID:      initiatorUserID,
+		AccountableUserID:     prepared.accountableUser,
+		ForceFreshSession:     pgtype.Bool{Bool: forceFreshSession, Valid: true},
+		RuntimeMcpOverlay:     prepared.runtimeOverlay.Overlay,
+		RuntimeConnectedApps:  prepared.runtimeOverlay.ConnectedApps,
+		OriginatorSource:      prepared.attrSource,
+		TriggerEvidenceKind:   prepared.attrEvidenceKind,
+		TriggerEvidenceRefID:  chatSession.ID,
 		ChannelContextRevision: pgtype.Int8{
 			Int64: contextRevision, Valid: contextRevision > 0,
 		},
@@ -2248,7 +2340,11 @@ func (s *TaskService) FinalizeChatTaskEnqueue(ctx context.Context, task db.Agent
 		"agent_id", util.UUIDToString(task.AgentID),
 	)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
-	s.NotifyTaskEnqueued(ctx, task)
+	if task.RuntimeID.Valid {
+		s.NotifyTaskEnqueued(ctx, task)
+	}
+	// M-351: a runtime-less row means every tier was full — no daemon to
+	// wake; promotion on the next capacity change re-resolves it.
 }
 
 // RegenerateChatQuickActions runs a fresh suggestion pass for the session's
@@ -2476,7 +2572,7 @@ func (s *TaskService) sendDirectChatMessage(
 		if carrier.ArchivedAt.Valid {
 			return ErrChatTaskAgentArchived
 		}
-		if !carrier.RuntimeID.Valid {
+		if !carrier.RuntimeID.Valid && !carrier.UseTiers {
 			return ErrChatTaskAgentNoRuntime
 		}
 
@@ -2492,21 +2588,32 @@ func (s *TaskService) sendDirectChatMessage(
 		}
 		out.Queued = queued
 
+		// M-351: same tier resolution as every other enqueue path. Uses the
+		// pool (not qtx) for the capacity reads; the insert below still runs
+		// in this tx so the row is atomic with the rest of the send.
+		tierRuntimeID, tierModel, tierThinking, tierService, tierID, _, tierErr := s.applyTierResolution(ctx, carrier)
+		if tierErr != nil {
+			return tierErr
+		}
 		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
-			ID:                   dbid.NewV7(),
-			AgentID:              session.AgentID,
-			RuntimeID:            carrier.RuntimeID,
-			Priority:             2, // medium priority for chat; matches EnqueueChatTask
-			ChatSessionID:        session.ID,
-			InitiatorUserID:      initiatorUserID,
-			OriginatorUserID:     attr.UserID,
-			AccountableUserID:    attr.AccountableUserID,
-			ForceFreshSession:    pgtype.Bool{Bool: false, Valid: true},
-			RuntimeMcpOverlay:    overlay.Overlay,
-			RuntimeConnectedApps: overlay.ConnectedApps,
-			OriginatorSource:     attrSource,
-			TriggerEvidenceKind:  attrEvidenceKind,
-			TriggerEvidenceRefID: attrEvidenceRef,
+			ID:                    dbid.NewV7(),
+			AgentID:               session.AgentID,
+			RuntimeID:             tierRuntimeID,
+			ModelOverride:         tierModel,
+			ThinkingLevelOverride: tierThinking,
+			ServiceTierOverride:   tierService,
+			TierID:                tierID,
+			Priority:              2, // medium priority for chat; matches EnqueueChatTask
+			ChatSessionID:         session.ID,
+			InitiatorUserID:       initiatorUserID,
+			OriginatorUserID:      attr.UserID,
+			AccountableUserID:     attr.AccountableUserID,
+			ForceFreshSession:     pgtype.Bool{Bool: false, Valid: true},
+			RuntimeMcpOverlay:     overlay.Overlay,
+			RuntimeConnectedApps:  overlay.ConnectedApps,
+			OriginatorSource:      attrSource,
+			TriggerEvidenceKind:   attrEvidenceKind,
+			TriggerEvidenceRefID:  attrEvidenceRef,
 		})
 		if err != nil {
 			return fmt.Errorf("create direct chat task: %w", err)
@@ -3742,7 +3849,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		// loaded Agent before returning any payload. Runtime mutation paths settle
 		// the remaining queued rows: teardown and revocation cancel them, and
 		// UpdateAgent re-stamps them to the new runtime.
-		if runtimeID.Valid && agent.RuntimeID != runtimeID {
+		// M-351: tier-stamped candidates carry their own enqueue-time runtime;
+		// the agent's current single runtime must not reject them here. The SQL
+		// fence (ClaimAgentTask + batch candidates) still enforces owner and
+		// visibility per row, and provider_slots is rechecked after the claim
+		// below so the two-enqueue race cannot oversubscribe a tier.
+		if runtimeID.Valid && agent.RuntimeID != runtimeID && !agent.UseTiers {
 			outcome = "runtime_mismatch"
 			return nil
 		}
@@ -3833,6 +3945,32 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 				return fmt.Errorf("reanchor claimed direct chat input: %w", err)
 			}
 			reanchorMs = time.Since(t0).Milliseconds()
+		}
+
+		// M-351: enforce provider_slots at claim as well as enqueue. Two
+		// enqueues can resolve the same tier before either inserts; the loser
+		// would otherwise oversubscribe the tier. The claim runs under the
+		// runtime capacity lock inside this tx, so this recheck is the
+		// serialization point: a tier-stamped task whose tier filled up since
+		// enqueue is requeued (not failed) for the next capacity change.
+		if task.TierID.Valid {
+			over, overErr := qtx.TierTaskOverCapacity(ctx, task.ID)
+			if overErr != nil {
+				outcome = "error_tier_capacity"
+				return fmt.Errorf("check tier capacity: %w", overErr)
+			}
+			if over {
+				if _, rqErr := qtx.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
+					TaskID:       task.ID,
+					RuntimeID:    task.RuntimeID,
+					DispatchedAt: task.DispatchedAt,
+				}); rqErr != nil {
+					outcome = "error_tier_requeue"
+					return fmt.Errorf("requeue over-capacity tier task: %w", rqErr)
+				}
+				outcome = "tier_no_capacity"
+				return nil
+			}
 		}
 
 		claimedTask := task
@@ -4485,10 +4623,56 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 			"runtime_id", util.UUIDToString(runtimeID),
 			"agent_id", util.UUIDToString(task.AgentID),
 		)
+		// M-351: runtime-less queued rows (no tier had capacity at enqueue)
+		// get their second chance here. Re-resolve against current capacity
+		// and stamp; only then wake the daemon.
+		if !task.RuntimeID.Valid {
+			if stamped, rok := s.restampQueuedTierTask(ctx, task); rok {
+				task = stamped
+			} else {
+				s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+				continue
+			}
+		}
 		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 		s.NotifyTaskEnqueued(ctx, task)
 	}
 	return nil
+}
+
+// restampQueuedTierTask re-resolves a runtime-less queued row (M-351: enqueue
+// found no tier with capacity) and stamps it when a slot frees. Returns false
+// when tiers are still full or the agent left use_tiers — the row stays
+// queued and a later capacity change retries. Tier selection errors fail
+// loudly: unlike full tiers they are not backpressure.
+func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTaskQueue) (db.AgentTaskQueue, bool) {
+	agent, err := s.Queries.GetAgent(ctx, task.AgentID)
+	if err != nil || !agent.UseTiers {
+		return task, false
+	}
+	res, rerr := s.resolveAgentTier(ctx, agent)
+	if rerr != nil {
+		if errors.Is(rerr, errNoTierCapacity) {
+			return task, false
+		}
+		slog.Warn("tier restamp failed: task stays queued",
+			"task_id", util.UUIDToString(task.ID), "error", rerr)
+		return task, false
+	}
+	stamped, serr := s.Queries.RestampQueuedTierTask(ctx, db.RestampQueuedTierTaskParams{
+		ID:                    task.ID,
+		RuntimeID:             res.runtimeID,
+		ModelOverride:         res.modelOverride,
+		ThinkingLevelOverride: res.thinkingLevel,
+		ServiceTierOverride:   res.serviceTier,
+		TierID:                res.tierID,
+	})
+	if serr != nil {
+		slog.Warn("tier restamp write failed: task stays queued",
+			"task_id", util.UUIDToString(task.ID), "error", serr)
+		return task, false
+	}
+	return stamped, true
 }
 
 // maybeLogClaimSlow emits one structured log per ClaimTask call when its total
@@ -7070,26 +7254,41 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryCovered, err
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
+		// M-351: same tier resolution as every other enqueue path. A full tier
+		// set here resolves to queuedOnly, which this recovery path treats as
+		// "still pending": return covered without a task so the next sweep
+		// retries once a slot frees.
+		recRuntimeID, recModel, recThinking, recService, recTierID, recQueuedOnly, recErr := s.applyTierResolution(ctx, target.agent)
+		if recErr != nil {
+			return delegatedFailureRecoveryCovered, recErr
+		}
+		if recQueuedOnly {
+			return delegatedFailureRecoveryCovered, nil
+		}
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-			ID:                   dbid.NewV7(),
-			AgentID:              target.agent.ID,
-			RuntimeID:            target.agent.RuntimeID,
-			IssueID:              target.issue.ID,
-			Priority:             priorityToInt(target.issue.Priority),
-			TriggerCommentID:     target.comment.ID,
-			TriggerSummary:       s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
-			IsLeaderTask:         pgtype.Bool{Bool: target.source.IsLeaderTask, Valid: target.source.IsLeaderTask},
-			SquadID:              target.source.SquadID,
-			OriginatorUserID:     originator,
-			AccountableUserID:    accountable,
-			RuntimeMcpOverlay:    overlay.Overlay,
-			RuntimeConnectedApps: overlay.ConnectedApps,
-			OriginatorSource:     pgtype.Text{String: string(source), Valid: true},
-			DelegatedFromTaskID:  target.failed.ID,
-			RuleVersionID:        ruleVersionID,
-			TriggerEvidenceKind:  pgtype.Text{String: string(attribution.EvidenceDelegatedFailure), Valid: true},
-			TriggerEvidenceRefID: target.failed.ID,
-			HeadSha:              headShaText(s.ResolveIssueReviewSHA(ctx, target.issue.ID)),
+			ID:                    dbid.NewV7(),
+			AgentID:               target.agent.ID,
+			RuntimeID:             recRuntimeID,
+			ModelOverride:         recModel,
+			ThinkingLevelOverride: recThinking,
+			ServiceTierOverride:   recService,
+			TierID:                recTierID,
+			IssueID:               target.issue.ID,
+			Priority:              priorityToInt(target.issue.Priority),
+			TriggerCommentID:      target.comment.ID,
+			TriggerSummary:        s.buildCommentTriggerSummary(ctx, target.issue.WorkspaceID, target.comment.ID),
+			IsLeaderTask:          pgtype.Bool{Bool: target.source.IsLeaderTask, Valid: target.source.IsLeaderTask},
+			SquadID:               target.source.SquadID,
+			OriginatorUserID:      originator,
+			AccountableUserID:     accountable,
+			RuntimeMcpOverlay:     overlay.Overlay,
+			RuntimeConnectedApps:  overlay.ConnectedApps,
+			OriginatorSource:      pgtype.Text{String: string(source), Valid: true},
+			DelegatedFromTaskID:   target.failed.ID,
+			RuleVersionID:         ruleVersionID,
+			TriggerEvidenceKind:   pgtype.Text{String: string(attribution.EvidenceDelegatedFailure), Valid: true},
+			TriggerEvidenceRefID:  target.failed.ID,
+			HeadSha:               headShaText(s.ResolveIssueReviewSHA(ctx, target.issue.ID)),
 		})
 		if err == nil {
 			slog.Info("delegated failure recovery task enqueued",

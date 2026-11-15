@@ -681,6 +681,18 @@ export interface Agent {
   max_concurrent_tasks: number;
   model: string;
   /**
+   * Workspace tier mode (M-351). True = the agent resolves runtime/model per
+   * task from its selected tiers at enqueue; false = today's single runtime
+   * + model. Older backends omit it; treat undefined as false.
+   */
+  use_tiers?: boolean;
+  /**
+   * Selected workspace tier ids. A late-deleted/disabled tier still present
+   * here renders as "unavailable" — the server never silently drops it.
+   * Older backends omit it; treat undefined as [].
+   */
+  tier_ids?: string[];
+  /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
    * `none|minimal|low|medium|high|xhigh|max|ultra`). Empty string means "no
@@ -904,6 +916,10 @@ export interface UpdateAgentRequest {
   status?: AgentStatus;
   max_concurrent_tasks?: number;
   model?: string;
+  /** M-351: omitted = keep; absent on older backends. */
+  use_tiers?: boolean;
+  /** M-351: omitted = keep, empty = clear all. */
+  tier_ids?: string[];
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change

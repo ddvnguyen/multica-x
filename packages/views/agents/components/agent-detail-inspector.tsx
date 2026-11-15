@@ -26,6 +26,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
   SettingsCard,
@@ -48,6 +49,7 @@ import {
   setAgentFreebuffAccountId,
 } from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./inspector/runtime-picker";
+import { TierPicker } from "./inspector/tier-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
 import { useExecutionControls } from "./inspector/use-execution-controls";
@@ -309,6 +311,34 @@ export function AgentDetailInspector({
           >
             <SettingsCard>
               <SettingsRow
+                label={t(($) => $.inspector.prop_use_tiers)}
+                description={t(($) => $.inspector.use_tiers_hint)}
+              >
+                <Switch
+                  checked={agent.use_tiers ?? false}
+                  disabled={!canEdit}
+                  onCheckedChange={(checked) => {
+                    // Toggling off keeps the last single runtime/model as
+                    // the fallback (M-351) — the columns are never cleared.
+                    void update({ use_tiers: checked });
+                  }}
+                  aria-label={t(($) => $.inspector.prop_use_tiers)}
+                />
+              </SettingsRow>
+              {agent.use_tiers ? (
+                <SettingsRow
+                  label={t(($) => $.inspector.prop_tiers)}
+                  description={t(($) => $.inspector.tiers_hint)}
+                >
+                  <TierPicker
+                    value={agent.tier_ids ?? []}
+                    canEdit={canEdit}
+                    onChange={(tier_ids) => update({ tier_ids })}
+                  />
+                </SettingsRow>
+              ) : (
+                <>
+              <SettingsRow
                 label={t(($) => $.inspector.prop_runtime)}
                 size="select-wide"
               >
@@ -401,6 +431,8 @@ export function AgentDetailInspector({
                       update({ service_tier: serviceTier })
                     }
                   />
+                </>
+              )}
                 </>
               )}
               <SettingsRow

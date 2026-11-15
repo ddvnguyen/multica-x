@@ -2940,7 +2940,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// changing task state, but Agent mutations do not stay locked through HTTP
 	// response assembly. Recheck the freshly loaded Agent here so a rebind or
 	// owner change that committed after the claim cannot reach the daemon.
-	if agent.RuntimeID != task.RuntimeID {
+	// M-351: tier-stamped tasks resolved their runtime at enqueue, so the
+	// agent's current single runtime must not refuse delivery. Owner and
+	// visibility checks below still run.
+	if agent.RuntimeID != task.RuntimeID && !task.TierID.Valid {
 		slog.Warn("daemon claim: agent runtime changed before delivery; refusing dispatch",
 			"task_id", uuidToString(task.ID),
 			"agent_id", uuidToString(task.AgentID),
@@ -3103,10 +3106,28 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		AccountCredentialRef:  claimAcct.CredentialRef,
 		AccountDaemonID:       claimAcct.DaemonAccountID,
 	}
+	// M-351: a tier-stamped task carries its enqueue-time model/thinking/
+	// service-tier selection on the row. The stamp wins over the agent
+	// columns: the agent is a position and its single runtime/model is only
+	// the fallback for use_tiers=false runs. Thinking/service overrides apply
+	// to every provider; ModelOverride keeps its existing openclaw-only wire
+	// meaning, falling back to the agent's persistent override when the task
+	// carries none.
+	if task.ModelOverride.Valid && task.ModelOverride.String != "" {
+		resp.Agent.Model = task.ModelOverride.String
+	}
+	if task.ThinkingLevelOverride.Valid && task.ThinkingLevelOverride.String != "" {
+		resp.Agent.ThinkingLevel = task.ThinkingLevelOverride.String
+	}
+	if task.ServiceTierOverride.Valid && task.ServiceTierOverride.String != "" {
+		resp.Agent.ServiceTier = task.ServiceTierOverride.String
+	}
 	// Snapshot the agent's persistent OpenClaw model override for this claim.
 	// It applies to every claim until changed or cleared; later edits do not
 	// affect payloads already delivered to the daemon.
-	if runtime.Provider == "openclaw" {
+	if task.ModelOverride.Valid && task.ModelOverride.String != "" {
+		resp.ModelOverride = task.ModelOverride.String
+	} else if runtime.Provider == "openclaw" {
 		resp.ModelOverride = openclawModelOverride(agent.RuntimeConfig)
 	}
 	// System agents carry a product-owned instruction layer that ships with

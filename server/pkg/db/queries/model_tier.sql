@@ -47,3 +47,54 @@ SET idx = o.pos,
 FROM (SELECT u.id, (u.ord - 1) AS pos
       FROM unnest(@ids::uuid[]) WITH ORDINALITY AS u(id, ord)) o
 WHERE t.workspace_id = @workspace_id AND t.id = o.id;
+
+-- Agent tier selection (M-351). The join behind the Agent page "Use tiers"
+-- switch: an agent with use_tiers stores its chosen tier ids here. No FKs per
+-- repo rule. ListAgentTiers joins model_tier so the resolver walks enabled
+-- tiers ordered by idx in one round trip; a tier deleted out from under an
+-- agent simply stops appearing (UI shows "unavailable", never silently
+-- reassigns). SetAgentTiers replaces the whole selection: delete-then-insert
+-- in one statement keeps partial writes impossible without a tx.
+
+-- name: ListAgentTiers :many
+SELECT t.* FROM model_tier t
+JOIN agent_tier at ON at.tier_id = t.id
+WHERE at.agent_id = $1
+ORDER BY t.idx ASC, t.created_at ASC;
+
+-- name: ListAgentTierIDs :many
+SELECT tier_id FROM agent_tier
+WHERE agent_id = $1;
+
+-- name: SetAgentTiers :execrows
+DELETE FROM agent_tier WHERE agent_id = sqlc.arg('agent_id')::uuid;
+
+-- name: AddAgentTier :execrows
+INSERT INTO agent_tier (agent_id, tier_id)
+VALUES (sqlc.arg('agent_id')::uuid, sqlc.arg('tier_id')::uuid)
+ON CONFLICT DO NOTHING;
+
+-- name: ClearAgentTiers :exec
+DELETE FROM agent_tier WHERE agent_id = $1;
+
+-- name: DeleteTierAgentSelections :exec
+DELETE FROM agent_tier WHERE tier_id = $1;
+
+-- M-351: claim-time provider_slots enforcement. A tier-stamped task claimed
+-- inside the runtime capacity lock asks whether its tier is over capacity:
+-- more active rows on the tier's runtime than provider_slots. TRUE means the
+-- claim must requeue, not dispatch — two enqueues resolved the same tier
+-- before either inserted. Enqueue already avoids full tiers; this closes the
+-- race at the serialization point.
+-- name: TierTaskOverCapacity :one
+SELECT EXISTS (
+    SELECT 1 FROM model_tier t
+    WHERE t.id = (SELECT atq.tier_id FROM agent_task_queue atq WHERE atq.id = $1)
+      AND t.enabled
+      AND (
+            SELECT count(*) FROM agent_task_queue active
+            WHERE active.runtime_id = t.runtime_id
+              AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+              AND active.id <> $1
+          ) >= t.provider_slots
+) AS over_capacity;
