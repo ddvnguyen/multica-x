@@ -5524,6 +5524,21 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 		}
 		task = t
 
+		// M-352: a tier-stamped task that just lost its provider to a
+		// capacity/rate-limit or quota failure arms that tier's cooldown, in
+		// the SAME transaction as the fail, so the resolver can never observe
+		// the failed row without its tier learning to skip. A row with no
+		// tier_id (legacy agent, or a future explicit runtime/model run) has
+		// nothing to cool.
+		if t.TierID.Valid && tierCooldownReasons[failureReason] {
+			if err := qtx.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{
+				ID:            t.TierID,
+				CooldownUntil: pgtype.Timestamptz{Time: time.Now().Add(DefaultTierCooldown), Valid: true},
+			}); err != nil {
+				return fmt.Errorf("arm tier cooldown: %w", err)
+			}
+		}
+
 		// Atomic with the status flip, same as the completion path. A failed
 		// coordinator that already received the recovery comment has consumed
 		// the obligation: the pre-existing delivered_comment_ids coverage check

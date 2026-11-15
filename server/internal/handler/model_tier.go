@@ -63,8 +63,12 @@ type ModelTierResponse struct {
 	Quality       *int    `json:"quality,omitempty"`
 	ProviderSlots int     `json:"provider_slots"`
 	Enabled       bool    `json:"enabled"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
+	// CooldownUntil is when a provider-refusal cooldown expires (M-352). Omitted
+	// when the tier is not cooling; the resolver skips a tier while it is set
+	// and in the future, and the Settings row renders it as "until HH:MM".
+	CooldownUntil string `json:"cooldown_until,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 func modelTierToResponse(t db.ModelTier) ModelTierResponse {
@@ -98,6 +102,9 @@ func modelTierToResponse(t db.ModelTier) ModelTierResponse {
 	if t.Quality.Valid {
 		q := int(t.Quality.Int32)
 		resp.Quality = &q
+	}
+	if t.CooldownUntil.Valid {
+		resp.CooldownUntil = timestampToString(t.CooldownUntil)
 	}
 	return resp
 }
