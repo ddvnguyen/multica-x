@@ -192,6 +192,12 @@
       "after_run": "Démarrer après cette exécution",
       "hint": "Définit seulement le choix par défaut. Vous pouvez le modifier pour chaque message avant l'envoi."
     },
+    "timeline_order": {
+      "title": "Ordre de la chronologie",
+      "hint": "Affiche l'activité de la tâche de la plus récente à la plus ancienne ou inversement.",
+      "oldest_first": "Plus anciens d'abord",
+      "newest_first": "Plus récents d'abord"
+    },
     "comments_title": "Commentaires et discussion",
     "region_title": "Langue et région",
     "appearance_title": "Apparence",

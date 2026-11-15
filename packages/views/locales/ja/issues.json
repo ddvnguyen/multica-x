@@ -533,8 +533,11 @@
     "pull_requests_empty_title": "関連する PR はありません。"
   },
   "timeline": {
-    "loading": "読み込み中..."
-  },
+    "loading": "読み込み中...",
+    "jump_to_latest": "最新に移動",
+    "order_oldest_first": "古い順",
+    "order_newest_first": "新しい順",
+    "order_toggle_hint": "タイムラインの順序を切り替え"  },
   "activity": {
     "created": "このタスクを作成しました",
     "self_assigned": "このタスクを自分に割り当てました",

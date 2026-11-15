@@ -533,8 +533,11 @@
     "pull_requests_empty_title": "연결된 PR이 없습니다."
   },
   "timeline": {
-    "loading": "불러오는 중..."
-  },
+    "loading": "불러오는 중...",
+    "jump_to_latest": "최신으로 이동",
+    "order_oldest_first": "오래된 순",
+    "order_newest_first": "최신 순",
+    "order_toggle_hint": "타임라인 순서 바꾸기"  },
   "activity": {
     "created": "이 태스크를 만들었습니다",
     "self_assigned": "이 태스크를 본인에게 할당했습니다",
