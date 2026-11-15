@@ -811,6 +811,9 @@ importers:
 
   packages/dsh-plugin:
     dependencies:
+      sonner:
+        specifier: 'catalog:'
+        version: 2.0.7(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       ws:
         specifier: ^8.18.3
         version: 8.20.1

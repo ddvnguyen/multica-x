@@ -111,6 +111,7 @@ type AgentPlan struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	EscalatedAt       pgtype.Timestamptz `json:"escalated_at"`
+	RemindedAt        pgtype.Timestamptz `json:"reminded_at"`
 }
 
 type AgentPlanComment struct {
@@ -172,6 +173,7 @@ type AgentQuestionCard struct {
 	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
 	EscalatedAt      pgtype.Timestamptz `json:"escalated_at"`
 	AnsweredByType   string             `json:"answered_by_type"`
+	RemindedAt       pgtype.Timestamptz `json:"reminded_at"`
 }
 
 type AgentRuntime struct {

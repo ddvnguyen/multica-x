@@ -349,6 +349,40 @@ func (q *Queries) ArchiveStaleAskPlanInboxForMember(ctx context.Context, arg Arc
 	return items, nil
 }
 
+const countOpenAskPlanMemberRows = `-- name: CountOpenAskPlanMemberRows :one
+SELECT count(*) FROM inbox_item i
+WHERE i.workspace_id = $1 AND i.issue_id = $2 AND i.archived = false
+  AND i.recipient_type = 'member'
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status = 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status = 'in_review'))
+  )
+`
+
+type CountOpenAskPlanMemberRowsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// M-362: the task:message question listener's dedupe check. SubmitAsk /
+// SubmitPlan write one `agent_question` / `plan_review` row per workspace
+// member with the evidence id in details; when such an open-evidence member
+// row exists on the issue, the subscriber row for the same park would be a
+// duplicate. Subscriber rows (empty details) never match: they carry no
+// evidence, so a park with no member row still counts zero and notifies.
+func (q *Queries) CountOpenAskPlanMemberRows(ctx context.Context, arg CountOpenAskPlanMemberRowsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenAskPlanMemberRows, arg.WorkspaceID, arg.IssueID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnreadInbox = `-- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item i
 WHERE i.workspace_id = $1

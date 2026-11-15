@@ -51,12 +51,27 @@ func runAskPlanTimeoutSweeper(ctx context.Context, queries *db.Queries, taskSvc 
 // marks the evidence row, so the next round sees it as already escalated and
 // leaves it for the Owner.
 func sweepExpiredAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) (int, error) {
+	expired, _, err := sweepAskPlanParks(ctx, queries, taskSvc)
+	return expired, err
+}
+
+// sweepAskPlanParks is one round with two independent branches per candidate:
+// the M-362 reminder at ~50% of the effective timeout (fires once, never
+// after resolution) and the M-131/M-332 escalation past the full timeout.
+// The candidate set only holds live, not-yet-escalated evidence with the park
+// clock in ParkedAt, so both branches judge against the same per-project
+// effective timeout — resolved by the same
+// handler.EffectiveAskPlanTimeoutSeconds the settings surfaces answer. A row
+// that fails is logged and left for the next tick; it never aborts the
+// round. Escalating only marks the evidence row, so the next round sees it as
+// already escalated and leaves it for the Owner; reminding only stamps
+// reminded_at, so a reminded row never re-reminds.
+func sweepAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) (expired, reminded int, err error) {
 	candidates, err := queries.ListParkedAskPlanSweepCandidates(ctx, askPlanTimeoutSweepBatch)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	now := time.Now()
-	expired := 0
 	for _, c := range candidates {
 		if !c.ParkedAt.Valid {
 			// Unreachable: COALESCE over two NOT NULL stamps. Skip rather than
@@ -64,7 +79,19 @@ func sweepExpiredAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc 
 			continue
 		}
 		seconds, source := handler.EffectiveAskPlanTimeoutSeconds(c.ProjectSettings, c.WorkspaceSettings)
-		if now.Sub(c.ParkedAt.Time) < time.Duration(seconds)*time.Second {
+		elapsed := now.Sub(c.ParkedAt.Time)
+		if elapsed >= time.Duration(seconds)*time.Second/2 && elapsed < time.Duration(seconds)*time.Second {
+			done, rerr := taskSvc.RemindParkedAskPlanTask(ctx, c.TaskID, seconds)
+			if rerr != nil {
+				slog.Warn("ask/plan timeout sweeper: remind failed",
+					"task_id", util.UUIDToString(c.TaskID),
+					"issue_id", util.UUIDToString(c.IssueID),
+					"error", rerr)
+			} else if done {
+				reminded++
+			}
+		}
+		if elapsed < time.Duration(seconds)*time.Second {
 			continue
 		}
 		done, err := taskSvc.EscalateParkedAskPlanTask(ctx, c.TaskID, seconds, source.String())
@@ -79,5 +106,5 @@ func sweepExpiredAskPlanParks(ctx context.Context, queries *db.Queries, taskSvc 
 			expired++
 		}
 	}
-	return expired, nil
+	return expired, reminded, nil
 }

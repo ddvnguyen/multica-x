@@ -20,7 +20,7 @@ SET status = 'answered',
     answered_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open'
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
 `
 
 type AnswerAgentQuestionCardParams struct {
@@ -62,6 +62,7 @@ func (q *Queries) AnswerAgentQuestionCard(ctx context.Context, arg AnswerAgentQu
 		&i.TriggerCommentID,
 		&i.EscalatedAt,
 		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -73,7 +74,7 @@ SET status = 'approved',
     approved_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'in_review' AND submitted_revision = $3
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type ApproveAgentPlanParams struct {
@@ -104,6 +105,7 @@ func (q *Queries) ApproveAgentPlan(ctx context.Context, arg ApproveAgentPlanPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -114,7 +116,7 @@ SET status = 'cancelled',
     cancelled_at = now(),
     updated_at = now()
 WHERE id = $1 AND status IN ('draft', 'in_review', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 // cancel: any open state -> cancelled; final; frees the issue for a new plan
@@ -139,6 +141,7 @@ func (q *Queries) CancelAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPla
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -188,7 +191,7 @@ INSERT INTO agent_plan (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, 'draft', $7
 )
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type CreateAgentPlanParams struct {
@@ -229,6 +232,7 @@ func (q *Queries) CreateAgentPlan(ctx context.Context, arg CreateAgentPlanParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -349,7 +353,7 @@ INSERT INTO agent_question_card (
     $1, $2, $3, $4, $5,
     'open', $6, $7, $8
 )
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
 `
 
 type CreateAgentQuestionCardParams struct {
@@ -399,6 +403,7 @@ func (q *Queries) CreateAgentQuestionCard(ctx context.Context, arg CreateAgentQu
 		&i.TriggerCommentID,
 		&i.EscalatedAt,
 		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -427,7 +432,7 @@ UPDATE agent_plan
 SET escalated_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'in_review' AND escalated_at IS NULL
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 // The plan half of the M-332 escalation: same once-only CAS, status untouched
@@ -452,6 +457,7 @@ func (q *Queries) EscalateAgentPlan(ctx context.Context, id pgtype.UUID) (AgentP
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -461,7 +467,7 @@ UPDATE agent_question_card
 SET escalated_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open' AND escalated_at IS NULL
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
 `
 
 // M-332 escalation, once per card. The CAS on 'escalated_at IS NULL' is the
@@ -489,12 +495,13 @@ func (q *Queries) EscalateAgentQuestionCard(ctx context.Context, id pgtype.UUID)
 		&i.TriggerCommentID,
 		&i.EscalatedAt,
 		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getAgentPlan = `-- name: GetAgentPlan :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at FROM agent_plan WHERE id = $1
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan WHERE id = $1
 `
 
 func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
@@ -517,6 +524,7 @@ func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -549,7 +557,7 @@ func (q *Queries) GetAgentPlanComment(ctx context.Context, id pgtype.UUID) (Agen
 }
 
 const getAgentPlanForUpdate = `-- name: GetAgentPlanForUpdate :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at FROM agent_plan WHERE id = $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan WHERE id = $1 FOR UPDATE
 `
 
 // M-131 expiry gate: same guarantee for ReviewPlan — a verdict arriving after
@@ -575,12 +583,13 @@ func (q *Queries) GetAgentPlanForUpdate(ctx context.Context, id pgtype.UUID) (Ag
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getAgentQuestionCard = `-- name: GetAgentQuestionCard :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type FROM agent_question_card WHERE id = $1
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card WHERE id = $1
 `
 
 func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
@@ -604,12 +613,13 @@ func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (Age
 		&i.TriggerCommentID,
 		&i.EscalatedAt,
 		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getAgentQuestionCardForUpdate = `-- name: GetAgentQuestionCardForUpdate :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type FROM agent_question_card WHERE id = $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card WHERE id = $1 FOR UPDATE
 `
 
 // M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
@@ -638,12 +648,13 @@ func (q *Queries) GetAgentQuestionCardForUpdate(ctx context.Context, id pgtype.U
 		&i.TriggerCommentID,
 		&i.EscalatedAt,
 		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getOpenAgentPlanByIssue = `-- name: GetOpenAgentPlanByIssue :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at FROM agent_plan
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan
 WHERE issue_id = $1 AND status IN ('draft', 'in_review', 'changes_requested')
 LIMIT 1
 `
@@ -668,6 +679,7 @@ func (q *Queries) GetOpenAgentPlanByIssue(ctx context.Context, issueID pgtype.UU
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -806,7 +818,7 @@ func (q *Queries) ListAgentPlanSectionVersionsUpto(ctx context.Context, arg List
 }
 
 const listOpenQuestionCardsByIssue = `-- name: ListOpenQuestionCardsByIssue :many
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type FROM agent_question_card
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card
 WHERE issue_id = $1 AND status = 'open'
 ORDER BY created_at DESC
 `
@@ -838,6 +850,7 @@ func (q *Queries) ListOpenQuestionCardsByIssue(ctx context.Context, issueID pgty
 			&i.TriggerCommentID,
 			&i.EscalatedAt,
 			&i.AnsweredByType,
+			&i.RemindedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1010,12 +1023,85 @@ func (q *Queries) RecordAgentPlanReview(ctx context.Context, arg RecordAgentPlan
 	return i, err
 }
 
+const remindAgentPlan = `-- name: RemindAgentPlan :one
+UPDATE agent_plan
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND reminded_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
+`
+
+// The plan half of the M-362 reminder: same once-only CAS, status untouched
+// (in_review stays in_review until a human verdict).
+func (q *Queries) RemindAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, remindAgentPlan, id)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const remindAgentQuestionCard = `-- name: RemindAgentQuestionCard :one
+UPDATE agent_question_card
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND reminded_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
+`
+
+// M-362 reminder, once per card. The CAS on 'reminded_at IS NULL' is the
+// idempotency gate: a second sweep round (or a racing first one) matches no
+// row, so the bump fires exactly once. The status is NOT touched: the card
+// stays open for the Owner.
+func (q *Queries) RemindAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
+	row := q.db.QueryRow(ctx, remindAgentQuestionCard, id)
+	var i AgentQuestionCard
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Status,
+		&i.Context,
+		&i.Questions,
+		&i.Answers,
+		&i.AnsweredBy,
+		&i.AnsweredAt,
+		&i.WithdrawnAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
 const requestAgentPlanChanges = `-- name: RequestAgentPlanChanges :one
 UPDATE agent_plan
 SET status = 'changes_requested',
     updated_at = now()
 WHERE id = $1 AND status = 'in_review' AND submitted_revision = $2
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type RequestAgentPlanChangesParams struct {
@@ -1046,6 +1132,7 @@ func (q *Queries) RequestAgentPlanChanges(ctx context.Context, arg RequestAgentP
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -1096,7 +1183,7 @@ SET status = 'in_review',
     updated_at = now()
 WHERE id = $1 AND revision = $2
   AND status IN ('draft', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type SubmitAgentPlanParams struct {
@@ -1133,6 +1220,7 @@ func (q *Queries) SubmitAgentPlan(ctx context.Context, arg SubmitAgentPlanParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -1145,7 +1233,7 @@ SET sections = $2,
     updated_at = now()
 WHERE id = $1 AND revision = $3
   AND status IN ('draft', 'in_review', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type UpdateAgentPlanSectionParams struct {
@@ -1179,6 +1267,7 @@ func (q *Queries) UpdateAgentPlanSection(ctx context.Context, arg UpdateAgentPla
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -1206,7 +1295,7 @@ SET sections = $2,
     updated_at = now()
 WHERE id = $1 AND revision = $3
   AND status IN ('draft', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type WriteAgentPlanSectionParams struct {
@@ -1241,6 +1330,7 @@ func (q *Queries) WriteAgentPlanSection(ctx context.Context, arg WriteAgentPlanS
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
