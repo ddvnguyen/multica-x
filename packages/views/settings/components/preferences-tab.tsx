@@ -32,6 +32,10 @@ import {
   type RunningAgentReply,
 } from "@multica/core/issues/stores";
 import {
+  useTimelineDisplayStore,
+  type TimelineOrder,
+} from "@multica/core/issues/stores/timeline-display-store";
+import {
   useIssueOpeningStore,
   type IssueOpenMode,
 } from "@multica/core/issues/stores/issue-opening-store";
@@ -96,6 +100,7 @@ export function PreferencesTab({
           <StickyCommentBarRow />
           <RunningAgentReplyRow />
           <FloatingChatRow />
+          <TimelineOrderRow />
         </SettingsCard>
       </SettingsSection>
 
@@ -225,6 +230,56 @@ function RunningAgentReplyRow() {
           size="sm"
           className="w-full"
           aria-label={t(($) => $.preferences.running_agent_reply.title)}
+        >
+          <SelectValue>
+            {options.find((option) => option.value === value)?.label}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent align="end">
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </SettingsRow>
+  );
+}
+
+/**
+ * Issue activity reading order, shared with the Activity header toggle: both
+ * read and write the same persisted `multica_timeline_display` preference,
+ * so flipping one updates the other. Newest-first puts the latest entry on
+ * top on long-running issues; oldest-first is the long-standing default.
+ */
+function TimelineOrderRow() {
+  const { t } = useT("settings");
+  const value = useTimelineDisplayStore((s) => s.order);
+  const setValue = useTimelineDisplayStore((s) => s.setOrder);
+  const options: { value: TimelineOrder; label: string }[] = [
+    { value: "oldest-first", label: t(($) => $.preferences.timeline_order.oldest_first) },
+    { value: "newest-first", label: t(($) => $.preferences.timeline_order.newest_first) },
+  ];
+
+  return (
+    <SettingsRow
+      anchor="timeline-order"
+      label={t(($) => $.preferences.timeline_order.title)}
+      description={t(($) => $.preferences.timeline_order.hint)}
+      size="select"
+    >
+      <Select
+        items={options}
+        value={value}
+        onValueChange={(next) => {
+          if (next && next !== value) setValue(next as TimelineOrder);
+        }}
+      >
+        <SelectTrigger
+          size="sm"
+          className="w-full"
+          aria-label={t(($) => $.preferences.timeline_order.title)}
         >
           <SelectValue>
             {options.find((option) => option.value === value)?.label}

@@ -15,7 +15,7 @@ const (
 	// askPlanTimeoutSweepInterval is two ticks a minute: the tightest effective
 	// timeout is the validator's 60s floor (interactionsMinTimeoutSeconds), so
 	// a park escalates no later than ~90s after its deadline, and the default
-	// 600s wait lands within half a minute of expiry. Ticks that overlap a
+	// 300s wait lands within half a minute of expiry. Ticks that overlap a
 	// slow round are dropped by runPeriodicSweep.
 	askPlanTimeoutSweepInterval = 30 * time.Second
 	// askPlanTimeoutSweepBatch bounds one round. Live parks are rare — one per
@@ -37,8 +37,8 @@ func runAskPlanTimeoutSweeper(ctx context.Context, queries *db.Queries, taskSvc 
 			return
 		}
 		if expired > 0 {
-				slog.Info("ask/plan timeout sweeper: escalated overdue parks", "count", expired)
-			}
+			slog.Info("ask/plan timeout sweeper: escalated overdue parks", "count", expired)
+		}
 	})
 }
 

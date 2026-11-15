@@ -13,6 +13,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useCallback, useMemo, useRef, useId, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { useHostStorage } from "@multica/ui/components/ui/host-storage";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import { OpenQuestionsSection } from "./open-questions-section";
@@ -662,6 +663,7 @@ function ActivityBlock({
   truncateOlder,
   showOlder,
   onToggleShowOlder,
+  newestFirst,
   getActorName,
   resolveStatusLabel,
   resolveStatusCategory,
@@ -680,6 +682,10 @@ function ActivityBlock({
   truncateOlder: boolean;
   showOlder: boolean;
   onToggleShowOlder: () => void;
+  // Page-level reading order. When newest-first, the block's entries render
+  // newest-first and the "Show N more" affordance moves to the block's
+  // trailing end (the older side), mirroring the top-level reversal.
+  newestFirst: boolean;
   getActorName: (type: string, id: string) => string;
   resolveStatusLabel: (statusKey: string) => string;
   resolveStatusCategory: (statusKey: string) => IssueStatusCategory;
@@ -712,6 +718,10 @@ function ActivityBlock({
       : 0;
   const visibleEntries =
     hiddenOlderCount > 0 ? entries.slice(-LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT) : entries;
+  // In newest-first mode the block reads newest-first like the rest of the
+  // page; the entries themselves are stored oldest-first, so reverse the
+  // rendered slice (the slice still keeps the most recent N).
+  const orderedVisibleEntries = newestFirst ? [...visibleEntries].reverse() : visibleEntries;
   // Hide the "v N activities" collapse header while we're in the truncated
   // default state. The "Show N more" link is the only control users need
   // when they're glancing at recent activity — stacking two chevron rows
@@ -731,7 +741,7 @@ function ActivityBlock({
           <span>{t(($) => $.activity.activity_count, { count: entries.length })}</span>
         </button>
       )}
-      {hiddenOlderCount > 0 && (
+      {hiddenOlderCount > 0 && !newestFirst && (
         <button
           type="button"
           onClick={onToggleShowOlder}
@@ -741,7 +751,7 @@ function ActivityBlock({
           <span>{t(($) => $.activity.show_more_activities, { count: hiddenOlderCount })}</span>
         </button>
       )}
-      {visibleEntries.map((entry) => {
+      {orderedVisibleEntries.map((entry) => {
         const details = (entry.details ?? {}) as Record<string, string>;
         // Duplicate rows replace the status rows of the same write, so they
         // carry the status glyph those rows would have had.
@@ -831,6 +841,16 @@ function ActivityBlock({
           </div>
         );
       })}
+      {hiddenOlderCount > 0 && newestFirst && (
+        <button
+          type="button"
+          onClick={onToggleShowOlder}
+          className="flex items-center gap-1.5 text-label text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRight className="h-3 w-3 shrink-0" />
+          <span>{t(($) => $.activity.show_more_activities, { count: hiddenOlderCount })}</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -1428,6 +1448,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { uploadWithToast } = useEditorUpload();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: layoutId,
+    // A host on a shared origin (the dsh island) keeps the layout in its own
+    // namespaced store; `undefined` keeps the library's `localStorage` default.
+    storage: useHostStorage(),
   });
   const sidebarRef = usePanelRef();
   const isMobile = useIsMobile();
@@ -1845,6 +1868,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     () => timelineNewestFirst ? [...chronologicalItems].reverse() : chronologicalItems,
     [chronologicalItems, timelineNewestFirst],
   );
+  // Toggling the reading order re-anchors the viewport on the latest entry:
+  // newest-first puts it at the top, oldest-first at the bottom. Without
+  // this, a stored offset from the other geometry restores mid-list and the
+  // toggle looks like it lost the user's place. Mount-skipped: the initial
+  // value only feeds Virtuoso's initialScrollTop / the flat restore path.
+  const prevNewestFirstRef = useRef(timelineNewestFirst);
+  useEffect(() => {
+    if (prevNewestFirstRef.current === timelineNewestFirst) return;
+    prevNewestFirstRef.current = timelineNewestFirst;
+    const el = scrollContainerEl;
+    // jsdom has no Element.scrollTo; the toggle path is a no-op there.
+    if (!el || typeof el.scrollTo !== "function") return;
+    el.scrollTo({ top: timelineNewestFirst ? 0 : el.scrollHeight, behavior: "auto" });
+  }, [timelineNewestFirst, scrollContainerEl]);
 
   // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
   // triggers a match recompute when comments are added/removed; text edits
@@ -1922,6 +1959,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       items.flatMap((it) => {
         if (it.kind === "activity-group" || !it.entry) return [];
         const replies = timelineView.threadReplies.get(it.id) ?? EMPTY_REPLIES;
+        const liveReplies = replies.filter((reply) => !isDeletedComment(reply));
         const resolution = deriveThreadResolution(it.entry, replies);
         return [
           {
@@ -1929,13 +1967,15 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             entry: it.entry,
             resolved: resolution.kind !== "none",
             participants: collectThreadParticipants(it.entry, replies),
-            // Tombstones render no row, so they get no tick either.
-            replies: replies.filter((reply) => !isDeletedComment(reply)),
+            // Tombstones render no row, so they get no tick either. Replies
+            // follow the page order: newest-first reverses them so the rail's
+            // top-to-bottom order equals the page order.
+            replies: timelineNewestFirst ? [...liveReplies].reverse() : liveReplies,
             resolutionReplyId: resolution.kind === "reply" ? resolution.resolutionId : null,
           },
         ];
       }),
-    [items, timelineView.threadReplies],
+    [items, timelineView.threadReplies, timelineNewestFirst],
   );
 
   // When the timeline renders flat (deep-link or in-page find), there is no
@@ -2969,6 +3009,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
+            newestFirst={timelineNewestFirst}
           />
         </div>
       );
@@ -2989,6 +3030,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         truncateOlder={truncateOlder}
         showOlder={showOlder}
         onToggleShowOlder={() => showOlderActivities(item.id)}
+        newestFirst={timelineNewestFirst}
         getActorName={getActorName}
         resolveStatusLabel={resolveStatusLabel}
         resolveStatusCategory={resolveStatusCategory}

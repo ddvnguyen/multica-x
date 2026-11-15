@@ -162,6 +162,13 @@ interface CommentCardProps {
   onResolvedExpandChange?: (rootId: string, expand: boolean) => void;
   /** ID of the comment to highlight (flash animation). */
   highlightedCommentId?: string | null;
+  /**
+   * Page-level reading order. When true, the thread's replies and run slots
+   * render newest-first under the root (which stays first), and the folded-
+   * replies bar moves to the thread's trailing end — mirroring the top-level
+   * reversal so the rail and the page read in the same order.
+   */
+  newestFirst?: boolean;
 }
 
 // Shared delete confirmation dialog
@@ -1038,6 +1045,7 @@ function CommentCardImpl({
   expandedResolvedIds,
   onResolvedExpandChange,
   highlightedCommentId,
+  newestFirst = false,
 }: CommentCardProps) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -1174,6 +1182,11 @@ function CommentCardImpl({
     ? orderThreadWithRuns(entry, resolutionReply ? [resolutionReply] : [], runs.filter((run) => !run.hasReply
       && (run.anchorCommentId === entry.id || run.anchorCommentId === replyResolutionId)))
     : orderThreadWithRuns(entry, allNestedReplies, runs);
+  // Newest-first threads read newest-first under the root, matching the
+  // page and the rail. The reversal is presentation-only: run slots keep
+  // their adjacency to the reply they answer, and every id-based jump
+  // still resolves through the same anchors.
+  const orderedThreadRows = newestFirst ? [...threadRows].reverse() : threadRows;
 
   // Pin the root comment's header to the timeline's scroll parent while the
   // thread is open, so a LONG root comment keeps its author + actions visible
@@ -1507,8 +1520,10 @@ function CommentCardImpl({
           <>
           {replyFolded ? (
             <>
-              {/* reply-mode folded: other replies behind a bar, resolution pinned below */}
-              {foldedReplies.length > 0 && (
+              {/* reply-mode folded: other replies behind a bar, resolution pinned below.
+                  Newest-first parks the bar at the trailing (older) end, as in
+                  the activity blocks. */}
+              {!newestFirst && foldedReplies.length > 0 && (
                 <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
                   <CommentsFoldBar
                     replies={foldedReplies}
@@ -1516,7 +1531,15 @@ function CommentCardImpl({
                   />
                 </div>
               )}
-              {threadRows.map(renderThreadRow)}
+              {orderedThreadRows.map(renderThreadRow)}
+              {newestFirst && foldedReplies.length > 0 && (
+                <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
+                  <CommentsFoldBar
+                    replies={foldedReplies}
+                    onExpand={() => onResolvedExpandChange?.(entry.id, true)}
+                  />
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -1533,8 +1556,9 @@ function CommentCardImpl({
                   {t(($) => $.comment.resolve.collapse)}
                 </button>
               )}
-              {/* Replies — chronological; the resolution keeps its place with a badge */}
-              {threadRows.map(renderThreadRow)}
+              {/* Replies — chronological; the resolution keeps its place with a badge.
+                  Newest-first reverses them under the root, matching the rail. */}
+              {orderedThreadRows.map(renderThreadRow)}
 
               {/* Reply input */}
               <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">

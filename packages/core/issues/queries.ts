@@ -600,6 +600,22 @@ export function planSectionHistoryOptions(
 }
 
 /**
+ * One older plan revision (M-348), read-only.
+ *
+ * Keyed on the revision: picking another revision is a key change, so each
+ * viewed revision fetches once and caches under its own key. Disabled for
+ * non-positive revisions — the panel only calls it with a picked older
+ * revision, never for the current one.
+ */
+export function planRevisionOptions(wsId: string, planId: string, revision: number) {
+  return queryOptions({
+    queryKey: [...issueKeys.planHistory(wsId, planId, "__revision__"), revision] as const,
+    queryFn: () => api.getPlanRevision(wsId, planId, revision),
+    enabled: !!wsId && !!planId && revision > 0,
+  });
+}
+
+/**
  * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
  *
  * Backs the Linear-style autolink. This is an EXACT lookup, so it goes to

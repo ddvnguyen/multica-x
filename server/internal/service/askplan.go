@@ -456,6 +456,15 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 // prior_session_id from that named source — the only path that can see a
 // blocked row's session) and the evidence kind naming the card/plan. Runs in
 // the caller's transaction via the tx-scoped service.
+//
+// M-327: the resume inherits the parked task's trigger_comment_id. Without it,
+// every resume task was written with trigger_comment_id NULL, so the claim had
+// no trigger thread to resolve (daemon.go fills TriggerThreadID from that
+// comment, walking to its thread root) and the resumed run posted its reply as
+// a NEW top-level comment instead of into the thread that asked the question
+// (M-285 quirk, reproduced on opencode2 in M-318). A parked task with no
+// trigger comment — an assignment-triggered run — stays NULL, which is right:
+// there was no thread to answer in.
 func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Issue, parked db.AgentTaskQueue, evidenceKind string, evidenceRefID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, parked.AgentID)
 	if err != nil {
@@ -487,6 +496,7 @@ func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Iss
 		AccountableUserID:    attr.AccountableUserID,
 		RuleVersionID:        attr.RuleVersionID,
 		RerunOfTaskID:        parked.ID,
+		TriggerCommentID:     parked.TriggerCommentID,
 		RuntimeMcpOverlay:    overlay.Overlay,
 		RuntimeConnectedApps: overlay.ConnectedApps,
 		OriginatorSource:     attrSource,

@@ -3894,6 +3894,134 @@ describe("IssueDetail (shared)", () => {
     expect(useTimelineDisplayStore.getState().order).toBe("oldest-first");
   });
 
+  // M-290 rail follow-up: toggling the order re-anchors the viewport on the
+  // latest entry instead of restoring a stale offset from the other geometry.
+  it("re-anchors the viewport on the latest entry when the order toggles", async () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      writable: true,
+      value: scrollTo,
+    });
+    try {
+      renderIssueDetail();
+      await screen.findByText("Started working on this");
+
+      fireEvent.click(screen.getByTitle("Toggle timeline order"));
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+
+      scrollTo.mockClear();
+      fireEvent.click(screen.getByTitle("Toggle timeline order"));
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+      expect(scrollTo.mock.calls[0]?.[0]).toMatchObject({ behavior: "auto" });
+    } finally {
+      // jsdom ships no scrollTo; restore the hole so other tests keep the guard path.
+      delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+    }
+  });
+
+  // M-290 rail follow-up: replies read newest-first under their root in
+  // newest-first mode, so the page and the rail agree top-to-bottom.
+  it("renders thread replies newest-first under the root when the preference is newest-first", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    const root = { ...mockTimeline[0]!, id: "thread-root", parent_id: null, content: "Root" };
+    const replyOld = { ...mockTimeline[1]!, id: "reply-old", parent_id: root.id, content: "Older reply",
+      created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
+    const replyNew = { ...mockTimeline[1]!, id: "reply-new", parent_id: root.id, content: "Newer reply",
+      created_at: "2026-01-17T00:02:00Z", updated_at: "2026-01-17T00:02:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([root, replyOld, replyNew]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Newer reply");
+
+    const rendered = Array.from(container.querySelectorAll("[id^='comment-']")).map((el) => el.id)
+      .filter((id) => ["comment-thread-root", "comment-reply-old", "comment-reply-new"].includes(id));
+    expect(rendered).toEqual(["comment-thread-root", "comment-reply-new", "comment-reply-old"]);
+  });
+
+  // M-290 rail follow-up: the folded-replies bar parks at the thread's
+  // trailing end in newest-first mode, mirroring the activity blocks.
+  it("places the folded-replies bar after the resolution in newest-first mode", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    const root = { ...mockTimeline[0]!, id: "fold-root", parent_id: null, content: "Root" };
+    const older = { ...mockTimeline[1]!, id: "fold-older", parent_id: root.id, content: "Older reply",
+      created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
+    const resolution = { ...mockTimeline[1]!, id: "fold-resolution", parent_id: root.id, content: "Resolution reply",
+      created_at: "2026-01-17T00:02:00Z", updated_at: "2026-01-17T00:02:00Z", resolved_at: "2026-01-17T00:03:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([root, older, resolution]);
+    const { container } = renderIssueDetail();
+    await screen.findByText(/comment from/);
+
+    const html = container.innerHTML;
+    expect(html.indexOf("comment-fold-resolution")).toBeGreaterThan(-1);
+    expect(html.indexOf("comment-fold-resolution")).toBeLessThan(html.indexOf("comment from"));
+  });
+
+  // M-290 follow-up: the newest-first reversal used to stop at the group
+  // boundary, so entries inside an activity-group block still read
+  // oldest-first while the page around them read newest-first.
+  it("renders activity-group entries newest-first inside the block when the preference is newest-first", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        type: "activity", id: "act-old", actor_type: "member", actor_id: "user-1",
+        action: "title_changed", details: { from: "Old title", to: "Older title" },
+        created_at: "2026-01-17T00:00:00Z", updated_at: "2026-01-17T00:00:00Z",
+      },
+      {
+        type: "activity", id: "act-new", actor_type: "member", actor_id: "user-1",
+        action: "description_updated", details: {},
+        created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z",
+      },
+    ]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("updated the description");
+
+    const html = container.innerHTML;
+    expect(html.indexOf("updated the description")).toBeLessThan(html.indexOf("Older title"));
+  });
+
+  // M-290 follow-up: the "Show N more" affordance folds the older end of the
+  // trailing block, so in newest-first mode it belongs at the block's
+  // trailing (older) end, not ahead of the newest entries.
+  it.each([
+    { order: "oldest-first" as const, linkBeforeEntries: true },
+    { order: "newest-first" as const, linkBeforeEntries: false },
+  ])("places the show-more link on the older end of the block ($order)", async ({ order, linkBeforeEntries }) => {
+    useTimelineDisplayStore.setState({ order });
+    mockApiObj.listTimeline.mockResolvedValue(
+      Array.from({ length: 10 }, (_, i) => (
+        i % 2 === 0
+          ? {
+            type: "activity", id: `act-${i}`, actor_type: "member", actor_id: "user-1",
+            action: "title_changed", details: { from: `T${i}`, to: `U${i}` },
+            created_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+            updated_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+          }
+          : {
+            type: "activity", id: `act-${i}`, actor_type: "member", actor_id: "user-1",
+            action: "description_updated", details: {},
+            created_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+            updated_at: `2026-01-17T00:${String(i).padStart(2, "0")}:00Z`,
+          }
+      )),
+    );
+    const { container } = renderIssueDetail();
+    // 10 entries, limit 8 → the 2 oldest fold behind the link.
+    await screen.findByText("Show 2 more activities");
+
+    const html = container.innerHTML;
+    const linkPos = html.indexOf("Show 2 more activities");
+    // Newest-first renders entries 9..2, so the last rendered entry is U2;
+    // oldest-first renders 2..9, so the first rendered entry is U2.
+    const edgePos = html.indexOf("U2");
+    expect(edgePos).toBeGreaterThan(-1);
+    if (linkBeforeEntries) {
+      expect(linkPos).toBeLessThan(edgePos);
+    } else {
+      expect(linkPos).toBeGreaterThan(edgePos);
+    }
+  });
+
 });
 
 describe("groupSubIssuesByStage", () => {

@@ -50,7 +50,9 @@
     "send": "Répondre",
     "sending": "Envoi…",
     "sent": "Réponse envoyée",
-    "failed": "Impossible d'envoyer votre réponse. Réessayez."
+    "failed": "Impossible d'envoyer votre réponse. Réessayez.",
+    "multiline_hint": "Entrée pour une nouvelle ligne. ⌘/Ctrl+Entrée envoie.",
+    "submit_shortcut": "⌘/Ctrl+Entrée envoie"
   },
   "ask_plan": {
     "plan_draft": "L'agent prépare ce plan — il n'y a encore rien à relire.",
@@ -107,7 +109,15 @@
     "hide_resolved": "Masquer les résolus",
     "pending_hint": "{{n}} commentaire(s) de passage seront envoyés à l'agent avec votre verdict.",
     "stale_notice": "Le plan a changé depuis son ouverture. La révision actuelle est affichée ci-dessus ; réessayez.",
-    "unknown_author": "Un membre"
+    "unknown_author": "Un membre",
+    "revision_switcher": "Afficher une autre révision",
+    "revision_viewing": "Révision {{revision}} sur {{current}} affichée — lecture seule.",
+    "revision_back": "Retour à l'actuelle",
+    "revision_unavailable": "{{heading}} à la révision {{revision}} est antérieur à l'historique enregistré.",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "Commenter",
+    "comments_show": "Afficher les commentaires ({{n}})",
+    "comments_hide": "Masquer les commentaires"
   },
   "working_filter_error": {
     "title": "Impossible de charger les tâches en cours de traitement par les agents"

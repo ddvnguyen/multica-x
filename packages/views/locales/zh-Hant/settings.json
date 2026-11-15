@@ -191,6 +191,12 @@
       "after_run": "本輪結束後開始",
       "hint": "只決定預設選項，每條訊息傳送前仍可單獨修改。"
     },
+    "timeline_order": {
+      "title": "時間線順序",
+      "hint": "按最新在前或最早在前顯示任務動態。",
+      "oldest_first": "最早在前",
+      "newest_first": "最新在前"
+    },
     "comments_title": "評論與聊天",
     "region_title": "語言與地區",
     "appearance_title": "外觀",

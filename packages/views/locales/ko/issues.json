@@ -49,7 +49,9 @@
     "send": "답변",
     "sending": "전송 중…",
     "sent": "답변을 보냈습니다",
-    "failed": "답변을 보내지 못했습니다. 다시 시도하세요."
+    "failed": "답변을 보내지 못했습니다. 다시 시도하세요.",
+    "multiline_hint": "줄 바꿈은 Enter. ⌘/Ctrl+Enter로 전송.",
+    "submit_shortcut": "⌘/Ctrl+Enter로 전송"
   },
   "ask_plan": {
     "plan_draft": "에이전트가 이 계획을 준비 중입니다. 아직 검토할 내용이 없습니다.",
@@ -106,7 +108,15 @@
     "hide_resolved": "해결된 항목 숨기기",
     "pending_hint": "발추 댓글 {{n}}개가 판정과 함께 에이전트에 전송됩니다.",
     "stale_notice": "열어 둔 사이에 계획이 변경되었습니다. 위에 현재 리변을 표시합니다. 다시 시도해 주세요.",
-    "unknown_author": "멤버"
+    "unknown_author": "멤버",
+    "revision_switcher": "다른 리비전 표시",
+    "revision_viewing": "{{current}} 중 리비전 {{revision}} 보기 — 읽기 전용.",
+    "revision_back": "현재로 돌아가기",
+    "revision_unavailable": "리비전 {{revision}} 시점의 {{heading}}은(는) 기록된 히스토리보다 이전입니다.",
+    "comment_revision": "R{{revision}}",
+    "comment_on_selection": "댓글",
+    "comments_show": "댓글 표시 ({{n}})",
+    "comments_hide": "댓글 숨기기"
   },
   "working_filter_error": {
     "title": "에이전트가 작업 중인 태스크를 불러오지 못했습니다"

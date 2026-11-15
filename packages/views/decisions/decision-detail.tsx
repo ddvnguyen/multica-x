@@ -303,12 +303,15 @@ function SourceBody({
       // the issue page. The sequence comes with the ask, so the answer is fenced
       // to the question it was written for (M-210) — a stale tab here cannot
       // steer a second answer into a turn that already moved on.
+      // Same draftKey as the thread's mount (`ask:${taskId}:${seq}`): the two
+      // stay in step, and answering from either clears both.
       return (
         <AgentQuestionCard
           issueId={decision.issue_id}
           taskId={parsed.taskId}
           questionSeq={parsed.seq}
           questions={parsed.questions}
+          draftKey={`ask:${parsed.taskId}:${parsed.seq}`}
           onSent={onChanged}
         />
       );
@@ -410,6 +413,7 @@ function QuestionForm({
         issueId={issueId}
         taskId={cardId}
         questions={questions}
+        draftKey={`ask:${cardId}`}
         submit={async (drafts: readonly AgentAnswerDraft[]) => {
           await answer.mutateAsync({ cardId, answers: draftsToCardAnswers(drafts) });
         }}

@@ -43,6 +43,10 @@ export { PageChromeProvider } from "@multica/views/layout";
 // shell's own origin.
 export { SidebarProvider } from "@multica/ui/components/ui/sidebar";
 export type { WidthStorage } from "@multica/ui/components/ui/sidebar";
+// M-360: the same store backs the other width owners the pages render — the
+// `react-resizable-panels` split layouts and rich-table column widths — so no
+// bare key reaches the origin the shell shares.
+export { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";
@@ -176,7 +180,11 @@ export { PortalContainerProvider } from "@multica/ui/components/ui/portal-contai
 // so the island's Settings can manage what the workspace actually runs on
 // instead of only what it stores. The desktop's own wrapper adds daemon state
 // its shell owns; a dsh panel has no local daemon, so the props stay unset.
-export { RuntimesPage } from "@multica/views/runtimes";
+export {
+  RuntimesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
+} from "@multica/views/runtimes";
 
 // The stamped build identity (M-155): one string for one build, injected by
 // this package's vite config, so the island's badge, the Settings row and the

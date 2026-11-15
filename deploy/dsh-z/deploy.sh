@@ -29,6 +29,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_HOME="$HOME"
 # shellcheck source=dsh-z.env
 source "$SCRIPT_DIR/dsh-z.env"
+# Persistent switch override (M-335): if present, repoint lane z at multica_mmx.
+if [ -f "$LANE_ROOT/data/mmx-switch.env" ]; then
+  # shellcheck source=/dev/null
+  source "$LANE_ROOT/data/mmx-switch.env"
+fi
 
 log()  { printf '[lane-z] %s\n' "$*"; }
 die()  { printf '[lane-z] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -196,6 +201,7 @@ umask 077
   echo "DATABASE_URL=$MULTICA_Z_DATABASE_URL"
   echo "JWT_SECRET=$MULTICA_Z_JWT_SECRET"
   echo "MULTICA_PUBLIC_URL=$MULTICA_BE_Z_PUBLIC_URL"
+  echo "LOCAL_UPLOAD_DIR=${MULTICA_Z_UPLOADS_DIR:-/mnt/containers/volumes/multica_backend_uploads/_data}"
   # Lane auth bootstrap: fixed dev verification code; never set in production.
   echo "MULTICA_DEV_VERIFICATION_CODE=$MULTICA_Z_DEV_CODE"
 } > "$LANE_ROOT/multica-be/env"

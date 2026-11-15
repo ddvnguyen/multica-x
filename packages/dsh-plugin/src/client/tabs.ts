@@ -277,6 +277,8 @@ export function familyOfRoute(route: IslandRoute): string {
     case "chat":
       return "chat";
     case "settings":
+    case "runtime":
+    case "runtime-settings":
       return "settings";
   }
 }

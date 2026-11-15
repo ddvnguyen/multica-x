@@ -51,6 +51,8 @@ import {
   InboxPage,
   IssueDetailRoute,
   IssuesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
   mmxBuild,
   ModalRegistry,
   SearchCommand,
@@ -58,6 +60,7 @@ import {
   NavigationProvider,
   PortalContainerProvider,
   ScrollRestorationProvider,
+  HostStorageProvider,
   SidebarProvider,
   projectListOptions,
   RESOURCES,
@@ -354,7 +357,10 @@ function IslandPage({
   extraAgentSections,
 }: {
   /** Settings is mounted by `IslandPages`; it needs props this switch lacks. */
-  route: Exclude<IslandRoute, { view: "settings" }>;
+  route: Exclude<
+    IslandRoute,
+    { view: "settings" } | { view: "runtime" } | { view: "runtime-settings" }
+  >;
   projectId: string | null;
   extraAgentSections?: ReturnType<typeof createAgentMemorySections>;
 }) {
@@ -382,6 +388,11 @@ function IslandPage({
       return <DecisionsPage projectId={projectId} />;
     case "chat":
       return <ChatPage />;
+    default:
+      // `settings`, `runtime` and `runtime-settings` are mounted by
+      // `IslandPages`, beside this switch: Settings needs the MOCT group and
+      // hidden-page list this switch lacks.
+      return null;
   }
 }
 
@@ -527,6 +538,11 @@ export function IslandPages({
 
   return (
     <ViewStoreProvider store={viewStore}>
+      {/* Every page's width owner reads through one store: the sidebar widths
+          (M-330), the resizable split layouts and the rich-table columns
+          (M-360). `storage` is the island's namespaced adapter, so none of
+          them touch the bare keys the shell's origin already holds. */}
+      <HostStorageProvider storage={storage}>
       <NavigationProvider value={navigation}>
         <PageChromeProvider titleInHostChrome projectId={projectId}>
           <DecisionsBadgeReporter workspaceId={workspaceId} projectId={projectId} />
@@ -597,7 +613,18 @@ export function IslandPages({
                 className="contents"
                 data-island-page-root=""
               >
-              {route.view === "settings" ? (
+              {route.view === "runtime" ? (
+                // M-349: a runtime row pushes `/<slug>/runtimes/<machine>`; the
+                // island renders the fork's own detail page instead of
+                // refusing the path. The Settings rail row stays selected: the
+                // family of this route is settings.
+                <RuntimeDetailPage runtimeId={route.machineId} />
+              ) : route.view === "runtime-settings" ? (
+                <RuntimeSettingsPage
+                  machineId={route.machineId}
+                  runtimeId={route.runtimeId}
+                />
+              ) : route.view === "settings" ? (
                 // The fork's page, scoped to what this shell can actually render:
                 // no billing, integrations, plugins or shortcut reference, plus the
                 // one group that only exists here.
@@ -646,6 +673,7 @@ export function IslandPages({
           <IslandVersionBadge />
         </PageChromeProvider>
       </NavigationProvider>
+      </HostStorageProvider>
     </ViewStoreProvider>
   );
 }

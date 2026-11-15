@@ -102,6 +102,7 @@ vi.mock("@multica/core/auth", async () => {
 
 import { PreferencesTab } from "./preferences-tab";
 import { useCommentComposerStore } from "@multica/core/issues/stores";
+import { useTimelineDisplayStore } from "@multica/core/issues/stores/timeline-display-store";
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
 import {
   DEFAULT_MANUAL_CREATE_FIELDS,
@@ -319,6 +320,7 @@ describe("PreferencesTab — Comments & chat", () => {
     vi.clearAllMocks();
     userRef.current = null;
     useCommentComposerStore.setState({ runningAgentReply: "steer", sticky: true });
+    useTimelineDisplayStore.setState({ order: "oldest-first" });
     chatState.floatingChatEnabled = true;
   });
 
@@ -352,6 +354,22 @@ describe("PreferencesTab — Comments & chat", () => {
 
     await user.click(screen.getByRole("switch", { name: enSettings.chat.floating_label }));
     expect(chatState.setFloatingChatEnabled).toHaveBeenCalledWith(false);
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("switches the timeline order, sharing state with the Activity header toggle", async () => {
+    const user = userEvent.setup();
+    useTimelineDisplayStore.setState({ order: "oldest-first" });
+    render(<PreferencesTab />, { wrapper: I18nWrapper });
+
+    const select = screen.getByRole("combobox", { name: "Timeline order" });
+    expect(select).toHaveTextContent("Oldest first");
+
+    await user.click(select);
+    await user.click(await screen.findByRole("option", { name: "Newest first" }));
+
+    expect(useTimelineDisplayStore.getState().order).toBe("newest-first");
+    expect(select).toHaveTextContent("Newest first");
     expect(mockToastSuccess).not.toHaveBeenCalled();
   });
 });

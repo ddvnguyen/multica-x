@@ -1,8 +1,9 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@multica/core/api";
 import type { IssueAskPlan } from "@multica/core/issues/ask-plan";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import { renderWithI18n } from "../../test/i18n";
 import { AskPlanPanel, ThreadAskCards } from "./ask-plan-panel";
 
@@ -23,7 +24,6 @@ vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("../../editor", () => ({
   ReadonlyContent: ({ content }: { content: string }) => <div data-testid="section">{content}</div>,
 }));
-
 const EMPTY: IssueAskPlan = { question_cards: [], plan: null };
 
 const CARD_STATE: IssueAskPlan = {
@@ -78,8 +78,13 @@ function renderPanel() {
   );
 }
 
+beforeEach(() => {
+  useAskDraftStore.setState({ drafts: {} });
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  useAskDraftStore.setState({ drafts: {} });
 });
 
 describe("AskPlanPanel", () => {
@@ -178,6 +183,39 @@ describe("AskPlanPanel", () => {
         note: "",
       }),
     );
+  });
+
+  it("keeps a staged plan comment across reload and clears it on verdict", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(PLAN_STATE);
+    vi.mocked(api.reviewPlan).mockResolvedValue({
+      plan: PLAN_STATE.plan,
+      resume_task: "task-8",
+    } as never);
+
+    const view = renderPanel();
+    await screen.findByText("Split the cutover");
+
+    // The plan comment box is the multi-line field now, with its own count.
+    const box = screen.getByRole("textbox", { name: "What should change?" });
+    expect(box.tagName).toBe("TEXTAREA");
+    fireEvent.change(box, { target: { value: "Ship z first.\nThen web." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    // whitespace-pre-wrap keeps the newline: match the full two-line text
+    // (both the span and its li match, so take all).
+    expect(screen.getAllByText((_content, element) => element?.textContent === "Ship z first.\nThen web.").length).toBeGreaterThan(0);
+    expect(useAskDraftStore.getState().getDraft("plan:plan-4")).toMatchObject({
+      planComments: ["Ship z first.\nThen web."],
+    });
+
+    // Reload the panel: the staged comment is still there.
+    view.unmount();
+    renderPanel();
+    await screen.findByText("Split the cutover");
+    expect((await screen.findAllByText((_content, element) => element?.textContent === "Ship z first.\nThen web.")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(api.reviewPlan).toHaveBeenCalled());
+    expect(useAskDraftStore.getState().getDraft("plan:plan-4")).toBeUndefined();
   });
 
   it("takes two presses to cancel a plan", async () => {

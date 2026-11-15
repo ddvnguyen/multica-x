@@ -159,6 +159,58 @@ func TestAnswerQuestionCardEnqueuesResumeTask(t *testing.T) {
 	).Want(http.StatusConflict)
 }
 
+// answerWithAsk parks f's running task behind an ask card (option 0) and
+// returns the resume task the answer enqueued.
+func answerWithAsk(t *testing.T, f askPlanFixture) string {
+	t.Helper()
+	var ask askResponse
+	testutil.Call(t, testHandler.SubmitAsk,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/ask", validAskBody()),
+	).Want(http.StatusAccepted).JSON(&ask)
+	var answerResp map[string]any
+	testutil.Call(t, testHandler.AnswerQuestionCard,
+		withURLParams(newRequest(http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/question-cards/"+ask.CardID+"/answer",
+			map[string]any{"answers": []map[string]any{{"selected": []int{0}}}}),
+			"id", testWorkspaceID, "cardId", ask.CardID),
+	).Want(http.StatusOK).JSON(&answerResp)
+	resumeID, _ := answerResp["resume_task"].(string)
+	if resumeID == "" {
+		t.Fatalf("no resume task in answer response: %#v", answerResp)
+	}
+	return resumeID
+}
+
+// M-327 (the M-285 quirk): the resumed run must answer in the thread that
+// asked the question. The claim handler derives trigger_thread_id — and the
+// reply target — from the task's trigger_comment_id (daemon.go), so a resume
+// task written without one leaves the daemon with no thread to answer in and
+// the reply lands as a new top-level comment. The parked task's trigger must
+// be carried onto the resume.
+func TestAskResumeTaskInheritsTriggerComment(t *testing.T) {
+	t.Run("comment-triggered park carries the trigger", func(t *testing.T) {
+		f := newAskPlanFixture(t)
+		triggerID := dbfx.Comment(t, f.issueID, "please decide the release day")
+		dbfx.Exec(t, `UPDATE agent_task_queue SET trigger_comment_id=$2 WHERE id=$1`, f.taskID, triggerID)
+
+		resumeID := answerWithAsk(t, f)
+		var inherited string
+		dbfx.QueryRow(t, `SELECT coalesce(trigger_comment_id::text, '') FROM agent_task_queue WHERE id=$1`, resumeID).Scan(&inherited)
+		if inherited != triggerID {
+			t.Fatalf("resume task trigger_comment_id = %q, want the parked task's %q", inherited, triggerID)
+		}
+	})
+
+	t.Run("assignment-triggered park stays null", func(t *testing.T) {
+		f := newAskPlanFixture(t)
+		resumeID := answerWithAsk(t, f)
+		var inherited string
+		dbfx.QueryRow(t, `SELECT coalesce(trigger_comment_id::text, '') FROM agent_task_queue WHERE id=$1`, resumeID).Scan(&inherited)
+		if inherited != "" {
+			t.Fatalf("resume task trigger_comment_id = %q, want empty: the parked run had no trigger comment", inherited)
+		}
+	})
+}
+
 // taskTokenRequestWithoutPathTask builds the request the router actually
 // produces for the plan routes that carry no taskId segment
 // (PUT /plans/{planId}/sections, POST /plans/{planId}/submit): the token's own

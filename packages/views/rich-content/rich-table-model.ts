@@ -141,12 +141,27 @@ export function tableToCsv(header: string[], rows: string[][]): string {
 const WIDTHS_STORAGE_KEY = "multica:rich-table-widths";
 const MAX_STORED_TABLES = 200;
 
+/**
+ * Where a committed width set is kept.
+ *
+ * The web app and the desktop write `localStorage` directly, which is correct
+ * there: it is their own origin. A host that shares its origin with another app
+ * must not: the dsh island lives beside the shell's own storage, so the host
+ * passes its namespaced adapter through `RichTableFrame` instead of letting the
+ * key land bare where the shell reads (M-360). Omitted means `localStorage`.
+ */
+export interface TableWidthStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
 interface StoredWidths {
   widths: number[];
   usedAt: number;
 }
 
-function getStorage(): Storage | null {
+function getStorage(host?: TableWidthStorage | null): TableWidthStorage | null {
+  if (host !== undefined) return host;
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage;
@@ -155,7 +170,7 @@ function getStorage(): Storage | null {
   }
 }
 
-function readStore(storage: Storage): Record<string, StoredWidths> {
+function readStore(storage: Pick<TableWidthStorage, "getItem">): Record<string, StoredWidths> {
   try {
     const parsed: unknown = JSON.parse(storage.getItem(WIDTHS_STORAGE_KEY) ?? "{}");
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -190,15 +205,23 @@ export function columnWidthKey(model: Pick<RichTableModel, "headerText" | "rowTe
   return `${model.headerText.length}:${text.length}:${hash(text)}`;
 }
 
-export function readColumnWidths(key: string, columnCount: number): number[] | null {
-  const storage = getStorage();
+export function readColumnWidths(
+  key: string,
+  columnCount: number,
+  host?: TableWidthStorage | null,
+): number[] | null {
+  const storage = getStorage(host);
   if (!storage || columnCount === 0) return null;
   const widths = readStore(storage)[key]?.widths;
   return isWidthList(widths, columnCount) ? widths : null;
 }
 
-export function writeColumnWidths(key: string, widths: number[] | null): void {
-  const storage = getStorage();
+export function writeColumnWidths(
+  key: string,
+  widths: number[] | null,
+  host?: TableWidthStorage | null,
+): void {
+  const storage = getStorage(host);
   if (!storage) return;
   const store = readStore(storage);
   if (widths) store[key] = { widths, usedAt: Date.now() };
