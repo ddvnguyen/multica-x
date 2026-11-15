@@ -245,9 +245,20 @@ export const issueKeys = {
   questions: (issueId: string) =>
     [...issueKeys.questionsAll(), issueId] as const,
   subtreeTasks: (issueId: string) => [...issueKeys.tasks(issueId), "subtree"] as const,
+  taskMemoryReport: (issueId: string, taskId: string) =>
+    [...issueKeys.tasks(issueId), taskId, "memory-report"] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
+
+export function taskMemoryReportOptions(issueId: string, taskId: string) {
+  return queryOptions({
+    queryKey: issueKeys.taskMemoryReport(issueId, taskId),
+    queryFn: () => api.getIssueTaskMemoryReport(issueId, taskId),
+    enabled: !!issueId && !!taskId,
+    staleTime: 60_000,
+  });
+}
 
 export function sourceContextPreviewOptions(
   wsId: string,

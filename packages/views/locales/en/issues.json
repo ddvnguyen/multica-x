@@ -866,6 +866,11 @@
     "cancel_failed": "Failed to cancel run"
   },
   "execution_log": {
+    "memory_report": "Injected memory",
+    "memory_loading": "Loading memory report...",
+    "memory_load_failed": "Could not load the memory report.",
+    "memory_retry": "Retry",
+    "memory_empty": "No memory was injected.",
     "latest": "Latest",
     "include_children": "Include sub-issues",
     "loading": "Loading runs...",

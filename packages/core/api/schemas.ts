@@ -2561,6 +2561,21 @@ export const TaskContextReceiptResponseSchema = z.object({
   recorded_at: z.string().optional(),
 }).loose();
 
+export const TaskMemoryReportSchema = z.object({
+  task_id: z.string().catch(""),
+  workspace_id: z.string().catch(""),
+  memory: z.object({
+    part: z.literal("memory"),
+    note: z.string().optional(),
+    entries: z.array(z.object({
+      id: z.string().catch(""),
+      type: z.string().catch(""),
+      title: z.string().catch(""),
+      body: z.string().catch(""),
+    }).loose()).catch([]),
+  }).loose().nullable().catch(null),
+}).loose();
+
 // Task cancellation (`POST /api/tasks/:id/cancel`) is consumed directly by
 // chat recovery. Its optional message payload must be well-formed before the
 // UI deletes a message from cache or restores text into the input.

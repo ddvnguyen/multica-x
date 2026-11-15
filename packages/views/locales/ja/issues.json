@@ -976,7 +976,12 @@
     "include_children": "サブタスクを含める",
     "loading": "実行履歴を読み込み中...",
     "load_failed_retry": "実行履歴を読み込めませんでした。再試行",
-    "empty": "この範囲には実行履歴がありません。"
+    "empty": "この範囲には実行履歴がありません。",
+    "memory_report": "注入されたメモリ",
+    "memory_loading": "メモリレポートを読み込み中...",
+    "memory_load_failed": "メモリレポートを読み込めませんでした。",
+    "memory_retry": "再試行",
+    "memory_empty": "メモリは注入されませんでした。"
   },
   "runs_timeline": {
     "title": "実行履歴",

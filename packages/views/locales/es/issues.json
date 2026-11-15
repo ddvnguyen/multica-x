@@ -914,7 +914,12 @@
     "include_children": "Incluir subtareas",
     "loading": "Cargando ejecuciones...",
     "load_failed_retry": "No se han podido cargar las ejecuciones. Reintentar",
-    "empty": "No hay ejecuciones en este ámbito."
+    "empty": "No hay ejecuciones en este ámbito.",
+    "memory_report": "Memoria inyectada",
+    "memory_loading": "Cargando informe de memoria...",
+    "memory_load_failed": "No se pudo cargar el informe de memoria.",
+    "memory_retry": "Reintentar",
+    "memory_empty": "No se inyectó memoria."
   },
   "terminate_dialog": {
     "title": "¿Detener esta ejecución?",

@@ -563,6 +563,16 @@ export interface TaskContextReceiptResponse {
   recorded_at?: string;
 }
 
+export interface TaskMemoryReport {
+  task_id: string;
+  workspace_id: string;
+  memory: {
+    part: "memory";
+    note?: string;
+    entries: { id: string; type: string; title: string; body: string }[];
+  } | null;
+}
+
 /**
  * Response of the Mika bootstrap endpoint: the workspace's Mika plus the
  * caller's conversation with it, resolved together server-side so two clients

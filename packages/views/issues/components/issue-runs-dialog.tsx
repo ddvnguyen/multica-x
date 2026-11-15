@@ -47,6 +47,7 @@ import { RunCumulativeChart } from "./issue-runs-cumulative-chart";
 import { canRetryRun, RetryRunButton } from "./retry-run-button";
 import { RunTriggerLabel } from "./run-trigger-label";
 import { useFormatSpend, useStatusLabel, useTriggerText } from "./task-run-labels";
+import { InjectedMemoryReport } from "./injected-memory-report";
 
 // The issue's runs laid out in time — the surface the execution log's header
 // and cost bars open.
@@ -1178,6 +1179,11 @@ function RunDetails({ id, run, reason }: { id: string; run: TimelineRun; reason:
           </>
         )}
       </dl>
+      {run.task.issue_id && (
+        <div className="col-span-full">
+          <InjectedMemoryReport issueId={run.task.issue_id} taskId={run.task.id} />
+        </div>
+      )}
     </div>
   );
 }
