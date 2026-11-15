@@ -59,7 +59,13 @@ export type IslandRoute =
   | WithQuery<{ view: "inbox" }>
   | WithQuery<{ view: "decisions" }>
   | WithQuery<{ view: "chat" }>
-  | WithQuery<{ view: "settings" }>;
+  | WithQuery<{ view: "settings" }>
+  | WithQuery<{ view: "runtime"; machineId: string }>
+  | WithQuery<{
+    view: "runtime-settings";
+    machineId: string;
+    runtimeId: string;
+  }>;
 
 export const BOARD_ROUTE: IslandRoute = { view: "board" };
 
@@ -91,6 +97,9 @@ function normalizeQuery(raw: string): string {
  * `/w/issues` and `/w/issues/MUL-12` are the board and one issue; `/w/agents`,
  * `/w/skills`, `/w/inbox`, `/w/decisions`, `/w/chat` and `/w/settings` are the other six
  * entries, with `/w/agents/<id>` and `/w/skills/<id>` as their detail depth.
+ * `/w/runtimes/<machine>` and `/w/runtimes/<machine>/runtime/<id>` are the
+ * runtime detail depth (M-349): the rows of the Runtimes settings tab push
+ * these workspace paths, and the island keeps the Settings family selected.
  * `null` means the path is not one of the places this panel owns.
  */
 export function parseIslandRoute(path: string): IslandRoute | null {
@@ -101,11 +110,44 @@ export function parseIslandRoute(path: string): IslandRoute | null {
   const query = normalizeQuery(mark === -1 ? "" : withoutHash.slice(mark + 1));
 
   const parts = pathname.split("/").filter((part) => part !== "");
+  // Runtimes live under Settings (`extraDeviceTabs`), but the shared page
+  // pushes workspace paths (`/<slug>/runtimes/...`). Read those here: the
+  // `settings` family below only sees `/settings`, so without this every row
+  // click is refused and the detail never opens (M-349).
+  const runtimeRoute = parseRuntimesPath(parts);
+  if (runtimeRoute !== null) {
+    return query === "" ? runtimeRoute : { ...runtimeRoute, query };
+  }
   const at = parts.findIndex(isFamily);
   if (at === -1) return null;
   const route = parseFamilyPath(parts[at] as IslandFamily, parts.slice(at + 1));
   if (route === null) return null;
   return query === "" ? route : { ...route, query };
+}
+
+/**
+ * Read the runtimes paths the shared page pushes: `/<slug>/runtimes`,
+ * `/<slug>/runtimes/<machine>` and `/<slug>/runtimes/<machine>/runtime/<id>`
+ * (see `packages/core/paths/paths.ts`). The list row returns to the Settings
+ * tab that owns the Runtimes device page; the two detail shapes render the
+ * fork's own detail pages. `null` is anything else.
+ */
+function parseRuntimesPath(parts: string[]): IslandRoute | null {
+  if (parts.length < 2 || parts[1] !== "runtimes") return null;
+  const [machineId, second, runtimeId, ...extra] = parts.slice(2);
+  if (machineId === undefined) return { view: "settings", query: "tab=runtimes" };
+  if (machineId === "" || extra.length > 0) return null;
+  if (second === undefined) {
+    return { view: "runtime", machineId: decodeURIComponent(machineId) };
+  }
+  if (second === "runtime" && runtimeId !== undefined && runtimeId !== "") {
+    return {
+      view: "runtime-settings",
+      machineId: decodeURIComponent(machineId),
+      runtimeId: decodeURIComponent(runtimeId),
+    };
+  }
+  return null;
 }
 
 function parseFamilyPath(
@@ -163,6 +205,10 @@ export function islandPathname(slug: string, route: IslandRoute): string {
       return `${base}/chat`;
     case "settings":
       return `${base}/settings`;
+    case "runtime":
+      return `${base}/runtimes/${encodeURIComponent(route.machineId)}`;
+    case "runtime-settings":
+      return `${base}/runtimes/${encodeURIComponent(route.machineId)}/runtime/${encodeURIComponent(route.runtimeId)}`;
   }
 }
 
@@ -190,6 +236,9 @@ export function islandParent(route: IslandRoute): IslandRoute | null {
       return FAMILY_ROOTS.agents;
     case "skill":
       return FAMILY_ROOTS.skills;
+    case "runtime":
+    case "runtime-settings":
+      return { view: "settings", query: "tab=runtimes" };
     default:
       return null;
   }
@@ -204,6 +253,10 @@ export function islandRouteKey(route: IslandRoute): string {
       return `agent:${route.agentId}`;
     case "skill":
       return `skill:${route.skillId}`;
+    case "runtime":
+      return `runtime:${route.machineId}`;
+    case "runtime-settings":
+      return `runtime-settings:${route.machineId}:${route.runtimeId}`;
     default:
       return route.view;
   }

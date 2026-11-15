@@ -53,7 +53,8 @@ export interface AskPlanSection {
  * `section_id` is `""` for a note with no anchor and `quote` is `""` when
  * nothing was selected. `parent_comment_id` makes it a reply; `resolved_at` is
  * the human's resolve, which never rewrites the agent's text; `delivered_at` is
- * the verdict that sent it to the agent, stamped once.
+ * the verdict that sent it to the agent, stamped once. `revision` (M-348) is
+ * the plan revision the comment was made on; nullish = predates the label.
  */
 export interface PlanComment {
   id: string;
@@ -67,6 +68,7 @@ export interface PlanComment {
   resolved_by?: string | null;
   delivered_at?: string | null;
   delivered_verdict?: string | null;
+  revision?: number | null;
   created_at: string;
 }
 
@@ -116,6 +118,27 @@ export interface PlanSectionWriteBody {
   markdown: string;
 }
 
+/**
+ * One section as it read at an older revision (M-348
+ * `GET plans/{planId}/revisions/{revision}`). `available` is false for a
+ * section with no ledger version at or before that revision: the page renders
+ * a placeholder row instead of invented text.
+ */
+export interface PlanRevisionSection {
+  section_id: string;
+  heading: string;
+  markdown: string;
+  available: boolean;
+}
+
+/** An older plan revision, read-only: sections plus what is current. */
+export interface PlanRevisionRead {
+  plan_id: string;
+  revision: number;
+  current: number;
+  status: string;
+  sections: PlanRevisionSection[];
+}
 /**
  * The island's read: open cards plus the one open plan, either absent.
  *

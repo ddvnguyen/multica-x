@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 
 const copyText = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@multica/ui/lib/clipboard", () => ({ copyText }));
@@ -117,6 +118,46 @@ describe("RichTable", () => {
     expect(remounted.table).not.toHaveAttribute("data-column-widths");
     expect(remounted.table.querySelectorAll("colgroup col")).toHaveLength(0);
     expect(window.localStorage.getItem("multica:rich-table-widths")).toBe("{}");
+  });
+
+  // M-360: the island's tables must not touch the shell's bare key — the host
+  // supplies its namespaced store through the provider, and browser
+  // localStorage stays out of it entirely.
+  it("keeps a host-supplied store's widths out of the browser's localStorage", async () => {
+    const stored = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      },
+    };
+    const view = render(
+      <HostStorageProvider storage={storage}>
+        <RichContent content={TABLE} />
+      </HostStorageProvider>,
+    );
+    const table = view.container.querySelector("table");
+    if (!table) throw new Error("table not rendered");
+
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize Relation column" }), {
+      key: "ArrowRight",
+      shiftKey: true,
+    });
+
+    expect(table).toHaveAttribute("data-column-widths");
+    expect(stored.get("multica:rich-table-widths")).toContain("widths");
+    expect(window.localStorage.getItem("multica:rich-table-widths")).toBeNull();
+
+    // The host's store restores the widths on a fresh mount, like the bare key
+    // does on web.
+    view.unmount();
+    const remounted = render(
+      <HostStorageProvider storage={storage}>
+        <RichContent content={TABLE} />
+      </HostStorageProvider>,
+    );
+    expect(remounted.container.querySelector("table")).toHaveAttribute("data-column-widths");
+    expect(window.localStorage.getItem("multica:rich-table-widths")).toBeNull();
   });
 
   it("keeps a handle's height after a click, so a double-click lands", () => {

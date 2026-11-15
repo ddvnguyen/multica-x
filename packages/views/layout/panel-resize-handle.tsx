@@ -59,7 +59,13 @@ export function PanelResizeHandle({
       const startX = e.clientX;
       const startWidth = clamp(panel.getBoundingClientRect().width);
       let latestWidth = startWidth;
+      // The wrapper carries the same attribute the document root does: the
+      // island's shadow tree cannot match a selector against the document
+      // root, so the cursor, selection and transition rules that read the
+      // attribute would otherwise never apply inside a host's shadow root.
+      const wrapper = panel.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
       document.documentElement.setAttribute("data-sidebar-resizing", "true");
+      wrapper?.setAttribute("data-sidebar-resizing", "true");
 
       const finish = (mode: "commit" | "cancel") => {
         document.removeEventListener("pointermove", onMove);
@@ -67,6 +73,7 @@ export function PanelResizeHandle({
         document.removeEventListener("pointercancel", onCancel);
         window.removeEventListener("blur", onBlur);
         document.documentElement.removeAttribute("data-sidebar-resizing");
+        wrapper?.removeAttribute("data-sidebar-resizing");
         if (mode === "commit" && draggedRef.current) commit(latestWidth);
         panel.style.removeProperty(variable);
         cancelRef.current = null;

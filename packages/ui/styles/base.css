@@ -328,9 +328,14 @@
  * react-resizable-panels: the resize cursor survives leaving the narrow rail
  * and wins over descendants with their own cursor declarations. Live width is
  * written directly to the layout shells and opt-in chrome consumers, so their
- * toggle transitions must stay disabled until the gesture finishes. */
+ * toggle transitions must stay disabled until the gesture finishes.
+ * Both roots match: the document root for the app that owns its origin, and
+ * the sidebar wrapper for a host's shadow tree, which cannot match a selector
+ * against the document root and reads the attribute off the wrapper instead. */
 html[data-sidebar-resizing="true"],
-html[data-sidebar-resizing="true"] * {
+html[data-sidebar-resizing="true"] *,
+[data-sidebar-resizing="true"],
+[data-sidebar-resizing="true"] * {
   cursor: ew-resize !important;
   user-select: none !important;
 }

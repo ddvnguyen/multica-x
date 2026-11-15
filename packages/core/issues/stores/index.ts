@@ -38,6 +38,7 @@ export {
 } from "./resolved-expand-store";
 export { useCommentComposerStore, type CommentImageLayout, type RunningAgentReply } from "./comment-composer-store";
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
+export { useAskDraftStore, ASK_DRAFT_STORAGE_KEY, type AskCardDraft, type AskDraftKey } from "./ask-draft-store";
 export {
   myIssuesViewStore,
   type MyIssuesViewState,

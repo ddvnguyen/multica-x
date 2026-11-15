@@ -64,6 +64,34 @@ describe("ListColumn", () => {
     expect(wrapper.style.getPropertyValue("--sidebar-width")).toBe("240px");
   });
 
+  // M-360: the drag polish attributes must land on the wrapper too, not only
+  // the document root — inside the island's shadow root the CSS rules can only
+  // match selectors against the shadow tree.
+  it("flags the wrapper while a drag is live, not just the document root", () => {
+    const { container } = renderWithI18n(
+      <SidebarProvider>
+        <AppShellProvider>
+          <ListColumn>list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+    const wrapper = container.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!;
+    const column = container.querySelector<HTMLElement>("[data-slot='list-column']")!;
+    const handle = container.querySelector<HTMLElement>("[data-slot='space-panel-resize']")!;
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 240 } as DOMRect);
+
+    expect(document.documentElement).not.toHaveAttribute("data-sidebar-resizing");
+    expect(wrapper).not.toHaveAttribute("data-sidebar-resizing");
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 3, clientX: 240 });
+    expect(document.documentElement).toHaveAttribute("data-sidebar-resizing", "true");
+    expect(wrapper).toHaveAttribute("data-sidebar-resizing", "true");
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 3, clientX: 240 }));
+    });
+    expect(document.documentElement).not.toHaveAttribute("data-sidebar-resizing");
+    expect(wrapper).not.toHaveAttribute("data-sidebar-resizing");
+  });
+
   it("restores a stored list width within its bounds", () => {
     localStorage.setItem("list_column_width", "900");
     const { container } = renderWithI18n(

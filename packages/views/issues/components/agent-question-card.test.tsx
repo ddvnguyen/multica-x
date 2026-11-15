@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@multica/core/api";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import type { AgentAnswerDraft, AgentQuestion } from "@multica/core/issues/agent-question";
 import { renderWithI18n } from "../../test/i18n";
 import { AgentQuestionCard } from "./agent-question-card";
@@ -45,6 +46,7 @@ function render(
   questions: AgentQuestion[],
   submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>,
   questionSeq?: number,
+  draftKey?: `ask:${string}`,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   renderWithI18n(
@@ -55,15 +57,21 @@ function render(
         questions={questions}
         submit={submit}
         questionSeq={questionSeq}
+        draftKey={draftKey}
       />
     </QueryClientProvider>,
   );
   return client;
 }
 
+beforeEach(() => {
+  useAskDraftStore.setState({ drafts: {} });
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useAskDraftStore.setState({ drafts: {} });
 });
 
 describe("AgentQuestionCard", () => {
@@ -211,5 +219,56 @@ describe("AgentQuestionCard", () => {
     const [other] = screen.getAllByRole("textbox");
     fireEvent.keyDown(other!, { key: "Enter" });
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("grows the free-text field and keeps line breaks in the posted answer", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    const [other] = screen.getAllByRole("textbox");
+    expect(other!.tagName).toBe("TEXTAREA");
+    fireEvent.change(other!, { target: { value: "line one\nline two" } });
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith([
+      { selected: [], text: "line one\nline two" },
+    ]));
+  });
+
+  it("submits on Cmd+Enter and keeps a plain Enter as a newline", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    const [other] = screen.getAllByRole("textbox");
+    fireEvent.change(other!, { target: { value: "two lines" } });
+    // A plain Enter inserts a newline: the form does not submit.
+    fireEvent.keyDown(other!, { key: "Enter" });
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.keyDown(other!, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  });
+
+  it("restores the draft after remount and clears it on send", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    const view = render([question()], submit, undefined, "ask:card-9");
+    const [other] = screen.getAllByRole("textbox");
+    fireEvent.change(other!, { target: { value: "half an answer" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    expect(useAskDraftStore.getState().getAnswers("ask:card-9")).toEqual([
+      { selected: [0], text: "half an answer" },
+    ]);
+
+    // Navigate away (unmount) and back: the draft is still there.
+    view.unmount();
+    cleanup();
+    render([question()], submit, undefined, "ask:card-9");
+    expect(screen.getAllByRole("textbox")[0]).toHaveValue("half an answer");
+    expect(screen.getByRole("radio", { name: /Web/ })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(useAskDraftStore.getState().getDraft("ask:card-9")).toBeUndefined();
+  });
+
+  it("shows the remaining count against the 2000-character cap", () => {
+    render([question()], undefined, undefined, "ask:card-9");
+    expect(screen.getByText("0 / 2000")).toBeInTheDocument();
   });
 });

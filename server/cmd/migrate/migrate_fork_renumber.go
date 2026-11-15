@@ -79,6 +79,9 @@ var forkMigrationRenames = [][2]string{
 	{"634_issue_decision_response_id_index", "675_issue_decision_response_id_index"},
 	{"635_decision_handoff_wakeup", "676_decision_handoff_wakeup"},
 	{"636_workspace_account_engine_version", "677_workspace_account_engine_version"},
+	{"637_agent_plan_review_threads", "678_agent_plan_review_threads"},
+	{"638_issue_workflow_continue_unfinished", "679_issue_workflow_continue_unfinished"},
+	{"640_agent_question_card_trigger_comment", "680_agent_question_card_trigger_comment"},
 	{"637_runtime_profile_add_freebuff", "658_runtime_profile_add_freebuff"},
 	{"638_agent_question_card", "659_agent_question_card"},
 	{"639_agent_plan", "660_agent_plan"},
@@ -107,6 +110,7 @@ var forkMigrationRenames = [][2]string{
 	{"663_question_task_status_index", "683_question_task_status_index"},
 	{"664_question_issue_status_index", "684_question_issue_status_index"},
 	{"665_ask_plan_escalation_ladder", "685_ask_plan_escalation_ladder"},
+	{"666_plan_comment_revision", "686_plan_comment_revision"},
 }
 
 // forkMigrationRenameOrder returns the table in the order it must be applied:
