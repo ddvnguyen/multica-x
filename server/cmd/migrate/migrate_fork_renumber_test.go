@@ -95,7 +95,7 @@ func TestForkMigrationRenameOrderChainsGenerations(t *testing.T) {
 		"lane on v0.8.2 stems": append([]string{
 			"637_runtime_profile_add_freebuff", "638_agent_question_card",
 			"639_agent_plan", "640_agent_plan_review",
-		}, rowsFor(641, 666)...),
+		}, rowsFor(641, 667)...),
 		"lane still on pre-v0.8.1 stems": rowsFor(595, 616),
 	}
 
