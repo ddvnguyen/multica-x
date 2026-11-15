@@ -52,6 +52,29 @@ export function shadowStyles(css: string): string {
   return css.replace(/:root\b/g, ":host");
 }
 
+/**
+ * Rewrite a stylesheet written for the document (`:root`, `html`, `.theme-*`,
+ * `data-theme`) so it can live inside a shadow root and target the host.
+ * Used for the generated appearance/theme CSS.
+ */
+export function shadowAppearanceCss(css: string): string {
+  return css
+    .replace(/:root(\[[^\]]*\])/g, ":host$1")
+    .replace(/html(\[[^\]]*\])/g, ":host$1")
+    .replace(/:root(\.[A-Za-z0-9_-]+)/g, ":host($1)")
+    .replace(/html(\.[A-Za-z0-9_-]+)/g, ":host($1)")
+    .replace(/(^|[^\w.])\.theme-(light|dark)\b/g, "$1:host(.theme-$2)")
+    .replace(/:root\b/g, ":host")
+    .replace(/\bhtml\b/g, ":host");
+}
+
+export const rewriteForShadow = shadowAppearanceCss;
+export const scopeToHost = shadowAppearanceCss;
+export const hostScopedCss = shadowAppearanceCss;
+export const shadowThemeCss = shadowAppearanceCss;
+export const appearanceShadowCss = shadowAppearanceCss;
+
+
 /** The island stylesheet, rewritten for a shadow tree. */
 export const ISLAND_CSS = shadowStyles(islandCss);
 

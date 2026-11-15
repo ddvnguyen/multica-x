@@ -11,7 +11,7 @@ import {
   type PopupSeat,
 } from "./popup-seat";
 import { installPropertyRules } from "./property-shim";
-import { mountAppearanceIsland } from "./appearance-island";
+import { mountAppearanceIsland, applyAppearanceTo } from "./appearance-island";
 import { swallowShellShortcuts } from "./shell-keys";
 
 /**
@@ -114,7 +114,19 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     // `dark` class on that container is what the fork's utilities match on.
     portalHost.classList.toggle("dark", dark);
     // seat host too
-    seat.element.classList.toggle("dark", dark);
+    try {
+      seat.element.classList.toggle("dark", dark);
+    } catch {
+      // seat not ready
+    }
+    // Re-apply appearance so theme-light/theme-dark follow the shell.
+    applyAppearanceTo(host, shadow);
+    try {
+      const sh = seat.element.shadowRoot;
+      if (sh) applyAppearanceTo(seat.element, sh);
+    } catch {
+      // seat not ready
+    }
   };
   syncTheme();
 
@@ -129,12 +141,7 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
     attributeFilter: ["class", "data-theme"],
   });
 
-  const appearanceCleanup = mountAppearanceIsland(
-    host,
-    shadow,
-    seat.element,
-    seat.element.shadowRoot ?? undefined,
-  );
+  const appearanceCleanup = mountAppearanceIsland(host, shadow, seat);
 
   swallowShellShortcuts(rootElement);
   // A dialog is not a child of the page that opened it: it is portalled into

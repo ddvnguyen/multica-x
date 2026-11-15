@@ -13,6 +13,8 @@ import {
   useInstalledThemesStore,
   useThemeSafeMode,
 } from "../fork";
+import { shadowAppearanceCss } from "./popup-seat";
+import type { PopupSeat } from "./popup-seat";
 
 const THEME_CSS_ELEMENT_ID = "multica-theme-css";
 const STYLE_ELEMENT_ID = "multica-appearance";
@@ -70,20 +72,27 @@ export function applyAppearanceTo(root: HTMLElement, shadowRoot: ShadowRoot) {
 
   syncModeClasses(root);
 
-  writeStyle(shadowRoot, THEME_CSS_ELEMENT_ID, appearanceThemeCss(theme));
-  writeStyle(shadowRoot, STYLE_ELEMENT_ID, appearanceStylesheet(theme, prefs));
+  writeStyle(shadowRoot, THEME_CSS_ELEMENT_ID, shadowAppearanceCss(appearanceThemeCss(theme)));
+  writeStyle(shadowRoot, STYLE_ELEMENT_ID, shadowAppearanceCss(appearanceStylesheet(theme, prefs)));
   orderStyles(shadowRoot);
 }
 
 export function mountAppearanceIsland(
   host: HTMLElement,
   shadowRoot: ShadowRoot,
-  popupHost?: HTMLElement,
-  popupShadowRoot?: ShadowRoot,
+  popupSeat?: PopupSeat,
 ): () => void {
   const applyAll = () => {
     applyAppearanceTo(host, shadowRoot);
-    if (popupHost && popupShadowRoot) applyAppearanceTo(popupHost, popupShadowRoot);
+    if (popupSeat) {
+      try {
+        const seatHost = popupSeat.element;
+        const seatShadow = seatHost.shadowRoot;
+        if (seatShadow) applyAppearanceTo(seatHost, seatShadow);
+      } catch {
+        // seat not ready yet
+      }
+    }
   };
   applyAll();
 
