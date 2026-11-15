@@ -22,6 +22,7 @@ var MinVersions = map[string]string{
 	"copilot":     "1.0.0",     // --output-format json envelope stable from 1.0.x
 	"grok":        "0.2.89",    // ACP + authenticate/session-load/set_model/MCP and --effort thinking flag
 	"qwen":        "0.20.0",    // stream-json protocol captured and verified against Qwen Code 0.20.0
+	"droid":       "1.8.0",     // native exec stream-json envelope verified against the official executable
 	"dim":         "0.3.10",    // cross-run session/load: per-process lock releases on graceful exit
 	"mcode":       "0.1.2",     // ACP v1 session/new, prompt, MCP capability forwarding
 	"muse":        "1.4.10",    // MSP stable surface: session/start, turn/start, item stream
@@ -179,7 +180,8 @@ func SupportsTaskSupplement(provider, version string) bool {
 // SupportsTaskMCP reports whether this provider can carry daemon-injected MCP
 // servers (the per-task overlay: saved agent config, remote broker, moct,
 // ask/plan) into a launch without failing it. Every provider consumes the
-// overlay without a version floor except builtin pi, whose gate lives in
+// overlay without a version floor except amp and droid, which reject managed
+// MCP configuration, and builtin pi, whose gate lives in
 // pi.go: preparePiMcpExtension refuses to start when the MCP extension needs
 // a Pi newer than piMcpMinVersion, and an unparseable version fails closed
 // there ("could not verify detected version"). Pre-checking the same floor
@@ -187,6 +189,9 @@ func SupportsTaskSupplement(provider, version string) bool {
 // instead of failing the launch — and a custom profile skips the floor
 // entirely (validatePiMcpVersion), so only builtin pi is gated.
 func SupportsTaskMCP(provider, version string, builtinRuntime bool) bool {
+	if provider == "amp" || provider == "droid" {
+		return false
+	}
 	if provider != "pi" || !builtinRuntime {
 		return true
 	}

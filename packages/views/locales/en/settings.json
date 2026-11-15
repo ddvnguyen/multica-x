@@ -209,7 +209,13 @@
       "dark": "Dark",
       "system": "System"
     },
-    "appearance_title": "Appearance"
+    "appearance_title": "Appearance",
+    "comment_images": {
+      "title": "Images in comments",
+      "thumbnails": "Thumbnails",
+      "full": "Full size",
+      "hint": "Thumbnails keep long threads short; click an image to see it full size."
+    }
   },
   "appearance": {
     "reset": "Reset to defaults",
@@ -226,7 +232,14 @@
       "title": "Theme",
       "description": "Colors, borders, shadows and corners across the app.",
       "default": "Default",
-      "pop": "Pop"
+      "pop": "Pop",
+      "built_in": "Built in",
+      "installed": "Installed",
+      "remove": "Remove {{name}}",
+      "safe_mode": "Safe mode: your theme is paused until you close this window.",
+      "safe_mode_exit": "Use my theme",
+      "folder": "Themes folder",
+      "folder_problems": "Some themes in the themes folder don't pass the checks. Fix them and save; the last version that passed stays in use."
     },
     "theme_options": {
       "title": "Theme options",
@@ -308,6 +321,83 @@
     "high_contrast": {
       "title": "Increase contrast",
       "description": "Darker secondary text and stronger borders."
+    },
+    "import": {
+      "button": "Import theme",
+      "from_zip": "Theme file (.zip)",
+      "from_folder": "Theme folder",
+      "storage_full": "There isn't enough space on this device to save the theme. Remove another theme and try again.",
+      "confirm_title": "Install “{{name}}”?",
+      "warning": "A theme can restyle every page, including dialogs and warnings. Only install themes from people you trust.",
+      "author": "Author",
+      "version": "Version",
+      "replaces": "{{to}} (replaces {{from}})",
+      "includes": "Includes",
+      "cancel": "Cancel",
+      "confirm": "Install and use",
+      "error_title": "Couldn't install this theme",
+      "error_description": "Nothing was changed. The theme file has these problems:",
+      "close": "Close",
+      "has_options_one": "{{count}} option",
+      "has_options_other": "{{count}} options",
+      "has_assets_one": "{{count}} font or image",
+      "has_assets_other": "{{count}} fonts and images",
+      "beta": "Beta",
+      "beta_note": "Custom themes are in beta. The variables and manifest a theme uses may change, and a theme may need updating."
+    },
+    "store": {
+      "manage": "Manage",
+      "title": "Themes",
+      "description": "The themes you installed, and themes made by the community.",
+      "description_local": "The themes you installed.",
+      "search": "Search themes",
+      "installed_only": "Show installed only",
+      "showing_one": "Showing {{count}} theme",
+      "showing_other": "Showing {{count}} themes",
+      "installed": "Installed",
+      "loading": "Loading themes",
+      "error": "Couldn't load the theme store. Try again in a moment.",
+      "retry": "Try again",
+      "none_installed": "No themes are installed yet.",
+      "no_results": "No themes match “{{query}}”.",
+      "by": "by {{author}}",
+      "downloads_one": "{{downloads}} download",
+      "downloads_other": "{{downloads}} downloads",
+      "source": "{{repo}} on GitHub",
+      "no_preview": "No preview",
+      "screenshot_alt": "{{name}} in {{mode}} mode",
+      "install": "Install",
+      "installing": "Installing…",
+      "use": "Use",
+      "in_use": "In use",
+      "update": "Update to {{version}}",
+      "remove": "Remove",
+      "taken": "A theme with this id is installed",
+      "installed_toast": "Installed “{{name}}”.",
+      "updated": "Updated “{{name}}” to {{version}}.",
+      "install_failed": "Couldn't install “{{name}}”",
+      "warning": "Themes can restyle every page, including dialogs and warnings. Store themes are checked automatically, but they are made by the community."
+    },
+    "updates": {
+      "title": "Store themes",
+      "description_one": "You have {{count}} theme from the store.",
+      "description_other": "You have {{count}} themes from the store.",
+      "check": "Check for updates",
+      "checking": "Checking…",
+      "up_to_date": "Your store themes are up to date.",
+      "update_all": "Update all ({{count}})"
+    },
+    "own": {
+      "title": "Make your own",
+      "description": "Import a theme as a .zip or folder, or start from a copy of the current one."
+    },
+    "tools": {
+      "duplicate": "Duplicate “{{name}}” as a new theme",
+      "open_folder": "Open themes folder",
+      "guide": "How to make a theme",
+      "duplicated_web": "Downloaded {{file}}. Unzip it, edit theme.css, then import the folder.",
+      "duplicated_desktop": "Created “{{name}}” in the themes folder. Edits to its theme.css apply when you save.",
+      "duplicate_failed": "Couldn't create the copy: {{error}}"
     }
   },
   "shortcuts": {
@@ -427,6 +517,10 @@
       "goSettings": {
         "label": "Go to Settings",
         "description": "Open workspace settings."
+      },
+      "newChat": {
+        "label": "Ask Multica",
+        "description": "Start a new chat in the floating chat window."
       }
     },
     "fixed": {
@@ -444,7 +538,10 @@
   },
   "chat": {
     "floating_label": "Floating chat window",
-    "floating_hint": "Show the floating chat button on every page."
+    "floating_hint": "Show the floating chat button on every page.",
+    "ask_agent_label": "Ask Multica agent",
+    "ask_agent_hint": "The agent a new chat from the bottom bar starts with, in this workspace.",
+    "ask_agent_last_used": "Last used"
   },
   "issue": {
     "opening": {
@@ -788,6 +885,13 @@
       "agent_activity": {
         "label": "Agent activity",
         "description": "When an agent run fails"
+      },
+      "new_issues": {
+        "label": "New issues",
+        "description": "When an issue is created in a project you subscribe to"
+      },
+      "chat_replies": {
+        "label": "Include chat replies"
       }
     },
     "system": {
@@ -1326,7 +1430,9 @@
     "url_label": "Repository URL",
     "description_label": "Description",
     "duplicate": "This repository is already added.",
-    "actions_aria": "Actions for {{url}}"
+    "actions_aria": "Actions for {{url}}",
+    "github_import_one": "Add {{count}} repository",
+    "github_import_other": "Add {{count}} repositories"
   },
   "desktop": {
     "tabs": {
@@ -1339,7 +1445,10 @@
       "close_others": "Close other tabs",
       "open_window": "Open as new window",
       "new": "New tab",
-      "pinned_name": "{{title}} (pinned)"
+      "pinned_name": "{{title}} (pinned)",
+      "copy_link": "Copy link",
+      "link_copied": "Link copied",
+      "close_right": "Close tabs to the right"
     },
     "updates": {
       "title": "Updates",
@@ -1545,7 +1654,40 @@
     "github_actions": "GitHub actions"
   },
   "channels": {
-    "breadcrumb": "Breadcrumb"
+    "breadcrumb": "Breadcrumb",
+    "add": "Add messaging channel",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "open": "Open",
+    "normal": "Connected",
+    "waiting_message": "Waiting for first message",
+    "disconnected": "Disconnected",
+    "find_me": "Find me on {{platform}}",
+    "manage": "Manage {{platform}}",
+    "last_message": "Last message {{time}}",
+    "ask_admin": "Ask an admin",
+    "unavailable": "Connection unavailable",
+    "permissions_title": "Who can connect",
+    "owner_or_admin": "Agent owner or workspace admin",
+    "admin_only": "Workspace admins only",
+    "connect_title": "Connect messaging channel",
+    "choose_description": "Choose an agent and a platform.",
+    "authorize_description": "Connect {{agent}} to {{platform}}.",
+    "agent_label": "Agent",
+    "choose_agent": "Choose an agent",
+    "platform_label": "Platform",
+    "region_label": "Region",
+    "method_label": "Connection method",
+    "feishu": "Feishu (China)",
+    "lark": "Lark (International)",
+    "setup_guide": "Setup guide",
+    "connection_changed": "This connection is no longer available. Close this dialog and try again.",
+    "connect_failed": "Could not connect the bot.",
+    "connect_success": "Messaging channel connected.",
+    "disconnect_failed": "Could not disconnect the bot.",
+    "disconnect_title": "Disconnect messaging channel?",
+    "disconnect_description": "This agent will stop receiving messages from {{platform}}.",
+    "agent_unavailable": "Agent unavailable"
   },
   "mcp_usage": {
     "agent_count_one": "Used by {{count}} agent",

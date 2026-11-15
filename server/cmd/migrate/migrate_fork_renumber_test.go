@@ -10,8 +10,8 @@ import (
 )
 
 // finalStemOf returns the newest stem for one migration name, which is what a
-// renumbered row must end on. Two generations target the same name (595 and 617
-// both resolve to the 637 stem), so the newest number wins.
+// renumbered row must end on. Multiple historical stems can target the same
+// current migration, so the newest number wins.
 func finalStemOf(name string) string {
 	final := ""
 	for _, pair := range forkMigrationRenames {
@@ -74,12 +74,8 @@ func TestForkMigrationRenamesMatchFiles(t *testing.T) {
 	}
 }
 
-// TestForkMigrationRenameOrderChainsGenerations is the guard for the hazard the
-// application order exists for. The table chains: v0.8.1 moved 595-stems to 617,
-// v0.8.2 moves 617-stems to 637, and 637 is itself an old stem in that second
-// generation. Applying the pairs in table order would rename a 617 row onto 637
-// and then sweep it on to 657 — a database that ends up recording a migration
-// whose SQL never ran, and one row short of the migration it did run.
+// TestForkMigrationRenameOrderChainsGenerations checks that each historical
+// ledger generation maps directly to the current stems without replaying SQL.
 func TestForkMigrationRenameOrderChainsGenerations(t *testing.T) {
 	t.Parallel()
 
@@ -94,7 +90,12 @@ func TestForkMigrationRenameOrderChainsGenerations(t *testing.T) {
 	}
 
 	cases := map[string][]string{
-		"lane on v0.8.1 stems":           rowsFor(617, 640),
+		"lane on v0.8.1 stems": append(rowsFor(617, 636),
+			"637_agent_plan_review_threads", "638_issue_workflow_continue_unfinished", "640_agent_question_card_trigger_comment"),
+		"lane on v0.8.2 stems": append([]string{
+			"637_runtime_profile_add_freebuff", "638_agent_question_card",
+			"639_agent_plan", "640_agent_plan_review",
+		}, rowsFor(641, 667)...),
 		"lane still on pre-v0.8.1 stems": rowsFor(595, 616),
 	}
 

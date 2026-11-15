@@ -196,6 +196,9 @@ type Task struct {
 	TriggerEvidenceKind           string                 `json:"trigger_evidence_kind,omitempty"` // S1-A1: question_answer / plan_verdict names a parked ask/plan resume; the prompt renders the handoff as the answer/verdict block
 
 	ChatSource *protocol.ChatSource `json:"chat_source,omitempty"`
+	// ChatFeishuSource is the Feishu ids of the message a Feishu chat task
+	// answers. Older servers omit it and the prompt then lists no ids.
+	ChatFeishuSource *protocol.FeishuSource `json:"chat_feishu_source,omitempty"`
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text

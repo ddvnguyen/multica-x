@@ -60,6 +60,26 @@ SET escalated_at = now(),
 WHERE id = $1 AND status = 'in_review' AND escalated_at IS NULL
 RETURNING *;
 
+-- name: RemindAgentQuestionCard :one
+-- M-362 reminder, once per card. The CAS on 'reminded_at IS NULL' is the
+-- idempotency gate: a second sweep round (or a racing first one) matches no
+-- row, so the bump fires exactly once. The status is NOT touched: the card
+-- stays open for the Owner.
+UPDATE agent_question_card
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND reminded_at IS NULL
+RETURNING *;
+
+-- name: RemindAgentPlan :one
+-- The plan half of the M-362 reminder: same once-only CAS, status untouched
+-- (in_review stays in_review until a human verdict).
+UPDATE agent_plan
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND reminded_at IS NULL
+RETURNING *;
+
 -- name: WithdrawQuestionCardsByTask :exec
 -- Cancel-while-parked settle (Architect amendment 3): withdrawing every open
 -- card of a task batch just moved to a terminal status. No-op for tasks that

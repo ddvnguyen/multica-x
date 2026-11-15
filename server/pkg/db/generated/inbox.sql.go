@@ -349,6 +349,40 @@ func (q *Queries) ArchiveStaleAskPlanInboxForMember(ctx context.Context, arg Arc
 	return items, nil
 }
 
+const countOpenAskPlanMemberRows = `-- name: CountOpenAskPlanMemberRows :one
+SELECT count(*) FROM inbox_item i
+WHERE i.workspace_id = $1 AND i.issue_id = $2 AND i.archived = false
+  AND i.recipient_type = 'member'
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status = 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status = 'in_review'))
+  )
+`
+
+type CountOpenAskPlanMemberRowsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// M-362: the task:message question listener's dedupe check. SubmitAsk /
+// SubmitPlan write one `agent_question` / `plan_review` row per workspace
+// member with the evidence id in details; when such an open-evidence member
+// row exists on the issue, the subscriber row for the same park would be a
+// duplicate. Subscriber rows (empty details) never match: they carry no
+// evidence, so a park with no member row still counts zero and notifies.
+func (q *Queries) CountOpenAskPlanMemberRows(ctx context.Context, arg CountOpenAskPlanMemberRowsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenAskPlanMemberRows, arg.WorkspaceID, arg.IssueID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnreadInbox = `-- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item i
 WHERE i.workspace_id = $1
@@ -531,6 +565,37 @@ func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams
 		&i.Section,
 	)
 	return i, err
+}
+
+const deleteInboxGroup = `-- name: DeleteInboxGroup :execrows
+WITH target AS (
+    SELECT selected.id, selected.workspace_id, selected.recipient_type, selected.recipient_id, selected.type, selected.severity, selected.issue_id, selected.title, selected.body, selected.read, selected.archived, selected.created_at, selected.actor_type, selected.actor_id, selected.details, selected.section FROM inbox_item selected
+    WHERE selected.id = $1 AND selected.workspace_id = $2
+      AND selected.recipient_type = 'member' AND selected.recipient_id = $3
+)
+DELETE FROM inbox_item item USING target
+WHERE item.workspace_id = target.workspace_id
+  AND item.recipient_type = target.recipient_type
+  AND item.recipient_id = target.recipient_id
+  AND item.archived = target.archived
+  AND (item.id = target.id OR item.issue_id = target.issue_id)
+`
+
+type DeleteInboxGroupParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+}
+
+// A visible inbox row groups notifications on an issue. Remove that group
+// only in the selected view, so older siblings cannot bring the row back and
+// deleting an active row does not erase its archived history.
+func (q *Queries) DeleteInboxGroup(ctx context.Context, arg DeleteInboxGroupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteInboxGroup, arg.ID, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getInboxItem = `-- name: GetInboxItem :one

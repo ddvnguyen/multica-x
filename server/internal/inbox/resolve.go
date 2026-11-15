@@ -15,18 +15,13 @@ import (
 // stale and publishes inbox:batch-archived per member recipient so open
 // clients drop them without a manual refresh (M-333).
 //
-// Two row shapes exist for the ask/plan types:
-//
 //   - Evidence rows, whose details carry the card id ('agent_question') or the
 //     plan id ('plan_review'): archived whenever that card is no longer open /
 //     the plan is no longer in_review. Row identity is the evidence id, so a
-//     second open card on the same issue is never touched.
+//     second open card on the same issue is never touched. M-362 reminder
+//     rows carry the same evidence id plus `reminder: true`, so they match
+//     the same predicate and resolve with the original row.
 //   - Timeout-escalation rows (askplan_expiry), whose details carry only the
-//     parked task id: archived only when taskIDs names a task whose evidence
-//     is no longer open — i.e. the ask/plan itself was answered or verdicted.
-//     The cancel paths pass no task ids on purpose: the expiry escalation
-//     creates its row after the settle that withdraws the card, and that row
-//     stays as the lead's pointer to the expired ask until it is answered.
 //
 // Best-effort by contract, like every inbox housekeeping path: callers log a
 // failure and the rows stay stale, and the lazy sweep on list

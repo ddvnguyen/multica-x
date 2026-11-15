@@ -190,3 +190,12 @@ export {
 // this package's vite config, so the island's badge, the Settings row and the
 // client identity sent to multica-be all read the same value.
 export { mmxBuild } from "@multica/views/build-info";
+
+// In-island toasts for ask/plan arrivals (M-362): the fork's sonner surface
+// and the realtime + navigation hooks the reporter subscribes through, so the
+// island toasts on live `inbox:new` without importing the fork directly.
+export { Toaster } from "@multica/ui/components/ui/sonner";
+export { useWSEvent } from "@multica/core/realtime";
+export { useIntentNavigate } from "@multica/views/navigation";
+export type { InboxItem } from "@multica/core/types/inbox";
+export { toast } from "sonner";

@@ -46,6 +46,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "sonner": "catalog:",
     "ws": "^8.18.3"
   },
   "devDependencies": {

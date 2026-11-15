@@ -36,6 +36,7 @@ import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
 import { SteerReporter } from "./steer-reporter";
 import { DecisionsBadgeReporter } from "./decisions-badge-reporter";
+import { AskPlanToastReporter } from "./ask-plan-toast-reporter";
 import { IslandVersionBadge } from "./version-badge";
 import { SidePreviewCapability } from "./side-preview-opener";
 import { SidePreviewPortals } from "./side-preview-portals";
@@ -68,6 +69,7 @@ import {
   SettingsPage,
   SkillDetailPage,
   SkillsPage,
+  Toaster,
   useWorkspaceList,
   ViewStoreProvider,
   WorkspaceSlugProvider,
@@ -317,13 +319,15 @@ function WorkspaceGate({
   return (
     <WorkspaceSlugProvider slug={workspace.slug}>
       {/* Beside the app itself, inside CoreProvider's QueryClientProvider:
-          the reporter observes the summary key the inbox page reads and
-          writes the rail dot's store. */}
+          the reporters observe live state and write the rail dot's store. */}
       <UnreadReporter workspaceId={workspace.id} />
       {/* Which running MMX turn owns each dsh session (M-136): the dsh chat's
           composer takeover reads this store, and this observer is what keeps
           it current from the same snapshot query presence already loads. */}
       <SteerReporter workspaceId={workspace.id} />
+      {/* M-362: the fork's Toaster, mounted once at the island root. No
+          permission prompt on load. */}
+      <Toaster />
       <IslandPages
         slug={workspace.slug}
         workspaceId={workspace.id}
@@ -544,6 +548,10 @@ export function IslandPages({
           them touch the bare keys the shell's origin already holds. */}
       <HostStorageProvider storage={storage}>
       <NavigationProvider value={navigation}>
+        {/* M-362: toasts agent_question / plan_review inbox:new rows only,
+            deduped by item id. Inside the provider: the toast action routes
+            through useIntentNavigate. */}
+        <AskPlanToastReporter />
         <PageChromeProvider titleInHostChrome projectId={projectId}>
           <DecisionsBadgeReporter workspaceId={workspaceId} projectId={projectId} />
           <TabBar
