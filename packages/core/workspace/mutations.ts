@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import type { Workspace } from "../types";
+import type { Workspace, ModelTierInput } from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
 import { clearWorkspaceStorage } from "../platform/storage-cleanup";
@@ -136,6 +136,49 @@ export function useDeleteWorkspaceMcpServer(wsId: string) {
       // no agent's assignment list can be trusted afterwards.
       queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
+  });
+}
+
+/**
+ * Model tiers (M-350). Every write invalidates the tier list the Settings
+ * tab and (in M-351) agent pickers share. No optimistic updates: the order
+ * and idx values are server-computed, and the confirm flows await the
+ * mutation before closing.
+ */
+export function useCreateModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ModelTierInput) => api.createModelTier(wsId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useUpdateModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tierId, ...input }: ModelTierInput & { tierId: string }) =>
+      api.updateModelTier(wsId, tierId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useDeleteModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (tierId: string) => api.deleteModelTier(wsId, tierId),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useReorderModelTiers(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => api.reorderModelTiers(wsId, ids),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
   });
 }
 
