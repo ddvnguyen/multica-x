@@ -1,11 +1,13 @@
+// The existing MOCT controls are English-only; keep their copy during the move.
+/* eslint-disable i18next/no-literal-string */
 import { useEffect, useState, type ReactNode } from "react";
 
 /**
- * The browser side of the `/moct` seam: one JSON call, one read hook, and the
+ * The browser side of the MOCT API: one JSON call, one read hook, and the
  * two host-authored answers every MOCT page starts from.
  *
- * The seam itself is the host's (`src/moct-proxy.ts`); this module is only what
- * the pages on this side of it share — the settings tabs (Connection,
+ * The seam is multica-be's authenticated workspace API; this module is what
+ * the shared pages rely on — the settings tabs (Connection,
  * Interactions) and the Memory overview. Keeping it here rather than in the
  * settings module is what lets the Memory page read the seam without the
  * settings module having to own it.
@@ -33,6 +35,10 @@ export interface MoctUsage {
 
 /** How this panel is wired, as the host half reported it at boot. */
 export interface MoctConnection {
+  /** Host prefix for the authenticated Multica API, e.g. `/multica` in dsh. */
+  apiBasePath: string;
+  /** Permission hint from Multica membership; server authorization still applies. */
+  canManageMemory: boolean;
   /** Workspace the panel speaks as; empty means the first readable one. */
   workspaceSlug: string;
   /** Workspace UUID the settings writes address. Empty when unresolved. */
@@ -45,8 +51,17 @@ export interface MoctConnection {
   problem: string | null;
 }
 
-export const MOCT_STATUS_PATH = "/moct/status";
-export const MOCT_USAGE_PATH = "/moct/team/v1/memory/usage";
+export function moctWorkspacePath(connection: MoctConnection): string {
+  return `${connection.apiBasePath}/api/workspaces/${encodeURIComponent(connection.workspaceId)}/moct`;
+}
+
+export function moctStatusPath(connection: MoctConnection): string {
+  return `${moctWorkspacePath(connection)}/status`;
+}
+
+export function moctUsagePath(connection: MoctConnection): string {
+  return `${moctWorkspacePath(connection)}/team/v1/memory/usage`;
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null

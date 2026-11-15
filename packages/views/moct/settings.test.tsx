@@ -8,8 +8,8 @@ import {
   parseMoctInteractions,
   parseMoctMemorySettings,
   secondsFromMinutes,
-} from "../src/client/moct-settings";
-import type { MoctConnection } from "../src/client/moct-seam";
+} from "./settings";
+import type { MoctConnection } from "./seam";
 
 /**
  * The two S2-C tabs, driven the way the settings page mounts them: over a
@@ -19,6 +19,8 @@ import type { MoctConnection } from "../src/client/moct-seam";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const CONNECTION: MoctConnection = {
+  apiBasePath: "/multica",
+  canManageMemory: true,
   workspaceSlug: "demo",
   workspaceId: WORKSPACE_ID,
   wsPath: "/multica/ws",
@@ -78,7 +80,7 @@ afterEach(() => {
 
 function memoryAnswers(overrides: Record<string, unknown> = {}) {
   return {
-    "/moct/status": { ok: true, schema: 8, reachable: true },
+    [`/api/workspaces/${WORKSPACE_ID}/moct/status`]: { ok: true, schema: 8, reachable: true },
     [`/api/workspaces/${WORKSPACE_ID}/moct`]: {
       memory_inject: false,
       memory_inject_set: true,

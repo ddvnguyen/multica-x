@@ -1,18 +1,21 @@
+// These screens are an existing English-only MOCT surface moved into views;
+// preserve its copy and behavior during the shared-package migration.
+/* eslint-disable i18next/no-literal-string, no-restricted-syntax */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SettingsCard, SettingsRow, SettingsSection } from "../fork";
-import type { ExtraAgentSection } from "../fork";
+import { SettingsCard, SettingsRow, SettingsSection } from "../settings";
+import type { ExtraAgentSection } from "../agents";
 import {
   ActionButton,
   callJson,
   Failure,
-  MOCT_USAGE_PATH,
+  moctUsagePath,
   parseMoctUsage,
   RefreshButton,
   Status,
   useSeamRead,
   type MoctConnection,
   type Answer,
-} from "./moct-seam";
+} from "./seam";
 import {
   agentRef,
   homeLabel,
@@ -27,7 +30,7 @@ import {
   useMemoryDirectory,
   type MemoryRecord,
   type MemoryPage,
-} from "./moct-memory";
+} from "./memory";
 
 /**
  * The agent page's Memory section (S2-E): one agent's records, pending first.
@@ -52,13 +55,13 @@ const MAX_LOAD_PAGES = 25;
  * to this agent's ref before render — nothing of another agent's may pass, not
  * even transiently, and the count anything claims is the whole result's.
  */
-export function pendingListPath(cursor: string | null): string {
-  return memoryListPath({ q: "", type: "", status: "pending", home: "", agent: "" }, cursor);
+export function pendingListPath(cursor: string | null, connection: MoctConnection): string {
+  return memoryListPath({ q: "", type: "", status: "pending", home: "", agent: "" }, cursor, connection);
 }
 
 /** The records read: `status=all` on expert homes, narrowed to the agent. */
-export function agentListPath(cursor: string | null): string {
-  return memoryListPath({ q: "", type: "", status: "all", home: "expert", agent: "" }, cursor);
+export function agentListPath(cursor: string | null, connection: MoctConnection): string {
+  return memoryListPath({ q: "", type: "", status: "all", home: "expert", agent: "" }, cursor, connection);
 }
 
 function mergeRecords(
@@ -203,11 +206,13 @@ function PendingRow({
   busy,
   onApprove,
   onReject,
+  canManage,
 }: {
   record: MemoryRecord;
   busy: boolean;
   onApprove: () => void;
   onReject: () => void;
+  canManage: boolean;
 }) {
   const title = record.title ?? "Untitled record";
   return (
@@ -227,14 +232,14 @@ function PendingRow({
         </span>
       }
     >
-      <span className="flex items-center gap-2">
+      {canManage ? <span className="flex items-center gap-2">
         <ActionButton label={`Approve ${title}`} disabled={busy} onClick={onApprove}>
           <span data-memory-action="approve">Approve</span>
         </ActionButton>
         <ActionButton label={`Reject ${title}`} disabled={busy} onClick={onReject}>
           <span data-memory-action="retract">Reject</span>
         </ActionButton>
-      </span>
+      </span> : null}
     </SettingsRow>
   );
 }
@@ -302,17 +307,20 @@ export function AgentMemoryTab({
   connection: MoctConnection;
 }) {
   const ref = agentRef(agentId);
-  const directory = useMemoryDirectory(connection.workspaceId, connection.workspaceSlug);
+  const canManage = connection.canManageMemory;
+  const directory = useMemoryDirectory(connection.workspaceId, connection.workspaceSlug, connection.apiBasePath);
   const [reloadKey, setReloadKey] = useState(0);
   const overdue = useCallback(() => setReloadKey((current) => current + 1), []);
 
 const wired = connection.problem === null;
-const pending = useMemoryPages(pendingListPath, true, wired, reloadKey);
-const ledger = useMemoryPages(agentListPath, false, wired, reloadKey);
+const pendingPath = useCallback((cursor: string | null) => pendingListPath(cursor, connection), [connection]);
+const agentPath = useCallback((cursor: string | null) => agentListPath(cursor, connection), [connection]);
+const pending = useMemoryPages(pendingPath, true, wired, reloadKey);
+const ledger = useMemoryPages(agentPath, false, wired, reloadKey);
 // Stable across reads: a decision patches one record in either list.
 const replacePending = pending.replaceRecord;
 const replaceLedger = ledger.replaceRecord;
-  const [usage, reloadUsage] = useSeamRead(MOCT_USAGE_PATH, parseMoctUsage, wired);
+  const [usage, reloadUsage] = useSeamRead(moctUsagePath(connection), parseMoctUsage, wired);
 
   // One reload answers every read: this section speaks for one plane, so a
   // reader wants the queue, the ledger and the cap fresher together.
@@ -345,7 +353,7 @@ const replaceLedger = ledger.replaceRecord;
       setNotice(null);
       try {
         const answer = await callJson(
-          memoryDecisionPath(record.id, verb),
+          memoryDecisionPath(record.id, verb, connection),
           parseMemoryRecord,
           { method: "POST", body: { baseVersion: record.version } },
         );
@@ -363,7 +371,7 @@ const replaceLedger = ledger.replaceRecord;
       }
     },
     // Both reads outlive every decision here; replace is stable per read.
-    [replacePending, replaceLedger],
+    [replacePending, replaceLedger, connection],
   );
 
   const ledgerGroups = useMemo(() => groupByType(shownRecords), [shownRecords]);
@@ -438,6 +446,7 @@ const replaceLedger = ledger.replaceRecord;
                     busy={busyId !== null}
                     onApprove={() => void decide(record, "approve")}
                     onReject={() => void decide(record, "retract")}
+                    canManage={canManage}
                   />
                 </li>
               ))}

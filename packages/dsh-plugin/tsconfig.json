@@ -2,7 +2,7 @@
   "extends": "@multica/tsconfig/react-library.json",
   "compilerOptions": {
     "outDir": "lib",
-    "rootDir": ".",
+    "rootDir": "../..",
     "types": ["node", "vitest/globals"]
   },
   "include": ["src", "tests", "scripts", "e2e", "playwright.config.ts"],

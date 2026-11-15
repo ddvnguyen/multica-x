@@ -260,7 +260,7 @@ function byId(id: string, rest: string, method: string): { status: number; body:
 
 function answer(url: string, method: string, body: unknown): { status: number; body: unknown } {
   const parsed = new URL(url, location.origin);
-  const path = parsed.pathname;
+  const path = parsed.pathname.replace(/^\/multica\/api\/workspaces\/[^/]+\/moct/, "/moct");
   if (path === "/multica/config") {
     return { status: 200, body: { wsPath: "/multica/ws", workspaceSlug: "demo", problem: null } };
   }
@@ -280,6 +280,12 @@ function answer(url: string, method: string, body: unknown): { status: number; b
   }
   if (path === "/multica/api/me") {
     return { status: 200, body: { id: "user-1", name: "Ada", email: "ada@example.test" } };
+  }
+  if (path === `/multica/api/workspaces/${WORKSPACE_ID}/members`) {
+    return {
+      status: 200,
+      body: [{ id: "member-1", workspace_id: WORKSPACE_ID, user_id: "user-1", role: "owner", name: "Ada", email: "ada@example.test", avatar_url: null }],
+    };
   }
   if (path === "/multica/api/agents") {
     return {

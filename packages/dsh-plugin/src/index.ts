@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { DshHostContext } from "./dsh.js";
-import { MoctProxy, MOCT_PREFIX, resolveMoctSettings } from "./moct-proxy.js";
 import {
   MulticaProxy,
   PROXY_PREFIX,
@@ -30,10 +29,6 @@ export const CONFIG_PATH = `${PROXY_PREFIX}/config`;
 export function apply(ctx: DshHostContext, config?: unknown): void {
   const { settings, problem } = resolveSettings(config);
   const proxy = settings === null ? null : new MulticaProxy(settings);
-  // The memory seam is a second transport, configured independently: a lane
-  // without a moct-be loses the memory surfaces, not the board.
-  const moct = resolveMoctSettings(config, settings);
-  const moctProxy = moct.settings === null ? null : new MoctProxy(moct.settings);
 
   // The session gate moved between harness generations (M-377): the certified
   // line exposes `requestRejection()`, the merged line exposes `admit()`.
@@ -120,28 +115,10 @@ export function apply(ctx: DshHostContext, config?: unknown): void {
       },
     });
 
-    const offMoct = ctx.webServer.register({
-      kind: "prefix",
-      path: MOCT_PREFIX,
-      handler: async (req, res) => {
-        const rejected = refusal(req);
-        if (rejected !== undefined) {
-          sendJson(res, rejected, { error: "not this dsh session" });
-          return;
-        }
-        if (moctProxy === null) {
-          sendJson(res, 503, { error: moct.problem ?? "moct is not configured" });
-          return;
-        }
-        await moctProxy.handle(req, res);
-      },
-    });
-
     return () => {
       offConfig();
       offHttp();
       offUpgrade();
-      offMoct();
     };
-  }, "multica: /multica and /moct transports");
+  }, "multica: /multica transport");
 }

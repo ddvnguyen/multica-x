@@ -1,14 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentRef, type MemoryRecord } from "../src/client/moct-memory";
+import { agentRef, type MemoryRecord } from "./memory";
 import type { Agent } from "@multica/core/types";
 import {
   AgentMemoryTab,
   agentListPath,
   createAgentMemorySections,
   pendingListPath,
-} from "../src/client/moct-agent-memory";
-import type { MoctConnection } from "../src/client/moct-seam";
+} from "./agent-memory";
+import type { MoctConnection } from "./seam";
 
 /**
  * The agent Memory tab, driven the way the agent pane mounts it: over a
@@ -30,6 +30,8 @@ const AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const CONNECTION: MoctConnection = {
+  apiBasePath: "/multica",
+  canManageMemory: true,
   workspaceSlug: "demo",
   workspaceId: WORKSPACE_ID,
   wsPath: "/multica/ws",
@@ -65,7 +67,8 @@ function ok(body: unknown): Responder {
  */
 function stubSeam(routes: Record<string, Responder>) {
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
+    const rawUrl = typeof input === "string" ? input : input.toString();
+    const url = rawUrl.replace(`/multica/api/workspaces/${WORKSPACE_ID}/moct`, "/moct");
     const method = init?.method ?? "GET";
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
     const call: Call = { url, method, body };
@@ -266,8 +269,8 @@ async function listReads(): Promise<URLSearchParams[]> {
 
 describe("paths the tab reads", () => {
   it("queues with no home filter and ledgers with expert homes", () => {
-    expect(pendingListPath(null)).toBe("/moct/team/v1/memory?limit=20&status=pending");
-    const ledger = new URLSearchParams(agentListPath(null).split("?")[1]);
+    expect(pendingListPath(null, CONNECTION)).toBe(`/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?limit=20&status=pending`);
+    const ledger = new URLSearchParams(agentListPath(null, CONNECTION).split("?")[1]);
     expect(ledger.get("status")).toBe("all");
     expect(ledger.get("homes")).toBe("expert");
     // The agent narrowing is the page's own: moct never sees it.
@@ -282,6 +285,16 @@ describe("paths the tab reads", () => {
     expect(sections[0]?.render({ id: AGENT_ID } as Agent)).toMatchObject({
       props: { agentId: AGENT_ID, connection: CONNECTION },
     });
+  });
+});
+
+describe("member permissions", () => {
+  it("keeps pending records readable but hides decision controls for members", async () => {
+    stubSeam(routes(store()));
+    renderTab({ ...CONNECTION, canManageMemory: false });
+    await waitFor(() => expect(pendingRow("mem_pending_agent")).toBeInTheDocument());
+    expect(document.querySelector('[data-memory-action="approve"]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-memory-action="retract"]')).not.toBeInTheDocument();
   });
 });
 

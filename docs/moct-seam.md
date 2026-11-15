@@ -128,61 +128,26 @@ Write semantics the tool must surface to the agent (live-verified):
   cannot satisfy — see above). A `decision` requires
   `attrs.decidedBy` and `attrs.sourceRef`.
 
-## Out-path 3 — browser reads (`/moct` in the dsh plugin)
+## Out-path 3 — browser reads (shared MOCT views)
 
-The dsh panel reads memory through its own host proxy, never moct-be: the
-browser calls `/moct/...` on the dsh origin and
-`packages/dsh-plugin/src/moct-proxy.ts` re-issues the request with the scope
-the browser is not allowed to choose.
+S3 moved the Memory overview, Connection and Interactions settings, and each
+agent's Memory section into `packages/views/moct`. Both `apps/web` and the dsh
+plugin mount those same components. The SPA calls the same-origin `/api`
+routes; the dsh panel reaches them through its existing `/multica/api` host
+transport. The plugin has no separate `/moct` route or direct moct-be transport.
 
-- Allow-list, and nothing else: `GET /team/v1/memory`,
-  `POST /team/v1/memory/get`, `GET /team/v1/memory/:id/versions`,
-  `GET /team/v1/memory/usage`, `POST /team/v1/memory/:id/{approve,retract}`,
-  and a host-authored `/moct/status`. Notes, settings, inject, rule-feed and
-  the other record verbs are a proxy-side 404.
-- `workspaceId` is `multica:ws:<uuid>` resolved from `/api/workspaces` by the
-  row's `workspaceSlug` (a slug that is not readable is a 503, never a fall
-  back), `actor` is `{kind:"human", id:"multica:user:<uuid>"}` from
-  `/api/me`, and an agent page addresses `expertId` only after the agent is
-  confirmed in that workspace. `all=1` on reads.
-- A by-id route reads the record back through a scoped `POST /memory/get`
-  first; an id from another workspace is a 404 and never reaches a verb. A
-  record with no workspace (`workspace_id IS NULL`) is readable but cannot be
-  approved or retracted from one workspace.
-- The acting human is the owner of the plugin's personal access token, so
-  approvals are made **as that user**, and a token whose owner is not an
-  owner/admin of the workspace is refused. A bridge that carries a live dsh
-  session's own Multica identity would remove that limitation.
+The browser calls `/api/workspaces/{id}/moct/...`. Multica-be verifies workspace
+membership, supplies the actor and workspace scope to moct-be, checks that an
+agent is in the workspace when needed, and enforces owner/admin access for
+approve and retract. The shared UI hides those decision controls for members;
+the server remains authoritative. The backend's closed allow-list covers
+memory listing, record reads, versions, usage, approval and retraction. A
+record from another workspace is never exposed through an identifier lookup.
 
-### The panel's memory overview (S2-D)
-
-The dsh panel's MOCT → **Memory** page is that seam's reader
-(`packages/dsh-plugin/src/client/moct-memory.tsx`). What it can say about a
-record is bounded by the seven routes above, and it adds no eighth:
-
-- **Filters that are moct's**: `q`, `types`, `homes`, `status` and the page's
-  `limit`/`cursor` go to `GET /memory` as the reader set them; the host replaces
-  only the scope around them. The `homes` filter is a home **kind**
-  (`task`/`channel`/`team`/`expert`), and `status` accepts `all`.
-- **The agent filter is the page's own.** moct has no per-agent query: a read is
-  scoped by workspace and by the reader, `all=1` drops the tag filter, and every
-  `decision` carries a team tag, so naming an expert would not narrow the set.
-  The page therefore narrows the records it has **loaded** — matching the
-  profile a record is homed on, its `expert` tag, or its writer — and says so
-  next to the control, with the seam's own total still shown.
-- **Decisions**: `approve` and `retract`, each with `baseVersion` = the version
-  the reader was shown, and nothing else — the host adds `workspaceId` and the
-  actor. "Reject" in the panel is `retract`; no moct verb was added for it. The
-  page offers a decision only while a record is `pending` and belongs to a
-  workspace, and it opens on `status=pending`, because an unapproved worker
-  write is what a human is there to read. A refusal (not an owner/admin, a
-  version that moved, a home whose always-load set is full) is shown as moct
-  answered it and the record is re-read.
-- **Versions** come from `GET /memory/:id/versions` after the host's scoped
-  `POST /memory/get` has confirmed the id belongs to this workspace; the
-  record's `links` ride on that same `get`. Nothing on the page edits a record:
-  text, home and pin belong to the writer, and `PATCH`, `purge`, `restore`,
-  `widen` and the note route stay a proxy-side 404.
+The shared page keeps the original filters and client-side agent narrowing.
+It sends `baseVersion` with each decision, displays server refusals, and reloads
+the record after a decision. It does not edit record text, home or pin or add
+writer operations to the browser API.
 
 ## Panel settings (S2-C, M-123)
 

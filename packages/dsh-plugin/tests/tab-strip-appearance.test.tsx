@@ -9,7 +9,7 @@ import {
 import { attachSeat } from "../src/client/seat";
 import { resetIslandConfig } from "../src/client/config";
 import { BOARD_ROUTE } from "../src/client/navigation";
-import { HIDDEN_SETTINGS_TABS } from "../src/client/moct-settings";
+import { HIDDEN_SETTINGS_TABS } from "../../views/moct/settings";
 import { runtimesDeviceTab } from "../src/client/moct-runtimes";
 
 vi.mock("@tanstack/react-virtual", () => ({

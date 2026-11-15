@@ -179,7 +179,7 @@ function stubBackend(
         problem: options.problem ?? null,
       });
     }
-    if (url.startsWith("/multica/api/workspaces")) {
+    if (url === "/multica/api/workspaces" || url.startsWith("/multica/api/workspaces?")) {
       return json(options.workspaces ?? [WORKSPACE]);
     }
     if (url.startsWith("/multica/api/projects")) {
@@ -188,11 +188,12 @@ function stubBackend(
     if (url.startsWith("/multica/api/me")) {
       return json({ id: "user-1", name: "Ada", email: "ada@example.test" });
     }
-    // The memory seam the settings page reads through the host's /moct prefix.
-    if (url.startsWith("/moct/status")) {
+    // The shared screens use the authenticated workspace MOCT API.
+    const moctApi = "/multica/api/workspaces/ws-1/moct";
+    if (url.startsWith(`${moctApi}/status`)) {
       return json({ ok: true, schema: 8, reachable: true });
     }
-    if (url.startsWith("/moct/team/v1/memory/usage")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/usage`)) {
       return json({
         workspaceId: "multica:ws:ws-1",
         capTokens: 1200,
@@ -204,7 +205,7 @@ function stubBackend(
     }
     // The record list the Memory tab opens on: one pending rule, which is what
     // a worker's write looks like before a human approves it.
-    if (url.startsWith("/moct/team/v1/memory?")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory?`)) {
       return json({
         results: [
           {
@@ -228,10 +229,10 @@ function stubBackend(
         nextCursor: null,
       });
     }
-    if (url.startsWith("/moct/team/v1/memory/get")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/get`)) {
       return json({ records: [], missing: ["mem_1"] });
     }
-    if (url.startsWith("/moct/team/v1/memory/mem_1/versions")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/mem_1/versions`)) {
       return json({ versions: [] });
     }
     if (url.startsWith("/multica/api/issues/grouped")) {
@@ -775,9 +776,10 @@ describe("mountIsland", () => {
       expect(text).toContain("Always run the package suite");
       expect(text).toContain("1 of 1 records");
     });
-    expect(requests).toContain("/moct/status");
-    expect(requests).toContain("/moct/team/v1/memory/usage");
-    const list = requests.find((url) => url.startsWith("/moct/team/v1/memory?"));
+    const moctApi = "/multica/api/workspaces/ws-1/moct";
+    expect(requests).toContain(`${moctApi}/status`);
+    expect(requests).toContain(`${moctApi}/team/v1/memory/usage`);
+    const list = requests.find((url) => url.startsWith(`${moctApi}/team/v1/memory?`));
     expect(new URLSearchParams(list?.split("?")[1] ?? "").get("status")).toBe("pending");
   });
 
@@ -789,7 +791,7 @@ describe("mountIsland", () => {
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
     });
-    expect(requests.some((url) => url.startsWith("/moct"))).toBe(false);
+    expect(requests.some((url) => url.includes("/moct/team/v1/memory"))).toBe(false);
   });
 
   it("explains a host that is not configured instead of rendering an empty page", async () => {

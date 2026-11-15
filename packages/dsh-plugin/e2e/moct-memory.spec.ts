@@ -21,6 +21,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const PENDING_RULE = "Always run the package suite before pushing";
 const ACTIVE_CONVENTION = "Lane z keeps its own database";
+const MOCT_API = "/multica/api/workspaces/11111111-1111-4111-8111-111111111111/moct";
 
 interface FetchCall {
   url: string;
@@ -45,7 +46,7 @@ async function callsTo(page: Page, path: string): Promise<FetchCall[]> {
 
 /** The list reads, newest last, with the query each one carried. */
 async function listReads(page: Page): Promise<URLSearchParams[]> {
-  return (await callsTo(page, "/moct/team/v1/memory?")).map(
+  return (await callsTo(page, `${MOCT_API}/team/v1/memory?`)).map(
     (call) => new URLSearchParams(call.url.split("?")[1] ?? ""),
   );
 }
@@ -85,14 +86,14 @@ test("the Memory entry lists, filters, decides and versions through the seam", a
   await page.getByRole("combobox", { name: "Type" }).click();
   await page.getByRole("option", { name: "Decision" }).click();
   await expect(page.getByText(PENDING_RULE)).toHaveCount(0);
-  await expect(page.getByText("M-103 acceptance run")).toBeVisible();
+  await expect(page.getByText("M-103 acceptance run", { exact: true })).toBeVisible();
   await expect(page.getByText("2 of 2 records")).toBeVisible();
   expect((await listReads(page))[2]?.get("types")).toBe("decision");
 
   // 4. Search is submitted, not typed at: one request per submit.
   const before = (await listReads(page)).length;
   await page.getByLabel("Search memory").fill("acceptance");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByLabel("Records").getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("1 of 1 records")).toBeVisible();
   const searched = await listReads(page);
   expect(searched).toHaveLength(before + 1);
@@ -106,9 +107,9 @@ test("the Memory entry lists, filters, decides and versions through the seam", a
   await expect(page.getByText("m103-acceptance")).toBeVisible();
   await expect(page.getByText("v1")).toBeVisible();
   await page.getByText("Decision").first().scrollIntoViewIfNeeded();
-  const versionsRead = await callsTo(page, "/moct/team/v1/memory/mem_decision_pending/versions");
+  const versionsRead = await callsTo(page, `${MOCT_API}/team/v1/memory/mem_decision_pending/versions`);
   expect(versionsRead).toHaveLength(1);
-  const get = await callsTo(page, "/moct/team/v1/memory/get");
+  const get = await callsTo(page, `${MOCT_API}/team/v1/memory/get`);
   expect(get[0]?.body).toEqual({ ids: ["mem_decision_pending"] });
 
   await shot(page, testInfo, "memory-record-desktop");
@@ -117,7 +118,7 @@ test("the Memory entry lists, filters, decides and versions through the seam", a
   //    browser sends the version it was shown and nothing else.
   await page.getByRole("button", { name: "Approve M-103 acceptance run" }).click();
   await expect(page.getByText("Approved. The record injects from here on.")).toBeVisible();
-  const decisions = (await callsTo(page, "/moct/team/v1/memory/mem_decision_pending/approve")).filter(
+  const decisions = (await callsTo(page, `${MOCT_API}/team/v1/memory/mem_decision_pending/approve`)).filter(
     (call) => call.method === "POST",
   );
   expect(decisions).toHaveLength(1);
@@ -130,14 +131,14 @@ test("the Memory entry lists, filters, decides and versions through the seam", a
   await shot(page, testInfo, "memory-approved-desktop");
 
   // 7. Back on the list the row moved with it, in the page's own state.
-  await page.getByRole("button", { name: "Memory" }).click();
-  await expect(page.getByText("M-103 acceptance run")).toBeVisible();
+  await page.getByRole("button", { name: "Back to Memory" }).click();
+  await expect(page.getByText("M-103 acceptance run", { exact: true })).toBeVisible();
   await expect(page.getByText("1 of 1 records")).toBeVisible();
 
   // 8. The narrow panel the shell can hand this page on a phone-sized window:
   //    the record list, its count and the way into a record all stay usable.
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("button", { name: "Search" })).toBeVisible();
+  await expect(page.getByLabel("Records").getByRole("button", { name: "Search" })).toBeVisible();
   await page.getByText("M-103 acceptance run").scrollIntoViewIfNeeded();
   await shot(page, testInfo, "memory-narrow");
   await expect(page.getByRole("button", { name: "Open M-103 acceptance run" })).toBeVisible();

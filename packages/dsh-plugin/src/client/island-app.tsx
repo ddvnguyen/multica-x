@@ -29,10 +29,8 @@ import { readProjectScope, writeProjectScope } from "./project-scope";
 import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
 import { PanelZoomRow } from "./zoom-row";
 import { useZoom } from "./zoom-store";
-import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
 import { runtimesDeviceTab } from "./moct-runtimes";
 import { ShellButtons } from "./shell-buttons";
-import { createAgentMemorySections } from "./moct-agent-memory";
 import { UnreadReporter } from "./unread-reporter";
 import { SteerReporter } from "./steer-reporter";
 import { DecisionsBadgeReporter } from "./decisions-badge-reporter";
@@ -43,6 +41,10 @@ import { SidePreviewPortals } from "./side-preview-portals";
 import { hostShell } from "./shell-runtime";
 import {
   AgentDetailPage,
+  createMoctGroup,
+  createAgentMemorySections,
+  HIDDEN_SETTINGS_TABS,
+  useCurrentMember,
   AgentsPage,
   ChatPage,
   CoreProvider,
@@ -480,14 +482,16 @@ export function IslandPages({
   }, [attached, family]);
 
   const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+  const { role } = useCurrentMember(workspaceId);
+  const canManageMemory = role === "owner" || role === "admin";
 
   const moctGroup = useMemo(
-    () => createMoctGroup({ workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
-    [slug, workspaceId, wsPath, workspaceFolder, problem],
+    () => createMoctGroup({ apiBasePath: ISLAND_API_BASE, canManageMemory, workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
+    [slug, workspaceId, wsPath, workspaceFolder, problem, canManageMemory],
   );
   const agentMemorySections = useMemo(
-    () => createAgentMemorySections({ workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
-    [slug, workspaceId, wsPath, workspaceFolder, problem],
+    () => createAgentMemorySections({ apiBasePath: ISLAND_API_BASE, canManageMemory, workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
+    [slug, workspaceId, wsPath, workspaceFolder, problem, canManageMemory],
   );
 
   const navigation = useMemo(

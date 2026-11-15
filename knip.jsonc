@@ -60,6 +60,7 @@
     // leaves e2e/perf to run by hand.
     "packages/dsh-plugin": {
       "entry": [
+        "src/index.ts",
         "e2e/harness/*.{ts,tsx}",
         "e2e/perf/*.mjs",
         "e2e/vite.harness.config.ts"

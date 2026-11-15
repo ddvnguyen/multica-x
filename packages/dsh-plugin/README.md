@@ -8,7 +8,7 @@ Two halves, one package:
 
 | Face | Entry | Runs in | Owns |
 | --- | --- | --- | --- |
-| host | `src/index.ts` | the dsh process | `/multica` HTTP + WebSocket transport, and the `/moct` memory seam |
+| host | `src/index.ts` | the dsh process | `/multica` HTTP + WebSocket transport |
 | client | `src/client/index.ts` | the dsh browser shell | six rail rows, their `main` seats, the React 19 island |
 
 The host half exists so the Multica credential never leaves the dsh process: the
@@ -17,12 +17,10 @@ Multica server named in the plugin config, and the browser sees neither the
 server URL nor the token. Same origin means no CORS, and a WebSocket goes through
 `/multica/ws` on the same seam.
 
-`/moct` is the same idea for the memory plane, but closed: moct-be has no auth
-and trusts whoever names a workspace, so the host serves a fixed allow-list of
-memory routes and injects `workspaceId`, `expertId` and `actor` itself. A route
-the panel does not need is a 404 that never reaches the backend; see
-[`docs/moct-seam.md`](../../docs/moct-seam.md) and
-the config comment in [`cordis.patch.yml`](cordis.patch.yml).
+The shared MOCT screens call the authenticated Multica server through this
+same `/multica` transport. The server scopes each request to the workspace and
+enforces owner/admin decisions; the browser never contacts moct-be directly.
+See [`docs/moct-seam.md`](../../docs/moct-seam.md).
 
 ## Configure
 

@@ -64,6 +64,7 @@
     "./chat": "./chat/index.ts",
     "./chat/floating-chat": "./chat/floating-chat.tsx",
     "./settings": "./settings/index.ts",
+    "./moct": "./moct/index.ts",
     "./lark": "./lark/index.ts",
     "./slack": "./slack/index.ts",
     "./dingtalk": "./dingtalk/index.ts",
