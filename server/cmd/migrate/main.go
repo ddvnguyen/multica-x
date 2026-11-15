@@ -140,16 +140,27 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
-	"662_question_group_index":                                  "question_group_idx",
-	"663_question_task_status_index":                            "question_task_status_idx",
-	"664_question_issue_status_index":                           "question_issue_status_idx",
-	"653_issue_decision_response_request_index":                 "issue_decision_response_request_idx",
-	"654_issue_decision_response_id_index":                      "issue_decision_response_id_idx",
-	"648_decision_delivered_supplement_index":                   "idx_decision_delivered_supplement",
-	"650_native_question_answer_seq_index":                      "uq_native_question_answer_task_seq",
-	"651_native_question_answer_request_index":                  "idx_native_question_answer_request",
-	"646_workspace_account_runtime_index":                       "workspace_account_runtime_id_idx",
-	"647_workspace_account_daemon_id_index":                     "workspace_account_daemon_account_id_uq",
+	"682_question_group_index":                                  "question_group_idx",
+	"683_question_task_status_index":                            "question_task_status_idx",
+	"684_question_issue_status_index":                           "question_issue_status_idx",
+	"674_issue_decision_response_request_index":                 "issue_decision_response_request_idx",
+	"675_issue_decision_response_id_index":                      "issue_decision_response_id_idx",
+	"669_decision_delivered_supplement_index":                   "idx_decision_delivered_supplement",
+	"671_native_question_answer_seq_index":                      "uq_native_question_answer_task_seq",
+	"672_native_question_answer_request_index":                  "idx_native_question_answer_request",
+	"667_workspace_account_runtime_index":                       "workspace_account_runtime_id_idx",
+	"668_workspace_account_daemon_id_index":                     "workspace_account_daemon_account_id_uq",
+	"654_chat_submission_receipt_key":                           "uq_chat_submission_receipt_key",
+	"655_chat_submission_receipt_workspace":                     "idx_chat_submission_receipt_workspace",
+	"651_task_context_receipt_issue_idx":                        "idx_task_context_receipt_issue",
+	"650_task_context_receipt_workspace_idx":                    "idx_task_context_receipt_workspace",
+	"648_project_subscriber_user_idx":                           "idx_project_subscriber_workspace_user",
+	"645_issue_member_creator_index":                            "idx_issue_workspace_member_creator",
+	"644_issue_requester_index":                                 "idx_issue_workspace_requester",
+	"642_issue_environment_config_issue_idx":                    "idx_issue_environment_config_issue",
+	"641_issue_environment_command_logs_idx":                    "idx_issue_environment_command_logs",
+	"640_issue_environment_command_issue_idx":                   "idx_issue_environment_command_issue",
+	"639_issue_environment_command_pending_idx":                 "idx_issue_environment_command_pending",
 	"635_issue_environment_issue_idx":                           "idx_issue_environment_issue",
 	"634_issue_environment_task_key_idx":                        "uq_issue_environment_task_key",
 	"632_project_member_user_idx":                               "idx_project_member_workspace_user",
@@ -515,16 +526,16 @@ var upMigrationConditions = map[string]migrationCondition{
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
 	// Fork-rename gates (M-167, M-165 deploy): the v0.7.1 sync renumbered
 	// migrations previously applied to fork lanes under other numbers, so
-	// their SQL ships again under 618–622/623/624. A database that ran the
+	// their SQL ships again under the 658+ block. A database that ran the
 	// old numbers has the objects and must record these versions without
 	// re-running; a fresh database applies them. See
 	// migrate_fork_rename_conditions.go.
-	"638_agent_question_card":  whenRenamedObjectsAllPresent(objects618AgentQuestionCard),
-	"639_agent_plan":           whenRenamedObjectsAllPresent(objects619AgentPlan),
-	"640_agent_plan_review":    whenRenamedObjectsAllPresent(objects620AgentPlanReview),
-	"642_project_settings":     whenRenamedObjectsAllPresent(objects622ProjectSettings),
-	"643_workspace_account":    whenRenamedObjectsAllPresent(objects623WorkspaceAccount),
-	"644_task_supplement_mode": whenRenamedObjectsAllPresent(objects624TaskSupplementMode),
+	"659_agent_question_card":  whenRenamedObjectsAllPresent(objects618AgentQuestionCard),
+	"660_agent_plan":           whenRenamedObjectsAllPresent(objects619AgentPlan),
+	"661_agent_plan_review":    whenRenamedObjectsAllPresent(objects620AgentPlanReview),
+	"663_project_settings":     whenRenamedObjectsAllPresent(objects622ProjectSettings),
+	"664_workspace_account":    whenRenamedObjectsAllPresent(objects623WorkspaceAccount),
+	"665_task_supplement_mode": whenRenamedObjectsAllPresent(objects624TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index

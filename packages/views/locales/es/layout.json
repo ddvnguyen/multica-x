@@ -109,7 +109,16 @@
     "open_in_new_window_click": "Clic",
     "open_in_other_window": "Ya está abierto en otra ventana",
     "in_other_window": "Otra ventana",
-    "all_workspaces_open": "Todos los espacios de trabajo ya están abiertos en una ventana"
+    "all_workspaces_open": "Todos los espacios de trabajo ya están abiertos en una ventana",
+    "copy_link": "Copiar enlace",
+    "link_copied": "Enlace copiado",
+    "workspace_settings": "Ajustes del espacio de trabajo",
+    "mark_all_read": "Marcar todo como leído",
+    "mark_all_read_failed": "No se pudo marcar todo como leído",
+    "reset_order": "Restablecer el orden predeterminado",
+    "copy_workspace_link": "Copiar enlace del espacio de trabajo",
+    "workspace_meta_one": "{{slug}} · {{count}} miembro",
+    "workspace_meta_other": "{{slug}} · {{count}} miembros"
   },
   "panels": {
     "work": {
@@ -152,7 +161,9 @@
       "view_rename": "Renombrar",
       "view_duplicate": "Duplicar",
       "view_delete": "Eliminar vista",
-      "view_edit": "Editar vista"
+      "view_edit": "Editar vista",
+      "assignee_projects_only": "Solo se aplica a las tareas que se muestran en Proyectos",
+      "new_issue_here": "Nueva tarea en este proyecto"
     },
     "team": {
       "new_agent": "Nuevo agente",
@@ -172,7 +183,8 @@
       "runtimes_online_other": "{{count}} en línea",
       "invite_member": "Invitar miembro",
       "show_more_agents": "Mostrar {{count}} más…",
-      "show_fewer_agents": "Mostrar menos"
+      "show_fewer_agents": "Mostrar menos",
+      "open_issue": "Abrir {{identifier}}"
     },
     "autopilots": {
       "all": "Todas las automatizaciones",
@@ -190,7 +202,9 @@
       "system": "Sistema"
     },
     "language": "Idioma",
-    "shortcuts": "Atajos de teclado"
+    "shortcuts": "Atajos de teclado",
+    "mode": "Modo",
+    "appearance_settings": "Ajustes de apariencia"
   },
   "collection": {
     "filter": "Filtrar",
@@ -235,5 +249,24 @@
     "star_label": "Dar una Star a Multica en GitHub",
     "later": "Ahora no",
     "close": "Cerrar"
+  },
+  "bottom_bar": {
+    "label": "Barra de estado",
+    "working_one": "{{count}} agente trabajando",
+    "working_other": "{{count}} agentes trabajando"
+  },
+  "context_menu": {
+    "cut": "Cortar",
+    "copy": "Copiar",
+    "paste": "Pegar",
+    "select_all": "Seleccionar todo",
+    "add_to_dictionary": "Añadir al diccionario",
+    "open_link": "Abrir enlace en el navegador",
+    "copy_link_address": "Copiar dirección del enlace",
+    "copy_image": "Copiar imagen",
+    "copy_code": "Copiar código",
+    "copy_table": "Copiar tabla",
+    "copied": "Copiado",
+    "copy_failed": "No se pudo copiar"
   }
 }

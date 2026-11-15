@@ -6,9 +6,23 @@ import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 import { cn } from "@multica/ui/lib/utils"
 import { usePortalContainer } from "@multica/ui/components/ui/portal-container"
 import { ChevronRightIcon, CheckIcon } from "@multica/ui/icons"
+import {
+  ContextMenuOwnerProvider,
+  useContextMenuOwner,
+  useContextMenuOwnerRef,
+} from "@multica/ui/hooks/use-context-menu-owner"
 
-function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
-  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+function DropdownMenu({ onOpenChange, ...props }: MenuPrimitive.Root.Props) {
+  const owner = useContextMenuOwner(onOpenChange)
+  return (
+    <ContextMenuOwnerProvider value={owner.register}>
+      <MenuPrimitive.Root
+        data-slot="dropdown-menu"
+        onOpenChange={owner.onOpenChange}
+        {...props}
+      />
+    </ContextMenuOwnerProvider>
+  )
 }
 
 function DropdownMenuPortal({ ...props }: MenuPrimitive.Portal.Props) {
@@ -46,9 +60,11 @@ function DropdownMenuContent({
   // menu item inside a row that's wrapped in <a> (agent / runtime list
   // rows) would ALSO fire the row's onClick → unintended navigation.
   const container = usePortalContainer()
+  const ownerRef = useContextMenuOwnerRef()
   return (
     <MenuPrimitive.Portal container={container ?? undefined}>
       <MenuPrimitive.Positioner
+        ref={ownerRef}
         className="isolate z-50 outline-none"
         align={align}
         alignOffset={alignOffset}
@@ -62,7 +78,7 @@ function DropdownMenuContent({
             e.stopPropagation()
             onClick?.(e)
           }}
-          className={cn("z-50 max-h-(--available-height) min-w-32 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-menu bg-surface-raised p-1.5 text-popover-foreground shadow-[var(--menu-shadow)] ring-1 ring-surface-border duration-100 outline-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:overflow-hidden data-closed:fade-out-0 data-closed:zoom-out-95", className )}
+          className={cn("z-50 max-h-(--available-height) min-w-32 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-menu bg-surface-raised p-1.5 text-popover-foreground shadow-[var(--menu-shadow)] ring-1 ring-floating-border duration-100 outline-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:overflow-hidden data-closed:fade-out-0 data-closed:zoom-out-95", className )}
           {...props}
         />
       </MenuPrimitive.Positioner>
@@ -117,8 +133,20 @@ function DropdownMenuItem({
   )
 }
 
-function DropdownMenuSub({ ...props }: MenuPrimitive.SubmenuRoot.Props) {
-  return <MenuPrimitive.SubmenuRoot data-slot="dropdown-menu-sub" {...props} />
+function DropdownMenuSub({
+  onOpenChange,
+  ...props
+}: MenuPrimitive.SubmenuRoot.Props) {
+  const owner = useContextMenuOwner(onOpenChange)
+  return (
+    <ContextMenuOwnerProvider value={owner.register}>
+      <MenuPrimitive.SubmenuRoot
+        data-slot="dropdown-menu-sub"
+        onOpenChange={owner.onOpenChange}
+        {...props}
+      />
+    </ContextMenuOwnerProvider>
+  )
 }
 
 function DropdownMenuSubTrigger({
@@ -156,7 +184,7 @@ function DropdownMenuSubContent({
   return (
     <DropdownMenuContent
       data-slot="dropdown-menu-sub-content"
-      className={cn("w-auto min-w-[96px] rounded-menu bg-surface-raised p-1.5 text-popover-foreground shadow-[var(--menu-shadow)] ring-1 ring-surface-border duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
+      className={cn("w-auto min-w-[96px] rounded-menu bg-surface-raised p-1.5 text-popover-foreground shadow-[var(--menu-shadow)] ring-1 ring-floating-border duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
       align={align}
       alignOffset={alignOffset}
       side={side}

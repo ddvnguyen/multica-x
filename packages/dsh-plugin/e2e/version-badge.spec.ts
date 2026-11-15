@@ -17,10 +17,6 @@ import { expect, test, type Page } from "@playwright/test";
 /** The seeded issue the harness board always shows. */
 const BOARD_ROW = "Rail click stays warm";
 
-/** The issue detail's actions menu — proves the route actually changed. */
-const ISSUE_ACTIONS =
-  "button:has(svg.lucide-ellipsis), button:has(svg.lucide-more-horizontal)";
-
 /** `x.x.x-yyMMMdd.HH.mm`, the Owner's format (M-155). */
 const STAMP_SHAPE = /^\d+\.\d+\.\d+-\d{2}[A-Z]{3}\d{2}\.\d{2}\.\d{2}$/;
 
@@ -65,7 +61,7 @@ test("badge matches the Settings row from the board", async ({ page }) => {
 test("badge matches the Settings row from an issue", async ({ page }) => {
   await openBoard(page);
   await page.getByText(BOARD_ROW).click();
-  await expect(page.locator(ISSUE_ACTIONS).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "More actions" })).toBeVisible();
 
   const issue = await badgeStamp(page);
   expect(issue).toMatch(STAMP_SHAPE);
