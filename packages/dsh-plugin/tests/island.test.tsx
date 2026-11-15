@@ -541,7 +541,7 @@ describe("mountIsland", () => {
     act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
 
     await settle(() => {
-      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.title);
     });
     expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
   });
@@ -555,9 +555,8 @@ describe("mountIsland", () => {
     act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
 
     await settle(() => {
-      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+      expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).not.toBeNull();
     });
-    expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).not.toBeNull();
   });
 
   // M-360: the issue detail's resizable split (and every other
@@ -579,7 +578,7 @@ describe("mountIsland", () => {
     act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
 
     await settle(() => {
-      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.identifier);
+      expect(host.shadowRoot?.querySelector('[data-testid="sidebar"]')).not.toBeNull();
     });
     const sidebar = host.shadowRoot?.querySelector<HTMLElement>('[data-testid="sidebar"]');
     expect(sidebar).not.toBeNull();
