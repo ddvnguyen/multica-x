@@ -241,13 +241,10 @@ func TestIsRuntimeClaimable(t *testing.T) {
 func TestTierSweep_BothFullThenSlotFrees(t *testing.T) {
 	ctx := context.Background()
 	pool := sharedTestPool(t)
-	qq, agent, rtA, _, _, tierA := tierTestSetup(t, 1)
+	qq, agent, rtA, _, tierA, _ := tierTestSetup(t, 1)
 	svc := newTierTestService(pool, qq)
 
 	// Occupy both tiers: one active row on each tier runtime.
-	tierBRow, err := qq.GetAgentRuntime(ctx, agent.RuntimeID)
-	_ = tierBRow
-	_ = err
 	selections, err := qq.ListAgentTiers(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("list tiers: %v", err)
