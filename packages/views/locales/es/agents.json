@@ -208,7 +208,8 @@
     "cancel": "Cancelar",
     "qoder_execution_note": "El modelo, las herramientas y las skills se configuran en el agente desde Qoder Cloud Agents.",
     "section_skills": "Skills",
-    "no_description_placeholder": "No description"
+    "no_description_placeholder": "No description",
+    "save": "Guardar"
   },
   "overview": {
     "attention_title": "Ejecuciones que requieren atención",
@@ -252,7 +253,8 @@
     "service_tier_standard_description": "Velocidad estándar y uso estándar",
     "service_tier_tooltip": "Velocidad · {{value}}",
     "service_tier_clear": "Predeterminado del runtime",
-    "service_tier_clear_title": "Quitar la sobreescritura de velocidad y dejar que la configuración local de Codex decida"
+    "service_tier_clear_title": "Quitar la sobreescritura de velocidad y dejar que la configuración local de Codex decida",
+    "concurrency_tooltip": "Concurrencia · máximo de {{value}} ejecuciones simultáneas"
   },
   "model_dropdown": {
     "label": "Modelo",
@@ -296,7 +298,12 @@
     "step_ai": "Crear conversando",
     "modes": {
       "ai": {
-        "title": "Crear con IA"
+        "title": "Crear con IA",
+        "description": "Crea una configuración editable mediante una conversación."
+      },
+      "template": {
+        "title": "Usar una plantilla",
+        "description": "Parte de instrucciones y habilidades seleccionadas y adáptalas a tu espacio de trabajo."
       }
     },
     "sections": {
@@ -342,7 +349,11 @@
       "placeholder": "Describe el agente que necesitas…",
       "send": "Enviar mensaje",
       "draft_parse_failed": "Esta respuesta no pudo rellenar el formulario. Pide al asistente que vuelva a generar el borrador o rellénalo a mano.",
-      "conversation_tab": "Conversación"
+      "conversation_tab": "Conversación",
+      "setup_title": "Elige un entorno para el creador de agentes",
+      "setup_description": "Este entorno se usa para la configuración y será el predeterminado del nuevo agente.",
+      "start": "Iniciar conversación",
+      "connect_runtime": "Conectar un entorno"
     },
     "live_draft": "Configuración del agente",
     "live_draft_hint": "Puedes editar el borrador directamente.",
@@ -446,7 +457,9 @@
       "public_desc": "Elige quién puede ejecutar este agente",
       "public_workspace_option": "Todos en este espacio de trabajo",
       "public_members_group": "Personas concretas",
-      "public_targets_empty_hint": "Elige al menos una opción abajo; si no, el agente seguirá siendo privado."
+      "public_targets_empty_hint": "Elige al menos una opción abajo; si no, el agente seguirá siendo privado.",
+      "label": "Acceso",
+      "public_members_empty": "No hay miembros del espacio de trabajo disponibles"
     },
     "runtime_label": "Runtime",
     "runtime_filter_mine": "Míos",
@@ -464,7 +477,10 @@
     "squad_join_failed_toast": "El agente \"{{name}}\" se creó pero no pudo unirse al squad: {{error}}. Puedes añadirlo manualmente desde Miembros.",
     "instructions": {
       "label": "Instrucciones",
-      "editor_placeholder": "Escribe qué debe hacer este agente, en qué centrarse, qué evitar…"
+      "editor_placeholder": "Escribe qué debe hacer este agente, en qué centrarse, qué evitar…",
+      "placeholder_blank": "Haz clic para escribir instrucciones…",
+      "placeholder_duplicate": "Haz clic para ver o editar las instrucciones duplicadas",
+      "collapse": "Contraer"
     },
     "skills_section": {
       "label": "Skills",
@@ -484,7 +500,15 @@
       "remove_aria": "Quitar avatar",
       "select_image_toast": "Selecciona un archivo de imagen.",
       "upload_failed_toast": "Error al subir el avatar"
-    }
+    },
+    "title_create": "Crear agente",
+    "title_duplicate": "Duplicar agente",
+    "description_duplicate": "Crea un agente basado en «{{name}}». Se copiarán las instrucciones, variables de entorno y habilidades.",
+    "visibility_label": "Visibilidad",
+    "create": "Crear",
+    "creating": "Creando...",
+    "cancel": "Cancelar",
+    "create_failed_toast": "No se pudo crear el agente"
   },
   "conversation_starters": {
     "label": "Sugerencias de conversación",
@@ -1155,5 +1179,18 @@
     "label": "Account",
     "runtime_default": "Runtime default",
     "hint": "Which Freebuff-CLI account runs this agent."
+  },
+  "runtime_filter": {
+    "all": "Todos los entornos",
+    "section_local": "Locales",
+    "section_remote": "Remotos",
+    "section_cloud": "Nube",
+    "agent_count_one": "Agentes: {{count}}",
+    "agent_count_other": "Agentes: {{count}}",
+    "empty": "Aún no hay máquinas"
+  },
+  "skill_attach": {
+    "trigger_aria": "Adjuntar una habilidad del espacio de trabajo",
+    "trigger_label": "Adjuntar"
   }
 }

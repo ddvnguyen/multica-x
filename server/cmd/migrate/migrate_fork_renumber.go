@@ -15,7 +15,7 @@ import (
 //
 //   - v0.8.1 put upstream on 595–616, so the fork's 595–614 moved to 617–636.
 //   - v0.8.2 put upstream on 617–636, so the fork's 617–640 moved to 637–660.
-//   - v0.9.0 put upstream on 637–656, so the fork's 637–665 moved to 658–685.
+//   - v0.9.0 put upstream on 637–656, so the fork's 637–666 moved to 658–686.
 //
 // The generations chain: a lane that never took v0.8.1 still records 595-stems
 // and lands on 658 directly, while a lane already on 637-stems (lane z) makes
@@ -113,11 +113,8 @@ var forkMigrationRenames = [][2]string{
 	{"666_plan_comment_revision", "686_plan_comment_revision"},
 }
 
-// forkMigrationRenameOrder returns the table in the order it must be applied:
-// highest old number first. Renames chain (595, 617 and 637 all target
-// this sync's stems), and one of this sync's old stems — 637 — is also a target
-// of an earlier generation. Applying 617 -> 637 before 637 -> 678 would move the
-// row it just wrote a second time, onto the stem of a different migration.
+// forkMigrationRenameOrder applies old stems in descending numeric order.
+// Historical generations map directly to the newest stem for each migration.
 func forkMigrationRenameOrder() [][2]string {
 	ordered := make([][2]string, len(forkMigrationRenames))
 	copy(ordered, forkMigrationRenames)

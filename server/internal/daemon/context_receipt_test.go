@@ -260,7 +260,7 @@ func TestContextReceiptFailedBriefWrite(t *testing.T) {
 	}
 	r := buildContextReceipt(contextReceiptInput{
 		Provider: "claude", RuntimeVersion: "2.1.220", WorkDir: workDir,
-		RuntimeBrief: brief, TaskCtx: taskCtx,
+		RuntimeBrief: brief.Content, TaskCtx: taskCtx,
 	})
 	for _, kind := range []string{ReceiptKindRuntimeBrief, ReceiptKindAgentInstructions} {
 		s := receiptSource(t, r, kind, "")

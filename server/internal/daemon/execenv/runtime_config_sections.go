@@ -335,7 +335,7 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 
 // sharedStashRule keeps agents off the stash list in managed checkouts and
 // names the two ways to set changes aside that stay inside one checkout.
-const sharedStashRule = "Managed checkouts of one repo share a single `git stash` list, so `git stash pop` can apply another agent's changes: never use `git stash` / `git stash pop` there. To set changes aside, make a temporary commit, or keep the SHA from `git stash create` and restore it with `git stash apply <sha>`.\n\n"
+const sharedStashRule = "Managed checkouts of one repo share a single `git stash` list, so `git stash pop` can apply changes from another checkout: never use `git stash` / `git stash pop` there. To set changes aside, make a temporary commit, or keep the SHA from `git stash create` and restore it with `git stash apply <sha>`.\n\n"
 
 // duplicateOfCommandLine teaches the duplicate mark (MUL-7821). Without it
 // agents cancel duplicates with a plain status change plus a comment, which

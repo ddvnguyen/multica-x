@@ -59,7 +59,10 @@
     "new_issue": "Новая задача",
     "pinned_label": "Закреплённые",
     "show_more_pins": "Показать ещё {{count}}…",
-    "show_fewer_pins": "Показать меньше"
+    "show_fewer_pins": "Показать меньше",
+    "invitation_workspace_fallback": "Рабочее пространство",
+    "invitation_join": "Присоединиться",
+    "invitation_decline": "Отклонить"
   },
   "spaces": {
     "work": "Работа",
@@ -91,7 +94,8 @@
     "workspace_meta_one": "{{slug}} · {{count}} участник",
     "workspace_meta_few": "{{slug}} · {{count}} участника",
     "workspace_meta_many": "{{slug}} · {{count}} участников",
-    "workspace_meta_other": "{{slug}} · {{count}} участника"
+    "workspace_meta_other": "{{slug}} · {{count}} участника",
+    "invitation_from": "{{name}} приглашает вас"
   },
   "bottom_bar": {
     "label": "Строка состояния",
