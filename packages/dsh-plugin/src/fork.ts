@@ -199,3 +199,20 @@ export { useWSEvent } from "@multica/core/realtime";
 export { useIntentNavigate } from "@multica/views/navigation";
 export type { InboxItem } from "@multica/core/types/inbox";
 export { toast } from "sonner";
+
+// Appearance: island applies the fork's theme system to its own shadow surface.
+export {
+  APPEARANCE_STORAGE_KEY,
+  APPEARANCE_THEME_ATTR,
+  INSTALLED_THEMES_STORAGE_KEY,
+  THEME_OPTION_ATTR_PREFIX,
+  activeTheme,
+  appearanceRootVariables,
+  appearanceStylesheet,
+  appearanceThemeAttributes,
+  appearanceThemeCss,
+  selectAppearance,
+  useAppearanceStore,
+  useInstalledThemesStore,
+  useThemeSafeMode,
+} from "@multica/core/appearance";

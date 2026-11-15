@@ -11,7 +11,7 @@ import {
   startIsland,
   unmountIsland,
 } from "../src/client/island";
-import { shadowStyles } from "../src/client/popup-seat";
+import { shadowStyles, shadowAppearanceCss } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
 import { useModalStore } from "../src/fork";
@@ -1201,5 +1201,18 @@ describe("modal store", () => {
     await settle(() => {
       expect(dialogElement()).toBeNull();
     });
+  });
+});
+
+
+describe("shadowAppearanceCss", () => {
+  it("scopes selector forms to the host", () => {
+    const css = ":root { --x: 1; }\n:root.theme-light { --y: 2; }\n:root[data-theme] { --z: 3; }\nhtml.foo { --w: 4; }\n.theme-dark { --v: 5; }";
+    const out = shadowAppearanceCss(css);
+    expect(out).toContain(":host { --x: 1; }");
+    expect(out).toContain(":host(.theme-light) { --y: 2; }");
+    expect(out).toContain(":host([data-theme]) { --z: 3; }");
+    expect(out).toContain(":host(.foo) { --w: 4; }");
+    expect(out).toContain(":host(.theme-dark) { --v: 5; }");
   });
 });

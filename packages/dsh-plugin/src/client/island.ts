@@ -11,6 +11,7 @@ import {
   type PopupSeat,
 } from "./popup-seat";
 import { installPropertyRules } from "./property-shim";
+import { mountAppearanceIsland, applyAppearanceTo } from "./appearance-island";
 import { swallowShellShortcuts } from "./shell-keys";
 
 /**
@@ -39,6 +40,8 @@ import { swallowShellShortcuts } from "./shell-keys";
 interface IslandHandle {
   root: Root;
   theme: MutationObserver | null;
+  appearanceCleanup: (() => void) | null;
+  seatRebuiltCleanup: (() => void) | null;
   /** The seat overlays render into: the shell's layer, or the island's own. */
   seat: PopupSeat;
   /** Where portals render, so a later render can address the same container. */
@@ -105,11 +108,26 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
 
   const syncTheme = (): void => {
     const dark = shellPrefersDark(doc);
+    host.classList.toggle("dark", dark);
     surface.classList.toggle("dark", dark);
     // The popup seat lives outside this shadow root, so it must follow the
     // shell's theme itself: popups are children of the portal host, and the
     // `dark` class on that container is what the fork's utilities match on.
     portalHost.classList.toggle("dark", dark);
+    // seat host too
+    try {
+      seat.element.classList.toggle("dark", dark);
+    } catch {
+      // seat not ready
+    }
+    // Re-apply appearance so theme-light/theme-dark follow the shell.
+    applyAppearanceTo(host, shadow);
+    try {
+      const sh = seat.element.shadowRoot;
+      if (sh) applyAppearanceTo(seat.element, sh);
+    } catch {
+      // seat not ready
+    }
   };
   syncTheme();
 
@@ -122,6 +140,15 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   theme?.observe(doc.documentElement, {
     attributes: true,
     attributeFilter: ["class", "data-theme"],
+  });
+
+  const appearanceCleanup = mountAppearanceIsland(host, shadow, seat);
+
+  const offRebuilt = seat.onRebuilt((newSeat) => {
+    const dark = shellPrefersDark(doc);
+    newSeat.classList.toggle("dark", dark);
+    const sh = newSeat.shadowRoot;
+    if (sh) applyAppearanceTo(newSeat, sh);
   });
 
   swallowShellShortcuts(rootElement);
@@ -145,6 +172,8 @@ export function mountIsland(host: HTMLElement, options: MountIslandOptions = {})
   handles.set(host, {
     root,
     theme,
+    appearanceCleanup,
+    seatRebuiltCleanup: offRebuilt,
     seat,
     portalHost,
     route,
@@ -310,6 +339,8 @@ export function unmountIsland(host: HTMLElement): void {
   handles.delete(host);
   if (keepAlive === host) keepAlive = null;
   handle.theme?.disconnect();
+  handle.appearanceCleanup?.();
+  handle.seatRebuiltCleanup?.();
   handle.root.unmount();
   // The seat sits outside this host's shadow root — in the shell's overlay
   // layer or on the document — so nothing else would ever remove it.
