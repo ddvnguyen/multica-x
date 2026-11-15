@@ -1211,7 +1211,7 @@ describe("shadowAppearanceCss", () => {
     const out = shadowAppearanceCss(css);
     expect(out).toContain(":host { --x: 1; }");
     expect(out).toContain(":host(.theme-light) { --y: 2; }");
-    expect(out).toContain(":host[data-theme] { --z: 3; }");
+    expect(out).toContain(":host([data-theme]) { --z: 3; }");
     expect(out).toContain(":host(.foo) { --w: 4; }");
     expect(out).toContain(":host(.theme-dark) { --v: 5; }");
   });

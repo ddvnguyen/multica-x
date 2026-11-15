@@ -49,7 +49,7 @@ const SHELL_LAYER = "[data-shell-overlay]";
  * would otherwise be injected and never land.
  */
 export function shadowStyles(css: string): string {
-  return css.replace(/:root\b/g, ":host");
+  return shadowAppearanceCss(css);
 }
 
 /**
@@ -59,20 +59,19 @@ export function shadowStyles(css: string): string {
  */
 export function shadowAppearanceCss(css: string): string {
   return css
-    .replace(/:root(\[[^\]]*\])/g, ":host$1")
-    .replace(/html(\[[^\]]*\])/g, ":host$1")
+    // compound class + attribute, e.g. :root.a[b] -> :host(.a[b])
+    .replace(/:root(\.[A-Za-z0-9_-]+)(\[[^\]]*\])/g, ":host($1$2)")
+    .replace(/html(\.[A-Za-z0-9_-]+)(\[[^\]]*\])/g, ":host($1$2)")
+    // attribute-only, e.g. :root[x] -> :host([x])
+    .replace(/:root(\[[^\]]*\])/g, ":host($1)")
+    .replace(/html(\[[^\]]*\])/g, ":host($1)")
+    // class-only, e.g. :root.x -> :host(.x)
     .replace(/:root(\.[A-Za-z0-9_-]+)/g, ":host($1)")
     .replace(/html(\.[A-Za-z0-9_-]+)/g, ":host($1)")
     .replace(/(^|[^\w.(])\.theme-(light|dark)\b/g, "$1:host(.theme-$2)")
     .replace(/:root\b/g, ":host")
-    .replace(/\bhtml\b/g, ":host");
+    .replace(/(^|[\s,{])html\b/g, "$1:host");
 }
-
-export const rewriteForShadow = shadowAppearanceCss;
-export const scopeToHost = shadowAppearanceCss;
-export const hostScopedCss = shadowAppearanceCss;
-export const shadowThemeCss = shadowAppearanceCss;
-export const appearanceShadowCss = shadowAppearanceCss;
 
 
 /** The island stylesheet, rewritten for a shadow tree. */
