@@ -33,6 +33,10 @@ func TestBuildClaimedTaskResponseDeliversTierStampedTaskAfterRebind(t *testing.T
 
 	taskID := seedQueuedIssueTask(t, ctx, agentID, newRuntimeID, issueID)
 	dbfx.Exec(t, `UPDATE agent_task_queue SET model_override = 'tier-probe-model', tier_id = $1 WHERE id = $2`, tierID, taskID)
+	// The claim-time rebind reject exempts use_tiers agents, so the flag
+	// must be on before claiming — same as a real tier agent.
+	dbfx.Exec(t, `UPDATE agent SET use_tiers = true WHERE id = $1`, agentID)
+	dbfx.Exec(t, `INSERT INTO agent_tier (agent_id, tier_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, agentID, tierID)
 
 	task, err := testHandler.TaskService.ClaimTaskForRuntime(ctx, parseUUID(newRuntimeID))
 	if err != nil {
@@ -43,7 +47,6 @@ func TestBuildClaimedTaskResponseDeliversTierStampedTaskAfterRebind(t *testing.T
 	}
 	// Agent stays bound to the OLD runtime: without the tier carve-out the
 	// delivery gate would refuse with error_agent_runtime_changed.
-	dbfx.Exec(t, `UPDATE agent SET use_tiers = true WHERE id = $1`, agentID)
 
 	runtime, err := testHandler.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
 		ID:          parseUUID(newRuntimeID),
