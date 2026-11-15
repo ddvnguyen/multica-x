@@ -26,11 +26,24 @@ export interface DshUpgradeRoute {
   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 }
 
+/** Minimal request facts both harness generations pass to the session gate. */
+export interface DshGateRequest {
+  headers: Record<string, string | string[] | undefined>;
+}
+
 /** What dsh's Connection offers: refuse a request that is not this browser. */
 export interface DshConnection {
-  requestRejection(request: {
-    headers: Record<string, string | string[] | undefined>;
-  }): number | undefined;
+  /**
+   * Certified line (`dsh-v0.2.2-alpha.2`): HTTP status refusing the request,
+   * or undefined when the request may proceed.
+   */
+  requestRejection?(request: DshGateRequest): number | undefined;
+  /**
+   * Merged line (upstream auth-provider API): the Peer the request speaks
+   * for, or the status refusing it. Probed first; the lane runs
+   * `fork.noAuth`, where an admitted request shares the owner peer.
+   */
+  admit?(request: DshGateRequest): { peer?: unknown; rejection?: number } | { rejection: number };
 }
 
 /** The host half of a dsh plugin's context. */

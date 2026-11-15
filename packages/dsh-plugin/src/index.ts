@@ -35,8 +35,26 @@ export function apply(ctx: DshHostContext, config?: unknown): void {
   const moct = resolveMoctSettings(config, settings);
   const moctProxy = moct.settings === null ? null : new MoctProxy(moct.settings);
 
-  const refusal = (req: IncomingMessage): number | undefined =>
-    ctx.connection?.requestRejection(req);
+  // The session gate moved between harness generations (M-377): the certified
+  // line exposes `requestRejection()`, the merged line exposes `admit()`.
+  // Probe the new shape first and fall back to the old one, so this row runs
+  // on both. Calling a missing method would throw (optional chaining only
+  // skips a missing connection, not a missing method), which the webserver
+  // answers as an empty 400 — the M-377 `/multica/config` regression.
+  const refusal = (req: IncomingMessage): number | undefined => {
+    const connection = ctx.connection;
+    if (connection === undefined) return undefined;
+    if (typeof connection.admit === "function") {
+      const admission = connection.admit({ headers: req.headers });
+      return "rejection" in admission && admission.rejection !== undefined
+        ? admission.rejection
+        : undefined;
+    }
+    if (typeof connection.requestRejection === "function") {
+      return connection.requestRejection({ headers: req.headers });
+    }
+    return undefined;
+  };
 
   ctx.effect(() => {
     const offConfig = ctx.webServer.register({

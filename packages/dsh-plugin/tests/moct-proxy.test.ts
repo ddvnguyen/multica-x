@@ -624,12 +624,74 @@ describe("plugin registration", () => {
     return { base: `http://127.0.0.1:${port(server)}`, moctCalls };
   }
 
-  it("answers 403 on /moct when the dsh session gate refuses the request", async () => {
-    const { base, moctCalls } = await mountPrefix(403, { moctUrl: "set" });
-    const response = await fetch(`${base}${MOCT_PREFIX}/status`);
+  it("answers 403 on /moct when the merged-generation gate refuses the request", async () => {
+    const routes: Route[] = [];
+    const ctx = {
+      effect: (fn: () => unknown) => fn(),
+      webServer: {
+        register: (route: Route) => {
+          routes.push(route);
+          return () => {};
+        },
+        registerUpgrade: () => () => {},
+      },
+      // Merged harness (M-377): no requestRejection, only admit().
+      connection: { admit: () => ({ rejection: 403 as const }) },
+    };
+    apply(ctx as never, {
+      serverUrl: "http://127.0.0.1:1",
+      token: TOKEN,
+      workspaceSlug: "dsh-z",
+      moctUrl: "http://127.0.0.1:1",
+    });
+    const route = routes.find((candidate) => candidate.path === MOCT_PREFIX);
+    expect(route).toBeDefined();
+    const server = createServer((req, res) => void route!.handler(req, res));
+    await listen(server);
+    const response = await fetch(`http://127.0.0.1:${port(server)}${MOCT_PREFIX}/status`);
     expect(response.status).toBe(403);
-    expect(moctCalls).toHaveLength(0);
   });
+
+  it("admits on /moct when the merged-generation gate has no requestRejection", async () => {
+    const routes: Route[] = [];
+    const ctx = {
+      effect: (fn: () => unknown) => fn(),
+      webServer: {
+        register: (route: Route) => {
+          routes.push(route);
+          return () => {};
+        },
+        registerUpgrade: () => () => {},
+      },
+      // M-377 regression: `ctx.connection?.requestRejection(req)` throws when
+      // the connection exists but the method does not; the gate must probe.
+      connection: { admit: () => ({ peer: {} }) },
+    };
+    const moctServer = createServer((_req, res) => {
+      send(res, 200, { ok: true, schema: 8 });
+    });
+    await listen(moctServer);
+    apply(ctx as never, {
+      serverUrl: "http://127.0.0.1:1",
+      token: TOKEN,
+      workspaceSlug: "dsh-z",
+      moctUrl: `http://127.0.0.1:${port(moctServer)}`,
+    });
+    const route = routes.find((candidate) => candidate.path === MOCT_PREFIX);
+    expect(route).toBeDefined();
+    const server = createServer((req, res) => void route!.handler(req, res));
+    await listen(server);
+    // Must not throw (the old code answered an empty 400 via the last-resort guard).
+    const response = await fetch(`http://127.0.0.1:${port(server)}${MOCT_PREFIX}/status`);
+    expect(response.status).toBe(200);
+  });
+
+   it("answers 403 on /moct when the dsh session gate refuses the request", async () => {
+     const { base, moctCalls } = await mountPrefix(403, { moctUrl: "set" });
+     const response = await fetch(`${base}${MOCT_PREFIX}/status`);
+     expect(response.status).toBe(403);
+     expect(moctCalls).toHaveLength(0);
+   });
 
   it("answers 503 with the reason when moctUrl is not configured", async () => {
     vi.stubEnv("MOCT_BASE_URL", "");
