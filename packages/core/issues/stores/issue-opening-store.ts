@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { defaultStorage } from "../../platform/storage";
+import {
+  defaultStorage,
+  onDefaultStorageAdapterChanged,
+} from "../../platform/storage";
 
 export type IssueOpenMode = "page" | "peek" | "tab";
 
@@ -39,3 +42,12 @@ export const useIssueOpeningStore = create<IssueOpeningState>()(
     },
   ),
 );
+
+// The dsh island installs its namespaced adapter (`multica.dsh.*`, M-360) when
+// CoreProvider mounts — after this module's persist hydration has already read
+// the bare origin and found nothing. Without the re-read, the opening
+// capability's migration effect then sees the defaults and writes "tab" over
+// a Side preview choice it never read, so the choice died on the island's
+// every reload (M-336). The re-read follows the adapter swap the way the
+// workspace-scoped stores follow a workspace switch.
+onDefaultStorageAdapterChanged(() => void useIssueOpeningStore.persist.rehydrate());

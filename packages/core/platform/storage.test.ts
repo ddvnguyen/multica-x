@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { defaultStorage, setDefaultStorage } from "./storage";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  defaultStorage,
+  onDefaultStorageAdapterChanged,
+  setDefaultStorage,
+} from "./storage";
 import type { StorageAdapter } from "../types/storage";
 
 /** An isolated adapter, so the tests never read the suite's localStorage. */
@@ -53,5 +57,50 @@ describe("defaultStorage", () => {
     setDefaultStorage(backing);
     setDefaultStorage(defaultStorage);
     expect(defaultStorage.getItem("test:self")).toBe("browser");
+  });
+});
+
+// M-336: a store whose module hydrated before the host adapter existed needs
+// to know when the adapter lands, so it can re-read its persisted state.
+describe("onDefaultStorageAdapterChanged", () => {
+  /** Microtasks carry the deferred notification (the render-safety deferral). */
+  async function flushNotify(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  it("fires on install and on reset, deferred to a microtask", async () => {
+    const listener = vi.fn();
+    const stop = onDefaultStorageAdapterChanged(listener);
+    const backing = fakeBacking();
+    setDefaultStorage(backing);
+    // Deferred, not synchronous: the swap runs inside a render.
+    expect(listener).not.toHaveBeenCalled();
+    await flushNotify();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    setDefaultStorage(defaultStorage);
+    await flushNotify();
+    expect(listener).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("does not fire when the effective backing is unchanged", async () => {
+    const listener = vi.fn();
+    const stop = onDefaultStorageAdapterChanged(listener);
+    setDefaultStorage(defaultStorage);
+    await flushNotify();
+    expect(listener).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("stops firing after unsubscribe", async () => {
+    const listener = vi.fn();
+    const stop = onDefaultStorageAdapterChanged(listener);
+    stop();
+    setDefaultStorage(fakeBacking());
+    await flushNotify();
+    expect(listener).not.toHaveBeenCalled();
+    setDefaultStorage(defaultStorage);
   });
 });
