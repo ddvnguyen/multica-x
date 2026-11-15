@@ -667,7 +667,7 @@ describe("plugin registration", () => {
       // the connection exists but the method does not; the gate must probe.
       connection: { admit: () => ({ peer: {} }) },
     };
-    const moctServer = createServer((req, res) => {
+    const moctServer = createServer((_req, res) => {
       send(res, 200, { ok: true, schema: 8 });
     });
     await listen(moctServer);
