@@ -278,7 +278,8 @@
     "advanced_group_match_trailing": "of these",
     "advanced_group_hint": "Conditions in this group are joined with “{{word}}”",
     "advanced_add_to_group": "Add to group",
-    "advanced_turn_into_group": "Turn into group"
+    "advanced_turn_into_group": "Turn into group",
+    "agent_status_idle": "Idle"
   },
   "display": {
     "tooltip": "Display settings",
@@ -322,7 +323,8 @@
     "card_labels": "Labels",
     "card_child_progress": "Sub-issue progress",
     "show_sub_issues": "Show sub-issues",
-    "layout_options": "{{layout}} options"
+    "layout_options": "{{layout}} options",
+    "card_pull_requests": "Pull requests"
   },
   "view": {
     "tooltip_board": "Board view",
@@ -392,7 +394,8 @@
       "created_at": "Created",
       "updated_at": "Updated",
       "child_progress": "Sub-issue progress",
-      "creator": "Created by"
+      "creator": "Created by",
+      "pull_requests": "Pull requests"
     },
     "calculation": {
       "label": "Calculate",
@@ -593,14 +596,31 @@
     "workdir_path_copy_failed": "Failed to copy workdir path",
     "workdir_path_unavailable": "No local workdir yet — issue has not been run by a local agent",
     "pull_requests_empty_title": "No linked pull requests.",
-    "restore_to_inbox_tooltip": "Restore to inbox"
+    "restore_to_inbox_tooltip": "Restore to inbox",
+    "sidebar_settings": {
+      "open": "Customize sidebar",
+      "title": "Sidebar",
+      "reset": "Reset",
+      "footer": "Drag to reorder. Applies to every issue.",
+      "always_shown": "Always shown",
+      "empty": "None on this issue",
+      "customize": "Customize",
+      "drag_handle": "Reorder {{section}}",
+      "hidden_count_one": "{{count}} section hidden",
+      "hidden_count_other": "{{count}} sections hidden"
+    },
+    "pull_request_state_open": "Open",
+    "project_subscription_badge": "Via project",
+    "project_subscription_hint": "You're subscribed to every issue in this project. Unsubscribing here stops notifications for this issue only."
   },
   "timeline": {
     "loading": "Loading...",
     "jump_to_latest": "Jump to latest",
     "order_oldest_first": "Oldest first",
     "order_newest_first": "Newest first",
-    "order_toggle_hint": "Toggle timeline order"
+    "order_toggle_hint": "Toggle timeline order",
+    "new_comments_one": "{{count}} new comment",
+    "new_comments_other": "{{count}} new comments"
   },
   "activity": {
     "created": "created this issue",
@@ -662,7 +682,11 @@
     "wakeup_checkin_coalesced_one": "{{count}} silent check · latest: {{note}}",
     "wakeup_checkin_coalesced_other": "{{count}} silent checks · latest: {{note}}",
     "wakeup_chip_created_by": "{{name}}'s wakeup",
-    "wakeup_chip_system": "System rule"
+    "wakeup_chip_system": "System rule",
+    "created_on_behalf_of": "created this issue on behalf of {{name}}",
+    "environment_stopped": "stopped the environment {{name}}",
+    "environment_restarted": "restarted the environment {{name}}",
+    "environment_started": "started the environment {{name}}"
   },
   "comment": {
     "add_reaction": "Add reaction",
@@ -766,7 +790,10 @@
     "recipient_count_other": "{{count}} agents will receive this",
     "steer_attachment_notice": "Only text can join a running run, so a message with files is handled after it.",
     "restart_send": "Stop and send",
-    "restart_failed": "Couldn't stop the current run. Your message wasn't sent."
+    "restart_failed": "Couldn't stop the current run. Your message wasn't sent.",
+    "reply_action": "Reply",
+    "actions_label": "Comment actions",
+    "create_issue_from_selection": "Create sub-issue from selection"
   },
   "reply": {
     "recipients_changed": "Reply target changed. Review the recipients before sending again.",
@@ -1013,7 +1040,12 @@
     "delete_dialog_desc_one": "This action cannot be undone. This will permanently delete the selected issue and all associated data.",
     "delete_dialog_desc_other": "This action cannot be undone. This will permanently delete the selected issues and all associated data.",
     "cancel": "Cancel",
-    "delete_dialog_warning": "Any workspace member can delete issues."
+    "delete_dialog_warning": "Any workspace member can delete issues.",
+    "copy_links": "Copy links",
+    "links_copied_one": "Copied {{count}} link",
+    "links_copied_other": "Copied {{count}} links",
+    "delete_count_one": "Delete {{count}} issue",
+    "delete_count_other": "Delete {{count}} issues"
   },
   "card": {
     "update_failed": "Failed to update issue",
@@ -1055,7 +1087,9 @@
     "remove_parent_issue_success": "Removed parent issue",
     "add_sub_issue": "Add sub-issue...",
     "delete_issue": "Delete issue",
-    "mark_duplicate": "Mark as duplicate..."
+    "mark_duplicate": "Mark as duplicate...",
+    "quick_actions": "Quick actions",
+    "open_in_new_window": "Open in new window"
   },
   "pickers": {
     "custom_property": {
@@ -1471,7 +1505,8 @@
       "instruction_default": "Not set on this issue; uses the default:",
       "instruction_placeholder": "Leave empty to use the default",
       "instruction_invalid": "Keep the instruction within 4,000 bytes.",
-      "paused": "Paused: {{reason}}"
+      "paused": "Paused: {{reason}}",
+      "default_change": "Change the default"
     },
     "cond": {
       "status": "When this issue moves to {{status}}",
@@ -1868,7 +1903,8 @@
       "scope_own": "Only this project uses this workflow.",
       "no_handoff_here": "No handoff",
       "scope_shared_one": "{{count}} project uses this workflow. Its handoffs apply to every project using it.",
-      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them."
+      "scope_shared_other": "{{count}} projects use this workflow. Its handoffs apply to all of them.",
+      "switch": "Switch workflow"
     },
     "templates": {
       "delivery": {
@@ -2000,7 +2036,9 @@
       "running": "Running",
       "exited": "Exited",
       "stopped": "Stopped",
-      "unreachable": "Not responding"
+      "unreachable": "Not responding",
+      "stopping": "Stopping",
+      "preparing": "Preparing"
     },
     "expires_in_minutes_one": "Expires in {{count}}m",
     "expires_in_minutes_other": "Expires in {{count}}m",
@@ -2019,7 +2057,88 @@
     "open": "Open",
     "copy_url": "Copy URL",
     "copied": "URL copied",
-    "copy_failed": "Couldn't copy the URL"
+    "copy_failed": "Couldn't copy the URL",
+    "offline": "Offline",
+    "machine_offline": "{{machine}} is offline",
+    "more_actions": "More actions",
+    "view_logs": "View logs",
+    "restart": "Restart",
+    "stop": "Stop",
+    "stop_confirm_item": "Stop…",
+    "run_first": "the first run",
+    "run_nth_one": "run {{count}}",
+    "run_nth_other": "run {{count}}",
+    "someone": "Someone",
+    "started_by": "Started by {{name}}",
+    "restarted_by": "Restarted by {{name}}",
+    "started_by_agent_in_run": "Started by {{name}} in {{run}}",
+    "stopped_by": "Stopped by {{name}}",
+    "stopped_on_expiry": "Stopped when it expired",
+    "exited_ago": "Exited {{time}}",
+    "exit_code": "Exit code {{code}}",
+    "detected_label": "Detected service · {{name}}",
+    "detected_no_logs": "This service wasn't started from the environment config, so it has no logs and can't be restarted.",
+    "offline_hint": "Available once this machine is back online.",
+    "outdated_hint": "Update Multica on this machine to manage it from here.",
+    "no_permission_hint": "Only members who can use this machine can stop or restart it.",
+    "waiting_machine": "Waiting for the machine",
+    "waiting_ready": "Waiting for it to be ready",
+    "no_response": "No response",
+    "action_failed": {
+      "stop": "Couldn't stop",
+      "restart": "Couldn't restart",
+      "start": "Couldn't start"
+    },
+    "stop_confirm_title": "Stop {{name}}?",
+    "stop_confirm_body": "This service ({{process}}) was detected, not started from the environment config. Once stopped it can't be restarted here; an agent has to start it again.",
+    "cancel": "Cancel",
+    "preparing_title": "{{name}} is preparing the environment",
+    "preparing_hint": "It will show up here once it starts",
+    "start_menu": {
+      "trigger": "Start an environment",
+      "note": "Starts from the project's environment config, using the code from the latest run on this machine.",
+      "no_permission": "Only members who can use a machine can start environments on it.",
+      "nothing_to_start": "This issue hasn't run yet, or the code from earlier runs has been cleaned up, so there's nothing to start directly.",
+      "ask_agent": "Ask {{name}} to start it",
+      "ask_any_agent": "Ask an agent to start it",
+      "new_run": "New run",
+      "preparing": "Preparing",
+      "ask_agent_hint": "{{name}} will get this issue's code ready, then start the environment. If the project has no environment config, it works out how to start it.",
+      "ask_any_agent_hint": "The agent will get this issue's code ready, then start the environment. If the project has no environment config, it works out how to start it.",
+      "ask_failed": "Couldn't ask the agent",
+      "agent_instruction": "Start the environment: get this issue's code ready, then run `multica env start` for the environments the project declares; if it declares none, work out how to start it yourself. Keep it running and reply with its address."
+    },
+    "log": {
+      "title": "{{name}} · Logs",
+      "filter": "Filter logs",
+      "wrap": "Wrap lines",
+      "follow": "Follow latest",
+      "copy": "Copy",
+      "copied": "Logs copied",
+      "copy_failed": "Couldn't copy the logs",
+      "refresh": "Refresh",
+      "footer_one": "Showing the last line · updated {{time}}",
+      "footer_other": "Showing the last {{count}} lines · updated {{time}}",
+      "loading": "Reading the logs…",
+      "empty": "No output yet",
+      "no_match": "No matching lines",
+      "no_response": "The machine didn't respond",
+      "failed": "Couldn't read the logs: {{error}}",
+      "offline_excerpt": "This machine is offline. These are the last lines it printed before exiting.",
+      "offline_empty": "Logs are available once this machine is back online.",
+      "exit_divider": "Exited at {{time}}",
+      "exit_divider_code": "Exited at {{time}} · exit code {{code}}",
+      "stopped_divider": "Stopped at {{time}}"
+    },
+    "app_desktop_hint": "A desktop app. Switch to its window from Multica Desktop on the machine running it.",
+    "app_remote_hint": "Runs on {{machine}}. Switch to its window from Multica Desktop on that machine.",
+    "focus": "Switch to window",
+    "focus_gone": "{{name}} is no longer running",
+    "focus_unsupported": "This machine's daemon can't switch to app windows yet. Update Multica and try again.",
+    "focus_unavailable": "The local daemon isn't running",
+    "focus_failed": "Couldn't switch to {{name}}",
+    "retry": "Retry",
+    "dismiss": "Dismiss"
   },
   "agent_question": {
     "ask_title": "The agent needs your answer",
