@@ -2115,6 +2115,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (index < 0) return;
     let timer: number | undefined;
     const scrollEnd = () => {
+      if (timelineNewestFirst) {
+        // The new reply lands at the top of its card (under the root);
+        // align the card's top so the root and the fresh reply are in view.
+        virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
+        return;
+      }
       const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
       virtuosoRef.current?.scrollToIndex({ index, align: "end", offset: composerHeight });
     };
@@ -2129,7 +2135,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       cancelAnimationFrame(frame);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline]);
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, timelineNewestFirst]);
 
   // Flat mode (find bar) has no Virtuoso, so drive scrollTop by
   // hand: align the row's bottom to the composer's top edge. The comment's
@@ -2143,26 +2149,30 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     let rafId = 0;
     let frames = 0;
     let last = -1;
-    const alignBottom = () => {
+    const alignRow = () => {
       const el = document.getElementById(`comment-${rootId}`);
       const container = scrollContainerEl;
       if (el && container) {
         const c = container.getBoundingClientRect();
         const e = el.getBoundingClientRect();
+        // Newest-first lands the fresh reply at the card's top: align the
+        // top. Oldest-first keeps aligning the bottom to the composer's edge.
         const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
-        const target = Math.max(0, container.scrollTop + (e.bottom - c.bottom) + composerHeight);
+        const target = timelineNewestFirst
+          ? Math.max(0, container.scrollTop + (e.top - c.top) - 16)
+          : Math.max(0, container.scrollTop + (e.bottom - c.bottom) + composerHeight);
         container.scrollTop = target;
         if (Math.abs(target - last) > 1 && ++frames < 30) {
           last = target;
-          rafId = requestAnimationFrame(alignBottom);
+          rafId = requestAnimationFrame(alignRow);
           return;
         }
       }
       setPendingPostedCommentId(null);
     };
-    rafId = requestAnimationFrame(alignBottom);
+    rafId = requestAnimationFrame(alignRow);
     return () => cancelAnimationFrame(rafId);
-  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, scrollContainerEl]);
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, scrollContainerEl, timelineNewestFirst]);
   const jumpFlashTimerRef = useRef<number | null>(null);
   useEffect(
     () => () => {

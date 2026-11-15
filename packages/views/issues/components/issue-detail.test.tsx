@@ -4403,6 +4403,79 @@ describe("IssueDetail (shared)", () => {
     expect(html.indexOf("comment-fold-resolution")).toBeLessThan(html.indexOf("comment from"));
   });
 
+  // M-290 reply box: in newest-first mode the reply box sits directly under
+  // the root so it is adjacent to where the new reply lands; oldest-first
+  // keeps it at the thread's trailing end.
+  it.each([
+    { order: "oldest-first", boxFirst: false, label: "after" },
+    { order: "newest-first", boxFirst: true, label: "before" },
+  ] as const)("places the thread reply box $label the replies in $order mode", async ({ order, boxFirst }) => {
+    useTimelineDisplayStore.setState({ order });
+    const root = { ...mockTimeline[0]!, id: "box-thread-root", parent_id: null, content: "Root" };
+    const replyOld = { ...mockTimeline[1]!, id: "box-reply-old", parent_id: root.id, content: "Older reply",
+      created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
+    const replyNew = { ...mockTimeline[1]!, id: "box-reply-new", parent_id: root.id, content: "Newer reply",
+      created_at: "2026-01-17T00:02:00Z", updated_at: "2026-01-17T00:02:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([root, replyOld, replyNew]);
+    const { container } = renderIssueDetail();
+    await screen.findByText("Newer reply");
+
+    const html = container.innerHTML;
+    const boxPos = html.indexOf("Leave a reply...");
+    expect(boxPos).toBeGreaterThan(-1);
+    const firstReplyAnchor = boxFirst ? "comment-box-reply-new" : "comment-box-reply-old";
+    if (boxFirst) {
+      expect(boxPos).toBeLessThan(html.indexOf(firstReplyAnchor));
+    } else {
+      expect(boxPos).toBeGreaterThan(html.indexOf(firstReplyAnchor));
+    }
+  });
+
+  // M-290 reply box: submitting from the top box posts into the thread and
+  // the landing scroll aligns the card's top (where the new reply is), not
+  // the bottom as in oldest-first.
+  it("submits a thread reply from the top box and lands on the new top reply", async () => {
+    useTimelineDisplayStore.setState({ order: "newest-first" });
+    const root = { ...mockTimeline[0]!, id: "submit-thread-root", parent_id: null, content: "Root" };
+    mockApiObj.listTimeline.mockResolvedValue([root]);
+    mockApiObj.createComment.mockResolvedValue({
+      id: "submit-reply-new",
+      issue_id: "issue-1",
+      content: "Newer reply",
+      actor_type: "member",
+      actor_id: "user-1",
+      parent_id: root.id,
+      type: "comment",
+      created_at: "2026-01-17T00:02:00Z",
+      updated_at: "2026-01-17T00:02:00Z",
+    });
+    renderIssueDetail();
+    await screen.findByText("Root");
+    scrollToIndexSpy.mockClear();
+
+    const thread = document.getElementById("comment-submit-thread-root");
+    expect(thread).not.toBeNull();
+    fireEvent.click(within(thread!).getByTestId("reply-composer-shell"));
+    const editor = await within(thread!).findByPlaceholderText("Leave a reply...");
+    fireEvent.change(editor, { target: { value: "Newer reply" } });
+    fireEvent.click(within(thread!).getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(mockApiObj.createComment).toHaveBeenCalledWith(
+        "issue-1",
+        "Newer reply",
+        "comment",
+        root.id,
+        undefined,
+        undefined,
+        undefined,
+      );
+    });
+    await waitFor(() => {
+      expect(scrollToIndexSpy).toHaveBeenCalledWith({ index: 0, align: "start", offset: -16 });
+    });
+  });
+
   // M-290 follow-up: the newest-first reversal used to stop at the group
   // boundary, so entries inside an activity-group block still read
   // oldest-first while the page around them read newest-first.
