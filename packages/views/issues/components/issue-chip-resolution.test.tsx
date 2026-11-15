@@ -97,14 +97,17 @@ describe("IssueChip detail fallback on window focus", () => {
         queryClient.getQueryState(issueKeys.detail(issue.workspace_id, issue.id))?.status,
       ).toBe("error");
     });
-    expect(api.getIssue).toHaveBeenCalledTimes(2);
+    // A 404 is the server's answer, not a transport failure, so the shared
+    // retry guard (M-373) does not replay it: one call, then the cache holds
+    // the error and focus events refetch nothing.
+    expect(api.getIssue).toHaveBeenCalledTimes(1);
 
     for (let i = 0; i < 2; i++) {
       blurAndRefocus();
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      expect(api.getIssue).toHaveBeenCalledTimes(2);
+      expect(api.getIssue).toHaveBeenCalledTimes(1);
     }
 
     expect(screen.getByText(issue.identifier)).toBeInTheDocument();
