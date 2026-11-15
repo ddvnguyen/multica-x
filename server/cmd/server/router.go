@@ -1819,6 +1819,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Member-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Handle("/moct/*", http.HandlerFunc(h.ProxyMoct))
 					r.Get("/", h.GetWorkspace)
 					r.Put("/pin", h.SetWorkspacePinned)
 					r.Get("/members", h.ListMembersWithUser)
@@ -2259,6 +2260,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/quick-actions/{quickActionId}/run", h.RunQuickAction)
 					r.Post("/quick-actions/{quickActionId}/render", h.RenderQuickAction)
 					r.Get("/task-runs", h.ListTasksByIssue)
+					r.Get("/tasks/{taskId}/memory-report", h.GetTaskMemoryReport)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)
 					r.Delete("/reactions", h.RemoveIssueReaction)
