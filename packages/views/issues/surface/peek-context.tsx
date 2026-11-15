@@ -189,6 +189,13 @@ export function useIssuePeekClick() {
         event?.preventDefault();
         return true;
       }
+      if (capability.openSidePreview !== null) {
+        // The host owns the column but could not open it right now (no project
+        // folder yet, M-336). The press never dies silently: it keeps its other
+        // meaning and opens the issue in a new tab instead.
+        if (event) event.preventDefault();
+        return capability.openIssueInTab(tabIssueId);
+      }
       if (peek) {
         event?.preventDefault();
         // A plain click opens (or keeps open) the issue. Shift+Click is the
