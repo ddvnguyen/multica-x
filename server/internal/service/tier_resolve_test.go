@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/events"
+
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -70,9 +72,13 @@ func tierTestSetup(t *testing.T, slotsA int32) (q *db.Queries, agent db.Agent, r
 		t.Fatalf("enable use_tiers: %v", err)
 	}
 	_ = ag
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 	_ = svc
 	return qq, updated, rtA, rtB, tierA, tierB
+}
+
+func newTierTestService(pool *pgxpool.Pool, qq *db.Queries) *TaskService {
+	return &TaskService{Queries: qq, TxStarter: pool, Bus: events.New()}
 }
 
 // TestResolveAgentTier_PrefersFirstWithCapacity pins the resolver order: idx
@@ -82,7 +88,7 @@ func TestResolveAgentTier_PrefersFirstWithCapacity(t *testing.T) {
 	pool := sharedTestPool(t)
 	ctx := context.Background()
 	qq, agent, rtA, _, tierA, _ := tierTestSetup(t, 99)
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 	res, err := svc.resolveAgentTier(ctx, agent)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -105,7 +111,7 @@ func TestResolveAgentTier_FallsThroughToSecond(t *testing.T) {
 	ctx := context.Background()
 	pool := sharedTestPool(t)
 	qq, agent, _, rtB, _, tierB := tierTestSetup(t, 1)
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 	// Occupy the single slot with a running task on tier A's runtime.
 	var blockerID pgtype.UUID
 	if err := pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, agent.ID, agent.RuntimeID).Scan(&blockerID); err != nil {
@@ -133,7 +139,7 @@ func TestResolveAgentTier_BothFullStaysQueued(t *testing.T) {
 	ctx := context.Background()
 	pool := sharedTestPool(t)
 	qq, agent, _, _, _, _ := tierTestSetup(t, 1)
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 	selections, err := qq.ListAgentTiers(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("list tiers: %v", err)
@@ -177,7 +183,7 @@ func TestApplyTierResolution_LegacyAgentUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agent: %v", err)
 	}
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 	runtimeID, model, thinking, service, tierID, parked, queuedOnly, rerr := svc.applyTierResolution(ctx, agent)
 	if rerr != nil {
 		t.Fatalf("apply: %v", rerr)
@@ -236,7 +242,7 @@ func TestTierSweep_BothFullThenSlotFrees(t *testing.T) {
 	ctx := context.Background()
 	pool := sharedTestPool(t)
 	qq, agent, rtA, _, _, tierA := tierTestSetup(t, 1)
-	svc := &TaskService{Queries: qq}
+	svc := newTierTestService(pool, qq)
 
 	// Occupy both tiers: one active row on each tier runtime.
 	tierBRow, err := qq.GetAgentRuntime(ctx, agent.RuntimeID)
