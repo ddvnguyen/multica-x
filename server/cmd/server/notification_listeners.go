@@ -176,6 +176,7 @@ func deliverToSubscriber(reason, notifType string, statusIsHandoff bool) bool {
 // group. Types not in this map are always delivered (not configurable).
 var notifTypeToGroup = map[string]string{
 	"agent_question":     "agent_activity",
+	"plan_review":        "agent_activity",
 	"issue_assigned":     "assignments",
 	"unassigned":         "assignments",
 	"assignee_changed":   "assignments",
@@ -310,6 +311,34 @@ func archiveResolvedAskPlanInbox(
 		slog.Warn("auto-archive resolved ask/plan inbox: archive failed",
 			"workspace_id", workspaceID, "issue_id", issueID, "error", err)
 	}
+}
+
+// hasAskPlanMemberRow reports whether an open-card member row already exists
+// for the issue (M-362). SubmitAsk/SubmitPlan write one `agent_question` /
+// `plan_review` row per workspace member with the card/plan id in details;
+// when such a row exists the task:message question subscriber row would be a
+// duplicate trip to the same inbox, so the listener skips it. A park with no
+// member row (handlers bypassed, evidence lookup missed) still notifies.
+// Failure degrades to notify: a lookup error must never silence an ask.
+func hasAskPlanMemberRow(ctx context.Context, queries *db.Queries, workspaceID, issueID string) bool {
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return false
+	}
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		return false
+	}
+	n, err := queries.CountOpenAskPlanMemberRows(ctx, db.CountOpenAskPlanMemberRowsParams{
+		WorkspaceID: wsUUID,
+		IssueID:     issueUUID,
+	})
+	if err != nil {
+		slog.Warn("task:message question notification: member-row check failed",
+			"issue_id", issueID, "error", err)
+		return false
+	}
+	return n > 0
 }
 
 // notifySubscribers queries the subscriber table for an issue, excludes the
@@ -1148,6 +1177,15 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 		if err != nil {
 			slog.Error("task:message question notification: failed to get issue",
 				"issue_id", payload.IssueID, "error", err)
+			return
+		}
+		// M-362: SubmitAsk/SubmitPlan already wrote one member row per
+		// workspace member with this card/plan id in details, so a second
+		// subscriber row for the same evidence is a duplicate trip to the
+		// same inbox — skip it. Only when NO member row exists for the
+		// evidence (a park that bypassed the handlers, or a lookup miss)
+		// does this subscriber row still notify.
+		if hasAskPlanMemberRow(ctx, queries, e.WorkspaceID, payload.IssueID) {
 			return
 		}
 		// The run's agent is the actor, for the avatar and for the delegated

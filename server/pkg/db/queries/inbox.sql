@@ -214,6 +214,27 @@ UPDATE inbox_item SET archived = true
 WHERE workspace_id = $1 AND issue_id = $2 AND type = $3 AND archived = false
 RETURNING recipient_type, recipient_id;
 
+-- name: CountOpenAskPlanMemberRows :one
+-- M-362: the task:message question listener's dedupe check. SubmitAsk /
+-- SubmitPlan write one `agent_question` / `plan_review` row per workspace
+-- member with the evidence id in details; when such an open-evidence member
+-- row exists on the issue, the subscriber row for the same park would be a
+-- duplicate. Subscriber rows (empty details) never match: they carry no
+-- evidence, so a park with no member row still counts zero and notifies.
+SELECT count(*) FROM inbox_item i
+WHERE i.workspace_id = @workspace_id AND i.issue_id = @issue_id AND i.archived = false
+  AND i.recipient_type = 'member'
+  AND (
+       (i.type = 'agent_question' AND EXISTS (
+            SELECT 1 FROM agent_question_card c
+            WHERE c.id::text = i.details->>'card_id'
+              AND c.status = 'open'))
+    OR (i.type = 'plan_review' AND EXISTS (
+            SELECT 1 FROM agent_plan p
+            WHERE p.id::text = i.details->>'plan_id'
+              AND p.status = 'in_review'))
+  );
+
 -- name: ArchiveResolvedAskPlanInbox :many
 -- M-333: an ask/plan card that resolves — answered, withdrawn, cancelled,
 -- verdicted — must take its inbox rows with it. The rows to archive are
