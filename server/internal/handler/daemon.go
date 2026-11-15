@@ -2486,7 +2486,10 @@ func (h *Handler) finalizeClaimDelivery(
 		if aerr != nil {
 			return fmt.Errorf("re-read agent for delivery authorization: %w", aerr)
 		}
-		if agent.RuntimeID != task.RuntimeID {
+		// M-351: tier-stamped tasks resolved their runtime at enqueue; the
+		// agent's current single runtime must not refuse delivery. Owner and
+		// visibility checks below still run.
+		if agent.RuntimeID != task.RuntimeID && !task.TierID.Valid {
 			return &service.ClaimDeliveryAuthzError{
 				Reason: "error_agent_runtime_changed",
 				Detail: "agent runtime changed before delivery",
