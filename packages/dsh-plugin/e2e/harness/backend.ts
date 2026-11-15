@@ -386,11 +386,12 @@ export function installBackend(options: BackendOptions = {}): void {
     if (url.startsWith("/multica/api/config") || url.startsWith("/multica/api/onboarding")) {
       return json({});
     }
-    // The MOCT plane the settings tabs read through the host's /moct prefix.
-    if (url.startsWith("/moct/status")) {
+    // The MOCT screens use the same authenticated workspace API as the SPA.
+    const moctUrl = url.replace(/^\/multica\/api\/workspaces\/[^/]+\/moct/, "/moct");
+    if (moctUrl.startsWith("/moct/status")) {
       return json({ ok: true, schema: 8, reachable: true });
     }
-    if (url.startsWith("/moct/team/v1/memory/usage")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory/usage")) {
       return json({
         workspaceId: "multica:ws:ws-1",
         capTokens: 1200,
@@ -400,16 +401,16 @@ export function installBackend(options: BackendOptions = {}): void {
         ],
       });
     }
-    if (url.startsWith("/moct/team/v1/memory?")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory?")) {
       return json({ results: [], total: 0, nextCursor: null });
     }
-    if (url.startsWith("/moct/team/v1/memory/get")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory/get")) {
       return json({ records: [], missing: [] });
     }
-    if (url.startsWith("/moct/team/v1/memory")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory")) {
       return json({ records: [], total: 0, nextCursor: null });
     }
-    if (url.startsWith("/moct/")) return json({});
+    if (moctUrl.startsWith("/moct/")) return json({});
     // Everything else the fork reads on mount is a list.
     return json([]);
   };

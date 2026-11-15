@@ -16,6 +16,7 @@
 // Providers and platform state.
 export { CoreProvider, setCurrentWorkspace } from "@multica/core/platform";
 export { WorkspaceSlugProvider } from "@multica/core/paths";
+export { useCurrentMember } from "@multica/core/permissions";
 export { useWorkspaceList } from "@multica/core/workspace";
 
 // The account-level inbox unread summary the rail dot reports on: the same
@@ -94,6 +95,8 @@ export {
   SettingsTab,
 } from "@multica/views/settings";
 export type { ExtraSettingsGroup } from "@multica/views/settings";
+export { createMoctGroup, createAgentMemorySections, HIDDEN_SETTINGS_TABS } from "@multica/views/moct";
+export type { MoctConnection } from "@multica/views/moct";
 
 // Form primitives the MOCT tabs edit with. Taken from the fork rather than
 // styled here so a settings control looks and behaves like the web app's own,
