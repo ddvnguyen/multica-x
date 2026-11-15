@@ -218,7 +218,15 @@
     "save": "Save",
     "cancel": "Cancel",
     "section_skills": "Skills",
-    "no_description_placeholder": "No description"
+    "no_description_placeholder": "No description",
+    "prop_use_tiers": "Use tiers",
+    "use_tiers_hint": "Resolve runtime and model per task from the selected tiers. Off keeps the single runtime and model below.",
+    "prop_tiers": "Tiers",
+    "tiers_hint": "First tier with a free provider slot wins. A deleted or disabled tier shows as unavailable.",
+    "tiers_empty": "No tiers selected",
+    "tiers_none_hint": "No tiers in this workspace yet. Add them in Settings → Tiers.",
+    "tiers_disabled_badge": "disabled",
+    "tiers_unavailable_note": "One or more selected tiers is unavailable (deleted or disabled). Pick a replacement to keep this agent routable."
   },
   "overview": {
     "attention_title": "Runs need attention",

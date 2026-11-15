@@ -56,6 +56,7 @@ type Agent struct {
 	ConversationStarters  []byte      `json:"conversation_starters"`
 	AccountMode           string      `json:"account_mode"`
 	AccountID             pgtype.UUID `json:"account_id"`
+	UseTiers              bool        `json:"use_tiers"`
 }
 
 type AgentApp struct {
@@ -278,6 +279,17 @@ type AgentTaskQueue struct {
 	IssueSnapshot             []byte      `json:"issue_snapshot"`
 	WorkflowStep              pgtype.Text `json:"workflow_step"`
 	AccountID                 pgtype.UUID `json:"account_id"`
+	ModelOverride             pgtype.Text `json:"model_override"`
+	ThinkingLevelOverride     pgtype.Text `json:"thinking_level_override"`
+	ServiceTierOverride       pgtype.Text `json:"service_tier_override"`
+	TierID                    pgtype.UUID `json:"tier_id"`
+	TierParked                bool        `json:"tier_parked"`
+}
+
+type AgentTier struct {
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	TierID    pgtype.UUID        `json:"tier_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type AgentToLabel struct {

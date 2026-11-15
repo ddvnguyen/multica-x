@@ -484,12 +484,19 @@ func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Iss
 	overlay := s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
 	attrSource, attrDelegatedFrom, _, _ := attributionCreateParams(attr)
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-		ID:          dbid.NewV7(),
-		AgentID:     parked.AgentID,
-		RuntimeID:   agent.RuntimeID,
-		IssueID:     parked.IssueID,
-		Priority:    priorityToInt(issue.Priority),
-		HandoffNote: pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
+		ID:        dbid.NewV7(),
+		AgentID:   parked.AgentID,
+		RuntimeID: agent.RuntimeID,
+		// M-351: a parked resume replays the parked run's own session, so it
+		// inherits the parked row's tier stamp instead of re-resolving.
+		// Tier change mid-conversation starts a fresh provider session.
+		ModelOverride:         parked.ModelOverride,
+		ThinkingLevelOverride: parked.ThinkingLevelOverride,
+		ServiceTierOverride:   parked.ServiceTierOverride,
+		TierID:                parked.TierID,
+		IssueID:               parked.IssueID,
+		Priority:              priorityToInt(issue.Priority),
+		HandoffNote:           pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
 		// forceFreshSession stays false: the whole point is resuming the parked
 		// session through the named rerun source.
 		OriginatorUserID:     attr.UserID,

@@ -113,6 +113,14 @@ type AgentResponse struct {
 	Status             string                     `json:"status"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
 	Model              string                     `json:"model"`
+	// UseTiers flips the Agent page model picker into a multi-select of
+	// workspace tiers (M-351). The agent becomes a position; runtime/model
+	// resolve per task at enqueue. Off = today's single runtime + model.
+	UseTiers bool `json:"use_tiers"`
+	// TierIDs are the selected workspace tier ids. A late-deleted/disabled
+	// tier still selected shows as "unavailable" in the UI — it is never
+	// silently dropped server-side.
+	TierIDs []string `json:"tier_ids,omitempty"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -233,6 +241,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
+		UseTiers:                 a.UseTiers,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
 		AccountMode:              a.AccountMode,
@@ -1329,6 +1338,13 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
 		return
 	}
+	// M-351: tier selections for the list. Bounded N+1 like the targets
+	// loader above; the join rows are tiny.
+	agentIDs := make([]pgtype.UUID, 0, len(agents))
+	for _, a := range agents {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	tiersByAgent := h.tierIDsByAgent(r.Context(), agentIDs)
 	visible := make([]AgentResponse, 0, len(agents))
 	for _, a := range agents {
 		targets := targetsByAgent[uuidToString(a.ID)]
@@ -1338,6 +1354,9 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		resp := h.agentToResponse(a)
+		if tids, ok := tiersByAgent[resp.ID]; ok {
+			resp.TierIDs = tids
+		}
 		// The map is keyed by runtime, and active + archived agents may share one.
 		// Keep the archived guard here as well as in the loader so an active sibling
 		// cannot leak its projection onto an archived response.
@@ -1407,6 +1426,10 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		resp.RuntimeAvailability = availability
 	}
 	if !h.enrichAgentResponseWithTargetsHTTP(w, r, &resp, agent.ID) {
+		return
+	}
+	if err := h.enrichAgentResponseWithTiers(r.Context(), &resp, agent.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent tier selection")
 		return
 	}
 	// Use the summary query (no `content` column) — the embedded
@@ -1852,6 +1875,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, created.ID); err != nil {
 		slog.Warn("create agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(created.ID))...)
 	}
+	if err := h.enrichAgentResponseWithTiers(r.Context(), &resp, created.ID); err != nil {
+		slog.Warn("create agent: load tier selection for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(created.ID))...)
+	}
 	actorType, actorID := h.resolveActor(r, ownerID, workspaceID)
 	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 
@@ -1914,6 +1940,14 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// UseTiers flips the agent between a single runtime/model and the
+	// workspace tier selection (M-351). Omitted = no change. Toggling off
+	// keeps the last single runtime/model as the fallback.
+	UseTiers *bool `json:"use_tiers"`
+	// TierIDs replaces the agent's tier selection wholesale when present
+	// (omitted = keep, empty = clear all). Every id must name an existing
+	// tier in the agent's workspace.
+	TierIDs *[]string `json:"tier_ids"`
 	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
 	// omitted preserves; present sets account_mode (+ account_id when specific).
 	AccountMode *string `json:"account_mode"`
@@ -2350,6 +2384,46 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		params.MaxConcurrentTasks = pgtype.Int4{Int32: *req.MaxConcurrentTasks, Valid: true}
 	}
+	// M-351: Use tiers switch. use_tiers rides UpdateAgent (COALESCE keeps
+	// the toggle sticky); tier_ids replaces the selection wholesale.
+	// validatedTierIDs stays nil unless the request carries tier_ids, so the
+	// post-update join write can tell "omitted, keep" from "empty, clear".
+	var validatedTierIDs []pgtype.UUID
+	if req.UseTiers != nil {
+		params.UseTiers = pgtype.Bool{Bool: *req.UseTiers, Valid: true}
+	}
+	if req.TierIDs != nil {
+		validatedTierIDs = make([]pgtype.UUID, 0, len(*req.TierIDs))
+		seenTiers := map[string]struct{}{}
+		for _, tid := range *req.TierIDs {
+			if _, dup := seenTiers[tid]; dup {
+				continue
+			}
+			seenTiers[tid] = struct{}{}
+			tierUUID, ok := parseUUIDOrBadRequest(w, tid, "tier_ids")
+			if !ok {
+				return
+			}
+			validatedTierIDs = append(validatedTierIDs, tierUUID)
+		}
+		if len(validatedTierIDs) > 0 {
+			rows, terr := h.Queries.ListModelTiers(r.Context(), existing.WorkspaceID)
+			if terr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load workspace tiers")
+				return
+			}
+			known := map[string]struct{}{}
+			for _, t := range rows {
+				known[uuidToString(t.ID)] = struct{}{}
+			}
+			for _, tu := range validatedTierIDs {
+				if _, ok := known[uuidToString(tu)]; !ok {
+					writeError(w, http.StatusBadRequest, "tier_ids must name tiers in this workspace")
+					return
+				}
+			}
+		}
+	}
 	if req.Model != nil {
 		params.Model = pgtype.Text{String: *req.Model, Valid: true}
 	} else if req.RuntimeID != nil && existing.Model.Valid && agent.ModelKnownIncompatibleWithProvider(targetProvider, existing.Model.String) {
@@ -2698,6 +2772,25 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			h.TaskService.NotifyRuntimeMayHaveWork(pendingMovedTo)
 		}
 	}
+	// M-351: persist the tier selection after the row update. Delete-then-
+	// insert keeps partial writes impossible without a tx, and every id was
+	// validated against this workspace above.
+	if req.TierIDs != nil {
+		if _, err := h.Queries.SetAgentTiers(r.Context(), existing.ID); err != nil {
+			slog.Warn("update agent: set tier selection failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to update agent tier selection")
+			return
+		}
+		for _, tu := range validatedTierIDs {
+			if _, err := h.Queries.AddAgentTier(r.Context(), db.AddAgentTierParams{
+				AgentID: existing.ID, TierID: tu,
+			}); err != nil {
+				slog.Warn("update agent: add tier selection failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+				writeError(w, http.StatusInternalServerError, "failed to update agent tier selection")
+				return
+			}
+		}
+	}
 	// A cap change can make the agent's queued work claimable right away
 	// (#10455). Nudge its runtime now that the write is visible, as a runtime
 	// cap change does, instead of leaving the queue to the daemon's next poll.
@@ -2780,6 +2873,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
 		return
 	}
+	if err := h.enrichAgentResponseWithTiers(r.Context(), &resp, updated.ID); err != nil {
+		slog.Warn("update agent: load tier selection for response failed", append(logger.RequestAttrs(r), "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent tier selection")
+		return
+	}
 	// agentToResponse always initialises Skills as []; junction-table rows
 	// are untouched by the SQL update, so we reload them here to keep the
 	// response (and the broadcast that mirrors it) in sync with reality.
@@ -2805,6 +2903,40 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		redactComposioToolkitAllowlist(&resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// tierIDsByAgent batch-loads tier selections for a list of agents in one
+// query per agent (the join is tiny; N+1 is bounded by page size and matches
+// the existing invocation-targets pattern for small lists).
+func (h *Handler) tierIDsByAgent(ctx context.Context, agentIDs []pgtype.UUID) map[string][]string {
+	out := make(map[string][]string, len(agentIDs))
+	for _, aid := range agentIDs {
+		ids, err := h.Queries.ListAgentTierIDs(ctx, aid)
+		if err != nil {
+			continue
+		}
+		strs := make([]string, 0, len(ids))
+		for _, tid := range ids {
+			strs = append(strs, uuidToString(tid))
+		}
+		out[uuidToString(aid)] = strs
+	}
+	return out
+}
+
+// enrichAgentResponseWithTiers fills resp.TierIDs from the agent_tier join
+// (M-351). Deleted tiers simply stop appearing in ListAgentTiers, so the UI
+// can render a still-selected-but-gone id as "unavailable".
+func (h *Handler) enrichAgentResponseWithTiers(ctx context.Context, resp *AgentResponse, agentID pgtype.UUID) error {
+	ids, err := h.Queries.ListAgentTierIDs(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	resp.TierIDs = make([]string, 0, len(ids))
+	for _, tid := range ids {
+		resp.TierIDs = append(resp.TierIDs, uuidToString(tid))
+	}
+	return nil
 }
 
 // attachAgentSkills populates resp.Skills from the agent_skill junction
@@ -3062,6 +3194,11 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	wsID := uuidToString(archived.WorkspaceID)
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := h.agentToResponse(archived)
+	if err := h.enrichAgentResponseWithTiers(r.Context(), &resp, archived.ID); err != nil {
+		slog.Warn("load tier selection after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent tier selection")
+		return
+	}
 	if err := h.attachAgentSkills(r.Context(), &resp, archived.ID); err != nil {
 		slog.Warn("load agent skills after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
@@ -3097,6 +3234,11 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 	wsID := uuidToString(restored.WorkspaceID)
 	slog.Info("agent restored", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := h.agentToResponse(restored)
+	if err := h.enrichAgentResponseWithTiers(r.Context(), &resp, restored.ID); err != nil {
+		slog.Warn("load tier selection after restore failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+		writeError(w, http.StatusInternalServerError, "failed to load agent tier selection")
+		return
+	}
 	if err := h.attachAgentSkills(r.Context(), &resp, restored.ID); err != nil {
 		slog.Warn("load agent skills after restore failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")

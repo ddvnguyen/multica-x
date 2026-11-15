@@ -11,6 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addAgentTier = `-- name: AddAgentTier :execrows
+INSERT INTO agent_tier (agent_id, tier_id)
+VALUES ($1::uuid, $2::uuid)
+ON CONFLICT DO NOTHING
+`
+
+type AddAgentTierParams struct {
+	AgentID pgtype.UUID `json:"agent_id"`
+	TierID  pgtype.UUID `json:"tier_id"`
+}
+
+func (q *Queries) AddAgentTier(ctx context.Context, arg AddAgentTierParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addAgentTier, arg.AgentID, arg.TierID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearAgentTiers = `-- name: ClearAgentTiers :exec
+DELETE FROM agent_tier WHERE agent_id = $1
+`
+
+func (q *Queries) ClearAgentTiers(ctx context.Context, agentID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearAgentTiers, agentID)
+	return err
+}
+
 const createModelTier = `-- name: CreateModelTier :one
 
 INSERT INTO model_tier (
@@ -83,6 +111,15 @@ func (q *Queries) DeleteModelTier(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const deleteTierAgentSelections = `-- name: DeleteTierAgentSelections :exec
+DELETE FROM agent_tier WHERE tier_id = $1
+`
+
+func (q *Queries) DeleteTierAgentSelections(ctx context.Context, tierID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteTierAgentSelections, tierID)
+	return err
+}
+
 const getModelTierInWorkspace = `-- name: GetModelTierInWorkspace :one
 SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at FROM model_tier
 WHERE id = $1 AND workspace_id = $2
@@ -114,6 +151,82 @@ func (q *Queries) GetModelTierInWorkspace(ctx context.Context, arg GetModelTierI
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listAgentTierIDs = `-- name: ListAgentTierIDs :many
+SELECT tier_id FROM agent_tier
+WHERE agent_id = $1
+`
+
+func (q *Queries) ListAgentTierIDs(ctx context.Context, agentID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAgentTierIDs, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var tier_id pgtype.UUID
+		if err := rows.Scan(&tier_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tier_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentTiers = `-- name: ListAgentTiers :many
+
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at FROM model_tier t
+JOIN agent_tier at ON at.tier_id = t.id
+WHERE at.agent_id = $1
+ORDER BY t.idx ASC, t.created_at ASC
+`
+
+// Agent tier selection (M-351). The join behind the Agent page "Use tiers"
+// switch: an agent with use_tiers stores its chosen tier ids here. No FKs per
+// repo rule. ListAgentTiers joins model_tier so the resolver walks enabled
+// tiers ordered by idx in one round trip; a tier deleted out from under an
+// agent simply stops appearing (UI shows "unavailable", never silently
+// reassigns). SetAgentTiers replaces the whole selection: delete-then-insert
+// in one statement keeps partial writes impossible without a tx.
+func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]ModelTier, error) {
+	rows, err := q.db.Query(ctx, listAgentTiers, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ModelTier{}
+	for rows.Next() {
+		var i ModelTier
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Idx,
+			&i.RuntimeID,
+			&i.Provider,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ServiceTier,
+			&i.Cost,
+			&i.Quality,
+			&i.ProviderSlots,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listModelTiers = `-- name: ListModelTiers :many
@@ -177,6 +290,45 @@ type ReorderModelTiersParams struct {
 func (q *Queries) ReorderModelTiers(ctx context.Context, arg ReorderModelTiersParams) error {
 	_, err := q.db.Exec(ctx, reorderModelTiers, arg.WorkspaceID, arg.Ids)
 	return err
+}
+
+const setAgentTiers = `-- name: SetAgentTiers :execrows
+DELETE FROM agent_tier WHERE agent_id = $1::uuid
+`
+
+func (q *Queries) SetAgentTiers(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, setAgentTiers, agentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const tierTaskOverCapacity = `-- name: TierTaskOverCapacity :one
+SELECT EXISTS (
+    SELECT 1 FROM model_tier t
+    WHERE t.id = (SELECT atq.tier_id FROM agent_task_queue atq WHERE atq.id = $1)
+      AND t.enabled
+      AND (
+            SELECT count(*) FROM agent_task_queue active
+            WHERE active.runtime_id = t.runtime_id
+              AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+              AND active.id <> $1
+          ) >= t.provider_slots
+) AS over_capacity
+`
+
+// M-351: claim-time provider_slots enforcement. A tier-stamped task claimed
+// inside the runtime capacity lock asks whether its tier is over capacity:
+// more active rows on the tier's runtime than provider_slots. TRUE means the
+// claim must requeue, not dispatch — two enqueues resolved the same tier
+// before either inserted. Enqueue already avoids full tiers; this closes the
+// race at the serialization point.
+func (q *Queries) TierTaskOverCapacity(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, tierTaskOverCapacity, id)
+	var over_capacity bool
+	err := row.Scan(&over_capacity)
+	return over_capacity, err
 }
 
 const updateModelTier = `-- name: UpdateModelTier :one

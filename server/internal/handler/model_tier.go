@@ -471,6 +471,14 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load tier")
 		return
 	}
+	// M-351: a deleted tier stays selected on its agents as "unavailable"
+	// (never silently dropped), but the join rows must go — ListAgentTiers
+	// joins model_tier, so orphan rows would vanish from reads anyway while
+	// leaving dead weight. No FK per repo rule; app-layer cleanup here.
+	if err := h.Queries.DeleteTierAgentSelections(r.Context(), tierUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete tier")
+		return
+	}
 	if err := h.Queries.DeleteModelTier(r.Context(), tierUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete tier")
 		return
