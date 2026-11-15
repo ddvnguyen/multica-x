@@ -8,13 +8,17 @@ import {
 } from "./issue-opening-capability";
 import { IssuePeekActionsContext, useIssuePeekClick } from "./peek-context";
 
+const nav = vi.hoisted(() => ({
+  openInNewTab: undefined as ((path: string, issueId: string, opts?: { activate?: boolean }) => boolean) | undefined,
+}));
+
 vi.mock("../../navigation", () => ({
   useNavigation: () => ({
     pathname: "/acme/issues",
     searchParams: new URLSearchParams(),
     push: vi.fn(),
     replace: vi.fn(),
-    openInNewTab: undefined,
+    openInNewTab: nav.openInNewTab,
   }),
 }));
 
@@ -100,13 +104,34 @@ describe("host-owned side preview", () => {
     expect(open).toHaveBeenCalledWith("issue-1");
   });
 
-  it("leaves the click alone when the host cannot open the column", () => {
+  it("falls back to New tab when the host owns the column but cannot open it", () => {
+    // Seam present, no folder: the island's opener declines, and the click must
+    // not die silently (M-336) — it keeps its other meaning, a new tab.
     const open = vi.fn(() => false);
-    render(<ClickProbe onOpened={open} />);
+    const openInNewTab = vi.fn(() => true);
+    nav.openInNewTab = openInNewTab;
+    try {
+      render(<ClickProbe onOpened={open} />);
+      const link = screen.getByTestId("issue-link");
+      fireEvent.click(link);
+      expect(open).toHaveBeenCalledWith("issue-1");
+      expect(openInNewTab).toHaveBeenCalledWith("/acme/issues/issue-1", "issue-1", { activate: true });
+    } finally {
+      nav.openInNewTab = undefined;
+    }
+  });
+
+  it("routes the click to the in-view peek when the host has no opener and no peek host", () => {
+    const open = vi.fn(() => false);
+    render(
+      <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+        <IssueLink />
+      </IssueOpeningCapabilityProvider>,
+    );
     const link = screen.getByTestId("issue-link");
     const event = fireEvent.click(link);
-    expect(open).toHaveBeenCalledWith("issue-1");
-    // Unhandled: the press keeps whatever meaning the host gives it.
+    expect(open).not.toHaveBeenCalled();
+    // No host column and no fork peek: nothing handles the press.
     expect(event).toBe(true);
   });
 });
