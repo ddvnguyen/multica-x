@@ -17,10 +17,8 @@ export function PwaUpdateBanner() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     let cancelled = false;
-    let registration: ServiceWorkerRegistration | undefined;
 
     const track = (reg: ServiceWorkerRegistration) => {
-      registration = reg;
       if (reg.waiting && !cancelled) setWaiting(reg.waiting);
       reg.addEventListener("updatefound", () => {
         const next = reg.installing;
@@ -46,7 +44,6 @@ export function PwaUpdateBanner() {
     return () => {
       cancelled = true;
       navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-      void registration;
     };
   }, []);
 
@@ -60,7 +57,7 @@ export function PwaUpdateBanner() {
       <span>Update available — refresh for the latest version.</span>
       <button
         type="button"
-        className="rounded px-2 py-0.5 font-medium underline underline-offset-2"
+        className="rounded-md px-2 py-0.5 font-medium underline underline-offset-2"
         onClick={() => {
           waiting.postMessage("SKIP_WAITING");
         }}
