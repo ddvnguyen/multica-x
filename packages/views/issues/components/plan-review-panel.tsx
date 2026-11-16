@@ -61,6 +61,107 @@ import { PlanSectionHistory } from "./plan-section-history";
  * Rendered from both surfaces that review a plan: the issue panel and the
  * Decisions detail pane.
  */
+
+// A text pick over the plan body, resolved from the panel's own root. The
+// dsh plugin renders the plan inside a shadow root: after a mouse drag
+// there, document.getSelection() is collapsed with its anchor retargeted
+// to the host, while the shadow root holds the real range — so the
+// document selection is the wrong source inside a shadow tree.
+type PlanBodyPick = {
+  anchorNode: Node | null;
+  focusNode: Node | null;
+  text: string;
+  rect: { left: number; top: number };
+};
+
+// The selection capabilities differ by engine (Chromium has both;
+// ShadowRoot.getSelection is newer than getComposedRanges), so each use is
+// guarded by a shape check rather than assumed from the lib types.
+type ShadowSelectionProvider = { getSelection: () => Selection | null };
+type ComposedRangeProvider = {
+  getComposedRanges: (options: { shadowRoots: ShadowRoot[] }) => StaticRange[];
+};
+const asShadowSelectionProvider = (value: object): ShadowSelectionProvider | null => {
+  if (!("getSelection" in value)) return null;
+  const candidate = value.getSelection;
+  return typeof candidate === "function" ? (value as ShadowSelectionProvider) : null;
+};
+const asComposedRangeProvider = (value: object): ComposedRangeProvider | null => {
+  if (!("getComposedRanges" in value)) return null;
+  const candidate = value.getComposedRanges;
+  return typeof candidate === "function" ? (value as ComposedRangeProvider) : null;
+};
+
+// Resolve the pick over the plan body from the panel's own root. Prefers the
+// shadow root's selection inside a shadow tree (Chromium), falls back to the
+// document selection's ranges composed through the tree where the root has
+// no getSelection, and to the document selection outside one.
+function planBodyPick(body: HTMLElement): PlanBodyPick | null {
+  if (typeof document === "undefined") return null;
+  const root = body.getRootNode();
+  const shadow =
+    typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot ? root : null;
+  const provider = shadow === null ? null : asShadowSelectionProvider(shadow);
+  const live = provider === null ? document.getSelection() : provider.getSelection();
+  if (live !== null && !live.isCollapsed && live.rangeCount > 0) {
+    const atRange = live.getRangeAt(0);
+    return {
+      anchorNode: live.anchorNode,
+      focusNode: live.focusNode,
+      text: live.toString(),
+      // jsdom (and collapsed-then-restored picks) has no rect: park at the
+      // viewport origin instead of throwing.
+      rect:
+        typeof atRange.getBoundingClientRect === "function"
+          ? atRange.getBoundingClientRect()
+          : { left: 8, top: 48 },
+    };
+  }
+  // No getSelection on the root (older engines): ask the document selection
+  // for the ranges it holds inside this shadow tree, and re-anchor from the
+  // first one. Direction is unknowable from a static range, but the caller
+  // only needs both ends in the same section.
+  const doc = document.getSelection();
+  const composer = shadow === null || doc === null ? null : asComposedRangeProvider(doc);
+  if (shadow !== null && doc !== null && composer !== null) {
+    const [first] = composer.getComposedRanges({ shadowRoots: [shadow] });
+    if (first !== undefined) {
+      const revived = document.createRange();
+      revived.setStart(first.startContainer, first.startOffset);
+      revived.setEnd(first.endContainer, first.endOffset);
+      if (!revived.collapsed) {
+        return {
+          anchorNode: first.startContainer,
+          focusNode: first.endContainer,
+          text: revived.toString(),
+          rect:
+            typeof revived.getBoundingClientRect === "function"
+              ? revived.getBoundingClientRect()
+              : { left: 8, top: 48 },
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The plan page (M-275): the Claude Code plan view, ported behaviour for
+ * behaviour from the team-room Doc page and restyled with MMX tokens.
+ *
+ * A member selects a passage inside a section and comments on that passage;
+ * the quote is stored and the passage painted with the CSS Custom Highlight
+ * API (no DOM rewrite), replies thread under the comment, a thread can be
+ * resolved, and a section can be edited or read back through its history. The
+ * comments stay pending until a verdict sends them to the agent — that is the
+ * same exchange S1-A1 already had, now anchored.
+ *
+ * Every write is fenced by the plan revision on screen, so a plan the agent
+ * moved meanwhile answers a stale revision instead of writing blind.
+ *
+ * Rendered from both surfaces that review a plan: the issue panel and the
+ * Decisions detail pane.
+ */
 export function PlanReviewPanel({
   plan,
   issueId,
@@ -164,10 +265,9 @@ export function PlanReviewPanel({
     }
     const capture = (): void => {
       const body = bodyRef.current;
-      const current = typeof document === "undefined" ? null : document.getSelection();
-      if (body === null || current === null || current.isCollapsed || current.rangeCount === 0) {
-        return;
-      }
+      if (body === null) return;
+      const pick = planBodyPick(body);
+      if (pick === null) return;
       const sectionOf = (node: Node | null): HTMLElement | null => {
         const element =
           node instanceof HTMLElement ? node : (node?.parentElement ?? null);
@@ -175,35 +275,35 @@ export function PlanReviewPanel({
           element?.closest<HTMLElement>("[data-plan-section]") ?? null;
         return section !== null && body.contains(section) ? section : null;
       };
-      const anchor = sectionOf(current.anchorNode);
-      if (anchor === null || anchor !== sectionOf(current.focusNode)) return;
+      const anchor = sectionOf(pick.anchorNode);
+      if (anchor === null || anchor !== sectionOf(pick.focusNode)) return;
       // Text picked inside the section editor is a draft, not a passage to
       // comment on.
       const picked =
-        current.anchorNode instanceof HTMLElement
-          ? current.anchorNode
-          : (current.anchorNode?.parentElement ?? null);
+        pick.anchorNode instanceof HTMLElement
+          ? pick.anchorNode
+          : (pick.anchorNode?.parentElement ?? null);
       if (picked?.closest("[data-plan-section-editor]") != null) return;
-      const quote = docQuote(current.toString());
+      const quote = docQuote(pick.text);
       const sectionId = anchor.dataset["planSection"];
       if (quote === "" || sectionId === undefined) return;
       // An open composer owns its quote: typing in it collapses the page
       // selection, which must not re-raise the tooltip over it.
       if (composer !== undefined) return;
-      const atRange = current.getRangeAt(0);
-      // jsdom (and collapsed-then-restored picks) has no rect: park at the
-      // viewport origin instead of throwing.
-      const rect =
-        typeof atRange.getBoundingClientRect === "function"
-          ? atRange.getBoundingClientRect()
-          : { left: 8, top: 48 };
-      const x = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - 120));
-      const y = Math.max(8, rect.top - 40);
+      const x = Math.min(Math.max(8, pick.rect.left), Math.max(8, window.innerWidth - 120));
+      const y = Math.max(8, pick.rect.top - 40);
       setTooltip({ sectionId, quote, x, y });
     };
     document.addEventListener("selectionchange", capture);
+    // A shadow root fires its own selectionchange for picks inside it; the
+    // document listener alone never sees them.
+    const root = bodyRef.current?.getRootNode();
+    const shadow =
+      typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot ? root : null;
+    shadow?.addEventListener("selectionchange", capture);
     return () => {
       document.removeEventListener("selectionchange", capture);
+      shadow?.removeEventListener("selectionchange", capture);
     };
   }, [composer, readOnly]);
 
@@ -265,36 +365,38 @@ export function PlanReviewPanel({
   }, [highlightRoots, editing]);
 
   // A click on a painted passage opens its thread: the point is hit-tested
-  // against each painted quote, and the thread list opens on the match. CSS
-  // highlights are not DOM nodes, so there is nothing else to click.
+  // against each painted quote's client rects, and the thread list opens on
+  // the match. CSS highlights are not DOM nodes, so there is nothing else to
+  // click — and rects (unlike the caret APIs) pierce shadow roots.
   const openThreadAtPoint = (clientX: number, clientY: number): boolean => {
     const body = bodyRef.current;
-    if (body === null || typeof document === "undefined") return false;
-    const caret =
-      typeof document.caretRangeFromPoint === "function"
-        ? document.caretRangeFromPoint(clientX, clientY)
-        : null;
-    if (caret === null) return false;
+    if (body === null) return false;
     const hit = highlightRoots.find((comment) => {
       const section = body.querySelector(
         `[data-plan-section="${CSS.escape(comment.section_id)}"] [data-plan-section-body]`,
       );
       const range = section === null ? undefined : quoteRange(section, comment.quote);
-      if (range === undefined) return false;
-      const point = caret.cloneRange();
-      point.collapse(true);
-      return (
-        range.compareBoundaryPoints(Range.START_TO_START, point) <= 0 &&
-        range.compareBoundaryPoints(Range.END_TO_END, point) >= 0
+      if (range === undefined || typeof range.getClientRects !== "function") return false;
+      return Array.from(range.getClientRects()).some(
+        (rect) =>
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom,
       );
     });
     if (hit === undefined) return false;
     setCommentsOpen(true);
     setReplyTo(null);
     requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-plan-comment="${hit.id}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+      // The thread list lives in the panel's own tree, which may be a shadow
+      // root — query it, not the document.
+      const root = body.getRootNode();
+      const scoped =
+        root instanceof Document || root instanceof ShadowRoot
+          ? root.querySelector(`[data-plan-comment="${hit.id}"]`)
+          : null;
+      scoped?.scrollIntoView({ block: "nearest" });
     });
     return true;
   };
@@ -324,7 +426,17 @@ export function PlanReviewPanel({
     setTooltip(undefined);
     setComposer(undefined);
     setCommentText("");
-    if (typeof window !== "undefined") window.getSelection()?.removeAllRanges();
+    // Clear the panel's own tree: inside a shadow root the document
+    // selection is already collapsed, and only the root's own selection
+    // holds the pick.
+    const body = bodyRef.current;
+    if (typeof document === "undefined" || body === null) return;
+    const root = body.getRootNode();
+    const shadow =
+      typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot ? root : null;
+    const provider = shadow === null ? null : asShadowSelectionProvider(shadow);
+    const selection = provider === null ? document.getSelection() : provider.getSelection();
+    selection?.removeAllRanges();
   };
 
   const submitComment = (): void => {
