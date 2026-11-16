@@ -3397,15 +3397,15 @@ SELECT
     p.trigger_evidence_kind, p.trigger_evidence_ref_id, p.id,
     p.chat_input_task_id, $2,
     p.channel_context_revision,
-    -- M-359: a retry inherits its parent's tier stamp (same slot, unparked —
-    -- the inherited runtime is stamped, so no capacity wait applies).
-    p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id,
-    FALSE, COALESCE(p.tier_explicit, FALSE),
     -- Carried for a wakeup's prompt and a workflow handoff's brief (MUL-7420);
     -- rows from before workflow_step existed may hold a retired assignment note.
     CASE WHEN p.context->>'wakeup_id' IS NOT NULL OR p.workflow_step IS NOT NULL THEN p.handoff_note END,
     -- A retry continues its parent's work, so it keeps the parent's step (MUL-7420).
     p.workflow_step,
+    -- M-359: a retry inherits its parent's tier stamp (same slot, unparked —
+    -- the inherited runtime is stamped, so no capacity wait applies).
+    p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id,
+    FALSE, COALESCE(p.tier_explicit, FALSE),
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE($6::uuid, gen_random_uuid())
 FROM agent_task_queue p
