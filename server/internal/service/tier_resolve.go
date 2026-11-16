@@ -30,6 +30,16 @@ type tierResolution struct {
 // capacity change), never fail it: a full tier is backpressure, not an error.
 var errNoTierCapacity = errors.New("no selected tier has capacity")
 
+// errUnknownTier signals "explicit `@agent#tier` named a tier that does not
+// exist, is disabled, or is not selected for this agent" (M-359). Callers
+// block the trigger with tier_unavailable: no fallback, no queue.
+var errUnknownTier = errors.New("unknown or unavailable tier")
+
+// errNoExplicitTierCapacity signals "the explicit tier is cooling, offline or
+// full" (M-359). Callers stamp the parked row and queue it anyway:
+// tier_waiting_capacity is success-with-state, never a fallback.
+var errNoExplicitTierCapacity = errors.New("explicit tier has no capacity")
+
 // DefaultTierCooldown is how long a tier is skipped after its provider refused
 // work with a capacity/rate-limit or quota failure (M-352). The daemon reports
 // only the failure text — no Retry-After reaches the server — so the fail path
@@ -154,4 +164,104 @@ func tierTextOrNull(v pgtype.Text) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return pgtype.Text{String: v.String, Valid: true}
+}
+
+// resolveExplicitTier stamps one named tier for an `@agent#tier` trigger
+// (M-359). The tier must exist in the agent's workspace and be enabled;
+// when the agent uses tiers it must also be among the agent's selections
+// (plain `@agent` keeps the idx-ranked resolver; the explicit pick only
+// narrows, never widens). A use_tiers=false agent may name any enabled
+// workspace tier: the pick overrides the single runtime for that run.
+// Missing/disabled/unselected → errUnknownTier (blocked, no fallback).
+// Cooling, offline or full → errNoExplicitTierCapacity (parked, no fallback).
+func (s *TaskService) resolveExplicitTier(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string) (tierResolution, error) {
+	var none tierResolution
+	tier, err := s.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
+		WorkspaceID: workspaceID,
+		Lower:       tierName,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return none, errUnknownTier
+		}
+		return none, err
+	}
+	return s.stampExplicitTier(ctx, agent, tier)
+}
+
+// resolveExplicitTierByID is resolveExplicitTier for an already-validated
+// tier UUID (tier picker, API override). Same semantics: unknown/disabled/
+// unselected → errUnknownTier, cooling/offline/full → errNoExplicitTierCapacity.
+func (s *TaskService) resolveExplicitTierByID(ctx context.Context, agent db.Agent, tierID pgtype.UUID) (tierResolution, error) {
+	var none tierResolution
+	tier, err := s.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{
+		ID:          tierID,
+		WorkspaceID: agent.WorkspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return none, errUnknownTier
+		}
+		return none, err
+	}
+	return s.stampExplicitTier(ctx, agent, tier)
+}
+
+// stampExplicitTier applies the capacity gate to one validated tier row.
+func (s *TaskService) stampExplicitTier(ctx context.Context, agent db.Agent, tier db.ModelTier) (tierResolution, error) {
+	var none tierResolution
+	if !tier.Enabled {
+		return none, errUnknownTier
+	}
+	if agent.UseTiers {
+		selected, err := s.Queries.ListAgentTierIDs(ctx, agent.ID)
+		if err != nil {
+			return none, err
+		}
+		member := false
+		for _, id := range selected {
+			if util.UUIDToString(id) == util.UUIDToString(tier.ID) {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return none, errUnknownTier
+		}
+	}
+	if tierCoolingDown(tier.CooldownUntil, time.Now()) {
+		return none, errNoExplicitTierCapacity
+	}
+	if !tier.RuntimeID.Valid {
+		return none, errNoExplicitTierCapacity
+	}
+	rt, err := s.Queries.GetAgentRuntime(ctx, tier.RuntimeID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return none, errNoExplicitTierCapacity
+		}
+		return none, err
+	}
+	if !isRuntimeClaimable(rt) {
+		return none, errNoExplicitTierCapacity
+	}
+	running, err := s.Queries.CountActiveTasksByRuntime(ctx, rt.ID)
+	if err != nil {
+		return none, err
+	}
+	slots := int64(tier.ProviderSlots)
+	if slots < 1 {
+		slots = 1
+	}
+	if running >= slots {
+		return none, errNoExplicitTierCapacity
+	}
+	return tierResolution{
+		runtimeID:     rt.ID,
+		modelOverride: pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
+		thinkingLevel: tierTextOrNull(tier.ThinkingLevel),
+		serviceTier:   tierTextOrNull(tier.ServiceTier),
+		tierID:        tier.ID,
+		hasCapacity:   true,
+	}, nil
 }

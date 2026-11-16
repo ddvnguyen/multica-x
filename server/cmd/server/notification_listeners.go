@@ -19,8 +19,9 @@ import (
 
 // mention represents a parsed @mention from markdown content (local alias).
 type mention struct {
-	Type string // "member", "agent", "issue", or "all"
-	ID   string // user_id, agent_id, issue_id, or "all"
+	Type  string // "member", "agent", "issue", or "all"
+	ID    string // user_id, agent_id, issue_id, or "all"
+	Label string
 }
 
 var emptyDetails = []byte("{}")
@@ -31,7 +32,7 @@ func parseMentions(content string) []mention {
 	parsed := util.ParseMentions(content)
 	result := make([]mention, len(parsed))
 	for i, m := range parsed {
-		result[i] = mention{Type: m.Type, ID: m.ID}
+		result[i] = mention{Type: m.Type, ID: m.ID, Label: m.Label}
 	}
 	return result
 }

@@ -1144,7 +1144,7 @@ INSERT INTO agent_task_queue (
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
     fire_at, channel_context_revision,
     model_override, thinking_level_override, service_tier_override, tier_id,
-    tier_parked,
+    tier_parked, tier_explicit,
     id
 )
 SELECT
@@ -1166,6 +1166,7 @@ SELECT
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;

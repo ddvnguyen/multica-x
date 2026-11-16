@@ -121,6 +121,42 @@ func (q *Queries) DeleteTierAgentSelections(ctx context.Context, tierID pgtype.U
 	return err
 }
 
+const getModelTierByNameInWorkspace = `-- name: GetModelTierByNameInWorkspace :one
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
+WHERE workspace_id = $1 AND lower(name) = lower($2)
+`
+
+type GetModelTierByNameInWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Lower       string      `json:"lower"`
+}
+
+// M-359: explicit `@agent#tier` lookup. Case-insensitive exact match on the
+// slug-safe name; the idx_model_tier_workspace_name index covers the scan.
+func (q *Queries) GetModelTierByNameInWorkspace(ctx context.Context, arg GetModelTierByNameInWorkspaceParams) (ModelTier, error) {
+	row := q.db.QueryRow(ctx, getModelTierByNameInWorkspace, arg.WorkspaceID, arg.Lower)
+	var i ModelTier
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Idx,
+		&i.RuntimeID,
+		&i.Provider,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ServiceTier,
+		&i.Cost,
+		&i.Quality,
+		&i.ProviderSlots,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CooldownUntil,
+	)
+	return i, err
+}
+
 const getModelTierInWorkspace = `-- name: GetModelTierInWorkspace :one
 SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
 WHERE id = $1 AND workspace_id = $2

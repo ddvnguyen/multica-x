@@ -363,7 +363,7 @@ INSERT INTO agent_task_queue (
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
     model_override, thinking_level_override, service_tier_override, tier_id,
-    tier_parked,
+    tier_parked, tier_explicit,
     workflow_step, fire_at, id
 )
 SELECT
@@ -404,6 +404,7 @@ SELECT
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = $3)),
     sqlc.narg(fire_at)::timestamptz,
@@ -544,7 +545,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at,
     model_override, thinking_level_override, service_tier_override, tier_id,
-    tier_parked,
+    tier_parked, tier_explicit,
     workflow_step, id
 )
 SELECT
@@ -575,6 +576,7 @@ SELECT
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     (SELECT i.status FROM issue i WHERE i.id = $3),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
@@ -618,7 +620,7 @@ INSERT INTO agent_task_queue (
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
     model_override, thinking_level_override, service_tier_override, tier_id,
-    tier_parked,
+    tier_parked, tier_explicit,
     id
 )
 SELECT
@@ -635,6 +637,7 @@ SELECT
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;

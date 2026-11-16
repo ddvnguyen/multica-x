@@ -1496,6 +1496,9 @@ type commentAgentTrigger struct {
 	// from worker context. The worker need not be a squad member. Completion may
 	// replay it only if creation recorded it as a planned input.
 	NonLeaderAgentReply bool
+	// TierName is the explicit `@agent#tier` pick from the mention label
+	// (M-359). Empty = plain `@agent`, resolved by the normal resolver.
+	TierName string
 }
 
 type commentTriggerComputeOptions struct {
@@ -2272,7 +2275,8 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// no-blocker case; we simply never PROMISE it.)
 			}
 		}
-		if err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger); err != nil {
+		status, reason, err := h.enqueueSingleCommentTriggerWithOutcome(ctx, issue, triggerCommentID, trigger)
+		if err != nil {
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
@@ -2284,7 +2288,7 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 			}
 			return DispatchBlocked, commentEnqueueFailureReason(err)
 		}
-		return DispatchQueued, ReasonQueued
+		return status, reason
 	}
 	// Non-convergence after the bounded retries (only reachable under sustained
 	// concurrent churn where a sibling keeps flipping state under us): surface a
@@ -2357,6 +2361,11 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	}
 	if errors.Is(err, service.ErrProjectAccessDenied) {
 		return ReasonProjectAccessBlocked
+	}
+	// M-359: explicit `@agent#tier` that names nothing usable is a sender
+	// error (blocked, fix the name), not infrastructure noise.
+	if errors.Is(err, service.ErrExplicitTierUnavailable) {
+		return ReasonTierUnavailable
 	}
 	return ReasonInternalError
 }
@@ -2647,13 +2656,86 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 	slog.Warn(msg, append(attrs, "error", err)...)
 }
 
-// enqueueSingleCommentTrigger creates a fresh task for one computed trigger.
+// validateExplicitTierName checks an `@agent#tier` name at resolve time
+// (M-359): the tier must exist in the issue's workspace, be enabled, and —
+// for a use_tiers agent — be among the agent's selections. Anything else is
+// ErrExplicitTierUnavailable (tier_unavailable, blocked, no fallback).
+func (h *Handler) validateExplicitTierName(ctx context.Context, issue db.Issue, agent db.Agent, tierName string) error {
+	tier, err := h.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
+		WorkspaceID: issue.WorkspaceID,
+		Lower:       tierName,
+	})
+	if err != nil || !tier.Enabled {
+		return service.ErrExplicitTierUnavailable
+	}
+	if agent.UseTiers {
+		selected, err := h.Queries.ListAgentTierIDs(ctx, agent.ID)
+		if err != nil {
+			return err
+		}
+		for _, id := range selected {
+			if uuidToString(id) == uuidToString(tier.ID) {
+				return nil
+			}
+		}
+		return service.ErrExplicitTierUnavailable
+	}
+	return nil
+}
+
+// resolveTierTriggerOverride turns a trigger's TierName (`@agent#tier` suffix,
+// M-359) into a service TierTriggerOverride. Empty TierName = plain `@agent`,
+// zero override, normal resolver. Unknown/disabled tier (or a tier not
+// selected for a use_tiers agent) returns ErrExplicitTierUnavailable so the
+// sender gets tier_unavailable; a full/offline tier resolves to its UUID here
+// and parks at enqueue (tier_waiting_capacity), never falling back.
+func (h *Handler) resolveTierTriggerOverride(ctx context.Context, issue db.Issue, trigger commentAgentTrigger) (service.TierTriggerOverride, error) {
+	if trigger.TierName == "" {
+		return service.TierTriggerOverride{}, nil
+	}
+	tier, err := h.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
+		WorkspaceID: issue.WorkspaceID,
+		Lower:       trigger.TierName,
+	})
+	if err != nil {
+		return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+	}
+	if !tier.Enabled {
+		return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+	}
+	if trigger.Agent.UseTiers {
+		selected, lerr := h.Queries.ListAgentTierIDs(ctx, trigger.Agent.ID)
+		if lerr != nil {
+			return service.TierTriggerOverride{}, lerr
+		}
+		member := false
+		for _, id := range selected {
+			if uuidToString(id) == uuidToString(tier.ID) {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+	}
+	return service.TierTriggerOverride{TierID: tier.ID}, nil
+}
+
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
 // (MUL-4195) can fall back to it when a pending task vanished mid-flight.
 // enqueueSingleCommentTrigger enqueues one resolved trigger and returns the
 // enqueue error (nil on success) so the caller can surface a
 // trigger_outcome (MUL-4525 §2).
 func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) error {
+	_, _, err := h.enqueueSingleCommentTriggerWithOutcome(ctx, issue, triggerCommentID, trigger)
+	return err
+}
+
+func (h *Handler) enqueueSingleCommentTriggerWithOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) (DispatchStatus, DispatchReasonCode, error) {
+	fail := func(err error) (DispatchStatus, DispatchReasonCode, error) {
+		return DispatchBlocked, commentEnqueueFailureReason(err), err
+	}
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
@@ -2662,41 +2744,46 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 					"issue_id", uuidToString(issue.ID),
 					"squad_id", uuidToString(trigger.Squad.ID),
 					"leader_id", uuidToString(trigger.Agent.ID))
-				return err
+				return fail(err)
 			}
-			return nil
+			return DispatchQueued, ReasonQueued, nil
 		}
 		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, triggerCommentID); err != nil {
-			// EnqueueTaskForIssue now returns ErrDuplicatePendingTask on the
-			// benign duplicate-pending-task race, so use the shared helper that
-			// downgrades that case to debug — matching the squad-leader and
-			// mention cases and letting resolveCommentTriggerEnqueue coalesce
-			// instead of surfacing a warning (#5914).
 			logCommentEnqueueFailure("enqueue agent task on comment failed", err,
 				"issue_id", uuidToString(issue.ID))
-			return err
+			return fail(err)
 		}
+		return DispatchQueued, ReasonQueued, nil
 	case commentTriggerSourceMentionSquadLeader:
 		if _, err := h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed); err != nil {
 			logCommentEnqueueFailure("enqueue squad leader mention task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return fail(err)
 		}
+		return DispatchQueued, ReasonQueued, nil
 	case commentTriggerSourceMentionAgent:
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed); err != nil {
+		override, oerr := h.resolveTierTriggerOverride(ctx, issue, trigger)
+		if oerr != nil {
+			logCommentEnqueueFailure("resolve explicit tier failed", oerr,
+				"issue_id", uuidToString(issue.ID),
+				"agent_id", uuidToString(trigger.Agent.ID),
+				"tier", trigger.TierName)
+			return fail(oerr)
+		}
+		task, err := h.TaskService.EnqueueTaskForMentionWithTier(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed, override)
+		if err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))
-			return err
+			return fail(err)
 		}
+		if task.TierParked && task.TierID.Valid && trigger.TierName != "" {
+			return DispatchQueued, ReasonTierWaitingCapacity, nil
+		}
+		return DispatchQueued, ReasonQueued, nil
 	case commentTriggerSourceThreadParent, commentTriggerSourceConversation:
 		var err error
-		// Squad is set on these two sources only when the routing already
-		// proved a leader role to continue: the thread root's prior task for
-		// the conversation path, the replied-to comment's own authoring task
-		// for the thread-parent path. Gating on the source as well would keep
-		// the thread-parent path demoted for no reason (MUL-7006).
 		if trigger.Squad != nil {
 			_, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
 		} else {
@@ -2707,10 +2794,11 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID),
 				"source", trigger.Source)
-			return err
+			return fail(err)
 		}
+		return DispatchQueued, ReasonQueued, nil
 	}
-	return nil
+	return DispatchQueued, ReasonQueued, nil
 }
 
 // computeCommentAgentTriggers resolves which agents a comment triggers (deduped
@@ -3204,6 +3292,11 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			if triggers[idx].Source != commentTriggerSourceMentionSquadLeader &&
 				trigger.Source == commentTriggerSourceMentionSquadLeader {
 				triggers[idx] = trigger
+			} else if triggers[idx].TierName == "" && trigger.TierName != "" {
+				// M-359: a tier-suffixed mention of an already-added agent
+				// upgrades the trigger to the explicit pick either way
+				// round (mirrors the util.ParseMentions dedup rule).
+				triggers[idx].TierName = trigger.TierName
 			}
 			return
 		}
@@ -3371,7 +3464,20 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
-		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending})
+		tierName := ""
+		// M-359: the `@agent#tier` suffix rides the mention label (the wire
+		// stays `mention://agent/<uuid>`). Split at the last `#` and validate
+		// here so both preview and submit surface tier_unavailable for a
+		// name that matches nothing usable — instead of silently running
+		// the plain resolver.
+		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier {
+			tierName = tier
+			if verr := h.validateExplicitTierName(ctx, issue, agent, tierName); verr != nil {
+				blockTarget("agent", m.ID, ReasonTierUnavailable)
+				continue
+			}
+		}
+		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: hasPending, TierName: tierName})
 		addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID)})
 	}
 	return triggers, targets

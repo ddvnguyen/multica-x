@@ -435,3 +435,59 @@ func TestHasMentionAll(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMentions_LabelCarried(t *testing.T) {
+	got := ParseMentions("[@Helper Bot](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) fix it")
+	if len(got) != 1 {
+		t.Fatalf("got %d mentions, want 1", len(got))
+	}
+	if got[0].Label != "Helper Bot" {
+		t.Errorf("Label = %q, want %q", got[0].Label, "Helper Bot")
+	}
+	got = ParseMentions("[@Helper#fast](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) fix it")
+	if len(got) != 1 || got[0].Label != "Helper#fast" {
+		t.Fatalf("tier-suffixed label = %+v, want Label %q", got, "Helper#fast")
+	}
+}
+
+func TestParseMentions_TierSuffixWinsDedup(t *testing.T) {
+	id := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	for _, content := range []string{
+		"[@H](mention://agent/" + id + ") then [@H#fast](mention://agent/" + id + ")",
+		"[@H#fast](mention://agent/" + id + ") then [@H](mention://agent/" + id + ")",
+	} {
+		got := ParseMentions(content)
+		if len(got) != 1 {
+			t.Fatalf("%q: got %d mentions, want 1", content, len(got))
+		}
+		if got[0].Label != "H#fast" {
+			t.Errorf("%q: Label = %q, want %q", content, got[0].Label, "H#fast")
+		}
+	}
+}
+
+func TestSplitTierSuffix(t *testing.T) {
+	tests := []struct {
+		label       string
+		wantAgent   string
+		wantTier    string
+		wantHasTier bool
+	}{
+		{"Helper", "Helper", "", false},
+		{"Helper#fast", "Helper", "fast", true},
+		{"Helper#Fast", "Helper", "fast", true},
+		{"Helper#tier-1", "Helper", "tier-1", true},
+		{"Helper#", "Helper#", "", false},
+		{"C#", "C#", "", false},
+		{"Helper#bad_tier", "Helper#bad_tier", "", false},
+		{"a#b#c", "a#b", "c", true},
+		{"Helper#" + string(make([]byte, 41)), "Helper#" + string(make([]byte, 41)), "", false},
+	}
+	for _, tt := range tests {
+		agent, tier, hasTier := SplitTierSuffix(tt.label)
+		if agent != tt.wantAgent || tier != tt.wantTier || hasTier != tt.wantHasTier {
+			t.Errorf("SplitTierSuffix(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tt.label, agent, tier, hasTier, tt.wantAgent, tt.wantTier, tt.wantHasTier)
+		}
+	}
+}
