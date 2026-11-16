@@ -77,10 +77,15 @@ rollback.sh --list                  # releases on disk, newest first
   local build.
 * **One deploy at a time.** `flock` on `data/autodeploy.lock`; a tick that
   loses the lock exits 0 without touching anything.
+* **Targets only move forward.** Before inspecting artifacts, the target is
+  compared with the running release through GitHub's compare API. Only
+  `ahead` or `identical` is accepted; a behind, diverged, unknown, or failed
+  comparison skips the tick without a dump or report. A target SHA that fails
+  deployment is recorded in `data/autodeploy.failed` and is not retried on
+  every tick. A successful deploy clears the marker.
 * **Newest SHA wins.** The newest green run is re-read after the download, so a
   commit superseded mid-download is dropped for the next tick instead of
-  deployed. A SHA that already failed is not retried every minute
-  (`data/autodeploy.failed`).
+  deployed.
 * **The database is backed up, never restored automatically.** `pg_dump -Fc`
   runs before any migration and its path goes into the evidence comment.
   Rolling back flips binaries only: `pg_restore` over a live database silently
@@ -98,9 +103,12 @@ rollback.sh --list                  # releases on disk, newest first
   `fail()` so the `ERR` trap runs: flip to the previous release, restart,
   health-check, then deliver the red report (with the dump path) through the
   reporter autopilot.
-* **Disk floor.** A tick refuses to start below `AUTODEPLOY_MIN_FREE_GB` (3G)
-  and keeps `AUTODEPLOY_KEEP_RELEASES` (5) releases; the artifact directory is
-  deleted after install.
+* **Disk floor and backups.** A tick refuses to start below
+  `AUTODEPLOY_MIN_FREE_GB` (3G), keeps `AUTODEPLOY_KEEP_RELEASES` (5) releases,
+  and prunes pre-deploy dumps to the newest `AUTODEPLOY_BACKUP_KEEP_COUNT`
+  (default 10), always preserving the dump for the running release. Dry-run
+  reports which backups it would prune without deleting them. The artifact
+  directory is deleted after install.
 
 ## What a tick prints
 

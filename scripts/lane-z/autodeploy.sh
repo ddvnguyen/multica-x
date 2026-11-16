@@ -112,6 +112,12 @@ on_error() { # $1 = line
   FAILED=1
   FAIL_REASON="${FAIL_REASON:-command failed (rc=$rc) at line $1}"
   log "FAILED in step '$STEP': $FAIL_REASON"
+  if [ -n "$SHA" ] && [ "$DRY_RUN" = 0 ]; then
+    local failed_marker="$LANE_ROOT/data/autodeploy.failed"
+    printf '%s\n' "$SHA" > "$failed_marker.tmp.$$"
+    mv -f "$failed_marker.tmp.$$" "$failed_marker"
+    log "recorded failed target $SHA in $failed_marker"
+  fi
   if [ "$SWITCHED" = 1 ]; then
     log "rolling back to the previous release"
     bash "$SCRIPT_DIR/rollback.sh" || log "ROLLBACK FAILED — lane z may be on the broken release"
@@ -307,9 +313,40 @@ report() { # $1 = green|red
 }
 
 prune_backups() {
-  find "$AUTODEPLOY_BACKUP_DIR" -maxdepth 1 -type f \
-    \( -name 'multica_z-pre-*.dump' -o -name 'multica_z-pre-*-migrations-*.txt' \) \
-    -mtime +"$AUTODEPLOY_BACKUP_KEEP_DAYS" -print -delete 2>/dev/null || true
+  local keep="${AUTODEPLOY_BACKUP_KEEP_COUNT:-10}" running running_prefix dump name rest dump_sha dump_time
+  local retained=0
+  local -a dumps=()
+  if ! [[ "$keep" =~ ^[0-9]+$ ]] || [ "$keep" -lt 1 ]; then
+    log "invalid AUTODEPLOY_BACKUP_KEEP_COUNT='$keep'; retaining backups"
+    return 0
+  fi
+  running="$(release_sha)"
+  running_prefix="${running:0:9}"
+  mapfile -t dumps < <(find "$AUTODEPLOY_BACKUP_DIR" -maxdepth 1 -type f -name 'multica_z-pre-*.dump' \
+    -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  for dump in "${dumps[@]}"; do
+    name="${dump##*/}"
+    if [ -n "$running_prefix" ] && [[ "$name" == "multica_z-pre-${running_prefix}-"*.dump ]]; then
+      log "keeping backup for running release: $name"
+      if [ "$retained" -lt "$keep" ]; then retained=$((retained + 1)); fi
+      continue
+    fi
+    if [ "$retained" -lt "$keep" ]; then
+      retained=$((retained + 1))
+      continue
+    fi
+    if [ "$DRY_RUN" = 1 ]; then
+      log "dry-run: would prune old backup $name"
+      continue
+    fi
+    rm -f -- "$dump"
+    rest="${name#multica_z-pre-}"
+    dump_sha="${rest%%-*}"
+    dump_time="${rest#*-}"
+    dump_time="${dump_time%.dump}"
+    rm -f -- "$AUTODEPLOY_BACKUP_DIR/multica_z-pre-${dump_sha}-migrations-${dump_time}.txt"
+    log "pruned old backup $name"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -364,6 +401,26 @@ if [ -f "$LANE_ROOT/data/autodeploy.failed" ] && [ "$(cat "$LANE_ROOT/data/autod
   exit 0
 fi
 
+RUNNING_SHA="$(release_sha)"
+if [ -n "$RUNNING_SHA" ] && [ "$RUNNING_SHA" != "none" ]; then
+  if ! COMPARE_JSON="$(gh api "repos/$AUTODEPLOY_REPO/compare/$RUNNING_SHA...$SHA" 2>/dev/null)"; then
+    log "could not compare target $SHA with running release $RUNNING_SHA; skipping"
+    exit 0
+  fi
+  COMPARE_STATUS="$(printf '%s' "$COMPARE_JSON" | jq -r '.status // empty' 2>/dev/null || true)"
+  case "$COMPARE_STATUS" in
+    ahead|identical) ;;
+    behind|diverged)
+      log "target is behind running release; skipping"
+      exit 0
+      ;;
+    *)
+      log "target is behind running release; skipping (compare status: ${COMPARE_STATUS:-unknown})"
+      exit 0
+      ;;
+  esac
+fi
+
 ART="$LANE_ROOT/artifacts/$SHA"
 if [ "$DRY_RUN" = 1 ]; then
   log "dry-run: newest green run on $AUTODEPLOY_BRANCH is ${SHA:0:9} (run $RUN_ID, $RUN_URL)"
@@ -374,6 +431,7 @@ if [ "$DRY_RUN" = 1 ]; then
   log "dry-run: would download to $ART, back up the DB to $AUTODEPLOY_BACKUP_DIR, install releases/${SHA:0:9}, migrate, switch current, restart $MULTICA_BE_Z_UNIT,"
   log "dry-run: would sync the plugin bundle and restart $DSH_Z_WEB_UNIT only if its content changed, then assert health and comment on $(resolve_card "$SHA" || printf 'no card')"
   log "dry-run: disk ${DF_BEFORE}G free (refuse below ${AUTODEPLOY_MIN_FREE_GB}G), keeping $AUTODEPLOY_KEEP_RELEASES releases"
+  prune_backups
   exit 0
 fi
 
