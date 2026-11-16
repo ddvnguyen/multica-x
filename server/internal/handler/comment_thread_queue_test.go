@@ -35,8 +35,8 @@ func TestCommentThreadQueuesMergeAndExecuteIndependently(t *testing.T) {
 		t.Helper()
 		result := testHandler.enqueueCommentAgentTriggers(ctx, issue, parseUUID(commentID),
 			[]commentAgentTrigger{{Agent: agent, Source: commentTriggerSourceMentionAgent, AlreadyPending: pending}})
-		if result[agentID].status != want {
-			t.Fatalf("enqueue %s: got %+v, want %s", commentID, result[agentID], want)
+		if result[agentID+":"].status != want {
+			t.Fatalf("enqueue %s: got %+v, want %s", commentID, result[agentID+":"], want)
 		}
 	}
 	enqueue(rootA, false, DispatchQueued)
@@ -143,8 +143,8 @@ func TestCommentFoldedIntoQueuedRunBroadcastsCoalesced(t *testing.T) {
 		t.Helper()
 		result := testHandler.enqueueCommentAgentTriggers(ctx, issue, parseUUID(commentID),
 			[]commentAgentTrigger{{Agent: agent, Source: commentTriggerSourceIssueAssignee, AlreadyPending: pending}})
-		if result[agentID].status != want {
-			t.Fatalf("enqueue %s: got %+v, want %s", commentID, result[agentID], want)
+		if result[agentID+":"].status != want {
+			t.Fatalf("enqueue %s: got %+v, want %s", commentID, result[agentID+":"], want)
 		}
 	}
 

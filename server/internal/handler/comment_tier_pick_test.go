@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // TestCommentTierPick_PreviewUnknownTierBlocked pins the M-359 preview:
@@ -159,31 +160,70 @@ func TestCommentTierPick_MultiTierCommentRunsBoth(t *testing.T) {
 }
 
 // TestCommentTierPick_PlainPlusTieredRunsBoth pins the mixed case: plain
-// `@agent` and `@agent#tier-fast` in one comment are distinct triggers —
-// one auto-resolved run plus one explicit run.
+// `@agent` and `@agent#tier-fast` in one comment are distinct triggers. With
+// tier-fast's slot occupied, the auto resolver falls to tier-slow while the
+// explicit pick parks on tier-fast — two runs, neither falling back onto the
+// other's tier.
 func TestCommentTierPick_PlainPlusTieredRunsBoth(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	agentID, _, _, tierFast, _ := tierAgentFixture(t)
+	agentID, _, _, tierFast, tierSlow := tierAgentFixture(t)
 	issueID := createCommentTriggerPreviewIssue(t, "tier pick mixed", "", "")
+
+	// Occupy tier-fast's single slot so auto resolution falls through.
+	agentUUID := util.MustParseUUID(agentID)
+	fastRuntime := ""
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id::text FROM model_tier WHERE id = $1`, tierFast).Scan(&fastRuntime); err != nil {
+		t.Fatalf("tier runtime: %v", err)
+	}
+	var blockerID string
+	if err := testPool.QueryRow(context.Background(),
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`,
+		agentUUID, util.MustParseUUID(fastRuntime)).Scan(&blockerID); err != nil {
+		t.Fatalf("insert blocker: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, blockerID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
 
 	content := fmt.Sprintf("[@Agent](mention://agent/%s) plus [@Agent#tier-fast](mention://agent/%s) please", agentID, agentID)
 	var posted CommentResponse
 	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
 	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 2 {
-		t.Fatalf("queued tasks = %d, want 2 (auto + explicit)", got)
+		t.Fatalf("queued tasks = %d, want 2 (auto on slow + parked explicit on fast)", got)
 	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
-	})
-	var autoCount, explicitCount int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FILTER (WHERE tier_id IS NULL), count(*) FILTER (WHERE tier_id::text = $1 AND tier_explicit) FROM agent_task_queue WHERE issue_id = $2 AND agent_id = $3`,
-		tierFast, issueID, agentID).Scan(&autoCount, &explicitCount); err != nil {
-		t.Fatalf("count stamps: %v", err)
+	rows, err := testPool.Query(context.Background(),
+		`SELECT tier_id::text, tier_explicit::text, tier_parked::text FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`,
+		issueID, agentUUID)
+	if err != nil {
+		t.Fatalf("read stamps: %v", err)
 	}
-	if autoCount != 1 || explicitCount != 1 {
-		t.Fatalf("auto = %d, explicit = %d, want 1 + 1", autoCount, explicitCount)
+	defer rows.Close()
+	type stamp struct{ tier, explicit, parked string }
+	var stamps []stamp
+	for rows.Next() {
+		var s stamp
+		if err := rows.Scan(&s.tier, &s.explicit, &s.parked); err != nil {
+			t.Fatalf("scan stamp: %v", err)
+		}
+		stamps = append(stamps, s)
+	}
+	if len(stamps) != 2 {
+		t.Fatalf("stamps = %+v, want 2", stamps)
+	}
+	byTier := map[string]stamp{}
+	for _, s := range stamps {
+		byTier[s.tier] = s
+	}
+	auto, ok := byTier[tierSlow]
+	if !ok || auto.explicit != "false" || auto.parked != "false" {
+		t.Errorf("auto stamp = %+v, want tier-slow/non-explicit/unparked", auto)
+	}
+	explicit, ok := byTier[tierFast]
+	if !ok || explicit.explicit != "true" || explicit.parked != "true" {
+		t.Errorf("explicit stamp = %+v, want tier-fast/explicit/parked", explicit)
 	}
 }
