@@ -2021,6 +2021,10 @@ SELECT EXISTS (
 -- the pre-TEN-356 (issue_id, agent_id) key so non-PR issues keep coalescing.
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
+  -- rows, an explicit `@agent#tier` trigger only rows stamped with that tier.
+  -- COALESCE keeps the zero-arg call path on the exact legacy key.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -2035,6 +2039,10 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
 -- root comment and all descendants. NULL selects assignment-level work.
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
+  -- rows, an explicit `@agent#tier` trigger only rows stamped with that tier.
+  -- COALESCE keeps the zero-arg call path on the exact legacy key.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -2053,6 +2061,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = @issue_id
   AND agent_id = @agent_id
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -2068,6 +2077,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = @issue_id
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = @issue_id
   AND agent_id = @agent_id
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -2150,6 +2160,8 @@ WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
+      -- M-359: never fold across tier slots — a plain trigger folds into a tier-less row, an explicit `@agent#tier` trigger into its own tier row. Cross-tier siblings are separate runs.
+      AND COALESCE(t.tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@new_trigger_comment_id::uuid)
       AND (
           t.status = 'queued'
@@ -2206,6 +2218,8 @@ WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
+      -- M-359: same tier-slot rule as the merge — planned ids ride the comment\u2019s own tier run, never a sibling tier\u2019s.
+      AND COALESCE(t.tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@comment_id::uuid)
       AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
       AND (
@@ -2456,6 +2470,8 @@ LIMIT @max_per_tick;
 -- NO active task exists.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
+  -- M-359: same tier slot as the pending check.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -2465,6 +2481,8 @@ WHERE issue_id = $1 AND agent_id = $2
 -- Active execution and pending work in this comment thread only.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
+  -- M-359: same tier slot as the pending check (thread-scoped).
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE(sqlc.narg('tier_id')::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -3137,23 +3155,25 @@ RETURNING *;
 -- cannot starve one agent behind another's backlog. The caller resolves and
 -- stamps via RestampQueuedTierTask, then wakes the stamped runtime's daemon.
 -- name: ListRuntimelessTierTasks :many
-SELECT DISTINCT ON (atq.agent_id) atq.*
+SELECT DISTINCT ON (atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid)) atq.*
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND a.use_tiers
-ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC;
+  -- M-359: use_tiers=false agents can hold a parked EXPLICIT row (the pick
+  -- overrides the single runtime for that run); sweep those too.
+  AND (a.use_tiers OR atq.tier_explicit)
+ORDER BY atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC;
 
 -- M-351: workspace-scoped variant of the restamp sweep, run on
 -- offline->online flips (heartbeat recovery). Same one-per-agent oldest-first
 -- shape; the caller filters nothing else.
 -- name: ListRuntimelessTierTasksForWorkspace :many
-SELECT DISTINCT ON (atq.agent_id) atq.*
+SELECT DISTINCT ON (atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid)) atq.*
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND a.use_tiers
+  AND (a.use_tiers OR atq.tier_explicit)
   AND a.workspace_id = $1
-ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC;
+ORDER BY atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC;

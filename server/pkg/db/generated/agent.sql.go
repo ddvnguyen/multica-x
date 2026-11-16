@@ -5293,6 +5293,8 @@ func (q *Queries) HasActiveTaskForIssue(ctx context.Context, issueID pgtype.UUID
 const hasActiveTaskForIssueAndAgent = `-- name: HasActiveTaskForIssueAndAgent :one
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
+  -- M-359: same tier slot as the pending check.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5302,6 +5304,7 @@ WHERE issue_id = $1 AND agent_id = $2
 type HasActiveTaskForIssueAndAgentParams struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	AgentID pgtype.UUID `json:"agent_id"`
+	TierID  pgtype.UUID `json:"tier_id"`
 }
 
 // MUL-4195: true when the (issue, agent) pair has any non-terminal task in a
@@ -5315,7 +5318,7 @@ type HasActiveTaskForIssueAndAgentParams struct {
 // reconcile to schedule the guaranteed follow-up, and only enqueues fresh when
 // NO active task exists.
 func (q *Queries) HasActiveTaskForIssueAndAgent(ctx context.Context, arg HasActiveTaskForIssueAndAgentParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasActiveTaskForIssueAndAgent, arg.IssueID, arg.AgentID)
+	row := q.db.QueryRow(ctx, hasActiveTaskForIssueAndAgent, arg.IssueID, arg.AgentID, arg.TierID)
 	var has_active bool
 	err := row.Scan(&has_active)
 	return has_active, err
@@ -5324,22 +5327,30 @@ func (q *Queries) HasActiveTaskForIssueAndAgent(ctx context.Context, arg HasActi
 const hasActiveTaskForIssueAndAgentInThread = `-- name: HasActiveTaskForIssueAndAgentInThread :one
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
+  -- M-359: same tier slot as the pending check (thread-scoped).
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
-  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3::uuid)
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($4::uuid)
 `
 
 type HasActiveTaskForIssueAndAgentInThreadParams struct {
 	IssueID         pgtype.UUID `json:"issue_id"`
 	AgentID         pgtype.UUID `json:"agent_id"`
+	TierID          pgtype.UUID `json:"tier_id"`
 	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
 }
 
 // Active execution and pending work in this comment thread only.
 func (q *Queries) HasActiveTaskForIssueAndAgentInThread(ctx context.Context, arg HasActiveTaskForIssueAndAgentInThreadParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasActiveTaskForIssueAndAgentInThread, arg.IssueID, arg.AgentID, arg.ThreadCommentID)
+	row := q.db.QueryRow(ctx, hasActiveTaskForIssueAndAgentInThread,
+		arg.IssueID,
+		arg.AgentID,
+		arg.TierID,
+		arg.ThreadCommentID,
+	)
 	var has_active bool
 	err := row.Scan(&has_active)
 	return has_active, err
@@ -5385,19 +5396,24 @@ func (q *Queries) HasPendingTaskForIssue(ctx context.Context, issueID pgtype.UUI
 const hasPendingTaskForIssueAndAgent = `-- name: HasPendingTaskForIssueAndAgent :one
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
+  -- rows, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger only rows stamped with that tier.
+  -- COALESCE keeps the zero-arg call path on the exact legacy key.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
   AND (
-    COALESCE($3::text, '') = ''
-    OR context->>'head_sha' = $3::text
+    COALESCE($4::text, '') = ''
+    OR context->>'head_sha' = $4::text
   )
 `
 
 type HasPendingTaskForIssueAndAgentParams struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	AgentID pgtype.UUID `json:"agent_id"`
+	TierID  pgtype.UUID `json:"tier_id"`
 	HeadSha pgtype.Text `json:"head_sha"`
 }
 
@@ -5413,7 +5429,12 @@ type HasPendingTaskForIssueAndAgentParams struct {
 // When head_sha is empty/NULL (issue has no linked PR) the check falls back to
 // the pre-TEN-356 (issue_id, agent_id) key so non-PR issues keep coalescing.
 func (q *Queries) HasPendingTaskForIssueAndAgent(ctx context.Context, arg HasPendingTaskForIssueAndAgentParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgent, arg.IssueID, arg.AgentID, arg.HeadSha)
+	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgent,
+		arg.IssueID,
+		arg.AgentID,
+		arg.TierID,
+		arg.HeadSha,
+	)
 	var has_pending bool
 	err := row.Scan(&has_pending)
 	return has_pending, err
@@ -5423,20 +5444,22 @@ const hasPendingTaskForIssueAndAgentExcludingTriggerComment = `-- name: HasPendi
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1
   AND agent_id = $2
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
-  AND trigger_comment_id IS DISTINCT FROM $3::uuid
+  AND trigger_comment_id IS DISTINCT FROM $4::uuid
   AND (
-    COALESCE($4::text, '') = ''
-    OR context->>'head_sha' = $4::text
+    COALESCE($5::text, '') = ''
+    OR context->>'head_sha' = $5::text
   )
 `
 
 type HasPendingTaskForIssueAndAgentExcludingTriggerCommentParams struct {
 	IssueID                 pgtype.UUID `json:"issue_id"`
 	AgentID                 pgtype.UUID `json:"agent_id"`
+	TierID                  pgtype.UUID `json:"tier_id"`
 	ExcludeTriggerCommentID pgtype.UUID `json:"exclude_trigger_comment_id"`
 	HeadSha                 pgtype.Text `json:"head_sha"`
 }
@@ -5449,6 +5472,7 @@ func (q *Queries) HasPendingTaskForIssueAndAgentExcludingTriggerComment(ctx cont
 	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentExcludingTriggerComment,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TierID,
 		arg.ExcludeTriggerCommentID,
 		arg.HeadSha,
 	)
@@ -5461,21 +5485,23 @@ const hasPendingTaskForIssueAndAgentExcludingTriggerCommentInThread = `-- name: 
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1
   AND agent_id = $2
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
-  AND trigger_comment_id IS DISTINCT FROM $3::uuid
+  AND trigger_comment_id IS DISTINCT FROM $4::uuid
   AND (
-    COALESCE($4::text, '') = ''
-    OR context->>'head_sha' = $4::text
+    COALESCE($5::text, '') = ''
+    OR context->>'head_sha' = $5::text
   )
-  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($5::uuid)
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($6::uuid)
 `
 
 type HasPendingTaskForIssueAndAgentExcludingTriggerCommentInThreadParams struct {
 	IssueID                 pgtype.UUID `json:"issue_id"`
 	AgentID                 pgtype.UUID `json:"agent_id"`
+	TierID                  pgtype.UUID `json:"tier_id"`
 	ExcludeTriggerCommentID pgtype.UUID `json:"exclude_trigger_comment_id"`
 	HeadSha                 pgtype.Text `json:"head_sha"`
 	ThreadCommentID         pgtype.UUID `json:"thread_comment_id"`
@@ -5486,6 +5512,7 @@ func (q *Queries) HasPendingTaskForIssueAndAgentExcludingTriggerCommentInThread(
 	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentExcludingTriggerCommentInThread,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TierID,
 		arg.ExcludeTriggerCommentID,
 		arg.HeadSha,
 		arg.ThreadCommentID,
@@ -5498,20 +5525,25 @@ func (q *Queries) HasPendingTaskForIssueAndAgentExcludingTriggerCommentInThread(
 const hasPendingTaskForIssueAndAgentInThread = `-- name: HasPendingTaskForIssueAndAgentInThread :one
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
+  -- rows, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger only rows stamped with that tier.
+  -- COALESCE keeps the zero-arg call path on the exact legacy key.
+  AND COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
   AND (
-    COALESCE($3::text, '') = ''
-    OR context->>'head_sha' = $3::text
+    COALESCE($4::text, '') = ''
+    OR context->>'head_sha' = $4::text
   )
-  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($4::uuid)
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($5::uuid)
 `
 
 type HasPendingTaskForIssueAndAgentInThreadParams struct {
 	IssueID         pgtype.UUID `json:"issue_id"`
 	AgentID         pgtype.UUID `json:"agent_id"`
+	TierID          pgtype.UUID `json:"tier_id"`
 	HeadSha         pgtype.Text `json:"head_sha"`
 	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
 }
@@ -5522,6 +5554,7 @@ func (q *Queries) HasPendingTaskForIssueAndAgentInThread(ctx context.Context, ar
 	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentInThread,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TierID,
 		arg.HeadSha,
 		arg.ThreadCommentID,
 	)
@@ -7136,13 +7169,15 @@ func (q *Queries) ListRunningTasksForRuntime(ctx context.Context, runtimeID pgty
 }
 
 const listRuntimelessTierTasks = `-- name: ListRuntimelessTierTasks :many
-SELECT DISTINCT ON (atq.agent_id) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit
+SELECT DISTINCT ON (atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND a.use_tiers
-ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC
+  -- M-359: use_tiers=false agents can hold a parked EXPLICIT row (the pick
+  -- overrides the single runtime for that run); sweep those too.
+  AND (a.use_tiers OR atq.tier_explicit)
+ORDER BY atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `
 
 // M-351: runtime-less queued rows a tier enqueue left behind when no tier had
@@ -7238,14 +7273,14 @@ func (q *Queries) ListRuntimelessTierTasks(ctx context.Context) ([]AgentTaskQueu
 }
 
 const listRuntimelessTierTasksForWorkspace = `-- name: ListRuntimelessTierTasksForWorkspace :many
-SELECT DISTINCT ON (atq.agent_id) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit
+SELECT DISTINCT ON (atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND a.use_tiers
+  AND (a.use_tiers OR atq.tier_explicit)
   AND a.workspace_id = $1
-ORDER BY atq.agent_id, atq.priority DESC, atq.created_at ASC, atq.id ASC
+ORDER BY atq.agent_id, COALESCE(atq.tier_id, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `
 
 // M-351: workspace-scoped variant of the restamp sweep, run on
@@ -8425,6 +8460,8 @@ WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $12
       AND t.agent_id = $13
+      -- M-359: never fold across tier slots — a plain trigger folds into a tier-less row, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger into its own tier row. Cross-tier siblings are separate runs.
+      AND COALESCE(t.tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($14::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
       AND (
           t.status = 'queued'
@@ -8436,8 +8473,8 @@ WHERE id = (
       -- into it would give a new-HEAD comment old-HEAD review coverage. Empty/
       -- absent head_sha (no linked PR) matches any task, preserving coalescing.
       AND (
-          COALESCE($14::text, '') = ''
-          OR t.context->>'head_sha' = $14::text
+          COALESCE($15::text, '') = ''
+          OR t.context->>'head_sha' = $15::text
       )
     ORDER BY t.created_at DESC
     LIMIT 1
@@ -8459,6 +8496,7 @@ type MergeCommentIntoPendingTaskParams struct {
 	NewRuntimeConnectedApps []byte      `json:"new_runtime_connected_apps"`
 	IssueID                 pgtype.UUID `json:"issue_id"`
 	AgentID                 pgtype.UUID `json:"agent_id"`
+	TierID                  pgtype.UUID `json:"tier_id"`
 	HeadSha                 pgtype.Text `json:"head_sha"`
 }
 
@@ -8519,6 +8557,7 @@ func (q *Queries) MergeCommentIntoPendingTask(ctx context.Context, arg MergeComm
 		arg.NewRuntimeConnectedApps,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TierID,
 		arg.HeadSha,
 	)
 	var i AgentTaskQueue
@@ -9723,11 +9762,13 @@ WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $2
       AND t.agent_id = $3
+      -- M-359: same tier-slot rule as the merge — planned ids ride the comment\u2019s own tier run, never a sibling tier\u2019s.
+      AND COALESCE(t.tier_id, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($4::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
       AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
       AND (
-          COALESCE($4::text, '') = ''
-          OR t.context->>'head_sha' = $4::text
+          COALESCE($5::text, '') = ''
+          OR t.context->>'head_sha' = $5::text
       )
     ORDER BY t.created_at DESC
     LIMIT 1
@@ -9740,6 +9781,7 @@ type RegisterPlannedCommentForActiveTaskParams struct {
 	CommentID pgtype.UUID `json:"comment_id"`
 	IssueID   pgtype.UUID `json:"issue_id"`
 	AgentID   pgtype.UUID `json:"agent_id"`
+	TierID    pgtype.UUID `json:"tier_id"`
 	HeadSha   pgtype.Text `json:"head_sha"`
 }
 
@@ -9779,6 +9821,7 @@ func (q *Queries) RegisterPlannedCommentForActiveTask(ctx context.Context, arg R
 		arg.CommentID,
 		arg.IssueID,
 		arg.AgentID,
+		arg.TierID,
 		arg.HeadSha,
 	)
 	var i RegisterPlannedCommentForActiveTaskRow

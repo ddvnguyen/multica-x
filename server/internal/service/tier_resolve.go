@@ -176,17 +176,11 @@ func tierTextOrNull(v pgtype.Text) pgtype.Text {
 // Cooling, offline or full → errNoExplicitTierCapacity (parked, no fallback).
 func (s *TaskService) resolveExplicitTier(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string) (tierResolution, error) {
 	var none tierResolution
-	tier, err := s.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
-		WorkspaceID: workspaceID,
-		Lower:       tierName,
-	})
+	tier, err := s.LookupExplicitTier(ctx, agent, workspaceID, tierName)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return none, errUnknownTier
-		}
 		return none, err
 	}
-	return s.stampExplicitTier(ctx, agent, tier)
+	return s.stampExplicitTier(ctx, tier)
 }
 
 // resolveExplicitTierByID is resolveExplicitTier for an already-validated
@@ -204,12 +198,32 @@ func (s *TaskService) resolveExplicitTierByID(ctx context.Context, agent db.Agen
 		}
 		return none, err
 	}
-	return s.stampExplicitTier(ctx, agent, tier)
+	if !tier.Enabled {
+		return none, errUnknownTier
+	}
+	if agent.UseTiers {
+		return s.resolveExplicitTier(ctx, agent, agent.WorkspaceID, tier.Name)
+	}
+	return s.stampExplicitTier(ctx, tier)
 }
 
-// stampExplicitTier applies the capacity gate to one validated tier row.
-func (s *TaskService) stampExplicitTier(ctx context.Context, agent db.Agent, tier db.ModelTier) (tierResolution, error) {
-	var none tierResolution
+// LookupExplicitTier validates one named tier for an explicit pick (M-359)
+// and returns its row: the tier must exist in the workspace, be enabled, and
+// — for a use_tiers agent — be among the agent's selections. Anything else is
+// errUnknownTier (blocked, no fallback). Case-insensitive exact match: the
+// (workspace_id, lower(name)) unique index admits at most one row.
+func (s *TaskService) LookupExplicitTier(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string) (db.ModelTier, error) {
+	var none db.ModelTier
+	tier, err := s.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
+		WorkspaceID: workspaceID,
+		Lower:       tierName,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return none, errUnknownTier
+		}
+		return none, err
+	}
 	if !tier.Enabled {
 		return none, errUnknownTier
 	}
@@ -218,17 +232,19 @@ func (s *TaskService) stampExplicitTier(ctx context.Context, agent db.Agent, tie
 		if err != nil {
 			return none, err
 		}
-		member := false
 		for _, id := range selected {
 			if util.UUIDToString(id) == util.UUIDToString(tier.ID) {
-				member = true
-				break
+				return tier, nil
 			}
 		}
-		if !member {
-			return none, errUnknownTier
-		}
+		return none, errUnknownTier
 	}
+	return tier, nil
+}
+
+// stampExplicitTier applies the capacity gate to one validated tier row.
+func (s *TaskService) stampExplicitTier(ctx context.Context, tier db.ModelTier) (tierResolution, error) {
+	var none tierResolution
 	if tierCoolingDown(tier.CooldownUntil, time.Now()) {
 		return none, errNoExplicitTierCapacity
 	}

@@ -82,16 +82,12 @@ func ParseMentions(content string) []Mention {
 		if !ok {
 			return ast.WalkContinue, nil
 		}
-		key := mention.Type + ":" + mention.ID
-		if idx, dup := seen[key]; dup {
-			// M-359: two labels can name the same agent (`@bot` and
-			// `@bot#fast`). Keep the tier-suffixed one so the explicit
-			// pick survives dedup either way round.
-			if _, _, hasTier := SplitTierSuffix(mention.Label); hasTier {
-				if _, _, keptHasTier := SplitTierSuffix(result[idx].Label); !keptHasTier {
-					result[idx] = mention
-				}
-			}
+		// M-359: dedup key is type + id + tier slot. `@a#x` vs `@a#y`
+		// and plain `@a` vs `@a#x` are distinct triggers and must each
+		// run; only the identical mention dedups.
+		_, tier, _ := SplitTierSuffix(mention.Label)
+		key := mention.Type + ":" + mention.ID + ":" + tier
+		if _, dup := seen[key]; dup {
 			return ast.WalkContinue, nil
 		}
 		seen[key] = len(result)

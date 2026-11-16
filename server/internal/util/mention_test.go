@@ -450,19 +450,26 @@ func TestParseMentions_LabelCarried(t *testing.T) {
 	}
 }
 
-func TestParseMentions_TierSuffixWinsDedup(t *testing.T) {
+func TestParseMentions_TierSuffixDedupsOnSlot(t *testing.T) {
 	id := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-	for _, content := range []string{
-		"[@H](mention://agent/" + id + ") then [@H#fast](mention://agent/" + id + ")",
-		"[@H#fast](mention://agent/" + id + ") then [@H](mention://agent/" + id + ")",
-	} {
-		got := ParseMentions(content)
-		if len(got) != 1 {
-			t.Fatalf("%q: got %d mentions, want 1", content, len(got))
-		}
-		if got[0].Label != "H#fast" {
-			t.Errorf("%q: Label = %q, want %q", content, got[0].Label, "H#fast")
-		}
+	// Same agent + same tier dedups to one mention.
+	got := ParseMentions("[@H#fast](mention://agent/" + id + ") and [@H#fast](mention://agent/" + id + ")")
+	if len(got) != 1 || got[0].Label != "H#fast" {
+		t.Fatalf("same-tier dedup = %+v, want one H#fast", got)
+	}
+	// Same agent + different tiers are distinct triggers.
+	got = ParseMentions("[@H#fast](mention://agent/" + id + ") and [@H#slow](mention://agent/" + id + ")")
+	if len(got) != 2 {
+		t.Fatalf("different-tier mentions = %+v, want 2", got)
+	}
+	labels := map[string]bool{got[0].Label: true, got[1].Label: true}
+	if !labels["H#fast"] || !labels["H#slow"] {
+		t.Fatalf("different-tier labels = %+v, want H#fast + H#slow", got)
+	}
+	// Plain and tiered mentions of one agent are distinct.
+	got = ParseMentions("[@H](mention://agent/" + id + ") and [@H#fast](mention://agent/" + id + ")")
+	if len(got) != 2 {
+		t.Fatalf("plain+tiered mentions = %+v, want 2", got)
 	}
 }
 
