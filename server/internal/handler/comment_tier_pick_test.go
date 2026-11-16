@@ -227,3 +227,99 @@ func TestCommentTierPick_PlainPlusTieredRunsBoth(t *testing.T) {
 		t.Errorf("explicit stamp = %+v, want tier-fast/explicit/parked", explicit)
 	}
 }
+
+// TestCommentTierPick_PlainSeesAutoStampedRow pins the M-359 slot rule: a
+// plain `@agent` trigger shares the NULL slot with auto-resolved rows, so a
+// second plain `@agent` comment while the first run is queued merges into it
+// (one task) instead of double-enqueueing beside a tier-stamped row it
+// cannot see.
+func TestCommentTierPick_PlainSeesAutoStampedRow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, _, _, _, tierSlow := tierAgentFixture(t)
+	_ = tierSlow
+	issueID := createCommentTriggerPreviewIssue(t, "tier pick plain merge", "", "")
+
+	first := fmt.Sprintf("[@Agent](mention://agent/%s) first instruction", agentID)
+	var posted1 CommentResponse
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": first}), "id", issueID)).Want(http.StatusCreated).JSON(&posted1)
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
+		t.Fatalf("after first comment: queued = %d, want 1", got)
+	}
+
+	second := fmt.Sprintf("[@Agent](mention://agent/%s) second instruction", agentID)
+	var posted2 CommentResponse
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": second}), "id", issueID)).Want(http.StatusCreated).JSON(&posted2)
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
+		t.Fatalf("after second plain comment: queued = %d, want 1 merged task", got)
+	}
+	outcome := findCommentOutcome(t, posted2.TriggerOutcomes, agentID)
+	if outcome.Status != DispatchCoalesced {
+		t.Fatalf("second outcome = %+v, want coalesced", outcome)
+	}
+}
+
+// TestCommentTierPick_PlainFastSlowTriple pins the three-slot fan-out in one
+// comment: plain `@agent` (auto → slow, fast occupied), `@agent#tier-fast`
+// (parked explicit) and `@agent#tier-slow` (explicit, shares slow's runtime
+// but a different slot) — three sibling tasks, no fallback anywhere.
+func TestCommentTierPick_PlainFastSlowTriple(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, _, _, tierFast, tierSlow := tierAgentFixture(t)
+	issueID := createCommentTriggerPreviewIssue(t, "tier pick triple", "", "")
+
+	agentUUID := util.MustParseUUID(agentID)
+	fastRuntime := ""
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id::text FROM model_tier WHERE id = $1`, tierFast).Scan(&fastRuntime); err != nil {
+		t.Fatalf("tier runtime: %v", err)
+	}
+	var blockerID string
+	if err := testPool.QueryRow(context.Background(),
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`,
+		agentUUID, util.MustParseUUID(fastRuntime)).Scan(&blockerID); err != nil {
+		t.Fatalf("insert blocker: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, blockerID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
+
+	content := fmt.Sprintf("[@Agent](mention://agent/%s) plus [@Agent#tier-fast](mention://agent/%s) plus [@Agent#tier-slow](mention://agent/%s)",
+		agentID, agentID, agentID)
+	var posted CommentResponse
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 3 {
+		t.Fatalf("queued tasks = %d, want 3 (auto + 2 explicit)", got)
+	}
+	rows, err := testPool.Query(context.Background(),
+		`SELECT tier_id::text, tier_explicit::text, tier_parked::text FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`,
+		issueID, agentUUID)
+	if err != nil {
+		t.Fatalf("read stamps: %v", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var tier, explicit, parked string
+		if err := rows.Scan(&tier, &explicit, &parked); err != nil {
+			t.Fatalf("scan stamp: %v", err)
+		}
+		counts[tier+"/"+explicit+"/"+parked]++
+	}
+	if len(counts) != 3 {
+		t.Fatalf("stamps = %+v, want 3 distinct slots", counts)
+	}
+	if counts[tierSlow+"/false/false"] != 1 {
+		t.Errorf("missing auto-on-slow run: %+v", counts)
+	}
+	if counts[tierFast+"/true/true"] != 1 {
+		t.Errorf("missing parked explicit-fast run: %+v", counts)
+	}
+	if counts[tierSlow+"/true/false"] != 1 {
+		t.Errorf("missing explicit-slow run: %+v", counts)
+	}
+}

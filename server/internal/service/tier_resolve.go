@@ -56,6 +56,18 @@ var tierCooldownReasons = map[string]bool{
 	taskfailure.ReasonAgentProviderQuotaLimit.String():          true,
 }
 
+// tierSlotID maps a task row (or trigger override) onto the pending slot
+// the M-359 guard keys on: an explicit pick occupies its tier's slot, while
+// plain triggers and auto-resolved rows share the NULL slot — so a plain
+// `@agent` sees (and coalesces with) queued auto runs instead of
+// double-enqueueing beside them.
+func tierSlotID(tierID pgtype.UUID, explicit pgtype.Bool) pgtype.UUID {
+	if explicit.Bool && explicit.Valid && tierID.Valid {
+		return tierID
+	}
+	return pgtype.UUID{}
+}
+
 // tierCoolingDown reports whether a tier's provider is inside its cooldown
 // window. A NULL or expired deadline is not cooling: the tier re-enters idx
 // order by itself at the first resolve after cooldown_until.
