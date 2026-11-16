@@ -217,6 +217,9 @@ vi.mock("@multica/core/workspace/queries", () => ({
   squadListOptions: (wsId: string) => ({
     queryKey: ["workspaces", wsId, "squads"],
   }),
+  modelTiersOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "tiers"],
+  }),
 }));
 
 vi.mock("@multica/core/projects/queries", () => ({

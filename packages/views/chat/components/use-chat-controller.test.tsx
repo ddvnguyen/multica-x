@@ -95,6 +95,9 @@ vi.mock("@multica/core/auth", () => ({
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ queryKey: ["agents"] }),
   memberListOptions: () => ({ queryKey: ["members"] }),
+  modelTiersOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "tiers"],
+  }),
 }));
 vi.mock("@multica/core/projects/queries", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),

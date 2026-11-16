@@ -186,6 +186,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const wsId = useWorkspaceId();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
+  const selectedTierIds = useChatStore((s) => s.selectedTierIds ?? {});
   const selectedProjectId = useChatStore((s) => s.selectedProjectId);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId);
@@ -441,6 +442,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       createSession,
       sessions,
       sessionsLoaded,
+      selectedTierIds,
       qc,
     ],
   );
@@ -511,7 +513,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       const finalContent = content;
       const isNewSession = !activeSessionId;
       // M-359 explicit tier for this turn (TierDropdown in the composer).
-      const sendTierId = useChatStore.getState().selectedTierIds[activeAgent.id] ?? null;
+      const sendTierId = (selectedTierIds ?? {})[activeAgent.id] ?? null;
 
       apiLogger.info("sendChatMessage.start", {
         sessionId: activeSessionId,
