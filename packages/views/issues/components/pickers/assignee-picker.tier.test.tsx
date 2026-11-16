@@ -110,7 +110,9 @@ describe("AssigneePicker tier step", () => {
     // No members mocked — the empty-value row (first Unassigned text in
     // the popover, past the trigger) confirms immediately with no tier step.
     const matches = await screen.findAllByText("Unassigned");
-    await user.click(matches[matches.length - 1]);
+    const row = matches[matches.length - 1];
+    if (!row) throw new Error("unassigned row missing");
+    await user.click(row);
     expect(onUpdate).toHaveBeenCalledWith({ assignee_type: null, assignee_id: null });
   });
 });
