@@ -28,8 +28,8 @@ import {
 } from "@multica/views/layout";
 import { ActionShortcutKeycaps } from "@multica/views/common/shortcut-keycaps";
 import { useT } from "@multica/views/i18n";
-import { useTabHistory } from "@/hooks/use-tab-history";
-import { browsingHistoryKeyForUrl } from "@/stores/tab-store";
+import { useTabHistory } from "@multica/views/tabs";
+import { browsingHistoryKeyForUrl } from "@multica/core/tabs";
 
 // Controls sit left-aligned just past the macOS traffic lights, which end
 // around x=76 with trafficLightPosition { x: 16 }. The clearance covers that

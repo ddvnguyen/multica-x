@@ -27,7 +27,7 @@ const state = vi.hoisted(() => ({
   wsList: [] as { id: string; slug: string }[],
 }));
 
-vi.mock("@/hooks/use-tab-history", () => ({
+vi.mock("@multica/views/tabs", () => ({
   useTabHistory: () => ({
     canGoBack: false,
     canGoForward: false,

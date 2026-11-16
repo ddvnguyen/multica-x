@@ -245,18 +245,6 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@dnd-kit/core':
-        specifier: 'catalog:'
-        version: 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/modifiers':
-        specifier: 'catalog:'
-        version: 9.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/sortable':
-        specifier: 'catalog:'
-        version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/utilities':
-        specifier: 'catalog:'
-        version: 3.2.2(react@19.2.3)
       '@electron-toolkit/preload':
         specifier: ^3.0.2
         version: 3.0.2(electron@44.9.3)
@@ -293,9 +281,6 @@ importers:
       fix-path:
         specifier: ^5.0.0
         version: 5.0.0
-      motion:
-        specifier: 'catalog:'
-        version: 12.38.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       react:
         specifier: 'catalog:'
         version: 19.2.3

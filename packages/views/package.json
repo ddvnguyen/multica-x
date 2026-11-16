@@ -86,7 +86,8 @@
     "./locales/es": "./locales/es.ts",
     "./locales/ru": "./locales/ru.ts",
     "./locales/*": "./locales/*",
-    "./build-info": "./build-info.ts"
+    "./build-info": "./build-info.ts",
+    "./tabs": "./tabs/index.ts"
   },
   "dependencies": {
     "@base-ui/react": "catalog:",

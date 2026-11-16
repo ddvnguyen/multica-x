@@ -183,6 +183,9 @@ afterEach(() => {
 });
 
 describe("the island's tab strip (M-197)", () => {
+  // CI note: these tests poll real renders through settle(); under turbo's
+  // parallel suites on a loaded runner a single pass can exceed vitest's 5s
+  // default. The 20s budget below is wall-clock only, no behavior change.
   it("names an issue tab M-1 with the full title in its tooltip", async () => {
     stubBackend();
     bindShell({ layout: fakeLayout().layout, panelOfFamily: PANEL_OF_FAMILY });
@@ -197,7 +200,7 @@ describe("the island's tab strip (M-197)", () => {
     const tabs = stripTabs(host);
     expect(tabs.map((tab) => tab.textContent?.replace("×", "").trim())).toEqual(["MUL-1"]);
     expect(tabs[0]?.getAttribute("title")).toBe(`${ISSUE.identifier}: ${ISSUE.title}`);
-  });
+  }, 20000);
 
   it("keeps three tabs in the strip and walks back across them", async () => {
     stubBackend();
@@ -260,7 +263,7 @@ describe("the island's tab strip (M-197)", () => {
       expect(activeTabName(host)).toBe("Agents");
     });
     expect(selected.at(-1)).toBe("multica-agents");
-  });
+  }, 20000);
 
   it("follows a tab click into another family, and a relaunch does not select a row", async () => {
     stubBackend();

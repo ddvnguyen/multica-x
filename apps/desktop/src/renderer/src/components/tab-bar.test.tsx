@@ -42,7 +42,7 @@ const state = vi.hoisted(() => ({
   openIssueWindow: vi.fn(),
 }));
 
-vi.mock("@/stores/tab-store", () => {
+vi.mock("@multica/core/tabs", () => {
   const store = {
     get activeWorkspaceSlug() {
       return state.activeWorkspaceSlug;

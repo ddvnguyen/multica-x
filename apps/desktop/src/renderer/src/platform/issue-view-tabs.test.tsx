@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useActiveIssueViewStore } from "@multica/core/issue-views/active-view-store";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@/stores/window-overlay-store", () => ({

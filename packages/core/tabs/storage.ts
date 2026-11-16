@@ -1,5 +1,5 @@
 import type { StateStorage } from "zustand/middleware";
-import type { StorageAdapter } from "@multica/core/types";
+import type { StorageAdapter } from "../types";
 
 type SyncStorage = Pick<StorageAdapter, "getItem" | "setItem" | "removeItem">;
 

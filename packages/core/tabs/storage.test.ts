@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { createWindowTabStorage, mergeTabGroups } from "./tab-store-storage";
+import { createWindowTabStorage, mergeTabGroups } from "./storage";
 
 const KEY = "multica_tabs";
 

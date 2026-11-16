@@ -3,7 +3,7 @@ import { installUserTimingCap } from "@multica/core/diagnostics";
 import App from "./App";
 import { AppCrashBoundary } from "./components/app-crash-boundary";
 import { launchWorkspaceSlug } from "./platform/workspace-windows";
-import { useTabStore } from "./stores/tab-store";
+import { useTabStore } from "@multica/core/tabs";
 // Inter variable font covers all weights (100-900) in a single file.
 // CJK is handled by system font fallback (see globals.css --font-sans chain).
 // Keep font stack in sync with apps/web/app/layout.tsx.

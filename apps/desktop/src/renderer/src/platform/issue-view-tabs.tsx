@@ -6,7 +6,7 @@ import {
 } from "@multica/core/issue-views/active-view-store";
 import type { IssueViewScope } from "@multica/core/issue-views/queries";
 import { useNavigation } from "@multica/views/navigation";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 
 const tabViews = new Map<string, Record<string, string>>();
 let shownTabId: string | null = null;

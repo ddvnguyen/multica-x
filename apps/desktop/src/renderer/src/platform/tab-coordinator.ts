@@ -11,7 +11,7 @@ import {
   getActiveTab,
   splitTabUrl,
   scrollMementoKey,
-} from "@/stores/tab-store";
+} from "@multica/core/tabs";
 
 /**
  * Project the active tab session onto the single app router. Navigation entry

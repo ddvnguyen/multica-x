@@ -1,65 +1,5 @@
-import { useCallback, useEffect, useMemo } from "react";
-import {
-  browsingHistoryKeyForUrl,
-  useTabStore,
-  useActiveBrowsingHistory,
-  useActiveBrowsingHistoryTitles,
-  useActiveTabHistory,
-} from "@/stores/tab-store";
-
-export interface BrowsingHistoryEntry {
-  url: string;
-  title?: string;
-}
-
-/**
- * Shell back/forward for the active tab (MUL-4741 session architecture).
- *
- * Per-tab history is a virtual stack on the tab session — the single app
- * router has no usable history of its own (the Coordinator always navigates
- * with replace). goBack/goForward move the session's history index; the
- * Coordinator then reconciles the router to the newly projected URL. No
- * direction hints, no router.navigate(±1).
- */
-export function useTabHistory() {
-  const { historyIndex, historyLength, historyEntries } = useActiveTabHistory();
-  const browsingHistoryUrls = useActiveBrowsingHistory();
-  const browsingHistoryTitles = useActiveBrowsingHistoryTitles();
-  const browsingHistory = useMemo<BrowsingHistoryEntry[]>(
-    () =>
-      browsingHistoryUrls.map((url) => ({
-        url,
-        title: browsingHistoryTitles[browsingHistoryKeyForUrl(url)],
-      })),
-    [browsingHistoryTitles, browsingHistoryUrls],
-  );
-
-  const canGoBack = historyIndex > 0;
-  const canGoForward = historyIndex < historyLength - 1;
-
-  const goBack = useCallback(() => {
-    useTabStore.getState().goBack();
-  }, []);
-
-  const goForward = useCallback(() => {
-    useTabStore.getState().goForward();
-  }, []);
-
-  const goToHistoryIndex = useCallback((index: number) => {
-    useTabStore.getState().goToHistoryIndex(index);
-  }, []);
-
-  return {
-    canGoBack,
-    canGoForward,
-    historyEntries,
-    historyIndex,
-    browsingHistory,
-    goBack,
-    goForward,
-    goToHistoryIndex,
-  };
-}
+import { useEffect } from "react";
+import { useTabHistory } from "./use-tab-history";
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -89,7 +29,7 @@ export function useNavigationInputBindings() {
       // registered as goBack/goForward in packages/core/shortcuts and driven
       // by <GlobalShortcuts>, so both web and desktop share one rebindable
       // binding. Handling the brackets here too would double-navigate on
-      // desktop (DesktopShell mounts both this window listener and the
+      // desktop (which mounts both this window listener and the
       // document-level GlobalShortcuts), which only shows up on a history
       // stack of 3+ because stepHistory clamps at the ends.
       const back = e.key === "ArrowLeft";
