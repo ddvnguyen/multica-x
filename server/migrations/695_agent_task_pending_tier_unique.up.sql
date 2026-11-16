@@ -7,6 +7,6 @@
 -- throughout rolling deploys. Single statement: CREATE INDEX CONCURRENTLY
 -- cannot run in a transaction.
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_one_pending_task_per_issue_agent_tier
-    ON agent_task_queue (issue_id, agent_id, COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid))
+    ON agent_task_queue (issue_id, agent_id, COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))
     WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true');
