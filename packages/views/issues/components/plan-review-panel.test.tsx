@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@multica/core/api";
@@ -302,34 +302,133 @@ describe("PlanReviewPanel", () => {
     renderPanel(REVISED);
     expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
 
-    // Hit-test the click inside the quoted passage: jsdom has no
-    // caretRangeFromPoint, so the point is faked into the section body.
-    const sectionBody = document.querySelector(
-      '[data-plan-section="s1"] [data-plan-section-body]',
-    );
-    const textNode = sectionBody?.querySelector("p")?.firstChild ?? null;
-    const fakeRange = textNode
-      ? (() => {
-          const range = document.createRange();
-          range.selectNodeContents(textNode);
-          return range;
-        })()
-      : null;
-    const proto = document as Document & {
-      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    // Hit-test the click inside the quoted passage: jsdom ranges have no
+    // rects, so every range reports the clicked point's rect.
+    const clicked = [{ left: 0, top: 0, right: 100, bottom: 20 }] as DOMRect[];
+    const proto = Range.prototype as Range & {
+      getClientRects?: () => DOMRectList;
     };
-    const previous = proto.caretRangeFromPoint;
-    proto.caretRangeFromPoint = () => fakeRange;
+    const previous = proto.getClientRects;
+    proto.getClientRects = () => clicked as unknown as DOMRectList;
     try {
-      const target = sectionBody?.querySelector("p");
+      const target = document.querySelector(
+        '[data-plan-section="s1"] [data-plan-section-body] p',
+      );
       if (target == null) throw new Error("no section text");
       fireEvent.click(target, { clientX: 10, clientY: 10 });
     } finally {
-      proto.caretRangeFromPoint = previous;
+      if (previous === undefined) Reflect.deleteProperty(proto, "getClientRects");
+      else proto.getClientRects = previous;
     }
 
     // The thread list opened on the matching thread.
     expect(await screen.findByRole("button", { name: "Hide comments" })).toBeInTheDocument();
     expect(await screen.findByText("Start with the smaller lane.")).toBeInTheDocument();
+  });
+
+  it("raises the tooltip inside a shadow root", async () => {
+    vi.mocked(api.addPlanComment).mockResolvedValue({ comment: COMMENTED.comments![0]! });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    // The dsh plugin renders the plan inside a shadow root: the document
+    // selection stays collapsed and retargeted, so the panel must read the
+    // root's own selection.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    const queries = within(shadow as unknown as HTMLElement);
+    try {
+      renderWithI18n(
+        <QueryClientProvider client={client}>
+          <PlanReviewPanel plan={PLAN} issueId="issue-3" />
+        </QueryClientProvider>,
+        { container: shadow as unknown as HTMLElement },
+      );
+      const body = shadow.querySelector(
+        '[data-plan-section="s1"] [data-plan-section-body]',
+      );
+      const target = body?.querySelector("p") ?? null;
+      if (target == null) throw new Error("no section body");
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      const removeAllRanges = vi.fn();
+      const shadowSelection = {
+        isCollapsed: false,
+        rangeCount: 1,
+        anchorNode: target.firstChild,
+        focusNode: target.firstChild,
+        toString: () => "Two lanes, z first.",
+        getRangeAt: () => range,
+        removeAllRanges,
+      };
+      (shadow as unknown as Record<string, unknown>)["getSelection"] = () => shadowSelection;
+      shadow.dispatchEvent(new Event("selectionchange"));
+
+      // The tooltip raises from the root's selection, not the document's.
+      const tooltip = await queries.findByRole("button", { name: "Comment" });
+      fireEvent.click(tooltip);
+      expect(await queries.findByText("“Two lanes, z first.”")).toBeInTheDocument();
+      fireEvent.change(queries.getByRole("textbox", { name: "What should change here?" }), {
+        target: { value: "Start with the smaller lane." },
+      });
+      fireEvent.click(queries.getByRole("button", { name: "Comment" }));
+
+      await waitFor(() =>
+        expect(api.addPlanComment).toHaveBeenCalledWith("ws-1", "plan-4", {
+          base_revision: 6,
+          section_id: "s1",
+          quote: "Two lanes, z first.",
+          body: "Start with the smaller lane.",
+        }),
+      );
+      // Clearing reaches the shadow tree's own selection.
+      expect(removeAllRanges).toHaveBeenCalled();
+    } finally {
+      host.remove();
+    }
+  });
+
+  it("opens a thread from a click inside a shadow root", async () => {
+    const REVISED: AgentPlan = {
+      ...COMMENTED,
+      comments: COMMENTED.comments!.map((comment) => ({ ...comment, revision: 6 })),
+    };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    const queries = within(shadow as unknown as HTMLElement);
+    try {
+      renderWithI18n(
+        <QueryClientProvider client={client}>
+          <PlanReviewPanel plan={REVISED} issueId="issue-3" />
+        </QueryClientProvider>,
+        { container: shadow as unknown as HTMLElement },
+      );
+      expect(await queries.findByText("Split the cutover")).toBeInTheDocument();
+      const clicked = [{ left: 0, top: 0, right: 100, bottom: 20 }] as DOMRect[];
+      const proto = Range.prototype as Range & {
+        getClientRects?: () => DOMRectList;
+      };
+      const previous = proto.getClientRects;
+      proto.getClientRects = () => clicked as unknown as DOMRectList;
+      try {
+        const target = shadow.querySelector(
+          '[data-plan-section="s1"] [data-plan-section-body] p',
+        );
+        if (target == null) throw new Error("no section text");
+        fireEvent.click(target, { clientX: 10, clientY: 10 });
+      } finally {
+        if (previous === undefined) Reflect.deleteProperty(proto, "getClientRects");
+        else proto.getClientRects = previous;
+      }
+      expect(await queries.findByRole("button", { name: "Hide comments" })).toBeInTheDocument();
+      expect(await queries.findByText("Start with the smaller lane.")).toBeInTheDocument();
+    } finally {
+      host.remove();
+    }
   });
 });
