@@ -194,6 +194,42 @@ describe("unread poller", () => {
     expect(getUnread()).toBe(7);
   });
 
+  it("parks the poller on a 401 instead of failing every interval (M-373)", async () => {
+    setUnread(7);
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ error: "invalid token" }, 401),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    stopPoll = startUnreadPoll({ intervalMs: 1_000 });
+    await drained();
+    expect(getUnread()).toBe(7);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Parked: further ticks and visibility flips make no more requests.
+    await vi.advanceTimersByTimeAsync(60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await drained();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks the poller on a 403 instead of failing every interval (M-373)", async () => {
+    setUnread(7);
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ error: "forbidden" }, 403),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    stopPoll = startUnreadPoll({ intervalMs: 1_000 });
+    await drained();
+    expect(getUnread()).toBe(7);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await drained();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the stored count when the fetch itself rejects", async () => {
     setUnread(5);
     vi.stubGlobal(

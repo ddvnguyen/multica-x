@@ -98,6 +98,12 @@ let activePollStop: (() => void) | null = null;
  * transient outage must never read as "everything is read". Nothing escapes
  * the poller — it runs on a bare timer.
  *
+ * A 401 or 403 is not transient: the token is dead or the grant is gone, so
+ * every further tick would fail identically and pad the shell's
+ * failed-request chip once per interval (M-373). The poller parks itself on
+ * the last known count instead; the next page load starts it again. The
+ * island's own `onUnauthorized` hook still owns the visible session expiry.
+ *
  * The request is workspace-scoped, and this half of the plugin runs before any
  * island exists, so it cannot read the platform's current-workspace pointer.
  * The slug therefore comes from the host's own config, and a host with no
@@ -123,6 +129,10 @@ export function startUnreadPoll(
         credentials: "same-origin",
         headers: { accept: "application/json", "X-Workspace-Slug": slug },
       });
+      if (response.status === 401 || response.status === 403) {
+        stop();
+        return;
+      }
       if (!response.ok) return;
       const body: unknown = await response.json();
       if (!Array.isArray(body)) return;
