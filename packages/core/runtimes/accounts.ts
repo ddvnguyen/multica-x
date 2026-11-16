@@ -8,6 +8,7 @@ import type {
 } from "../types/agent";
 import { workspaceKeys } from "../workspace/queries";
 import { runtimeModelsKeys } from "./models";
+import { runtimeKeys } from "./queries";
 
 // Per-workspace freebuff-desktop accounts (M-153).
 //
@@ -60,6 +61,31 @@ export function useUpdateWorkspaceAccount(wsId: string) {
     }) => api.updateWorkspaceAccount(wsId, accountId, patch),
     onSettled: invalidate,
   });
+}
+
+/**
+ * Pin the runtime's default account: what `account_mode = default` agents on
+ * that runtime run on (M-203). An empty id clears the pin. The pin rides on the
+ * runtime row's Freebuff block, so the runtime queries are what go stale.
+ */
+export function useSetRuntimeDefaultAccount(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runtimeId, accountId }: { runtimeId: string; accountId: string }) =>
+      api.setFreebuffDesktopDefaultAccount(runtimeId, accountId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+/** The account id a runtime pins for its `default` agents, or "" when unset. */
+export function runtimeDefaultAccountId(
+  runtime: { metadata?: Record<string, unknown> } | undefined,
+): string {
+  const freebuff = runtime?.metadata?.freebuff as { default_account_id?: unknown } | undefined;
+  const id = freebuff?.default_account_id;
+  return typeof id === "string" ? id : "";
 }
 
 export function useDeleteWorkspaceAccount(wsId: string) {

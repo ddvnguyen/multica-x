@@ -8,8 +8,10 @@ import type { AgentRuntime, WorkspaceAccount } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { runtimeProfileListOptions } from "@multica/core/runtimes";
 import {
+  runtimeDefaultAccountId,
   useCreateWorkspaceAccount,
   useDeleteWorkspaceAccount,
+  useSetRuntimeDefaultAccount,
   useUpdateWorkspaceAccount,
   workspaceAccountListOptions,
 } from "@multica/core/runtimes/accounts";
@@ -61,6 +63,12 @@ export function WorkspaceAccountsCard({
   const create = useCreateWorkspaceAccount(wsId);
   const update = useUpdateWorkspaceAccount(wsId);
   const remove = useDeleteWorkspaceAccount(wsId);
+  const setDefault = useSetRuntimeDefaultAccount(wsId);
+  // The runtime's “default” agents fall back to this account (M-203). Shown
+  // here because this is the only account list the runtime page has for a
+  // freebuff-desktop runtime.
+  const defaultAccountId = runtimeDefaultAccountId(runtime);
+  const defaultAccount = accounts.find((account) => account.id === defaultAccountId);
 
   const [label, setLabel] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -115,6 +123,16 @@ export function WorkspaceAccountsCard({
         <p className="mt-0.5 text-caption text-muted-foreground">
           {t(($) => $.accounts.description)}
         </p>
+        <p className="mt-1 text-caption" data-testid="runtime-default-account">
+          <span className="text-muted-foreground">
+            {t(($) => $.freebuff.default_badge)}
+          </span>{" "}
+          <span className="font-medium">
+            {defaultAccount
+              ? defaultAccount.label || defaultAccount.daemonAccountId || defaultAccount.id
+              : "—"}
+          </span>
+        </p>
       </div>
 
       <div className="divide-y">
@@ -123,99 +141,124 @@ export function WorkspaceAccountsCard({
             {t(($) => $.accounts.empty)}
           </p>
         ) : (
-          accounts.map((account) => (
-            <div key={account.id} className="flex flex-col gap-2 px-4 py-2.5">
-              <div className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-body font-medium">
-                    {account.label || account.daemonAccountId || account.id}
+          accounts.map((account) => {
+            const isRuntimeDefault = account.id === defaultAccountId;
+            return (
+              <div key={account.id} className="flex flex-col gap-2 px-4 py-2.5">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-body font-medium">
+                        {account.label || account.daemonAccountId || account.id}
+                      </span>
+                      {isRuntimeDefault ? (
+                        <span className="shrink-0 rounded-xs bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                          {t(($) => $.freebuff.default_badge)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="truncate text-caption text-muted-foreground">
+                      {account.endpoint || t(($) => $.accounts.no_endpoint)}
+                      {account.credentialRef ? ` · ${account.credentialRef}` : ""}
+                      {account.runtimeId && account.state ? ` · ${account.state}` : ""}
+                    </div>
+                    {account.error ? (
+                      <div className="text-caption text-destructive">{account.error}</div>
+                    ) : null}
+                    {canManage && (account.state === "failed" || account.state === "signed_out") ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="self-start"
+                        disabled={update.isPending}
+                        onClick={() => update.mutate({ accountId: account.id, patch: { retry: true } }, { onError: fail })}
+                      >
+                        {t(($) => $.accounts.retry)}
+                      </Button>
+                    ) : null}
                   </div>
-                  <div className="truncate text-caption text-muted-foreground">
-                    {account.endpoint || t(($) => $.accounts.no_endpoint)}
-                    {account.credentialRef ? ` · ${account.credentialRef}` : ""}
-                    {account.runtimeId && account.state ? ` · ${account.state}` : ""}
-                  </div>
-                  {account.error ? (
-                    <div className="text-caption text-destructive">{account.error}</div>
+                  {hasEngineVersionOptions(account) ? (
+                    <select
+                      value={account.engineVersion ?? ""}
+                      disabled={!canManage || update.isPending}
+                      aria-label={t(($) => $.accounts.engine_version_aria, { label: account.label })}
+                      onChange={(event) =>
+                        update.mutate(
+                          {
+                            accountId: account.id,
+                            patch: { engine_version: event.target.value },
+                          },
+                          { onError: fail },
+                        )
+                      }
+                      className="max-w-36 rounded-md border bg-muted px-2 py-1 text-caption"
+                    >
+                      <option value="">{t(($) => $.accounts.engine_default)}</option>
+                      {account.installedVersions?.map((version) => (
+                        <option key={version.version} value={version.version}>
+                          {version.version}
+                        </option>
+                      ))}
+                    </select>
                   ) : null}
-                  {canManage && (account.state === "failed" || account.state === "signed_out") ? (
+                  <Switch
+                    checked={account.enabled}
+                    disabled={!canManage || update.isPending}
+                    aria-label={t(($) => $.accounts.enabled_aria, { label: account.label })}
+                    onCheckedChange={(enabled) =>
+                      update.mutate({ accountId: account.id, patch: { enabled } }, { onError: fail })
+                    }
+                  />
+                  {canManage && !isRuntimeDefault && account.enabled && account.state !== "requested" && account.state !== "awaiting_login" && account.state !== "removing" ? (
                     <Button
                       size="sm"
-                      variant="outline"
-                      className="self-start"
-                      disabled={update.isPending}
-                      onClick={() => update.mutate({ accountId: account.id, patch: { retry: true } }, { onError: fail })}
+                      variant="ghost"
+                      disabled={setDefault.isPending}
+                      onClick={() =>
+                        setDefault.mutate(
+                          { runtimeId: runtime.id, accountId: account.id },
+                          { onError: fail },
+                        )
+                      }
                     >
-                      {t(($) => $.accounts.retry)}
+                      {t(($) => $.freebuff.make_default)}
                     </Button>
                   ) : null}
+                  {canManage && (
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      disabled={remove.isPending}
+                      aria-label={t(($) => $.accounts.delete_aria, { label: account.label })}
+                      onClick={() => remove.mutate(account.id, { onError: fail })}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
                 {hasEngineVersionOptions(account) ? (
-                  <select
-                    value={account.engineVersion ?? ""}
-                    disabled={!canManage || update.isPending}
-                    aria-label={t(($) => $.accounts.engine_version_aria, { label: account.label })}
-                    onChange={(event) =>
-                      update.mutate(
-                        {
-                          accountId: account.id,
-                          patch: { engine_version: event.target.value },
-                        },
-                        { onError: fail },
-                      )
-                    }
-                    className="max-w-36 rounded-md border bg-muted px-2 py-1 text-caption"
-                  >
-                    <option value="">{t(($) => $.accounts.engine_default)}</option>
-                    {account.installedVersions?.map((version) => (
-                      <option key={version.version} value={version.version}>
-                        {version.version}
-                      </option>
-                    ))}
-                  </select>
+                  <p className="text-caption text-muted-foreground">
+                    {t(($) => $.accounts.engine_version_note)}
+                  </p>
                 ) : null}
-                <Switch
-                  checked={account.enabled}
-                  disabled={!canManage || update.isPending}
-                  aria-label={t(($) => $.accounts.enabled_aria, { label: account.label })}
-                  onCheckedChange={(enabled) =>
-                    update.mutate({ accountId: account.id, patch: { enabled } }, { onError: fail })
-                  }
-                />
-                {canManage && (
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    disabled={remove.isPending}
-                    aria-label={t(($) => $.accounts.delete_aria, { label: account.label })}
-                    onClick={() => remove.mutate(account.id, { onError: fail })}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                )}
+                {account.state === "awaiting_login" && account.loginUrl ? (
+                  <div className="flex items-stretch gap-1.5">
+                    <input
+                      readOnly
+                      value={account.loginUrl}
+                      className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-1.5 text-caption"
+                    />
+                    <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.copy_login_url_aria)} onClick={() => handleCopy(account.id, account.loginUrl!)}>
+                      {copied === account.id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    </Button>
+                    <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.open_login_url_aria)} onClick={() => openExternal(account.loginUrl!, { webTarget: "new-tab" })}>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : null}
               </div>
-              {hasEngineVersionOptions(account) ? (
-                <p className="text-caption text-muted-foreground">
-                  {t(($) => $.accounts.engine_version_note)}
-                </p>
-              ) : null}
-              {account.state === "awaiting_login" && account.loginUrl ? (
-                <div className="flex items-stretch gap-1.5">
-                  <input
-                    readOnly
-                    value={account.loginUrl}
-                    className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-1.5 text-caption"
-                  />
-                  <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.copy_login_url_aria)} onClick={() => handleCopy(account.id, account.loginUrl!)}>
-                    {copied === account.id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                  <Button size="sm" variant="outline" aria-label={t(($) => $.accounts.open_login_url_aria)} onClick={() => openExternal(account.loginUrl!, { webTarget: "new-tab" })}>
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

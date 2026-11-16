@@ -2621,6 +2621,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/freebuff/accounts/{accountId}/default", h.SetFreebuffDefaultAccount)
 					r.Post("/freebuff/accounts/{accountId}/login", h.RetryFreebuffAccountLogin)
 					r.Post("/freebuff/engine-version", h.SetFreebuffEngineVersion)
+					// The freebuff-desktop runtime default: which account this
+					// runtime's `account_mode = default` agents fall back to
+					// (M-203). Stored in the same Freebuff block as the pin
+					// above, so no new column and no second default.
+					r.Post("/freebuff-desktop/default", h.SetFreebuffDesktopDefaultAccount)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and

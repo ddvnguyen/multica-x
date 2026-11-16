@@ -160,6 +160,32 @@ Related: the five-minute idle auto-close of a managed Desktop orchestrator is
 the M-254 behavior recorded under Known limits below; the `POST /api/threads`
 404 failure mode and its runner alignment work are M-295 and M-296.
 
+## Runtime default account (M-203, Phase 2 of M-199)
+
+`account_mode = "default"` used to mean "no account: the runtime's own
+configuration applies". On a freebuff-desktop runtime it now means "the
+runtime's pinned default account":
+
+- The pin is `metadata.freebuff.default_account_id` on the runtime row — the
+  same field the runtime page's freebuff block already had, no new column.
+- Set it from the runtime page: `POST /api/runtimes/:id/freebuff-desktop/default`
+  with `{"account_id": "<workspace_account id>"}`; an empty id clears it. The
+  cards list shows a `Default` badge on the pinned account and a "make default"
+  action per usable account.
+- The write accepts only an account this runtime can run: enabled,
+  `freebuff-desktop` provider, and for a daemon-managed account owned by this
+  runtime and `connected`.
+- The claim path re-checks the same rules and fails the claim closed
+  (`account_unavailable`) when a pin names an account that is gone, disabled,
+  disconnected or owned by another runtime, instead of silently running on the
+  runtime's own configuration. An unset pin keeps the old behaviour.
+- `specific` and `any` are untouched, and custom env still wins for the env
+  knobs.
+- The claim is still a check, not a held lock (see Known limits): two `default`
+  agents on one pinned account can both pass the lease check in the same
+  instant; the bridge's single-run handling is the backstop. Serialising
+  `default` agents on the pinned account is not part of this phase.
+
 ## Known limits
 
 - Discovery runs account by account (sequentially), so `all` takes the sum of
