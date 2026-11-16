@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import type { TabSelectionShortcutKey } from "../../../shared/main-renderer-messages";
-import { useTabStore, type TabSession } from "@/stores/tab-store";
+import { useTabStore, type TabSession } from "@multica/core/tabs";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 import {
   selectTabByShortcut,

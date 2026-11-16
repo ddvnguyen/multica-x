@@ -18,7 +18,7 @@ import { UpdateNotification } from "./components/update-notification";
 import { NativeContextMenu } from "./components/native-context-menu";
 import { IssueWindow } from "./components/issue-window";
 import { DesktopDevToolbar } from "./components/desktop-dev-toolbar";
-import { useTabStore } from "./stores/tab-store";
+import { useTabStore } from "@multica/core/tabs";
 import { useWindowOverlayStore } from "./stores/window-overlay-store";
 import { useOpenSettingsShortcut } from "./hooks/use-open-settings-shortcut";
 import { useTabSelectionShortcut } from "./hooks/use-tab-selection-shortcut";

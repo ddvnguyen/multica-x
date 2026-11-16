@@ -16,7 +16,7 @@ const WORKSPACES = [{ id: "ws-1", slug: "acme" }];
 // the rail is stubbed out. What survives is the pair that has to agree:
 // `WindowToolbar`'s own trigger, and the `hasExternalTrigger` the provider
 // publishes to every page header inside the canvas.
-vi.mock("@/hooks/use-tab-history", () => ({
+vi.mock("@multica/views/tabs", () => ({
   useTabHistory: () => ({
     canGoBack: false,
     canGoForward: false,

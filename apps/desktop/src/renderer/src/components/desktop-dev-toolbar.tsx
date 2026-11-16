@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { DevToolbar } from "@multica/views/dev-toolbar";
-import { useActiveTabUrl } from "@/stores/tab-store";
+import { useActiveTabUrl } from "@multica/core/tabs";
 import { routeContentLinkPath } from "@/platform/navigation";
 
 const BUILD =

@@ -7,6 +7,7 @@ import { SearchCommand } from "@multica/views/search";
 import { FloatingChat } from "@multica/views/chat/floating-chat";
 import { StarPrompt } from "@multica/views/star-prompt";
 import { WebNotificationBridge } from "@/components/web-notification-bridge";
+import { WebTabShell } from "@/components/web-tab-shell";
 import { WorkspaceDocumentTitle } from "@/platform/workspace-document-title";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -29,7 +30,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </>
         }
       >
-        {children}
+        <WebTabShell>{children}</WebTabShell>
       </DashboardLayout>
     </>
   );

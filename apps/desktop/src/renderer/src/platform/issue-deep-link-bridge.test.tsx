@@ -34,7 +34,7 @@ vi.mock("sonner", () => ({ toast: { error } }));
 import { IssueDeepLinkBridge } from "./issue-deep-link-bridge";
 import { WorkspaceWindowBridge } from "./workspace-window-bridge";
 import { routeContentLinkPath } from "./navigation";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 
 let receive: ((url: string) => void) | undefined;
 let receiveWorkspace: ((request: WorkspacePathRequest) => void) | undefined;

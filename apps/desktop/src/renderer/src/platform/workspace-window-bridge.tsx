@@ -4,7 +4,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { workspaceSlugForPath } from "@multica/core/paths";
 import { useWorkspaceList } from "@multica/core/workspace";
 import { useT } from "@multica/views/i18n";
-import { useTabStore } from "@/stores/tab-store";
+import { useTabStore } from "@multica/core/tabs";
 import {
   nextWorkspaceForNewWindow,
   openWorkspaceInNewWindow,

@@ -23,7 +23,7 @@ const shellState = vi.hoisted(() => ({
   current: { toggleNav: () => {} } as { toggleNav: () => void } | null,
 }));
 
-vi.mock("@/hooks/use-tab-history", () => ({
+vi.mock("@multica/views/tabs", () => ({
   useTabHistory: () => historyState,
 }));
 

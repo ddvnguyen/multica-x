@@ -5,7 +5,7 @@ import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import {
   useNavigationInputBindings,
   useTabHistory,
-} from "@/hooks/use-tab-history";
+} from "@multica/views/tabs";
 import {
   SidebarProvider,
   useSidebar,
