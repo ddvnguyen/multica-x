@@ -31,7 +31,10 @@
       // Referenced only by the `@type {import('postcss-load-config').Config}`
       // JSDoc annotation in postcss.config.mjs. Declaring it would add a
       // runtime dependency to satisfy a type comment.
-      "ignoreDependencies": ["postcss-load-config"]
+      "ignoreDependencies": ["postcss-load-config"],
+      // MMX PWA service worker (M-390): served at /sw.js and registered by
+      // URL from PwaUpdateBanner — no import graph reaches it by design.
+      "ignore": ["public/sw.js"]
     },
 
     "apps/desktop": {

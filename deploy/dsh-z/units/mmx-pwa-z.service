@@ -1,0 +1,15 @@
+[Unit]
+Description=mmx-pwa z — lane z MMX PWA web (apps/web @ MMX_PWA=1, same backend as multica-be z)
+After=network.target multica-be-z.service
+
+[Service]
+Type=simple
+WorkingDirectory=__MMX_WEB_DIR__
+ExecStart=/home/ddv/.nvm/versions/node/v24.15.0/bin/node __MMX_WEB_DIR__/apps/web/server.js
+EnvironmentFile=__MMX_WEB_ENV__
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

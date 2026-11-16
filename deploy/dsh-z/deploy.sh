@@ -287,6 +287,9 @@ install_unit multica-be-z.service "$MULTICA_BE_Z_UNIT" \
 install_unit moct-backend-z.service "$MOCT_BE_Z_UNIT" \
   "MOCT_ROOT=$MOCT_Z_ROOT" \
   "MOCT_ENV=$MOCT_Z_ROOT/env"
+install_unit mmx-pwa-z.service "$MMX_PWA_Z_UNIT" \
+  "MMX_WEB_DIR=$LANE_ROOT/mmx-pwa" \
+  "MMX_WEB_ENV=$LANE_ROOT/mmx-pwa/env"
 install_unit multica-daemon-z.service "$MULTICA_DAEMON_Z_UNIT" \
   "LANE_HOME=$LANE_HOME" \
   "RELEASE_DIR=$LANE_ROOT/multica-be" \
@@ -600,6 +603,50 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Phase 9d — mmx-pwa z web (M-390: MMX PWA second web, same backend)
+# ---------------------------------------------------------------------------
+# Builds apps/web with MMX_PWA=1 against multica-be z and runs it standalone
+# on MMX_PWA_Z_PORT. Lane disk is tight (~10G free): reuse a committed
+# release dir per multica-x SHA and skip the rebuild when it exists.
+log "phase 9d: mmx-pwa z"
+
+MMX_SHA="$(git -C "$LANE_ROOT/src/multica-x" rev-parse HEAD 2>/dev/null || echo unknown)"
+MMX_REL="$LANE_ROOT/mmx-pwa/releases/$MMX_SHA"
+if [ ! -f "$MMX_REL/.complete" ]; then
+  rm -rf "$MMX_REL"; mkdir -p "$MMX_REL"
+  MMX_SRC="$LANE_ROOT/src/multica-x"
+  if [ ! -d "$MMX_SRC/.git" ]; then
+    git clone "$MULTICA_X_REPO" "$MMX_SRC"
+  fi
+  git -C "$MMX_SRC" fetch origin "$MULTICA_X_REF" >/dev/null 2>&1 || true
+  git -C "$MMX_SRC" checkout -q --detach "origin/$MULTICA_X_REF"
+  ( cd "$MMX_SRC" && pnpm install --prefer-offline --ignore-scripts >/dev/null 2>&1 || pnpm install --prefer-offline >/dev/null )
+  MMX_PWA_PORT="$MMX_PWA_Z_PORT" REMOTE_API_URL="http://127.0.0.1:$MULTICA_BE_Z_PORT" \
+    NEXT_PUBLIC_APP_VERSION="$MMX_SHA" STANDALONE=true bash "$MMX_SRC/scripts/build-mmx-pwa.sh" >/dev/null
+  rm -rf "$MMX_REL"; mkdir -p "$MMX_REL"
+  # build-mmx-pwa.sh already placed server.js + public + .next/static and
+  # stamped sw.js with the SHA; keep the standalone tree as the release.
+  cp -a "$MMX_SRC/apps/web/.next/standalone/." "$MMX_REL/"
+  : > "$MMX_REL/.complete"
+  log "mmx-pwa release built: $MMX_REL ($MMX_SHA)"
+else
+  log "mmx-pwa release already built, reusing $MMX_REL"
+fi
+ln -sfn "$MMX_REL" "$LANE_ROOT/mmx-pwa/current"
+umask 077
+{
+  echo "PORT=$MMX_PWA_Z_PORT"
+  echo "REMOTE_API_URL=http://127.0.0.1:$MULTICA_BE_Z_PORT"
+  echo "NEXT_PUBLIC_APP_VERSION=$MMX_SHA"
+} > "$LANE_ROOT/mmx-pwa/env"
+umask 022
+systemctl --user enable --now "$MMX_PWA_Z_UNIT" >/dev/null 2>&1 || true
+systemctl --user restart "$MMX_PWA_Z_UNIT"
+wait_http "http://127.0.0.1:$MMX_PWA_Z_PORT/manifest.webmanifest" 120 'MMX' \
+  || { journalctl --user -u "$MMX_PWA_Z_UNIT" -n 30 --no-pager >&2; die "mmx-pwa z manifest did not come up"; }
+log "mmx-pwa z up on http://127.0.0.1:$MMX_PWA_Z_PORT (unit $MMX_PWA_Z_UNIT, brand MMX)"
+
+# ---------------------------------------------------------------------------
 # Phase 10 — verify
 # ---------------------------------------------------------------------------
 log "phase 10: verify"
@@ -648,4 +695,5 @@ log "  moct-be z      http://127.0.0.1:$MOCT_BE_Z_PORT  (unit $MOCT_BE_Z_UNIT, d
 log "  lane daemon    profile $MULTICA_Z_PROFILE, home $LANE_HOME (unit $MULTICA_DAEMON_Z_UNIT)"
 log "  workspace      $MULTICA_Z_WS_SLUG = $MULTICA_Z_WORKSPACE_ID"
 log "  lane web       http://127.0.0.1:3180/ (unit ${DSH_Z_WEB_UNIT:-manual}, multica plugin row)"
+log "  mmx-pwa z      http://127.0.0.1:$MMX_PWA_Z_PORT/ (unit $MMX_PWA_Z_UNIT, /p/$MMX_PWA_Z_PORT/ on portal)"
 log "done"

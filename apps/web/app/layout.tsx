@@ -8,6 +8,8 @@ import { WebProviders } from "@/components/web-providers";
 import { getRequestLocale } from "@/lib/request-locale";
 import { HTML_LANG } from "@/lib/html-lang";
 import { SITE_TITLE, TITLE_TEMPLATE } from "@/platform/document-title";
+import { pwaBrand } from "@/lib/pwa-brand";
+import { PwaUpdateBanner } from "@/components/pwa-update-banner";
 import {
   resolveBrowserApiBaseUrl,
   resolveBrowserWsUrl,
@@ -94,8 +96,14 @@ export const metadata: Metadata = {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
     shortcut: ["/favicon.svg"],
     // iOS never reads the manifest's icons for the home screen; it needs its
-    // own opaque, full-bleed square and rounds the corners itself.
-    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180" }],
+    // own opaque, full-bleed square and rounds the corners itself. MMX builds
+    // point at the MMX icon set so the home-screen icon matches the install.
+    apple: [
+      {
+        url: `/${pwaBrand().iconDir}/apple-touch-icon.png`,
+        sizes: "180x180",
+      },
+    ],
   },
   // Home-screen behaviour: launch without browser chrome, and label the icon
   // "Multica" rather than the long SEO <title>. `capable` renders the
@@ -104,7 +112,7 @@ export const metadata: Metadata = {
   // manifest's `display` instead (honoured since iOS 16.4).
   appleWebApp: {
     capable: true,
-    title: "Multica",
+    title: pwaBrand().appleTitle,
     // `default` keeps the web view below the status bar. Going edge-to-edge
     // (`black-translucent` + viewport-fit=cover) needs env(safe-area-inset-*)
     // padding, which no surface in the app has yet.
@@ -184,6 +192,7 @@ export default async function RootLayout({
             {children}
           </WebProviders>
           <Toaster />
+          <PwaUpdateBanner />
         </ThemeProvider>
         {googleAnalyticsId && <GoogleAnalytics measurementId={googleAnalyticsId} />}
       </body>
