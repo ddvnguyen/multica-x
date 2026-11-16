@@ -216,6 +216,9 @@ export function useUpdateIssue() {
       // a rapid follow-up edit. mutationFn still sends the full payload.
       const {
         suppress_run: _suppressRun,
+        tier_id: _tierId,
+        runtime_id: _runtimeId,
+        model: _model,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         enter_workflow_step: _enterWorkflowStep,
         duplicate_of_issue_id: _duplicateOfIssueId,
@@ -330,6 +333,9 @@ export function useUpdateIssue() {
       // is the plain surgical patch it always was.
       const {
         suppress_run: _suppressRun,
+        tier_id: _tierId,
+        runtime_id: _runtimeId,
+        model: _model,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         enter_workflow_step: _enterWorkflowStep,
         duplicate_of_issue_id: _duplicateOfIssueId,
@@ -576,6 +582,9 @@ export function useBatchUpdateIssues() {
       // until a refetch returns the committed result.
       const {
         suppress_run: _suppressRun,
+        tier_id: _tierId,
+        runtime_id: _runtimeId,
+        model: _model,
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         enter_workflow_step: _enterWorkflowStep,
         description: _description,

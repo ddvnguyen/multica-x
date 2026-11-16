@@ -722,6 +722,8 @@
     "trigger_blocked_runtime_profile_missing": "This target's agent CLI is missing a runtime profile on its machine — install it there",
     "trigger_blocked_agent_runtime_required": "This target has no runtime — bind one to run it",
     "trigger_blocked_runtime_access_denied": "This target's agent can't run on its private runtime — make the runtime public, or rebind/copy the agent to one its owner can use",
+    "trigger_blocked_tier_unavailable": "The selected tier doesn't exist, is disabled, or isn't available to this agent — fix the name",
+    "trigger_blocked_tier_waiting_capacity": "The selected tier is full or offline — the run is queued and starts when a slot frees",
     "trigger_blocked_generic": "This target won't be triggered",
     "trigger_blocked_short_invocation_not_allowed": "Not found or no permission",
     "trigger_blocked_short_target_unavailable": "Unavailable",
@@ -730,6 +732,8 @@
     "trigger_blocked_short_runtime_profile_missing": "Runtime profile missing",
     "trigger_blocked_short_agent_runtime_required": "Needs a runtime",
     "trigger_blocked_short_runtime_access_denied": "No runtime access",
+    "trigger_blocked_short_tier_unavailable": "Bad tier",
+    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued",
     "trigger_blocked_short_generic": "Won't start",
     "send_reply_failed": "Failed to send reply",
     "delete_failed": "Failed to delete comment",
@@ -902,6 +906,11 @@
     "status_completed": "Completed",
     "status_failed": "Failed",
     "status_cancelled": "Cancelled",
+    "tier_parked_short": "{{name}} · waiting",
+    "tier_explicit_short": "{{name}} · explicit",
+    "tier_parked_detail": "Pinned to tier {{name}} — waiting for a free slot. The run starts on this tier, never another.",
+    "tier_explicit_detail": "Pinned to tier {{name}} by the sender.",
+    "tier_auto_detail": "Tier {{name}}, picked by the resolver.",
     "attribution": {
       "on_behalf_of": "On behalf of {{name}}",
       "someone": "someone",
@@ -1097,6 +1106,10 @@
     "open_in_new_window": "Open in new window"
   },
   "pickers": {
+    "tier": {
+      "tier_group": "Tier for this run",
+      "tier_auto": "Auto (resolver picks)"
+    },
     "custom_property": {
       "empty": "Empty",
       "none": "No value",

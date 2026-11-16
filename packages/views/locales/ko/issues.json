@@ -780,6 +780,8 @@
     "trigger_blocked_runtime_profile_missing": "이 대상의 CLI에 해당 기기의 런타임 프로필이 없습니다 — 그 기기에서 설치하세요",
     "trigger_blocked_agent_runtime_required": "이 대상에 런타임이 없습니다 — 실행하려면 런타임을 연결하세요",
     "trigger_blocked_runtime_access_denied": "이 대상의 에이전트는 비공개 런타임에서 실행할 수 없습니다 — 런타임을 공개로 변경하거나, 소유자가 사용할 수 있는 런타임으로 에이전트를 다시 연결/복사하세요",
+    "trigger_blocked_tier_waiting_capacity": "선택한 티어가 가득 찼거나 오프라인입니다 — 자리가 나면 실행이 시작됩니다",
+    "trigger_blocked_tier_unavailable": "선택한 티어가 없거나, 비활성화되었거나, 이 에이전트에서 사용할 수 없습니다 — 이름을 고치세요",
     "trigger_blocked_generic": "이 대상은 트리거되지 않습니다",
     "trigger_blocked_short_invocation_not_allowed": "찾을 수 없음 또는 권한 없음",
     "trigger_blocked_short_target_unavailable": "사용 불가",
@@ -788,6 +790,8 @@
     "trigger_blocked_short_runtime_profile_missing": "런타임 프로필 없음",
     "trigger_blocked_short_agent_runtime_required": "런타임 필요",
     "trigger_blocked_short_runtime_access_denied": "런타임 접근 거부",
+    "trigger_blocked_short_tier_waiting_capacity": "티어 가득 참 — 대기 중",
+    "trigger_blocked_short_tier_unavailable": "잘못된 티어",
     "trigger_blocked_short_generic": "트리거 안 됨",
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
@@ -949,6 +953,11 @@
     "status_completed": "완료됨",
     "status_failed": "실패함",
     "status_cancelled": "취소됨",
+    "tier_auto_detail": "리졸버가 선택한 티어 {{name}}.",
+    "tier_explicit_detail": "발신자가 티어 {{name}}에 고정했습니다.",
+    "tier_parked_detail": "티어 {{name}}에 고정 — 빈 슬롯 대기 중. 다른 티어가 아닌 이 티어에서 실행됩니다.",
+    "tier_explicit_short": "{{name}} · 명시적",
+    "tier_parked_short": "{{name}} · 대기 중",
     "attribution": {
       "on_behalf_of": "{{name}} 님을 대신하여",
       "someone": "어떤 멤버",
@@ -1175,6 +1184,10 @@
     "status": {
       "mark_duplicate": "중복으로 표시",
       "change_original": "원본 변경"
+    },
+    "tier": {
+      "tier_group": "이 실행의 티어",
+      "tier_auto": "자동 (리졸버 선택)"
     }
   },
   "labels_panel": {

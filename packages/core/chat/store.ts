@@ -356,6 +356,9 @@ export interface ChatState {
   floatingChatEnabled: boolean;
   activeSessionId: string | null;
   selectedAgentId: string | null;
+  /** M-359 explicit tier for the next chat turn(s), per agent id. Null/absent
+   *  = Auto (resolver). Cleared whenever the agent switches. */
+  selectedTierIds: Record<string, string | null>;
   /** Project context for the next session. Existing sessions remain bound to
    *  their server-persisted project_id. */
   selectedProjectId: string | null;
@@ -385,6 +388,7 @@ export interface ChatState {
   setFloatingChatEnabled: (enabled: boolean) => void;
   setActiveSession: (id: string | null) => void;
   setSelectedAgentId: (id: string) => void;
+  setSelectedTierId: (agentId: string, tierId: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
   setQuickChatAgentId: (id: string | null) => void;
   /** Ask Multica: open the window on a new chat with the quick-chat agent and no project. */
@@ -460,6 +464,7 @@ export function createChatStore(options: ChatStoreOptions) {
     floatingChatEnabled: initialFloatingEnabled,
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
     selectedAgentId: initialAgentId,
+    selectedTierIds: {},
     selectedProjectId: storage.getItem(wsKey(PROJECT_STORAGE_KEY)),
     quickChatAgentId: storage.getItem(wsKey(QUICK_CHAT_AGENT_KEY)),
     newChatRequest: 0,
@@ -505,6 +510,10 @@ export function createChatStore(options: ChatStoreOptions) {
       storage.setItem(wsKey(AGENT_STORAGE_KEY), id);
       set({ selectedAgentId: id });
     },
+    setSelectedTierId: (agentId, tierId) =>
+      set((state) => ({
+        selectedTierIds: { ...state.selectedTierIds, [agentId]: tierId },
+      })),
     setSelectedProjectId: (id) => {
       logger.info("setSelectedProjectId", { from: get().selectedProjectId, to: id });
       if (id) storage.setItem(wsKey(PROJECT_STORAGE_KEY), id);

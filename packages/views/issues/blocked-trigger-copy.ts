@@ -26,6 +26,10 @@ export function blockedReasonLabel(reasonCode: string, t: IssuesT): string {
       return t(($) => $.comment.trigger_blocked_agent_runtime_required);
     case "runtime_access_denied":
       return t(($) => $.comment.trigger_blocked_runtime_access_denied);
+    case "tier_unavailable":
+      return t(($) => $.comment.trigger_blocked_tier_unavailable);
+    case "tier_waiting_capacity":
+      return t(($) => $.comment.trigger_blocked_tier_waiting_capacity);
     default:
       return t(($) => $.comment.trigger_blocked_generic);
   }
@@ -49,6 +53,10 @@ export function blockedShortReasonLabel(reasonCode: string, t: IssuesT): string 
       return t(($) => $.comment.trigger_blocked_short_agent_runtime_required);
     case "runtime_access_denied":
       return t(($) => $.comment.trigger_blocked_short_runtime_access_denied);
+    case "tier_unavailable":
+      return t(($) => $.comment.trigger_blocked_short_tier_unavailable);
+    case "tier_waiting_capacity":
+      return t(($) => $.comment.trigger_blocked_short_tier_waiting_capacity);
     default:
       return t(($) => $.comment.trigger_blocked_short_generic);
   }

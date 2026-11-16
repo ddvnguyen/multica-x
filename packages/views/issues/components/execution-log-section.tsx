@@ -45,6 +45,7 @@ import {
 } from "./issue-run-timeline";
 import { canRetryRun, RetryRunButton } from "./retry-run-button";
 import { TaskStatusIcon } from "./task-status-icon";
+import { TierBadge } from "./tier-badge";
 import { useFormatSpend, useStatusLabel, useTriggerText } from "./task-run-labels";
 import { WakeupRunLabel } from "./wakeup-source-chip";
 
@@ -741,6 +742,7 @@ function PastRow({ task, issueId, showIssue = false }: { task: AgentTask; issueI
           <TaskCommentCoverage task={task} />
           <RowStatus title={statusTitle} wrap={!!usage?.credits.size}>
             <TaskStatusIcon status={task.status} />
+            <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
             <span className="sr-only">{[label, time].filter(Boolean).join(" · ")}</span>
             {usage ? (
               <span className="tabular-nums">{formatSpend(usage)}</span>

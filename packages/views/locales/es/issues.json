@@ -700,6 +700,8 @@
     "trigger_blocked_runtime_profile_missing": "A la CLI del agente de este destino le falta un perfil de runtime en su máquina; instálalo allí",
     "trigger_blocked_agent_runtime_required": "Este destino no tiene runtime; vincula uno para ejecutarlo",
     "trigger_blocked_runtime_access_denied": "El agente de este destino no puede ejecutarse en su runtime privado; haz el runtime público o reenlaza o copia el agente a uno que su propietario pueda usar",
+    "trigger_blocked_tier_waiting_capacity": "El tier seleccionado está lleno o sin conexión — la ejecución está en cola y empezará cuando haya capacidad",
+    "trigger_blocked_tier_unavailable": "El tier seleccionado no existe, está desactivado o no está disponible para este agente — corrige el nombre",
     "trigger_blocked_generic": "Este destino no se activará",
     "trigger_blocked_short_invocation_not_allowed": "No encontrado o sin permiso",
     "trigger_blocked_short_target_unavailable": "No disponible",
@@ -708,6 +710,8 @@
     "trigger_blocked_short_runtime_profile_missing": "Falta el perfil de runtime",
     "trigger_blocked_short_agent_runtime_required": "Necesita un runtime",
     "trigger_blocked_short_runtime_access_denied": "Sin acceso al runtime",
+    "trigger_blocked_short_tier_waiting_capacity": "Tier lleno — en cola",
+    "trigger_blocked_short_tier_unavailable": "Tier inválido",
     "trigger_blocked_short_generic": "No se iniciará",
     "send_reply_failed": "No se ha podido enviar la respuesta",
     "delete_failed": "No se ha podido eliminar el comentario",
@@ -869,6 +873,11 @@
     "status_completed": "Completada",
     "status_failed": "Fallida",
     "status_cancelled": "Cancelada",
+    "tier_auto_detail": "Tier {{name}}, elegido por el resolvedor.",
+    "tier_explicit_detail": "Fijado al tier {{name}} por el remitente.",
+    "tier_parked_detail": "Fijado al tier {{name}} — esperando un hueco. La ejecución usa este tier, nunca otro.",
+    "tier_explicit_short": "{{name}} · explícito",
+    "tier_parked_short": "{{name}} · en espera",
     "attribution": {
       "on_behalf_of": "En nombre de {{name}}",
       "someone": "alguien",
@@ -1051,6 +1060,10 @@
     "status": {
       "mark_duplicate": "Marcar como duplicada",
       "change_original": "Cambiar la original"
+    },
+    "tier": {
+      "tier_group": "Tier para esta ejecución",
+      "tier_auto": "Auto (el resolvedor elige)"
     }
   },
   "labels_panel": {

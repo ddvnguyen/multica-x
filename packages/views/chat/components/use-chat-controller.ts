@@ -510,6 +510,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
 
       const finalContent = content;
       const isNewSession = !activeSessionId;
+      // M-359 explicit tier for this turn (TierDropdown in the composer).
+      const sendTierId = useChatStore.getState().selectedTierIds[activeAgent.id] ?? null;
 
       apiLogger.info("sendChatMessage.start", {
         sessionId: activeSessionId,
@@ -551,7 +553,12 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds);
+        result = await api.sendChatMessage(
+          sessionId,
+          finalContent,
+          attachmentIds,
+          sendTierId ? { tier_id: sendTierId } : undefined,
+        );
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
         // Invoke permission can be revoked mid-session; the send is refused with

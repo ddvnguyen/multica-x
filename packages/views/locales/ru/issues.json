@@ -742,6 +742,8 @@
     "trigger_blocked_runtime_profile_missing": "У CLI агента этой цели отсутствует профиль среды выполнения на своей машине — установите его там",
     "trigger_blocked_agent_runtime_required": "У этой цели нет среды выполнения — привяжите её, чтобы запустить",
     "trigger_blocked_runtime_access_denied": "Агент этой цели не может работать в своей приватной среде выполнения — сделайте среду выполнения публичной или перепривяжите/скопируйте агента на ту, что доступна её владельцу",
+    "trigger_blocked_tier_waiting_capacity": "Выбранный тир переполнен или офлайн — запуск в очереди, стартует при освобождении места",
+    "trigger_blocked_tier_unavailable": "Выбранный тир не существует, отключён или недоступен этому агенту — исправьте имя",
     "trigger_blocked_generic": "Эта цель не будет запущена",
     "trigger_blocked_short_invocation_not_allowed": "Не найдено или нет прав",
     "trigger_blocked_short_target_unavailable": "Недоступно",
@@ -750,6 +752,8 @@
     "trigger_blocked_short_runtime_profile_missing": "Отсутствует профиль среды выполнения",
     "trigger_blocked_short_agent_runtime_required": "Нужна среда выполнения",
     "trigger_blocked_short_runtime_access_denied": "Нет доступа к среде выполнения",
+    "trigger_blocked_short_tier_waiting_capacity": "Тир полон — в очереди",
+    "trigger_blocked_short_tier_unavailable": "Плохой тир",
     "trigger_blocked_short_generic": "Не запустится",
     "send_reply_failed": "Не удалось отправить ответ",
     "delete_failed": "Не удалось удалить комментарий",
@@ -947,6 +951,11 @@
     "status_completed": "Завершено",
     "status_failed": "Ошибка",
     "status_cancelled": "Отменено",
+    "tier_auto_detail": "Тир {{name}}, выбранный резолвером.",
+    "tier_explicit_detail": "Отправитель закрепил за тиром {{name}}.",
+    "tier_parked_detail": "Закреплено за тиром {{name}} — ожидание свободного места. Запуск будет на этом тире, а не на другом.",
+    "tier_explicit_short": "{{name}} · явно",
+    "tier_parked_short": "{{name}} · ожидание",
     "attribution": {
       "on_behalf_of": "От имени {{name}}",
       "someone": "кого-то",
@@ -1209,6 +1218,10 @@
     "status": {
       "mark_duplicate": "Отметить как дубликат",
       "change_original": "Изменить оригинал"
+    },
+    "tier": {
+      "tier_group": "Тир для этого запуска",
+      "tier_auto": "Авто (выбирает резолвер)"
     }
   },
   "labels_panel": {
