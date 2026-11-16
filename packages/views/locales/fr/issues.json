@@ -800,6 +800,8 @@
     "trigger_blocked_runtime_profile_missing": "Le CLI de l'agent cible n'a pas de profil de runtime sur sa machine : installez-le sur celle-ci",
     "trigger_blocked_agent_runtime_required": "Cette cible n'a pas de runtime — associez-en un pour l'exécuter",
     "trigger_blocked_runtime_access_denied": "L'agent de cette cible ne peut pas s'exécuter sur son runtime privé — passez le runtime en public, ou réassociez/copiez l'agent vers un runtime que son propriétaire peut utiliser",
+    "trigger_blocked_tier_waiting_capacity": "Le tier sélectionné est plein ou hors ligne — l'exécution est en file et démarrera dès qu'une place se libère",
+    "trigger_blocked_tier_unavailable": "Le tier sélectionné n'existe pas, est désactivé ou n'est pas disponible pour cet agent — corrigez le nom",
     "trigger_blocked_generic": "Cette cible ne sera pas déclenchée",
     "trigger_blocked_short_invocation_not_allowed": "Introuvable ou sans permission",
     "trigger_blocked_short_target_unavailable": "Indisponible",
@@ -808,6 +810,8 @@
     "trigger_blocked_short_runtime_profile_missing": "Profil de runtime manquant",
     "trigger_blocked_short_agent_runtime_required": "Runtime requis",
     "trigger_blocked_short_runtime_access_denied": "Pas d'accès au runtime",
+    "trigger_blocked_short_tier_waiting_capacity": "Tier plein — en file",
+    "trigger_blocked_short_tier_unavailable": "Tier invalide",
     "trigger_blocked_short_generic": "Ne démarrera pas",
     "send_reply_failed": "Échec de l'envoi de la réponse",
     "delete_failed": "Échec de la suppression du commentaire",
@@ -984,6 +988,11 @@
     "status_completed": "Terminée",
     "status_failed": "En échec",
     "status_cancelled": "Annulée",
+    "tier_auto_detail": "Tier {{name}}, choisi par le résolveur.",
+    "tier_explicit_detail": "Épinglé au tier {{name}} par l'expéditeur.",
+    "tier_parked_detail": "Épinglé au tier {{name}} — en attente d'une place. L'exécution utilisera ce tier, jamais un autre.",
+    "tier_explicit_short": "{{name}} · explicite",
+    "tier_parked_short": "{{name}} · en attente",
     "attribution": {
       "on_behalf_of": "Au nom de {{name}}",
       "someone": "quelqu'un",
@@ -1226,6 +1235,10 @@
     "status": {
       "mark_duplicate": "Marquer comme doublon",
       "change_original": "Changer la tâche d'origine"
+    },
+    "tier": {
+      "tier_group": "Tier pour cette exécution",
+      "tier_auto": "Auto (le résolveur choisit)"
     }
   },
   "labels_panel": {

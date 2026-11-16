@@ -780,6 +780,8 @@
     "trigger_blocked_runtime_profile_missing": "この対象の CLI はそのマシンでランタイム プロファイルが不足しています — そのマシンでインストールしてください",
     "trigger_blocked_agent_runtime_required": "この対象にはランタイムがありません — 実行するにはバインドしてください",
     "trigger_blocked_runtime_access_denied": "この対象のエージェントはプライベートランタイムで実行できません — ランタイムを公開にするか、所有者が利用できるランタイムへエージェントを再設定/コピーしてください",
+    "trigger_blocked_tier_waiting_capacity": "選択したtierは満杯またはオフラインです — 空きが出たら実行が開始されます",
+    "trigger_blocked_tier_unavailable": "選択したtierは存在しない、無効化されている、またはこのエージェントで利用できません — 名前を修正してください",
     "trigger_blocked_generic": "この対象はトリガーされません",
     "trigger_blocked_short_invocation_not_allowed": "未検出または権限なし",
     "trigger_blocked_short_target_unavailable": "利用不可",
@@ -788,6 +790,8 @@
     "trigger_blocked_short_runtime_profile_missing": "ランタイム プロファイル未導入",
     "trigger_blocked_short_agent_runtime_required": "ランタイム未設定",
     "trigger_blocked_short_runtime_access_denied": "ランタイムアクセス拒否",
+    "trigger_blocked_short_tier_waiting_capacity": "tier満杯 — 待機中",
+    "trigger_blocked_short_tier_unavailable": "tierが無効",
     "trigger_blocked_short_generic": "トリガーされません",
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",
@@ -949,6 +953,11 @@
     "status_completed": "完了",
     "status_failed": "失敗",
     "status_cancelled": "キャンセル済み",
+    "tier_auto_detail": "リゾルバーが選択した tier {{name}}。",
+    "tier_explicit_detail": "送信者が tier {{name}} に固定しました。",
+    "tier_parked_detail": "tier {{name}} に固定 — 空き待ちです。他のtierではなく、このtierで実行されます。",
+    "tier_explicit_short": "{{name}} · 明示",
+    "tier_parked_short": "{{name}} · 待機中",
     "attribution": {
       "on_behalf_of": "{{name}} の代理として",
       "someone": "あるメンバー",
@@ -1175,6 +1184,10 @@
     "status": {
       "mark_duplicate": "重複としてマーク",
       "change_original": "元のタスクを変更"
+    },
+    "tier": {
+      "tier_group": "この実行のtier",
+      "tier_auto": "自動（リゾルバーが選択）"
     }
   },
   "labels_panel": {

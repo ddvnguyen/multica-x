@@ -408,6 +408,15 @@ export interface AgentTask {
    */
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct";
   /**
+   * M-359 run record: workspace tier id stamped at enqueue (absent = none).
+   * tier_explicit marks a sender's `@agent#tier` / picker pick vs the
+   * idx-ranked auto resolver; tier_parked marks a queued row waiting on its
+   * tier's capacity. Resolve the tier NAME from the cached tiers list.
+   */
+  tier_id?: string;
+  tier_explicit?: boolean;
+  tier_parked?: boolean;
+  /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
    * the canonical absolute path the agent runs in; UI surfaces should prefer

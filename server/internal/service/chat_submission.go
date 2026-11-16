@@ -98,6 +98,12 @@ func (s *TaskService) LookupDirectChatSubmission(ctx context.Context, session db
 // SendDirectChatMessageWithSubmission requires a real transaction even for
 // callers which construct TaskService without its usual database wiring.
 func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID, submissionID pgtype.UUID) (*DirectChatSendResult, error) {
+	return s.SendDirectChatMessageWithSubmissionAndTier(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, submissionID, TierTriggerOverride{})
+}
+
+// SendDirectChatMessageWithSubmissionAndTier is SendDirectChatMessageWithSubmission
+// with an M-359 explicit pick (tier picker on the chat send).
+func (s *TaskService) SendDirectChatMessageWithSubmissionAndTier(ctx context.Context, session db.ChatSession, agent db.Agent, userID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, actorType string, actorID, submissionID pgtype.UUID, override TierTriggerOverride) (*DirectChatSendResult, error) {
 	if !submissionID.Valid {
 		return nil, errors.New("submission_id is required for keyed chat send")
 	}
@@ -110,7 +116,7 @@ func (s *TaskService) SendDirectChatMessageWithSubmission(ctx context.Context, s
 	} else if response != nil {
 		return &DirectChatSendResult{Replayed: true, Acceptance: response}, nil
 	}
-	return s.sendDirectChatMessage(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, &submission)
+	return s.sendDirectChatMessageWithOverride(ctx, session, agent, userID, content, attachmentIDs, actorType, actorID, &submission, override)
 }
 
 func (submission chatSubmission) store(ctx context.Context, q *db.Queries, sent *DirectChatSendResult, attachmentsRequested bool) error {

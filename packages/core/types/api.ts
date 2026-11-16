@@ -80,6 +80,14 @@ export interface UpdateIssueRequest {
    *  MUL-3375). The assignee/status change still applies. Control field —
    *  strip from optimistic cache patches; never written onto the Issue. */
   suppress_run?: boolean;
+  /** M-359 explicit pick for the run this write starts: workspace tier id
+   *  (tier_unavailable → 409, full/offline → queued parked, omitted = auto).
+   *  Control field — strip from optimistic cache patches. */
+  tier_id?: string;
+  /** M-359 one-off runtime+model override for the run this write starts.
+   *  Control fields — strip from optimistic cache patches. */
+  runtime_id?: string;
+  model?: string;
   /** When a status change hands the issue off to a workflow step's handler,
    *  also stop the active runs of the agent it was taken from (MUL-7420).
    *  Control field — strip from optimistic cache patches. */

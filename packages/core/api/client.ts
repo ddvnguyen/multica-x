@@ -1705,6 +1705,9 @@ export class ApiClient {
     project_id?: string | null;
     parent_issue_id?: string | null;
     attachment_ids?: string[];
+    tier_id?: string;
+    runtime_id?: string;
+    model?: string;
   }): Promise<{ task_id: string }> {
     return this.fetch("/api/issues/quick-create", {
       method: "POST",
@@ -4637,14 +4640,21 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    tier?: { tier_id?: string; runtime_id?: string; model?: string },
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
+      tier_id?: string;
+      runtime_id?: string;
+      model?: string;
     } = { content };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
+    if (tier?.tier_id) body.tier_id = tier.tier_id;
+    if (tier?.runtime_id) body.runtime_id = tier.runtime_id;
+    if (tier?.model) body.model = tier.model;
     const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       body: JSON.stringify(body),

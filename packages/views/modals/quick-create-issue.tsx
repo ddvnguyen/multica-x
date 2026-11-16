@@ -73,7 +73,7 @@ import {
   PickerEmpty,
 } from "../issues/components/pickers/property-picker";
 import { useAuthStore } from "@multica/core/auth";
-import { memberListOptions } from "@multica/core/workspace/queries";
+import { memberListOptions, modelTiersOptions } from "@multica/core/workspace/queries";
 import {
   ContentEditor,
   type ContentEditorRef,
@@ -250,6 +250,8 @@ export function AgentCreatePanel({
   ]);
 
   const [actor, setActor] = useState<ActorSelection | null>(() => seedActor());
+  // M-359 explicit tier for the quick-created run. Null = Auto (resolver).
+  const [tierId, setTierId] = useState<string | null>(null);
 
   // Re-seed once visible lists resolve (queries may be empty on first render).
   useEffect(() => {
@@ -472,6 +474,7 @@ export function AgentCreatePanel({
               ...(priority !== "none" ? { priority } : {}),
               ...(dueDate ? { due_date: dueDate } : {}),
               ...(activeAttachmentIds.length > 0 ? { attachment_ids: activeAttachmentIds } : {}),
+              ...(tierId ? { tier_id: tierId } : {}),
             },
           });
         } else {
@@ -485,6 +488,7 @@ export function AgentCreatePanel({
             ...(dueDate ? { due_date: dueDate } : {}),
             parent_issue_id: parentIssueId,
             ...(activeAttachmentIds.length > 0 ? { attachment_ids: activeAttachmentIds } : {}),
+            ...(tierId ? { tier_id: tierId } : {}),
           });
         }
         setLastActor(actor.type, actor.id);
@@ -741,6 +745,11 @@ export function AgentCreatePanel({
             t={t}
           />
         </div>
+
+        {/* M-359 tier for this run — Auto (resolver) by default, or one
+            pinned tier. Squad picks route to the leader; the pin applies
+            to the leader's run. */}
+        <TierPickRow tierId={tierId} onPick={setTierId} />
 
         {selectedAgent && versionBlocked && (
           <div className="mx-5 mb-2 shrink-0 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-caption text-amber-700 dark:text-amber-300">
@@ -1109,5 +1118,53 @@ function ActorPicker({
         </>
       )}
     </PropertyPicker>
+  );
+}
+
+/** M-359 single-tier pick for the quick-created run (null = Auto). */
+function TierPickRow({
+  tierId,
+  onPick,
+}: {
+  tierId: string | null;
+  onPick: (tierId: string | null) => void;
+}) {
+  const { t } = useT("modals");
+  const wsId = useWorkspaceId();
+  const [open, setOpen] = useState(false);
+  const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
+  const enabled = tiers.filter((tier) => tier.enabled);
+  if (enabled.length === 0) return null;
+  const pick = (next: string | null) => {
+    onPick(next);
+    setOpen(false);
+  };
+  return (
+    <div className="px-5 pt-1 pb-2 shrink-0">
+      <PropertyPicker
+        open={open}
+        onOpenChange={setOpen}
+        width="w-64"
+        trigger={
+          <span className="truncate">
+            {tierId
+              ? `#${enabled.find((tier) => tier.id === tierId)?.name ?? tierId.slice(0, 8)}`
+              : t(($) => $.create_issue.tier.tier_auto_trigger)}
+          </span>
+        }
+      >
+        <PickerItem selected={tierId === null} onClick={() => pick(null)}>
+          <span className="truncate">{t(($) => $.create_issue.tier.tier_auto)}</span>
+        </PickerItem>
+        {enabled.map((tier) => (
+          <PickerItem key={tier.id} selected={tierId === tier.id} onClick={() => pick(tier.id)}>
+            <span className="truncate">
+              #{tier.name}
+              {tier.model ? <span className="text-muted-foreground"> · {tier.model}</span> : null}
+            </span>
+          </PickerItem>
+        ))}
+      </PropertyPicker>
+    </div>
   );
 }

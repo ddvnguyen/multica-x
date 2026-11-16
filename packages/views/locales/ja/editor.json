@@ -106,7 +106,9 @@
     "group_current": "現在のページ",
     "group_recent": "最近見た項目",
     "group_search": "検索結果",
-    "group_cancelled": "キャンセル済み"
+    "group_cancelled": "キャンセル済み",
+    "tier_disabled": "無効",
+    "tier_list_label": "Tier"
   },
   "code_block": {
     "html_preview": "HTML プレビュー",

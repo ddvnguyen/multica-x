@@ -799,13 +799,13 @@ func TestPlatformSkillTeachesTheParserContract(t *testing.T) {
 			// Skill Step 2: type and id source matched → fires.
 			name:    "real uuid with matching type fires",
 			content: "[@Alice](mention://member/" + uuid + ") please review",
-			want:    []util.Mention{{Type: "member", ID: uuid}},
+			want:    []util.Mention{{Type: "member", ID: uuid, Label: "Alice"}},
 		},
 		{
 			// Skill: @all uses the literal `all`, never a UUID.
 			name:    "all uses the literal all",
 			content: "[@all](mention://all/all) heads up",
-			want:    []util.Mention{{Type: "all", ID: "all"}},
+			want:    []util.Mention{{Type: "all", ID: "all", Label: "all"}},
 		},
 		{
 			name:    "empty label cannot trigger an agent",
@@ -834,7 +834,7 @@ func TestPlatformSkillTeachesTheParserContract(t *testing.T) {
 		{
 			name:    "copied example in prose parses",
 			content: "[@Agent](mention://agent/" + uuid + ") please review",
-			want:    []util.Mention{{Type: "agent", ID: uuid}},
+			want:    []util.Mention{{Type: "agent", ID: uuid, Label: "Agent"}},
 		},
 		{
 			// Skill: "Using the wrong type for a real UUID still parses — it
@@ -842,7 +842,7 @@ func TestPlatformSkillTeachesTheParserContract(t *testing.T) {
 			// skill stresses matching type to id source.
 			name:    "wrong type still parses (points at wrong entity)",
 			content: "[@Bot](mention://member/" + uuid + ")",
-			want:    []util.Mention{{Type: "member", ID: uuid}},
+			want:    []util.Mention{{Type: "member", ID: uuid, Label: "Bot"}},
 		},
 		{
 			// Skill: `project` is deliberately outside the type group, so a

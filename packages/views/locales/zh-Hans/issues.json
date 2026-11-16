@@ -780,6 +780,8 @@
     "trigger_blocked_runtime_profile_missing": "该目标的 CLI 在它所在的机器上缺少运行时 profile —— 需要在那台机器上安装",
     "trigger_blocked_agent_runtime_required": "该目标未绑定运行时——绑定后才能运行",
     "trigger_blocked_runtime_access_denied": "该目标的智能体无法在其私有运行时上运行 —— 请将该运行时设为公开，或将智能体重新绑定/复制到其所有者可用的运行时",
+    "trigger_blocked_tier_waiting_capacity": "所选层级已满或离线——运行已排队，有空位时即启动",
+    "trigger_blocked_tier_unavailable": "所选层级不存在、已停用或对此智能体不可用——请修正名称",
     "trigger_blocked_generic": "该目标不会被触发",
     "trigger_blocked_short_invocation_not_allowed": "找不到或无权限",
     "trigger_blocked_short_target_unavailable": "不可用",
@@ -788,6 +790,8 @@
     "trigger_blocked_short_runtime_profile_missing": "缺少运行时 profile",
     "trigger_blocked_short_agent_runtime_required": "需绑定运行时",
     "trigger_blocked_short_runtime_access_denied": "无运行时权限",
+    "trigger_blocked_short_tier_waiting_capacity": "层级已满——排队中",
+    "trigger_blocked_short_tier_unavailable": "层级无效",
     "trigger_blocked_short_generic": "不会触发",
     "send_reply_failed": "发送回复失败",
     "delete_failed": "删除评论失败",
@@ -949,6 +953,11 @@
     "status_completed": "已完成",
     "status_failed": "失败",
     "status_cancelled": "已取消",
+    "tier_auto_detail": "由解析器选择的层级 {{name}}。",
+    "tier_explicit_detail": "发送者已固定到层级 {{name}}。",
+    "tier_parked_detail": "已固定到层级 {{name}}——等待空位。运行将在此层级启动，不会切换到其他层级。",
+    "tier_explicit_short": "{{name}} · 已指定",
+    "tier_parked_short": "{{name}} · 等待中",
     "attribution": {
       "on_behalf_of": "代表 {{name}}",
       "someone": "某位成员",
@@ -1175,6 +1184,10 @@
     "status": {
       "mark_duplicate": "标记为重复",
       "change_original": "更改原始任务"
+    },
+    "tier": {
+      "tier_group": "本次运行的层级",
+      "tier_auto": "自动（由解析器选择）"
     }
   },
   "labels_panel": {

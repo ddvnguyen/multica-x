@@ -38,7 +38,7 @@ import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { shouldAutoLink } from "@multica/ui/markdown";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 import { BaseMentionExtension } from "./mention-extension";
-import { createMentionSuggestion, type MentionItem } from "./mention-suggestion";
+import { createMentionSuggestion, createTierPickExtension, type MentionItem } from "./mention-suggestion";
 import {
   createIssueIdentifierAutolinkExtension,
   type IssueIdentifierResolver,
@@ -282,6 +282,14 @@ export function createEditorExtensions(
           ? { suggestion: createMentionSuggestion(options.queryClient, { mode: options.mentionMode, getContextItems: options.getMentionContextItems }) }
           : {}),
     }),
+    // M-359 `#tier` picker: opens only directly after an `@agent` mention
+    // pill and rewrites that pill's label to `name#tier`. A standalone
+    // Suggestion plugin (same pattern as the boundary probe) — the Mention
+    // extension owns a single suggestion slot, already taken by `@`. Shares
+    // the disableMentions gate.
+    ...(!options.disableMentions && options.queryClient
+      ? [createTierPickExtension(options.queryClient)]
+      : []),
     // Linear-style bare identifier → issue mention. Attached only when a
     // resolver is provided AND mention creation is enabled (an editor that
     // suppresses new mentions should not synthesise them from identifiers).

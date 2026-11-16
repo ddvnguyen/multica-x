@@ -5379,8 +5379,23 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		// task and is not in its planned ids), so dropping the failure here is
 		// exactly how a promised follow-up is lost. Hand the obligation to that
 		// blocker instead, keeping it alive until some run provably covers it.
-		res := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)[agentID]
-		handled := res.status != DispatchBlocked
+		// M-359: scoped can hold several tier slots of one agent; the
+		// comment is handled unless EVERY slot blocked.
+		enqueued := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)
+		handled := false
+		blockedSeen := false
+		for _, trigger := range scoped {
+			res := enqueued[commentEnqueueResultKey(trigger)]
+			if res.status != DispatchBlocked {
+				handled = true
+				break
+			}
+			blockedSeen = true
+		}
+		res := commentEnqueueResult{status: DispatchBlocked, reason: ReasonInternalError}
+		if blockedSeen {
+			res = enqueued[commentEnqueueResultKey(scoped[0])]
+		}
 		if res.status == DispatchBlocked {
 			headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)
 			if h.propagateUncoveredCommentObligation(ctx, issue, scoped[0], c.ID, headSha) {

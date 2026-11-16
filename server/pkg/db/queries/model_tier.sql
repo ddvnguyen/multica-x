@@ -13,6 +13,12 @@ INSERT INTO model_tier (
 SELECT * FROM model_tier
 WHERE id = $1 AND workspace_id = $2;
 
+-- M-359: explicit `@agent#tier` lookup. Case-insensitive exact match on the
+-- slug-safe name; the idx_model_tier_workspace_name index covers the scan.
+-- name: GetModelTierByNameInWorkspace :one
+SELECT * FROM model_tier
+WHERE workspace_id = $1 AND lower(name) = lower($2);
+
 -- name: ListModelTiers :many
 SELECT * FROM model_tier
 WHERE workspace_id = $1

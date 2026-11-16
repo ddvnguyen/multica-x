@@ -106,7 +106,9 @@
     "group_current": "현재 페이지",
     "group_recent": "최근 본 항목",
     "group_search": "검색 결과",
-    "group_cancelled": "취소됨"
+    "group_cancelled": "취소됨",
+    "tier_disabled": "비활성화됨",
+    "tier_list_label": "티어"
   },
   "code_block": {
     "html_preview": "HTML 미리보기",

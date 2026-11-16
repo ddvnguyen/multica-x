@@ -28,6 +28,7 @@ type PreparedIssueHandoff struct {
 	tierService    pgtype.Text
 	tierID         pgtype.UUID
 	tierQueuedOnly bool
+	tierExplicit   pgtype.Bool
 }
 
 func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, agentID, actorID pgtype.UUID) (PreparedIssueHandoff, error) {
@@ -58,7 +59,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 		head:          headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
 		tierRuntimeID: tierRuntimeID, tierModel: tierModel, tierThinking: tierThinking,
 		tierService: tierService, tierID: tierID, tierQueuedOnly: tierQueuedOnly,
-		tierParked: tierParked,
+		tierParked: tierParked, tierExplicit: tierExplicitFlag(tierID, TierTriggerOverride{}),
 	}, nil
 }
 
@@ -84,8 +85,8 @@ func (s *TaskService) EnqueuePreparedIssueHandoffInTx(ctx context.Context, q *db
 		ID: dbid.NewV7(), AgentID: agent.ID, RuntimeID: prepared.tierRuntimeID, IssueID: issue.ID,
 		ModelOverride: prepared.tierModel, ThinkingLevelOverride: prepared.tierThinking,
 		ServiceTierOverride: prepared.tierService, TierID: prepared.tierID,
-		TierParked: prepared.tierParked,
-		Priority:   priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
+		TierParked: prepared.tierParked, TierExplicit: prepared.tierExplicit,
+		Priority: priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
 		SquadID: squadID, OriginatorUserID: prepared.attr.UserID, AccountableUserID: prepared.attr.AccountableUserID,
 		RuleVersionID: prepared.attr.RuleVersionID, RuntimeMcpOverlay: prepared.overlay.Overlay,
 		RuntimeConnectedApps: prepared.overlay.ConnectedApps, OriginatorSource: source,

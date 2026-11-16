@@ -732,6 +732,13 @@ var ErrAttributionFailClosed = errors.New("attribution: no precise accountable h
 // upper-layer log or response can leak the constraint name (#5914, Elon review).
 var ErrDuplicatePendingTask = errors.New("a pending task for this issue and agent already exists")
 
+// ErrExplicitTierUnavailable means an M-359 explicit pick (`@agent#tier` or
+// tier picker) named a tier that does not exist, is disabled, or is not
+// selected for a use_tiers agent. Callers block the trigger with
+// tier_unavailable: no fallback, no queue. Wrap errUnknownTier so errors.Is
+// works through either layer.
+var ErrExplicitTierUnavailable = errUnknownTier
+
 // isDuplicatePendingTaskErr reports whether err is the pending-task unique-index
 // violation (a concurrent enqueue won the race). Accept both names while v1 and
 // v2 can coexist during a rolling deploy.
@@ -741,7 +748,7 @@ func isDuplicatePendingTaskErr(err error) bool {
 		return false
 	}
 	switch pgErr.ConstraintName {
-	case "idx_one_pending_task_per_issue_agent", "idx_one_pending_task_per_issue_agent_v2", "idx_one_pending_task_per_issue_agent_thread":
+	case "idx_one_pending_task_per_issue_agent", "idx_one_pending_task_per_issue_agent_v2", "idx_one_pending_task_per_issue_agent_thread", "idx_one_pending_task_per_issue_agent_tier":
 		return true
 	default:
 		return false
@@ -1148,14 +1155,66 @@ func taskErrorType(reason string) string {
 	}
 }
 
-// applyTierResolution rewrites an enqueue's runtime/stamp fields for a
-// use_tiers agent (M-351). A use_tiers=false agent returns its own runtime
-// with empty stamps: the legacy single-runtime path, untouched. When no
-// selected tier has capacity the task stays queued — the caller inserts with
-// the agent's fallback runtime left NULL so no daemon can claim it, and the
-// next capacity change re-runs the resolver via promotion. Tier selection
-// errors fail the enqueue: unlike full tiers, they are not backpressure.
+// TierTriggerOverride is the M-359 per-trigger pick: at most one of TierID
+// (explicit `@agent#tier` or tier picker) or RuntimeID+Model (one-off
+// runtime+model override) is set. Zero value = plain trigger, normal
+// resolver.
+type TierTriggerOverride struct {
+	TierID    pgtype.UUID
+	RuntimeID pgtype.UUID
+	Model     string
+}
+
+func (o TierTriggerOverride) IsZero() bool {
+	return !o.TierID.Valid && !o.RuntimeID.Valid && o.Model == ""
+}
+
+// tierExplicitFlag marks the M-359 run record: the stamp came from a
+// sender's explicit pick (override set and a tier actually stamped), not
+// the idx-ranked resolver. One-off runtime overrides stamp no tier, so
+// they stay unmarked.
+func tierExplicitFlag(tierID pgtype.UUID, override TierTriggerOverride) pgtype.Bool {
+	if tierID.Valid && !override.IsZero() {
+		return pgtype.Bool{Bool: true, Valid: true}
+	}
+	return pgtype.Bool{}
+}
+
 func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, parked pgtype.Bool, queuedOnly bool, err error) {
+	return s.applyTierResolutionWithOverride(ctx, agent, TierTriggerOverride{})
+}
+
+// applyTierResolutionWithOverride is applyTierResolution plus the M-359
+// explicit pick. TierID selects one tier without ranking; RuntimeID+Model
+// stamps a one-off override without any tier at all.
+func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent db.Agent, override TierTriggerOverride) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, parked pgtype.Bool, queuedOnly bool, err error) {
+	if override.RuntimeID.Valid {
+		// One-off runtime+model override: stamp directly, no tier involved.
+		var modelText pgtype.Text
+		if override.Model != "" {
+			modelText = pgtype.Text{String: override.Model, Valid: true}
+		}
+		return override.RuntimeID, modelText, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, nil
+	}
+	if override.TierID.Valid {
+		res, rerr := s.resolveExplicitTierByID(ctx, agent, override.TierID)
+		if rerr == nil {
+			return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, pgtype.Bool{}, false, nil
+		}
+		if errors.Is(rerr, errNoExplicitTierCapacity) {
+			// Parked with the tier stamped: queued, visible, no fallback.
+			tier, terr := s.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{
+				ID:          override.TierID,
+				WorkspaceID: agent.WorkspaceID,
+			})
+			if terr != nil {
+				return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, terr
+			}
+			return pgtype.UUID{}, pgtype.Text{String: tier.Model, Valid: tier.Model != ""}, tierTextOrNull(tier.ThinkingLevel), tierTextOrNull(tier.ServiceTier), tier.ID, pgtype.Bool{Bool: true, Valid: true}, true, nil
+		}
+		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, rerr
+	}
+
 	if !agent.UseTiers {
 		return agent.RuntimeID, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, nil
 	}
@@ -1262,6 +1321,13 @@ func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue 
 	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 }
 
+// EnqueueTaskForIssueWithTierHandoff is the M-359 explicit-pick variant of
+// EnqueueTaskForIssueWithHandoff: override carries the tier-picker (or
+// runtime+model) selection for the assign-triggered run.
+func (s *TaskService) EnqueueTaskForIssueWithTierHandoff(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+}
+
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
 // and the manual rerun path. forceFreshSession=true marks the task so the
 // daemon claim handler skips the (agent_id, issue_id) resume lookup — the
@@ -1311,7 +1377,16 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, false)
 }
 
+// enqueueIssueTaskWithOverride is enqueueIssueTask with an M-359 explicit pick.
+func (s *TaskService) enqueueIssueTaskWithOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, false, override)
+}
+
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, freshRerun bool) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, freshRerun, TierTriggerOverride{})
+}
+
+func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, freshRerun bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -1356,7 +1431,8 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	// first selected tier with a free provider slot. Full tiers are
 	// backpressure: the row is still inserted (queued) but carries no
 	// runtime, so no daemon can claim it until promotion re-resolves.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
+	tierExplicit := tierExplicitFlag(tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1370,6 +1446,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
 		TierParked:            tierParked,
+		TierExplicit:          tierExplicit,
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1395,30 +1472,36 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
 		task, err = s.Queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
-			ID:                   dbid.NewV7(),
-			AgentID:              createParams.AgentID,
-			RuntimeID:            createParams.RuntimeID,
-			IssueID:              createParams.IssueID,
-			Priority:             createParams.Priority,
-			TriggerCommentID:     createParams.TriggerCommentID,
-			CoalescedCommentIds:  createParams.CoalescedCommentIds,
-			TriggerSummary:       createParams.TriggerSummary,
-			ForceFreshSession:    createParams.ForceFreshSession,
-			IsLeaderTask:         createParams.IsLeaderTask,
-			HandoffNote:          createParams.HandoffNote,
-			SquadID:              createParams.SquadID,
-			HeadSha:              createParams.HeadSha,
-			OriginatorUserID:     createParams.OriginatorUserID,
-			AccountableUserID:    createParams.AccountableUserID,
-			RuntimeMcpOverlay:    createParams.RuntimeMcpOverlay,
-			RuntimeConnectedApps: createParams.RuntimeConnectedApps,
-			OriginatorSource:     createParams.OriginatorSource,
-			DelegatedFromTaskID:  createParams.DelegatedFromTaskID,
-			RuleVersionID:        createParams.RuleVersionID,
-			RerunOfTaskID:        createParams.RerunOfTaskID,
-			TriggerEvidenceKind:  createParams.TriggerEvidenceKind,
-			TriggerEvidenceRefID: createParams.TriggerEvidenceRefID,
-			FireAt:               fireAt,
+			ID:                    dbid.NewV7(),
+			AgentID:               createParams.AgentID,
+			RuntimeID:             createParams.RuntimeID,
+			IssueID:               createParams.IssueID,
+			Priority:              createParams.Priority,
+			TriggerCommentID:      createParams.TriggerCommentID,
+			CoalescedCommentIds:   createParams.CoalescedCommentIds,
+			TriggerSummary:        createParams.TriggerSummary,
+			ForceFreshSession:     createParams.ForceFreshSession,
+			IsLeaderTask:          createParams.IsLeaderTask,
+			HandoffNote:           createParams.HandoffNote,
+			SquadID:               createParams.SquadID,
+			HeadSha:               createParams.HeadSha,
+			OriginatorUserID:      createParams.OriginatorUserID,
+			AccountableUserID:     createParams.AccountableUserID,
+			RuntimeMcpOverlay:     createParams.RuntimeMcpOverlay,
+			RuntimeConnectedApps:  createParams.RuntimeConnectedApps,
+			OriginatorSource:      createParams.OriginatorSource,
+			DelegatedFromTaskID:   createParams.DelegatedFromTaskID,
+			RuleVersionID:         createParams.RuleVersionID,
+			RerunOfTaskID:         createParams.RerunOfTaskID,
+			TriggerEvidenceKind:   createParams.TriggerEvidenceKind,
+			TriggerEvidenceRefID:  createParams.TriggerEvidenceRefID,
+			ModelOverride:         createParams.ModelOverride,
+			ThinkingLevelOverride: createParams.ThinkingLevelOverride,
+			ServiceTierOverride:   createParams.ServiceTierOverride,
+			TierID:                createParams.TierID,
+			TierParked:            createParams.TierParked,
+			TierExplicit:          createParams.TierExplicit,
+			FireAt:                fireAt,
 		})
 	} else {
 		task, err = s.Queries.CreateAgentTask(ctx, createParams)
@@ -1478,6 +1561,18 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, origin)
 }
 
+// EnqueueTaskForMentionWithTier is the M-359 explicit-pick variant of
+// EnqueueTaskForMention: override carries the `@agent#tier` (or picker)
+// selection. Unknown tier → typed error (blocked); full tier → parked row,
+// queued (never a fallback).
+func (s *TaskService) EnqueueTaskForMentionWithTier(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithOverride(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, origin, override)
+}
+
+func (s *TaskService) enqueueMentionTaskWithOverride(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false, override)
+}
+
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
 // the direct parent comment a member replied to.
 func (s *TaskService) EnqueueTaskForThreadParent(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -1519,6 +1614,10 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 }
 
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, freshRerun, workflowHandoff, TierTriggerOverride{})
+}
+
+func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
 	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1553,8 +1652,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
-	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	// M-351 auto path, or the M-359 explicit pick when override is set.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
+	tierExplicit := tierExplicitFlag(tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1568,6 +1668,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
 		TierParked:            tierParked,
+		TierExplicit:          tierExplicit,
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1706,7 +1807,19 @@ func (s *TaskService) EnqueueQuickCreateTaskWithSourceContext(ctx context.Contex
 	return s.enqueueQuickCreateTask(ctx, workspaceID, requesterID, agentID, squadID, prompt, priority, dueDate, projectID, parentIssueID, attachmentIDs, &capture)
 }
 
+// EnqueueQuickCreateTaskWithTier is the M-359 explicit-pick variant of
+// EnqueueQuickCreateTask.
+func (s *TaskService) EnqueueQuickCreateTaskWithTier(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueQuickCreateTaskWithOverride(ctx, workspaceID, requesterID, agentID, squadID, prompt, priority, dueDate, projectID, parentIssueID, attachmentIDs, nil, override)
+}
+
 func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, capture *SourceContextCapture) (db.AgentTaskQueue, error) {
+	return s.enqueueQuickCreateTaskWithOverride(ctx, workspaceID, requesterID, agentID, squadID, prompt, priority, dueDate, projectID, parentIssueID, attachmentIDs, capture, TierTriggerOverride{})
+}
+
+// enqueueQuickCreateTaskWithOverride is enqueueQuickCreateTask with an M-359
+// explicit pick (tier picker or runtime+model override in quick-create).
+func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, workspaceID, requesterID pgtype.UUID, agentID, squadID pgtype.UUID, prompt, priority, dueDate string, projectID, parentIssueID pgtype.UUID, attachmentIDs []pgtype.UUID, capture *SourceContextCapture, override TierTriggerOverride) (db.AgentTaskQueue, error) {
 	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
@@ -1776,8 +1889,9 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
-	// M-351: see enqueueIssueTaskWithCommentPlan — same tier resolution path.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	// M-351 auto path, or the M-359 explicit pick when override is set.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
+	tierExplicit := tierExplicitFlag(tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1791,6 +1905,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
 		TierParked:            tierParked,
+		TierExplicit:          tierExplicit,
 		Priority:              priorityToInt("high"),
 		Context:               contextJSON,
 		OriginatorUserID:      requesterID,
@@ -2160,6 +2275,23 @@ func (s *TaskService) enqueueChatTaskTx(
 	expectedRouteRevision int64,
 	prepared PreparedChatTaskEnqueue,
 ) (db.AgentTaskQueue, error) {
+	return s.enqueueChatTaskTxWithOverride(ctx, qtx, chatSession, initiatorUserID, forceFreshSession, contextRevision, requireDelivery, expectedBindingID, expectedRouteRevision, prepared, TierTriggerOverride{})
+}
+
+// enqueueChatTaskTxWithOverride is enqueueChatTaskTx with an M-359 explicit pick.
+func (s *TaskService) enqueueChatTaskTxWithOverride(
+	ctx context.Context,
+	qtx *db.Queries,
+	chatSession db.ChatSession,
+	initiatorUserID pgtype.UUID,
+	forceFreshSession bool,
+	contextRevision int64,
+	requireDelivery bool,
+	expectedBindingID pgtype.UUID,
+	expectedRouteRevision int64,
+	prepared PreparedChatTaskEnqueue,
+	override TierTriggerOverride,
+) (db.AgentTaskQueue, error) {
 	currentSession, err := qtx.LockChatSessionForEnqueue(ctx, chatSession.ID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("lock chat session: %w", err)
@@ -2232,9 +2364,9 @@ func (s *TaskService) enqueueChatTaskTx(
 		mediaPendingUntil = pgtype.Timestamptz{}
 	}
 
-	// M-351: use_tiers agents resolve via the service-level resolver (pool
-	// queries; qtx shares the pool snapshot for reads).
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolution(ctx, agent)
+	// M-351 auto path, or the M-359 explicit pick when override is set.
+	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
+	tierExplicit := tierExplicitFlag(tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -2247,6 +2379,7 @@ func (s *TaskService) enqueueChatTaskTx(
 		ServiceTierOverride:   tierService,
 		TierID:                tierID,
 		TierParked:            tierParked,
+		TierExplicit:          tierExplicit,
 		Priority:              2,
 		ChatSessionID:         chatSession.ID,
 		InitiatorUserID:       initiatorUserID,
@@ -2505,6 +2638,22 @@ func (s *TaskService) SendDirectChatMessage(
 	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, nil)
 }
 
+// SendDirectChatMessageWithTier is the M-359 explicit-pick variant of
+// SendDirectChatMessage.
+func (s *TaskService) SendDirectChatMessageWithTier(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	override TierTriggerOverride,
+) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessageWithOverride(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, nil, override)
+}
+
 func (s *TaskService) sendDirectChatMessage(
 	ctx context.Context,
 	session db.ChatSession,
@@ -2515,6 +2664,23 @@ func (s *TaskService) sendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 	submission *chatSubmission,
+) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessageWithOverride(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, submission, TierTriggerOverride{})
+}
+
+// sendDirectChatMessageWithOverride is sendDirectChatMessage with an M-359
+// explicit pick (tier picker on the chat send).
+func (s *TaskService) sendDirectChatMessageWithOverride(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	submission *chatSubmission,
+	override TierTriggerOverride,
 ) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
@@ -2592,10 +2758,11 @@ func (s *TaskService) sendDirectChatMessage(
 		}
 		out.Queued = queued
 
-		// M-351: same tier resolution as every other enqueue path. Uses the
-		// pool (not qtx) for the capacity reads; the insert below still runs
-		// in this tx so the row is atomic with the rest of the send.
-		tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolution(ctx, carrier)
+		// M-351 auto path, or the M-359 explicit pick when override is set.
+		// Uses the pool (not qtx) for the capacity reads; the insert below
+		// still runs in this tx so the row is atomic with the rest of the send.
+		tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, override)
+		tierExplicit := tierExplicitFlag(tierID, override)
 		if tierErr != nil {
 			return tierErr
 		}
@@ -2608,6 +2775,7 @@ func (s *TaskService) sendDirectChatMessage(
 			ServiceTierOverride:   tierService,
 			TierID:                tierID,
 			TierParked:            tierParked,
+			TierExplicit:          tierExplicit,
 			Priority:              2, // medium priority for chat; matches EnqueueChatTask
 			ChatSessionID:         session.ID,
 			InitiatorUserID:       initiatorUserID,
@@ -4652,16 +4820,27 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 // loudly: unlike full tiers they are not backpressure.
 func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTaskQueue) (db.AgentTaskQueue, bool) {
 	agent, err := s.Queries.GetAgent(ctx, task.AgentID)
-	if err != nil || !agent.UseTiers {
+	if err != nil {
 		return task, false
 	}
-	res, rerr := s.resolveAgentTier(ctx, agent)
-	if rerr != nil {
-		if errors.Is(rerr, errNoTierCapacity) {
+	// M-359: an explicit-pick row waits on ITS tier only — never the
+	// idx-ranked fallback. A use_tiers=false agent with a parked explicit
+	// row keeps it too (plain rows never park).
+	var res tierResolution
+	if task.TierExplicit && task.TierID.Valid {
+		res, err = s.resolveExplicitTierByID(ctx, agent, task.TierID)
+	} else {
+		if !agent.UseTiers {
+			return task, false
+		}
+		res, err = s.resolveAgentTier(ctx, agent)
+	}
+	if err != nil {
+		if errors.Is(err, errNoTierCapacity) || errors.Is(err, errNoExplicitTierCapacity) {
 			return task, false
 		}
 		slog.Warn("tier restamp failed: task stays queued",
-			"task_id", util.UUIDToString(task.ID), "error", rerr)
+			"task_id", util.UUIDToString(task.ID), "error", err)
 		return task, false
 	}
 	stamped, serr := s.Queries.RestampQueuedTierTask(ctx, db.RestampQueuedTierTaskParams{
@@ -6044,6 +6223,8 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 		ThreadCommentID: task.TriggerCommentID,
 		IssueID:         task.IssueID,
 		AgentID:         task.AgentID,
+		// M-359: the retry inherits the parent's tier stamp (same slot).
+		TierID: tierSlotID(task.TierID, pgtype.Bool{Bool: task.TierExplicit, Valid: true}),
 	})
 }
 
@@ -7337,6 +7518,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		// runtime-less) and the capacity-freed sweep restamps it when a slot
 		// frees — the recovery is not lost, only parked.
 		recRuntimeID, recModel, recThinking, recService, recTierID, recParked, _, recErr := s.applyTierResolution(ctx, target.agent)
+		recExplicit := tierExplicitFlag(recTierID, TierTriggerOverride{})
 		if recErr != nil {
 			return delegatedFailureRecoveryCovered, recErr
 		}
@@ -7349,6 +7531,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ServiceTierOverride:   recService,
 			TierID:                recTierID,
 			TierParked:            recParked,
+			TierExplicit:          recExplicit,
 			IssueID:               target.issue.ID,
 			Priority:              priorityToInt(target.issue.Priority),
 			TriggerCommentID:      target.comment.ID,
@@ -7392,6 +7575,8 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			CommentID: target.comment.ID,
 			IssueID:   target.issue.ID,
 			AgentID:   target.agent.ID,
+			// M-359: register on the failed run's own tier slot.
+			TierID: tierSlotID(target.failed.TierID, pgtype.Bool{Bool: target.failed.TierExplicit, Valid: true}),
 		}); err == nil {
 			slog.Info("delegated failure recovery registered behind dispatched coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),

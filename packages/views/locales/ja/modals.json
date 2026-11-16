@@ -263,6 +263,10 @@
       "error_daemon_version": "このエージェントのデーモン CLI（{{current}}）が必要なバージョン {{min}} を下回っています。エージェントで作成を使用するには、デーモンをアップグレードしてください。",
       "error_unknown": "送信できませんでした。再試行してください。",
       "sub_issue_of": "{{identifier}} のサブタスク"
+    },
+    "tier": {
+      "tier_auto_trigger": "自動tier",
+      "tier_auto": "自動（リゾルバーが選択）"
     }
   },
   "mark_duplicate": {

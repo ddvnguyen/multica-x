@@ -99,6 +99,16 @@ const (
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonTierUnavailable: an explicit `@agent#tier` pick named a tier that
+	// does not exist, is disabled, or is not selected for this agent (M-359).
+	// Blocked — nothing is queued, and there is no fallback: the sender must
+	// fix the name.
+	ReasonTierUnavailable ReasonCode = "tier_unavailable"
+	// ReasonTierWaitingCapacity: an explicit `@agent#tier` pick resolved, but
+	// its runtime is offline or its provider slots are full (M-359). The task
+	// IS queued (tier_parked) and runs when capacity frees — never silently
+	// moved to another tier.
+	ReasonTierWaitingCapacity ReasonCode = "tier_waiting_capacity"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

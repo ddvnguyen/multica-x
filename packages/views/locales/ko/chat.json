@@ -157,7 +157,11 @@
     "history_group": "채팅 기록",
     "agent_filter_placeholder": "에이전트 검색...",
     "agent_needs_runtime": "런타임 필요",
-    "agent_needs_runtime_hint": "이 에이전트와 채팅하기 전에 런타임을 연결하세요"
+    "agent_needs_runtime_hint": "이 에이전트와 채팅하기 전에 런타임을 연결하세요",
+    "tier": {
+      "tier_for_next_turn": "다음 턴의 티어",
+      "tier_auto": "자동 (리졸버 선택)"
+    }
   },
   "empty_state": {
     "first_time_title": "에이전트와 채팅하기",

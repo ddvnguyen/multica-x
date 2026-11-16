@@ -20,6 +20,9 @@ import (
 type Mention struct {
 	Type string // "member", "agent", "squad", "issue", or "all"
 	ID   string // user_id, agent_id, issue_id, or "all"
+	// Label is the visible mention text without the "@" prefix (M-359: the
+	// `@agent#tier` suffix rides the label so the wire stays stable).
+	Label string
 }
 
 // MentionRe matches [@Label](mention://type/id) or [Label](mention://issue/id) in markdown.
@@ -62,7 +65,7 @@ func ParseMentions(content string) []Mention {
 		parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
 	)
 	doc := markdown.Parse(text.NewReader(source))
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	var result []Mention
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
@@ -79,11 +82,15 @@ func ParseMentions(content string) []Mention {
 		if !ok {
 			return ast.WalkContinue, nil
 		}
-		key := mention.Type + ":" + mention.ID
-		if seen[key] {
+		// M-359: dedup key is type + id + tier slot. `@a#x` vs `@a#y`
+		// and plain `@a` vs `@a#x` are distinct triggers and must each
+		// run; only the identical mention dedups.
+		_, tier, _ := SplitTierSuffix(mention.Label)
+		key := mention.Type + ":" + mention.ID + ":" + tier
+		if _, dup := seen[key]; dup {
 			return ast.WalkContinue, nil
 		}
-		seen[key] = true
+		seen[key] = len(result)
 		result = append(result, mention)
 		return ast.WalkContinue, nil
 	})
@@ -161,6 +168,7 @@ func parseMentionLink(link *ast.Link, span text.Segment, source []byte) (Mention
 				firstVisible = false
 				continue
 			}
+			mention.Label = strings.TrimPrefix(labelText, "@")
 			return mention, true
 		}
 	}
@@ -217,4 +225,27 @@ func HasMentionAll(mentions []Mention) bool {
 		}
 	}
 	return false
+}
+
+// tierSuffixPattern is the M-350 slug shape ([a-z0-9][a-z0-9-]*, <=40
+// chars). A `#...` tail must match it to count as a tier pick; anything
+// else (C#, `a#b#c` with a bad tail, trailing `#`) is agent-name text.
+var tierSuffixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+const maxTierSuffixLen = 40
+
+// SplitTierSuffix splits an `@agent#tier` label at its last `#` (M-359).
+// hasTier is true only when the tail is slug-shaped; matching against real
+// tier names happens at resolve time. No `#`, or a non-slug tail, returns
+// the label untouched with hasTier=false so legacy names keep working.
+func SplitTierSuffix(label string) (agentPart, tierPart string, hasTier bool) {
+	hash := strings.LastIndex(label, "#")
+	if hash < 0 {
+		return label, "", false
+	}
+	tail := label[hash+1:]
+	if len(tail) == 0 || len(tail) > maxTierSuffixLen || !tierSuffixPattern.MatchString(strings.ToLower(tail)) {
+		return label, "", false
+	}
+	return label[:hash], strings.ToLower(tail), true
 }

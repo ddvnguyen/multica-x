@@ -9,12 +9,12 @@ package handler
 //
 // Three deliberate limits, all of them the card's:
 //	//   - The interaction wait is stored, surfaced, and ENFORCED by the sweeper
-	//     M-131 adds: nothing in this file cancels a parked run or writes the
-	//     notice a reader would get — the sweeper escalates a park past
-	//     EffectiveAskPlanTimeoutSeconds to the project lead (M-332: once, and
-	//     the card stays open afterwards). The resolver lives here (and is
-	//     exported) because the settings surfaces and the sweeper must agree on
-	//     one number and one source.
+//     M-131 adds: nothing in this file cancels a parked run or writes the
+//     notice a reader would get — the sweeper escalates a park past
+//     EffectiveAskPlanTimeoutSeconds to the project lead (M-332: once, and
+//     the card stays open afterwards). The resolver lives here (and is
+//     exported) because the settings surfaces and the sweeper must agree on
+//     one number and one source.
 //   - The values live in the existing `workspace.settings` / `project.settings`
 //     objects under their own keys rather than in a new column: every existing
 //     reader treats those objects as open sets, and an absent key falls back to

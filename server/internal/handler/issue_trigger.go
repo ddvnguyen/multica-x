@@ -77,18 +77,52 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 	return active || err != nil
 }
 
+// resolveIssueRunTierOverride parses M-359 explicit-pick fields from an
+// assign write (tier_id, or runtime_id+model one-off). Empty = zero
+// override, plain assign. Unknown tier or runtime → typed error the caller
+// surfaces as a structured block (no silent fallback).
+func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID pgtype.UUID, tierID, runtimeID, model string) (service.TierTriggerOverride, error) {
+	if tierID == "" && runtimeID == "" && model == "" {
+		return service.TierTriggerOverride{}, nil
+	}
+	if tierID != "" {
+		tierUUID, err := util.ParseUUID(tierID)
+		if err != nil {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		if _, err := h.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: workspaceID}); err != nil {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		return service.TierTriggerOverride{TierID: tierUUID}, nil
+	}
+	runtimeUUID, err := util.ParseUUID(runtimeID)
+	if err != nil {
+		return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+	}
+	if _, err := h.Queries.GetAgentRuntime(ctx, runtimeUUID); err != nil {
+		return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+	}
+	return service.TierTriggerOverride{RuntimeID: runtimeUUID, Model: model}, nil
+}
+
 // dispatchIssueRun executes the enqueue side effect for a decision produced by
 // WillEnqueueRun. handoffNote is a legacy API input retained for installed
 // clients and travels only with a run that actually starts. The squad path
 // still flows through enqueueSquadLeaderTask so the leader access gate and
 // pending dedup stay in one place.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) {
+	h.dispatchIssueRunWithTier(ctx, issue, trigger, actorType, actorID, handoffNote, service.TierTriggerOverride{})
+}
+
+// dispatchIssueRunWithTier is dispatchIssueRun with an M-359 explicit pick
+// (tier picker or runtime+model override on the assign write).
+func (h *Handler) dispatchIssueRunWithTier(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string, override service.TierTriggerOverride) {
 	switch trigger.AssigneeType {
 	case "agent":
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-		_, _ = h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		_, _ = h.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID), override)
 	case "squad":
 		h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
 	}

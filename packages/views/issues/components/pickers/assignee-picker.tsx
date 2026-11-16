@@ -9,7 +9,7 @@ import { isAgentRuntimeBound } from "@multica/core/agents";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions } from "@multica/core/workspace/queries";
+import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions, modelTiersOptions } from "@multica/core/workspace/queries";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
@@ -59,6 +59,13 @@ interface AssigneePickerProps {
   open?: boolean;
   onOpenChange?: (v: boolean) => void;
   align?: "start" | "center" | "end";
+  /**
+   * M-359: when true, picking an agent advances to a tier step (Auto default
+   * + enabled tiers) instead of confirming immediately; the confirm sends
+   * `{assignee_type, assignee_id, tier_id?}` in one update. Member/squad and
+   * unassigned picks still confirm immediately.
+   */
+  tierPick?: boolean;
 }
 
 /**
@@ -104,6 +111,7 @@ function AssigneePickerImpl({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   align,
+  tierPick = false,
 }: AssigneePickerProps) {
   const { t } = useT("issues");
   const [internalOpen, setInternalOpen] = useState(false);
@@ -149,6 +157,7 @@ function AssigneePickerImpl({
         assigneeType={assigneeType}
         assigneeId={assigneeId}
         mixed={mixed}
+        tierPick={tierPick}
         onPick={(updates) => {
           onUpdate(updates);
           setOpen(false);
@@ -190,6 +199,7 @@ export function AssigneePickerPanel({
         filter={filter}
         assigneeType={assigneeType}
         assigneeId={assigneeId}
+        tierPick={false}
         onPick={(updates) => {
           onUpdate(updates);
           onPicked();
@@ -253,6 +263,7 @@ function AssigneeOptions({
   assigneeType,
   assigneeId,
   mixed = false,
+  tierPick = false,
   onPick,
 }: {
   choices: ReturnType<typeof useAssigneeChoices>;
@@ -260,14 +271,32 @@ function AssigneeOptions({
   assigneeType: IssueAssigneeType | null;
   assigneeId: string | null;
   mixed?: boolean;
+  tierPick?: boolean;
   onPick: (updates: Partial<UpdateIssueRequest>) => void;
 }) {
+  const [tierAgent, setTierAgent] = useState<{ id: string; name: string } | null>(null);
   const { t } = useT("issues");
   const { userId, memberRole, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds } =
     choices;
 
   const isSelected = (type: string, id: string) =>
     assigneeType === type && assigneeId === id;
+
+  if (tierAgent) {
+    return (
+      <TierStep
+        agentName={tierAgent.name}
+        onBack={() => setTierAgent(null)}
+        onPick={(tierId) =>
+          onPick({
+            assignee_type: "agent",
+            assignee_id: tierAgent.id,
+            ...(tierId ? { tier_id: tierId } : {}),
+          })
+        }
+      />
+    );
+  }
 
   return (
     <>
@@ -333,6 +362,10 @@ function AssigneeOptions({
                 }
                 onClick={() => {
                   if (!allowed) return;
+                  if (tierPick) {
+                    setTierAgent({ id: a.id, name: a.name });
+                    return;
+                  }
                   onPick({
                     assignee_type: "agent",
                     assignee_id: a.id,
@@ -386,6 +419,48 @@ function AssigneeOptions({
         filteredAgents.length === 0 &&
         filteredSquads.length === 0 &&
         filter && <PickerEmpty />}
+    </>
+  );
+}
+
+/**
+ * TierStep is the M-359 second step of the assignee picker: after an agent
+ * is chosen, the sender optionally pins one tier for this run (Auto default
+ * = the idx-ranked resolver). Disabled tiers are hidden — picking one would
+ * only 409 at send.
+ */
+function TierStep({
+  agentName,
+  onBack,
+  onPick,
+}: {
+  agentName: string;
+  onBack: () => void;
+  onPick: (tierId: string | null) => void;
+}) {
+  const { t } = useT("issues");
+  const wsId = useWorkspaceId();
+  const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
+  const enabled = tiers.filter((tier) => tier.enabled);
+
+  return (
+    <>
+      <PickerItem selected={false} onClick={onBack}>
+        <span className="text-muted-foreground">← {agentName}</span>
+      </PickerItem>
+      <PickerSection label={t(($) => $.pickers.tier.tier_group)}>
+        <PickerItem selected={false} onClick={() => onPick(null)}>
+          <span className="truncate">{t(($) => $.pickers.tier.tier_auto)}</span>
+        </PickerItem>
+        {enabled.map((tier) => (
+          <PickerItem key={tier.id} selected={false} onClick={() => onPick(tier.id)}>
+            <span className="truncate">
+              #{tier.name}
+              {tier.model ? <span className="text-muted-foreground"> · {tier.model}</span> : null}
+            </span>
+          </PickerItem>
+        ))}
+      </PickerSection>
     </>
   );
 }

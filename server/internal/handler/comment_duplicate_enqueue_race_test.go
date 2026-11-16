@@ -144,7 +144,7 @@ func TestCommentEnqueueRaceQueuedWinnerFoldsLoser(t *testing.T) {
 			results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(loserCommentID), []commentAgentTrigger{trigger})
 
 			// Guards the service hunk: the lost race must coalesce, not block.
-			if res := results[agentID]; res.status != DispatchCoalesced {
+			if res := results[agentID+":"]; res.status != DispatchCoalesced {
 				t.Fatalf("queued-winner race: got status %q reason %q, want coalesced", res.status, res.reason)
 			}
 			if !commentCovered(t, issueID, agentID, loserCommentID, "queued") {
@@ -205,7 +205,7 @@ func TestCommentEnqueueRaceDispatchedWinnerDurablyCoversLoser(t *testing.T) {
 	results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(loserCommentID), []commentAgentTrigger{trigger})
 
 	// Truthful outcome: deferred (a follow-up will cover it), NOT coalesced.
-	if res := results[agentID]; res.status != DispatchDeferred {
+	if res := results[agentID+":"]; res.status != DispatchDeferred {
 		t.Fatalf("dispatched-winner race: got status %q reason %q, want deferred", res.status, res.reason)
 	}
 	// Durably planned on the winner, but NOT faked as delivered.
@@ -302,10 +302,10 @@ func TestCommentEnqueueRaceDifferentHeadNotCoalesced(t *testing.T) {
 	// snapshot cannot durably promise the head-A task's reconcile will still cover
 	// this comment (Elon round 7). The honest outcome is a non-success; the head-A
 	// reconcile still covers it best-effort below.
-	if res := results[agentID]; res.status == DispatchDeferred || res.status == DispatchCoalesced || res.status == DispatchQueued {
+	if res := results[agentID+":"]; res.status == DispatchDeferred || res.status == DispatchCoalesced || res.status == DispatchQueued {
 		t.Fatalf("different-head race: got success-shaped %q/%q, want a truthful non-success", res.status, res.reason)
 	}
-	if res := results[agentID]; res.status != DispatchBlocked || res.reason != ReasonInternalError {
+	if res := results[agentID+":"]; res.status != DispatchBlocked || res.reason != ReasonInternalError {
 		t.Fatalf("different-head race: got %q/%q, want blocked/internal_error", res.status, res.reason)
 	}
 	// The head-A task is untouched: the head-B comment was NOT folded in, and the
@@ -455,7 +455,7 @@ func TestCommentEnqueueRaceQueuedWinnerReattributesOriginator(t *testing.T) {
 
 	trigger := commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent}
 	results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(loserCommentID), []commentAgentTrigger{trigger})
-	if res := results[agentID]; res.status != DispatchCoalesced {
+	if res := results[agentID+":"]; res.status != DispatchCoalesced {
 		t.Fatalf("queued-winner reattribution race: got status %q reason %q, want coalesced", res.status, res.reason)
 	}
 
@@ -531,7 +531,7 @@ func TestCommentEnqueueRaceNewerDifferentHeadNotDeferred(t *testing.T) {
 	results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(loserCommentID), []commentAgentTrigger{trigger})
 
 	// Must NOT be a fabricated deferred — the newer head-A task cannot cover C.
-	res := results[agentID]
+	res := results[agentID+":"]
 	if res.status == DispatchDeferred || res.status == DispatchCoalesced || res.status == DispatchQueued {
 		t.Fatalf("newer different-head: got success-shaped %q/%q, want a truthful non-success (not deferred/coalesced/queued)", res.status, res.reason)
 	}
@@ -620,7 +620,7 @@ func TestCommentEnqueueRaceMixedCoveringAndNewerNotDeferred(t *testing.T) {
 	results := testHandler.enqueueCommentAgentTriggers(ctx, issue, util.MustParseUUID(loserCommentID), []commentAgentTrigger{trigger})
 
 	// Even though a covering (older) task exists, the newer one forbids deferral.
-	res := results[agentID]
+	res := results[agentID+":"]
 	if res.status == DispatchDeferred || res.status == DispatchCoalesced || res.status == DispatchQueued {
 		t.Fatalf("mixed covering+newer: got success-shaped %q/%q, want a truthful non-success", res.status, res.reason)
 	}

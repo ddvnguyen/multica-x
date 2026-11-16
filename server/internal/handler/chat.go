@@ -825,6 +825,11 @@ type SendChatMessageRequest struct {
 	SubmissionID  *string  `json:"submission_id"`
 	Content       string   `json:"content"`
 	AttachmentIDs []string `json:"attachment_ids"`
+	// M-359 explicit pick for this turn: tier_id (workspace tier) or a
+	// one-off runtime_id+model override. Omitted = normal resolver.
+	TierID    string `json:"tier_id,omitempty"`
+	RuntimeID string `json:"runtime_id,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 type SendChatMessageResponse = service.ChatSubmissionResponse
@@ -977,11 +982,16 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator and the run's originator —
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
+	override, oerr := h.resolveIssueRunTierOverride(r.Context(), session.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
+	if oerr != nil {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
+		return
+	}
 	var sent *service.DirectChatSendResult
 	if submissionID.Valid {
-		sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID)
+		sent, err = h.TaskService.SendDirectChatMessageWithSubmissionAndTier(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID, override)
 	} else {
-		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+		sent, err = h.TaskService.SendDirectChatMessageWithTier(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), override)
 	}
 	if err != nil {
 		switch {

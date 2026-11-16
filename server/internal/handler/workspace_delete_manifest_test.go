@@ -24,7 +24,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
 	"agent_invocation_target":            workspaceDelete,
-	"agent_tier":                           workspaceDelete,
+	"agent_tier":                         workspaceDelete,
 	"agent_runtime":                      workspaceDelete,
 	"agent_skill":                        workspaceDelete,
 	"agent_task_queue":                   workspaceDelete,
@@ -112,7 +112,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
-	"model_tier":                      workspaceDelete,
+	"model_tier":                         workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
 	"workspace_account":                  workspaceDelete,

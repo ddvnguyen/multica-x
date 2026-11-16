@@ -2856,6 +2856,12 @@ type QuickCreateIssueRequest struct {
 	ProjectID     string   `json:"project_id,omitempty"`
 	ParentIssueID string   `json:"parent_issue_id,omitempty"`
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
+	// M-359 explicit pick: tier_id (workspace tier) or a one-off
+	// runtime_id+model override for the quick-created run. Omitted =
+	// normal resolver.
+	TierID    string `json:"tier_id,omitempty"`
+	RuntimeID string `json:"runtime_id,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -3068,7 +3074,12 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		parentIssueUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs)
+	override, oerr := h.resolveIssueRunTierOverride(r.Context(), wsUUID, req.TierID, req.RuntimeID, req.Model)
+	if oerr != nil {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
+		return
+	}
+	task, err := h.TaskService.EnqueueQuickCreateTaskWithTier(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs, override)
 	if err != nil {
 		if writeIssueLimitReached(w, err) {
 			return
@@ -3797,6 +3808,17 @@ type UpdateIssueRequest struct {
 	// predate the handoff UI removal. It is consumed only when this write starts
 	// a run and is never stored on the issue itself.
 	HandoffNote string `json:"handoff_note,omitempty"`
+	// TierID is an M-359 explicit pick: the run this write starts stamps this
+	// workspace tier instead of the idx-ranked resolver. Unknown/disabled
+	// tier → 409 tier_unavailable; full/offline → queued parked. Omitted =
+	// plain assign, normal resolver. Consumed only when this write starts a
+	// run and never stored on the issue itself.
+	TierID string `json:"tier_id,omitempty"`
+	// RuntimeID + Model is an M-359 one-off override: the run this write
+	// starts stamps this runtime/model directly, bypassing tiers entirely.
+	// Omitted = no override.
+	RuntimeID string `json:"runtime_id,omitempty"`
+	Model     string `json:"model,omitempty"`
 	// StopPreviousAssigneeRuns, when a status change hands the issue off to a
 	// project workflow step's handler, cancels the active runs of the agent or
 	// squad it was taken from. Ignored when the write does not hand off.
@@ -4435,7 +4457,16 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
 	}
 	if willRun {
-		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote)
+		// M-359: explicit tier / runtime+model pick for the assign run.
+		// Unknown names fail the write (409, tier_unavailable) — the
+		// assignee change itself is already applied above; only the run
+		// is refused, never silently re-resolved.
+		override, oerr := h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
+		if oerr != nil {
+			h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
+			return
+		}
+		h.dispatchIssueRunWithTier(r.Context(), issue, trigger, actorType, actorID, handoffNote, override)
 	}
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
@@ -5172,7 +5203,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
 		}
 		if willRun {
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote)
+			override, oerr := h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.Updates.TierID, req.Updates.RuntimeID, req.Updates.Model)
+			if oerr != nil {
+				h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
+				return
+			}
+			h.dispatchIssueRunWithTier(r.Context(), issue, trigger, actorType, actorID, batchHandoffNote, override)
 		}
 
 		// No status change — not even → cancelled — cancels active tasks here,

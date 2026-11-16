@@ -673,6 +673,14 @@ type AgentTaskResponse struct {
 	// pure taskToResponse builds the labels + raw ids); initiator/originator names
 	// are hydrated from the global user table only on user-facing surfaces.
 	Attribution *TaskAttribution `json:"attribution,omitempty"`
+	// TierID is the workspace tier stamped at enqueue (empty = none: legacy
+	// single-runtime run). TierExplicit marks a sender's `@agent#tier` /
+	// picker pick vs the idx-ranked auto resolver. TierParked marks a queued
+	// row waiting on its tier's capacity (never a silent fallback). The tier
+	// NAME resolves client-side from the cached tiers list. (M-359)
+	TierID       string `json:"tier_id,omitempty"`
+	TierExplicit bool   `json:"tier_explicit,omitempty"`
+	TierParked   bool   `json:"tier_parked,omitempty"`
 	// Usage is this run's own token consumption, one entry per (provider, model)
 	// it used — the same grain `task_usage` stores and the same grain the client
 	// prices at. Hydrated on issue execution logs and explicit agent-history
@@ -1034,6 +1042,14 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		// Attribution labels + evidence + lineage + raw user ids (pure). Names are
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
 		Attribution: taskAttributionBase(t),
+		// M-359 run record: which tier stamped this run, whether the sender
+		// pinned it (explicit) or the resolver picked it (auto), and whether
+		// it is parked waiting on that tier's capacity. The tier NAME comes
+		// from the client's cached tiers list (same hook as the pickers) —
+		// no per-task join here.
+		TierID:       uuidToString(t.TierID),
+		TierExplicit: t.TierExplicit,
+		TierParked:   t.TierParked,
 	}
 }
 

@@ -47,7 +47,8 @@ import {
 import { cn } from "@multica/ui/lib/utils";
 import type { IssueStatus, IssueStatusCategory, ProjectStatus } from "@multica/core/types";
 import { PROJECT_STATUS_CONFIG } from "@multica/core/projects/config";
-import type { SuggestionOptions } from "@tiptap/suggestion";
+import { Extension } from "@tiptap/core";
+import Suggestion, { type SuggestionOptions } from "@tiptap/suggestion";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { PluginKey } from "@tiptap/pm/state";
 import {
@@ -865,4 +866,142 @@ export function createMentionSuggestion(
       onKeyDown: (ref, props) => ref?.onKeyDown(props) ?? false,
     }),
   };
+}
+
+export interface TierPickItem {
+  id: string;
+  name: string;
+  model?: string;
+  disabled: boolean;
+}
+
+/** Exported for tests: filters the cached workspace tiers by name. */
+export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem[] {
+  const wsId = getCurrentWsId();
+  if (!wsId) return [];
+  const q = query.trim().toLowerCase();
+  const tiers = (qc.getQueryData(workspaceKeys.tiers(wsId)) ?? []) as Array<{
+    id: string;
+    name: string;
+    model?: string;
+    enabled: boolean;
+  }>;
+  return tiers
+    .filter((t) => !q || t.name.toLowerCase().includes(q))
+    .slice(0, 20)
+    .map((t) => ({ id: t.id, name: t.name, model: t.model, disabled: !t.enabled }));
+}
+
+const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>(
+  function TierPickList({ items, command }, ref) {
+    const { t } = useT("editor");
+    const [selected, setSelected] = useState(0);
+    useEffect(() => setSelected(0), [items]);
+    useImperativeHandle(ref, () => ({
+      onKeyDown: ({ event }) => {
+        const dir = pickerNavigationDirection(event);
+        if (dir === "next") {
+          setSelected((s) => (s + 1) % Math.max(items.length, 1));
+          return true;
+        }
+        if (dir === "prev") {
+          setSelected((s) => (s - 1 + items.length) % Math.max(items.length, 1));
+          return true;
+        }
+        if (isPickerAcceptKey(event)) {
+          const item = items[selected];
+          if (item && !item.disabled) command(item);
+          return true;
+        }
+        return false;
+      },
+    }));
+    if (items.length === 0) return null;
+    return (
+      <div role="listbox" aria-label={t(($) => $.mention.tier_list_label)}>
+        {items.map((item, i) => (
+          <button
+            key={item.id}
+            type="button"
+            role="option"
+            aria-selected={i === selected}
+            disabled={item.disabled}
+            className={cn("flex w-full items-center gap-2 px-2 py-1.5 text-left", i === selected && "bg-accent")}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              if (!item.disabled) command(item);
+            }}
+            onMouseEnter={() => setSelected(i)}
+          >
+            <span className="font-medium">#{item.name}</span>
+            {item.model ? <span className="truncate text-muted-foreground">{item.model}</span> : null}
+            {item.disabled ? (
+              <span className="ml-auto text-muted-foreground">{t(($) => $.mention.tier_disabled)}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+    );
+  },
+);
+
+/**
+ * `#tier` picker (M-359): after an `@agent` mention pill, typing `#` lists
+ * the workspace's tiers. Selecting one rewrites the PRECEDING agent mention
+ * node's label to `name#tier`, which serializes to
+ * `[@name#tier](mention://agent/<uuid>)` — the server's explicit-pick syntax.
+ * The picker opens ONLY directly after an agent mention; a `#` anywhere else
+ * (headings, channels) keeps its normal meaning. Disabled tiers are shown
+ * but not selectable — picking one would only 409 at send.
+ */
+export function createTierPickSuggestion(
+  qc: QueryClient,
+): Omit<SuggestionOptions<TierPickItem>, "editor"> {
+  const pluginKey = new PluginKey("tierPickSuggestion");
+
+  const agentMentionAt = (doc: ProseMirrorNode, from: number): { pos: number; node: ProseMirrorNode } | null => {
+    let found: { pos: number; node: ProseMirrorNode } | null = null;
+    doc.nodesBetween(Math.max(0, from - 6), from, (node, pos) => {
+      if (node.type.name === "mention" && node.attrs.type === "agent") {
+        found = { pos, node };
+      }
+    });
+    return found;
+  };
+
+  return {
+    char: "#",
+    pluginKey,
+    allowSpaces: false,
+    items: ({ query }) => buildTierPickItems(qc, query),
+    shouldShow: ({ editor, range }) =>
+      isTriggerArmedAt(editor, range.from) && agentMentionAt(editor.state.doc, range.from) != null,
+    command: ({ editor, range, props }) => {
+      const found = agentMentionAt(editor.state.doc, range.from);
+      if (!found) return;
+      const currentLabel = String(found.node.attrs.label ?? "");
+      const base = currentLabel.includes("#") ? currentLabel.slice(0, currentLabel.indexOf("#")) : currentLabel;
+      const tr = editor.state.tr;
+      tr.setNodeMarkup(found.pos, undefined, { ...found.node.attrs, label: `${base}#${props.name}` });
+      tr.delete(range.from, range.to);
+      editor.view.dispatch(tr);
+      editor.chain().focus().run();
+    },
+    render: createSuggestionPopupRender<TierPickItem, TierPickItem, MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>({
+      pluginKey,
+      component: TierPickList,
+      getProps: (props) => ({ items: props.items, query: props.query, command: props.command }),
+      onKeyDown: (ref, props) => ref?.onKeyDown(props) ?? false,
+    }),
+  };
+}
+
+/** Standalone `#tier` picker extension (M-359). See createTierPickSuggestion. */
+export function createTierPickExtension(qc: QueryClient) {
+  return Extension.create({
+    name: "tierPick",
+    addProseMirrorPlugins() {
+      return [Suggestion({ ...createTierPickSuggestion(qc), editor: this.editor })];
+    },
+  });
 }
