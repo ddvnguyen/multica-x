@@ -2064,8 +2064,8 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	triggers, steered := h.steerCommentAgentTriggers(ctx, issue, comment, actorType, actorID, originatorUserID, triggers, steer)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
-	for agentID, result := range steered {
-		enqueued[agentID] = result
+	for key, result := range steered {
+		enqueued[key] = result
 	}
 	outcomes := commentTriggerOutcomes(targets, enqueued)
 	h.noteCommentInvocationDenied(ctx, issue, comment, outcomes)
@@ -2315,7 +2315,8 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 // out deliberately.
 // commentEnqueueResultKey is the agent+tier slot a trigger executes in
 // (M-359): the same key the resolver dedups on, so multi-tier mentions of
-// one agent fan out to their own runs and outcomes.
+// one agent fan out to their own runs and outcomes. A tier-less trigger keys
+// as "agentID:" (empty tier suffix).
 func commentEnqueueResultKey(trigger commentAgentTrigger) string {
 	return uuidToString(trigger.Agent.ID) + ":" + uuidToString(trigger.TierID)
 }

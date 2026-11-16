@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -33,14 +33,14 @@ type emptyRows struct{}
 
 func (e *emptyRows) Close()                                       {}
 func (e *emptyRows) Err() error                                   { return nil }
-func (e *emptyRows) CommandTag() pgconn.CommandTag                 { return pgconn.CommandTag{} }
+func (e *emptyRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (e *emptyRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (e *emptyRows) Next() bool                                   { return false }
 func (e *emptyRows) Scan(dest ...any) error                       { return nil }
 func (e *emptyRows) Values() ([]any, error)                       { return nil, nil }
 func (e *emptyRows) RawValues() [][]byte                          { return nil }
 func (e *emptyRows) Conn() *pgx.Conn                              { return nil }
-func (e *emptyRows) TypeMap() *pgtype.Map                            { return nil }
+func (e *emptyRows) TypeMap() *pgtype.Map                         { return nil }
 
 func TestAccessibleAgentIDsRunsOncePerRequest(t *testing.T) {
 	mdb := &memoAgentDB{}

@@ -229,15 +229,15 @@ type cardQuestion struct {
 }
 
 type cardResponse struct {
-	ID                string          `json:"id"`
-	IssueID           string          `json:"issue_id"`
-	TaskID            string          `json:"task_id"`
-	AgentID           string          `json:"agent_id"`
-	TriggerCommentID  *string         `json:"trigger_comment_id,omitempty"`
-	Status            string          `json:"status"`
-	Context   *string         `json:"context,omitempty"`
-	Questions json.RawMessage `json:"questions"`
-	Answers   json.RawMessage `json:"answers,omitempty"`
+	ID               string          `json:"id"`
+	IssueID          string          `json:"issue_id"`
+	TaskID           string          `json:"task_id"`
+	AgentID          string          `json:"agent_id"`
+	TriggerCommentID *string         `json:"trigger_comment_id,omitempty"`
+	Status           string          `json:"status"`
+	Context          *string         `json:"context,omitempty"`
+	Questions        json.RawMessage `json:"questions"`
+	Answers          json.RawMessage `json:"answers,omitempty"`
 }
 
 type askPlanStateResponse struct {

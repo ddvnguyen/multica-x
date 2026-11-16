@@ -265,7 +265,9 @@ func (h *Handler) steerCommentAgentTriggers(ctx context.Context, issue db.Issue,
 			kept = append(kept, trigger)
 			continue
 		}
-		steered[agentID] = commentEnqueueResult{status: DispatchSteered, reason: ReasonSteered}
+		// M-359: key steered outcomes by agent+tier slot, like the
+		// enqueue results they merge into.
+		steered[commentEnqueueResultKey(trigger)] = commentEnqueueResult{status: DispatchSteered, reason: ReasonSteered}
 		if h.DaemonTaskSupplement != nil && bound.RuntimeID.Valid {
 			h.DaemonTaskSupplement.NotifyTaskSupplementAvailable(uuidToString(bound.RuntimeID), uuidToString(bound.TaskID))
 		}
