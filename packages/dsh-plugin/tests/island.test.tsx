@@ -448,6 +448,9 @@ describe("mountIsland", () => {
     expect(requests.some((url) => url.includes("issues"))).toBe(true);
   });
 
+  // CI note: settle() polls real renders; under parallel-suite load on CI one
+  // pass can exceed vitest's 5s default (timed out 1/3 PR runs). 20s is
+  // wall-clock only, no behavior change.
   it("keeps an agent route when its in-panel settings entry updates the view query", async () => {
     stubBackend({ agents: [AGENT] });
     const host = hostElement();
@@ -490,7 +493,7 @@ describe("mountIsland", () => {
       const active = state.tabs.find((tab) => tab.id === state.activeId);
       expect(active?.url).toBe(`/demo/agents/${AGENT.id}?view=general`);
     });
-  });
+  }, 20000);
 
   // M-330: a list-and-detail page renders its resize edge only inside a
   // `SidebarProvider`, and the island renders pages without the dashboard
