@@ -275,6 +275,10 @@ report() { # $1 = green|red
   applied="$( [ -s "$LANE_ROOT/data/autodeploy-migrations.applied" ] && paste -sd', ' "$LANE_ROOT/data/autodeploy-migrations.applied" || true )"
   [ -n "$applied" ] || applied="none"
   plugin_note="$(cat "$LANE_ROOT/data/autodeploy-plugin.note" 2>/dev/null || printf 'unchanged')"
+  daemon_note="running $(printf '%s' "$(daemon_health_json)" | jq -r '.cli_commit // "unknown"' 2>/dev/null || printf 'unknown')"
+  if [ -f "$(daemon_refresh_pending_file)" ]; then
+    daemon_note="refresh pending for $(cat "$(daemon_refresh_pending_file)" 2>/dev/null || printf 'unknown') (deferred, no active-task interruption)"
+  fi
 
   if [ "$kind" = green ]; then
     {
@@ -284,6 +288,7 @@ report() { # $1 = green|red
       printf -- '- migrations applied: %s\n' "$applied"
       printf -- '- health: `/multica/health` commit `%s`, `/multica/healthz` ok, `/moct/status` ok\n' "${LANE_COMMIT:-$SHA}"
       printf -- '- plugin: %s\n' "$plugin_note"
+      printf -- '- daemon: %s\n' "$daemon_note"
       printf -- '- DB backup: `%s` (never auto-restored)\n' "${DUMP:-none taken}"
       printf -- '- disk: `/mnt/workspace` %sG free before, %sG after\n' "$DF_BEFORE" "$(free_gb)"
       printf -- '- deploy took %ss\n' "$dur"
@@ -392,7 +397,17 @@ if [ "$DRY_RUN" = 1 ] && [ "$(release_sha)" = "$SHA" ]; then
 fi
 
 if [ "$(release_sha)" = "$SHA" ]; then
-  log "lane z already runs $SHA; nothing to do"
+  log "lane z already runs $SHA; backend is current"
+  # M-301: a previous deploy may have deferred the daemon refresh because a
+  # task was running. Complete it now (no interruption) so the daemon advances
+  # to the deployed release without a manual restart.
+  if daemon_runs_release "$(daemon_health_json)" "$SHA" && [ ! -f "$(daemon_refresh_pending_file)" ]; then
+    log "daemon z already running ${SHA:0:9}; nothing to do"
+    exit 0
+  fi
+  step "daemon-refresh"
+  refresh_lane_daemon_after_deploy "$SHA" || exit 1
+  log "daemon refresh complete for ${SHA:0:9}"
   exit 0
 fi
 
@@ -519,6 +534,19 @@ systemctl --user restart "$MULTICA_BE_Z_UNIT"
 
 step "health"
 assert_health "$SHA" || fail "health check failed after the switch"
+
+step "daemon-refresh"
+# M-301: ordinary autodeploy must refresh the z daemon so session logic becomes
+# active on the deployed build. Safe: never interrupts an active task (defers
+# and retries). A deferral is not a deploy failure — the lane backend is healthy
+# and the daemon's auto-reload/M-232 recovery handles the eventual restart.
+if ! refresh_lane_daemon_after_deploy "$SHA"; then
+  health="$(daemon_health_json)"
+  if daemon_is_idle "$health"; then
+    fail "daemon refresh did not reach ${SHA:0:9} after restart"
+  fi
+  log "daemon refresh deferred (busy); deploy remains healthy, will retry next tick"
+fi
 
 step "plugin"
 if [ "$PLUGIN_PRESENT" = 1 ]; then
