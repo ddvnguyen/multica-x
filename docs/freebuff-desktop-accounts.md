@@ -132,6 +132,34 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
    and one to `any`; check the model picker per account and one run per agent;
    with one account busy, a second task for it stays queued.
 
+## Team runtime: one slot, one-hour sessions (M-256)
+
+The freebuff runtime that runs this team's agents allows **one concurrent
+run**. `Freebuff Engineer` and `Freebuff Agent` are two agents on that single
+slot: their cards serialize. A card assigned to the second agent waits until
+the running card ends; assigning both at once does not make them parallel, it
+only makes the second one late.
+
+Every open of a freebuff-desktop engine is a **1-hour session**. Idle time
+inside the hour is lost credit, not banked, so the slot is fed with work that
+fits in it: small scoped cards (30-60 minutes, with explicit acceptance
+checks), chained one after another. A card too large for one session is cut
+smaller before it is queued rather than started and abandoned.
+
+Two mechanisms keep the slot fed, both from M-256: the hourly Leader checkup
+autopilot pulls the next small card for an idle Freebuff agent from the epic
+decision record, and the turn-end contract makes every run end by assigning or
+waking the next card on the slot. A run must not end leaving the slot idle with
+queued work behind it.
+
+Failure fallback: a Freebuff run that fails with `404` on `POST /api/threads`,
+an auth failure, or a quota failure is not retried on this runtime. The card is
+reassigned to another live agent, and the slot takes a different card.
+
+Related: the five-minute idle auto-close of a managed Desktop orchestrator is
+the M-254 behavior recorded under Known limits below; the `POST /api/threads`
+404 failure mode and its runner alignment work are M-295 and M-296.
+
 ## Known limits
 
 - Discovery runs account by account (sequentially), so `all` takes the sum of
