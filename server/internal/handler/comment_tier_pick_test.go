@@ -248,9 +248,11 @@ func TestCommentTierPick_PlainSeesAutoStampedRow(t *testing.T) {
 		t.Fatalf("after first comment: queued = %d, want 1", got)
 	}
 
+	// Second plain mention arrives as a reply in the SAME thread while the
+	// first run is still queued: same NULL slot → merge, one task.
 	second := fmt.Sprintf("[@Agent](mention://agent/%s) second instruction", agentID)
 	var posted2 CommentResponse
-	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": second}), "id", issueID)).Want(http.StatusCreated).JSON(&posted2)
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": second, "parent_id": posted1.ID}), "id", issueID)).Want(http.StatusCreated).JSON(&posted2)
 	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
 		t.Fatalf("after second plain comment: queued = %d, want 1 merged task", got)
 	}
