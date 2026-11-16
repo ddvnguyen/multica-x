@@ -2684,10 +2684,6 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 	slog.Warn(msg, append(attrs, "error", err)...)
 }
 
-// validateExplicitTierName checks an `@agent#tier` name at resolve time
-// (M-359): the tier must exist in the issue's workspace, be enabled, and —
-// for a use_tiers agent — be among the agent's selections. Anything else is
-// ErrExplicitTierUnavailable (tier_unavailable, blocked, no fallback).
 // resolveExplicitTierID validates an `@agent#tier` name once (M-359) and
 // returns the tier UUID: the tier must exist in the issue's workspace, be
 // enabled, and — for a use_tiers agent — be among the agent's selections.

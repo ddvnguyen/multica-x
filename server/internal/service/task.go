@@ -6223,6 +6223,8 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 		ThreadCommentID: task.TriggerCommentID,
 		IssueID:         task.IssueID,
 		AgentID:         task.AgentID,
+		// M-359: the retry inherits the parent's tier stamp (same slot).
+		TierID: task.TierID,
 	})
 }
 
@@ -7573,6 +7575,8 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			CommentID: target.comment.ID,
 			IssueID:   target.issue.ID,
 			AgentID:   target.agent.ID,
+			// M-359: register on the failed run's own tier slot.
+			TierID: target.failed.TierID,
 		}); err == nil {
 			slog.Info("delegated failure recovery registered behind dispatched coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),

@@ -683,7 +683,9 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id,
     trigger_evidence_kind, trigger_evidence_ref_id, retry_of_task_id,
     chat_input_task_id, fire_at,
-    channel_context_revision, handoff_note, workflow_step, id
+    channel_context_revision, handoff_note, workflow_step,
+    model_override, thinking_level_override, service_tier_override, tier_id,
+    tier_parked, tier_explicit, id
 )
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -704,6 +706,10 @@ SELECT
     p.trigger_evidence_kind, p.trigger_evidence_ref_id, p.id,
     p.chat_input_task_id, sqlc.narg(fire_at),
     p.channel_context_revision,
+    -- M-359: a retry inherits its parent's tier stamp (same slot, unparked —
+    -- the inherited runtime is stamped, so no capacity wait applies).
+    p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id,
+    FALSE, COALESCE(p.tier_explicit, FALSE),
     -- Carried for a wakeup's prompt and a workflow handoff's brief (MUL-7420);
     -- rows from before workflow_step existed may hold a retired assignment note.
     CASE WHEN p.context->>'wakeup_id' IS NOT NULL OR p.workflow_step IS NOT NULL THEN p.handoff_note END,
@@ -714,7 +720,7 @@ SELECT
 FROM agent_task_queue p
 WHERE p.id = $1
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
-ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
+ON CONFLICT (issue_id, agent_id, (COALESCE(tier_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
 RETURNING *;
