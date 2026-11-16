@@ -420,7 +420,10 @@ For a `dsh`-backed run, the daemon starts a per-session clock when the run
 ends and, at TTL − margin — while the provider's prompt cache is still warm —
 builds a summary of the conversation with dsh's own compaction and stores it
 beside the session (`summary.json` in the session store, carrying `summary`,
-`tokens`, `made_at`, and `parent_session`). A resumed session disarms its
+`tokens`, `made_at`, and `parent_session`). The model that armed the clock is
+recorded beside it (`clock.json`), so the next run judges that cache with the
+model that left it — `MULTICA_DSH_PROMPT_CACHE` is per model, and a model
+change between runs must not re-price a cache it never wrote. A resumed session disarms its
 clock. Whether the summary is built is decided from the run's usage facts
 (`cache_read_tokens`/`cache_write_tokens`): the conversation above the init
 prefix — the run's last model request's prompt size minus its first request's,
