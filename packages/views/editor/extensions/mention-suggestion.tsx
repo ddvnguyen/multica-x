@@ -875,7 +875,8 @@ export interface TierPickItem {
   disabled: boolean;
 }
 
-function buildTierPickItems(qc: QueryClient, query: string): TierPickItem[] {
+/** Exported for tests: filters the cached workspace tiers by name. */
+export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
   const q = query.trim().toLowerCase();

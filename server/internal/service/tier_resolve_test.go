@@ -22,6 +22,14 @@ import (
 // plus a use_tiers agent selecting both. Returns the ids the resolver tests
 // need. Claim-fence tests use the same shape through the handler package.
 func tierTestSetup(t *testing.T, slotsA int32) (q *db.Queries, agent db.Agent, rtA, rtB, tierA, tierB string) {
+	qq, agent, rtA, rtB, tierA, tierB, _ := tierTestSetupWithWorkspace(t, slotsA, "")
+	return qq, agent, rtA, rtB, tierA, tierB
+}
+
+// tierTestSetupWithWorkspace is tierTestSetup that also reports the workspace
+// id, so enqueue tests can seed their issue in the same workspace. Empty
+// wantWs skips the check; otherwise the ids must match.
+func tierTestSetupWithWorkspace(t *testing.T, slotsA int32, wantWs string) (q *db.Queries, agent db.Agent, rtA, rtB, tierA, tierB, wsID string) {
 	t.Helper()
 	ctx := context.Background()
 	pool := sharedTestPool(t)
@@ -75,7 +83,10 @@ func tierTestSetup(t *testing.T, slotsA int32) (q *db.Queries, agent db.Agent, r
 	_ = ag
 	svc := newTierTestService(pool, qq)
 	_ = svc
-	return qq, updated, rtA, rtB, tierA, tierB
+	if wantWs != "" && fx.WorkspaceID != wantWs {
+		t.Fatalf("workspace = %s, want %s", fx.WorkspaceID, wantWs)
+	}
+	return qq, updated, rtA, rtB, tierA, tierB, fx.WorkspaceID
 }
 
 func newTierTestService(pool *pgxpool.Pool, qq *db.Queries) *TaskService {
@@ -478,4 +489,172 @@ func newTierTestIssue(t *testing.T, pool *pgxpool.Pool, agent db.Agent) string {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(id))
 	})
 	return id
+}
+
+// TestResolveExplicitTier_PinsNamedTier pins the M-359 explicit pick: naming
+// tier-b stamps tier-b even though tier-a (idx 0) has free capacity — no
+// auto ranking applies.
+func TestResolveExplicitTier_PinsNamedTier(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, rtB, _, tierB := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+	wsID := agent.WorkspaceID
+	res, err := svc.resolveExplicitTier(ctx, agent, wsID, "tier-b")
+	if err != nil {
+		t.Fatalf("resolve explicit: %v", err)
+	}
+	if got := util.UUIDToString(res.tierID); got != tierB {
+		t.Errorf("tier = %s, want %s", got, tierB)
+	}
+	if got := util.UUIDToString(res.runtimeID); got != rtB {
+		t.Errorf("runtime = %s, want tier-B runtime %s", got, rtB)
+	}
+	if !res.hasCapacity {
+		t.Errorf("explicit resolve must report capacity")
+	}
+	_ = pool
+}
+
+// TestResolveExplicitTier_CaseInsensitive pins suffix normalization: the
+// label suffix `TIER-B` resolves like `tier-b`.
+func TestResolveExplicitTier_CaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, _, _, tierB := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+	res, err := svc.resolveExplicitTier(ctx, agent, agent.WorkspaceID, "TIER-B")
+	if err != nil {
+		t.Fatalf("resolve explicit uppercase: %v", err)
+	}
+	if got := util.UUIDToString(res.tierID); got != tierB {
+		t.Errorf("tier = %s, want %s", got, tierB)
+	}
+	_ = pool
+}
+
+// TestResolveExplicitTier_UnknownDisabledUnselected pins the M-359 block:
+// an unknown name, a disabled tier, and a tier not in the agent's selection
+// all return errUnknownTier (tier_unavailable, no fallback, no queue).
+func TestResolveExplicitTier_UnknownDisabledUnselected(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, _, _, _ := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+	wsID := agent.WorkspaceID
+
+	if _, err := svc.resolveExplicitTier(ctx, agent, wsID, "no-such-tier"); err != errUnknownTier {
+		t.Errorf("unknown tier err = %v, want errUnknownTier", err)
+	}
+
+	selections, err := qq.ListAgentTiers(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("list tiers: %v", err)
+	}
+	disabled := selections[0]
+	if _, err := qq.UpdateModelTier(ctx, db.UpdateModelTierParams{
+		ID: disabled.ID, Name: disabled.Name, Idx: disabled.Idx, RuntimeID: disabled.RuntimeID,
+		Provider: disabled.Provider, Model: disabled.Model,
+		ThinkingLevel: disabled.ThinkingLevel, ServiceTier: disabled.ServiceTier,
+		Cost: disabled.Cost, Quality: disabled.Quality,
+		ProviderSlots: disabled.ProviderSlots, Enabled: false,
+	}); err != nil {
+		t.Fatalf("disable tier: %v", err)
+	}
+	if _, err := svc.resolveExplicitTier(ctx, agent, wsID, disabled.Name); err != errUnknownTier {
+		t.Errorf("disabled tier err = %v, want errUnknownTier", err)
+	}
+
+	// Tier outside the selection: create a third tier the agent never selected.
+	rtExtra := selections[0].RuntimeID
+	extra, err := qq.CreateModelTier(ctx, db.CreateModelTierParams{
+		WorkspaceID: wsID, Name: "tier-extra", Idx: 2, RuntimeID: rtExtra,
+		Provider: "codebuddy", Model: "model-x", ProviderSlots: 99, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create extra tier: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_tier WHERE id = $1`, extra.ID)
+	})
+	if _, err := svc.resolveExplicitTier(ctx, agent, wsID, "tier-extra"); err != errUnknownTier {
+		t.Errorf("unselected tier err = %v, want errUnknownTier", err)
+	}
+}
+
+// TestResolveExplicitTier_FullTierParks pins the M-359 no-fallback rule: a
+// named tier with no free slot returns errNoExplicitTierCapacity (the caller
+// parks the row on THAT tier — never the next one).
+func TestResolveExplicitTier_FullTierParks(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, _, _, _ := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+	wsID := agent.WorkspaceID
+
+	selections, err := qq.ListAgentTiers(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("list tiers: %v", err)
+	}
+	var tierA db.ModelTier
+	for _, sel := range selections {
+		if sel.Idx == 0 {
+			tierA = sel
+		}
+	}
+	if _, err := qq.UpdateModelTier(ctx, db.UpdateModelTierParams{
+		ID: tierA.ID, Name: tierA.Name, Idx: tierA.Idx, RuntimeID: tierA.RuntimeID,
+		Provider: tierA.Provider, Model: tierA.Model,
+		ThinkingLevel: tierA.ThinkingLevel, ServiceTier: tierA.ServiceTier,
+		Cost: tierA.Cost, Quality: tierA.Quality,
+		ProviderSlots: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("set slots: %v", err)
+	}
+	var blockerID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, agent.ID, tierA.RuntimeID).Scan(&blockerID); err != nil {
+		t.Fatalf("insert blocker: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = qq.CancelAgentTask(context.Background(), blockerID)
+	})
+	if _, err := svc.resolveExplicitTier(ctx, agent, wsID, tierA.Name); err != errNoExplicitTierCapacity {
+		t.Errorf("full tier err = %v, want errNoExplicitTierCapacity", err)
+	}
+}
+
+// TestEnqueueMentionWithTier_ExplicitStampsAndMarks pins the stamp: an
+// explicit pick writes tier_id + tier_explicit on the queued row.
+func TestEnqueueMentionWithTier_ExplicitStampsAndMarks(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, rtB, _, tierB, wsID := tierTestSetupWithWorkspace(t, 99, "")
+	svc := newTierTestService(pool, qq)
+	fx := testutil.New(pool, wsID, "")
+	issueID := util.MustParseUUID(fx.Issue(t, "explicit tier stamp"))
+	var issue db.Issue
+	if err := pool.QueryRow(ctx, `SELECT id, workspace_id, assignee_id, assignee_type, priority FROM issue WHERE id = $1`, issueID).Scan(&issue.ID, &issue.WorkspaceID, &issue.AssigneeID, &issue.AssigneeType, &issue.Priority); err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	tierUUID := util.MustParseUUID(tierB)
+	task, err := svc.EnqueueTaskForMentionWithTier(ctx, issue, agent.ID, pgtype.UUID{}, OriginNamed, TierTriggerOverride{TierID: tierUUID})
+	if err != nil {
+		t.Fatalf("enqueue with tier: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = qq.CancelAgentTask(context.Background(), task.ID)
+	})
+	if got := util.UUIDToString(task.TierID); got != tierB {
+		t.Errorf("task tier = %s, want %s", got, tierB)
+	}
+	if got := util.UUIDToString(task.RuntimeID); got != rtB {
+		t.Errorf("task runtime = %s, want tier-B runtime %s", got, rtB)
+	}
+	if !task.TierExplicit {
+		t.Errorf("task tier_explicit = false, want true")
+	}
+	if task.TierParked {
+		t.Errorf("task tier_parked = true, want false (capacity free)")
+	}
+	_ = pool
 }
