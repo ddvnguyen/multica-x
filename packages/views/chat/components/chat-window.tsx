@@ -466,9 +466,10 @@ export function ChatWindow() {
  * queued parked). Sessions are agent-bound, so no per-session key needed.
  */
 export function TierDropdown({ agentId }: { agentId: string | null }) {
+  const { t } = useT("chat");
   const wsId = useWorkspaceId();
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
-  const tierId = useChatStore((s) => (agentId ? (s.selectedTierIds[agentId] ?? null) : null));
+  const tierId = useChatStore((s) => (agentId ? ((s.selectedTierIds ?? {})[agentId] ?? null) : null));
   const setSelectedTierId = useChatStore((s) => s.setSelectedTierId);
   const [open, setOpen] = useState(false);
   const enabled = tiers.filter((tier) => tier.enabled);
@@ -487,7 +488,7 @@ export function TierDropdown({ agentId }: { agentId: string | null }) {
         <span className="text-caption text-muted-foreground max-w-24 truncate">{label}</span>
       }
     >
-      <PickerSection label="Tier for next turn">
+      <PickerSection label={t(($) => $.window.tier.tier_for_next_turn)}>
         <PickerItem
           selected={tierId === null}
           onClick={() => {
@@ -495,7 +496,7 @@ export function TierDropdown({ agentId }: { agentId: string | null }) {
             setOpen(false);
           }}
         >
-          <span className="truncate">Auto (resolver picks)</span>
+          <span className="truncate">{t(($) => $.window.tier.tier_auto)}</span>
         </PickerItem>
         {enabled.map((tier) => (
           <PickerItem

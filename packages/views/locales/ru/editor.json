@@ -118,7 +118,9 @@
     "group_current": "Текущая страница",
     "group_recent": "Недавно просмотренные",
     "group_search": "Результаты поиска",
-    "group_cancelled": "Отменено"
+    "group_cancelled": "Отменено",
+    "tier_disabled": "Отключён",
+    "tier_list_label": "Тиры"
   },
   "slash_command": {
     "no_skills_configured": "Навыки не настроены",

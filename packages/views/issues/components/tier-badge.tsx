@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Layers } from "lucide-react";
+import { Layers } from "@multica/ui/icons";
 import { modelTiersOptions } from "@multica/core/workspace/queries";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { Badge } from "@multica/ui/components/ui/badge";

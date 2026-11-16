@@ -106,7 +106,9 @@
     "group_current": "當前頁面",
     "group_recent": "最近瀏覽",
     "group_search": "搜尋結果",
-    "group_cancelled": "已取消"
+    "group_cancelled": "已取消",
+    "tier_disabled": "已停用",
+    "tier_list_label": "層級"
   },
   "slash_command": {
     "no_skills_configured": "暫無配置的技能",

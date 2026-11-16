@@ -1129,6 +1129,7 @@ function TierPickRow({
   tierId: string | null;
   onPick: (tierId: string | null) => void;
 }) {
+  const { t } = useT("modals");
   const wsId = useWorkspaceId();
   const [open, setOpen] = useState(false);
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
@@ -1146,12 +1147,14 @@ function TierPickRow({
         width="w-64"
         trigger={
           <span className="truncate">
-            {tierId ? `#${enabled.find((tier) => tier.id === tierId)?.name ?? tierId.slice(0, 8)}` : "Auto tier"}
+            {tierId
+              ? `#${enabled.find((tier) => tier.id === tierId)?.name ?? tierId.slice(0, 8)}`
+              : t(($) => $.create_issue.tier.tier_auto_trigger)}
           </span>
         }
       >
         <PickerItem selected={tierId === null} onClick={() => pick(null)}>
-          <span className="truncate">Auto (resolver picks)</span>
+          <span className="truncate">{t(($) => $.create_issue.tier.tier_auto)}</span>
         </PickerItem>
         {enabled.map((tier) => (
           <PickerItem key={tier.id} selected={tierId === tier.id} onClick={() => pick(tier.id)}>

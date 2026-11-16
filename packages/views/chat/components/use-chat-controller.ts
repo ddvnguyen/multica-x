@@ -442,7 +442,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
       createSession,
       sessions,
       sessionsLoaded,
-      selectedTierIds,
       qc,
     ],
   );
@@ -664,6 +663,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       isAgentRuntimeBound,
       ensureSession,
       cancelChatTask,
+      selectedTierIds,
       qc,
       setActiveSession,
       t,

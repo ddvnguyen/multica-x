@@ -249,6 +249,10 @@
       "error_unknown": "No se ha podido enviar. Inténtalo de nuevo.",
       "sub_issue_of": "Subtarea de {{identifier}}",
       "qoder_attachments_unsupported": "Qoder Cloud Agents no puede leer adjuntos. Quítalos o elige otro agente."
+    },
+    "tier": {
+      "tier_auto_trigger": "Tier auto",
+      "tier_auto": "Auto (el resolvedor elige)"
     }
   },
   "mark_duplicate": {

@@ -106,7 +106,9 @@
     "group_current": "当前页面",
     "group_recent": "最近浏览",
     "group_search": "搜索结果",
-    "group_cancelled": "已取消"
+    "group_cancelled": "已取消",
+    "tier_disabled": "已停用",
+    "tier_list_label": "层级"
   },
   "slash_command": {
     "no_skills_configured": "暂无配置的技能",

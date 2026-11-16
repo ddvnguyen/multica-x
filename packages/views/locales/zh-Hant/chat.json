@@ -157,7 +157,11 @@
     "history_group": "歷史對話",
     "agent_filter_placeholder": "搜尋 AI 代理...",
     "agent_needs_runtime": "需繫結執行時",
-    "agent_needs_runtime_hint": "請先繫結執行時，再與該 AI 代理開始對話"
+    "agent_needs_runtime_hint": "請先繫結執行時，再與該 AI 代理開始對話",
+    "tier": {
+      "tier_for_next_turn": "下一回合的層級",
+      "tier_auto": "自動（由解析器選擇）"
+    }
   },
   "empty_state": {
     "first_time_title": "和你的 AI 代理對話",

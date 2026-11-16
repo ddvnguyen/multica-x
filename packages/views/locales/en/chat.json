@@ -162,7 +162,11 @@
     "history_group": "Chat history",
     "agent_filter_placeholder": "Search agents...",
     "agent_needs_runtime": "Needs runtime",
-    "agent_needs_runtime_hint": "Bind a runtime before starting a chat with this agent"
+    "agent_needs_runtime_hint": "Bind a runtime before starting a chat with this agent",
+    "tier": {
+      "tier_for_next_turn": "Tier for next turn",
+      "tier_auto": "Auto (resolver picks)"
+    }
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",

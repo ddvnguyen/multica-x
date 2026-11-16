@@ -630,7 +630,9 @@ func TestEnqueueMentionWithTier_ExplicitStampsAndMarks(t *testing.T) {
 	pool := sharedTestPool(t)
 	qq, agent, _, rtB, _, tierB, wsID := tierTestSetupWithWorkspace(t, 99, "")
 	svc := newTierTestService(pool, qq)
-	fx := testutil.New(pool, wsID, "")
+	userFx := testutil.New(pool, "", "")
+	userID := userFx.User(t, "explicit tier user", fmt.Sprintf("explicit-tier-%d@multica.test", time.Now().UnixNano()))
+	fx := testutil.New(pool, wsID, userID)
 	issueID := util.MustParseUUID(fx.Issue(t, "explicit tier stamp"))
 	var issue db.Issue
 	if err := pool.QueryRow(ctx, `SELECT id, workspace_id, assignee_id, assignee_type, priority FROM issue WHERE id = $1`, issueID).Scan(&issue.ID, &issue.WorkspaceID, &issue.AssigneeID, &issue.AssigneeType, &issue.Priority); err != nil {

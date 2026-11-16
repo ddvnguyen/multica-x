@@ -172,7 +172,11 @@
     "history_group": "История чата",
     "agent_filter_placeholder": "Поиск агентов...",
     "agent_needs_runtime": "Нужна среда выполнения",
-    "agent_needs_runtime_hint": "Привяжите среду выполнения перед началом чата с этим агентом"
+    "agent_needs_runtime_hint": "Привяжите среду выполнения перед началом чата с этим агентом",
+    "tier": {
+      "tier_for_next_turn": "Тир для следующего хода",
+      "tier_auto": "Авто (выбирает резолвер)"
+    }
   },
   "empty_state": {
     "first_time_title": "Общайтесь со своими агентами",

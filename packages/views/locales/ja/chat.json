@@ -157,7 +157,11 @@
     "history_group": "チャット履歴",
     "agent_filter_placeholder": "エージェントを検索...",
     "agent_needs_runtime": "ランタイム未設定",
-    "agent_needs_runtime_hint": "このエージェントとチャットする前にランタイムを設定してください"
+    "agent_needs_runtime_hint": "このエージェントとチャットする前にランタイムを設定してください",
+    "tier": {
+      "tier_for_next_turn": "次のターンのtier",
+      "tier_auto": "自動（リゾルバーが選択）"
+    }
   },
   "empty_state": {
     "first_time_title": "エージェントとチャット",

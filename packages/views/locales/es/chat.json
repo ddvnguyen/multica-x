@@ -162,7 +162,11 @@
     "history_group": "Historial de chats",
     "agent_filter_placeholder": "Buscar agentes...",
     "agent_needs_runtime": "Necesita runtime",
-    "agent_needs_runtime_hint": "Vincula un runtime antes de empezar un chat con este agente"
+    "agent_needs_runtime_hint": "Vincula un runtime antes de empezar un chat con este agente",
+    "tier": {
+      "tier_for_next_turn": "Tier para el próximo turno",
+      "tier_auto": "Auto (el resolvedor elige)"
+    }
   },
   "empty_state": {
     "first_time_title": "Chatea con tus agentes",

@@ -110,7 +110,9 @@
     "group_current": "Current page",
     "group_recent": "Recently viewed",
     "group_search": "Search results",
-    "group_cancelled": "Cancelled"
+    "group_cancelled": "Cancelled",
+    "tier_disabled": "Disabled",
+    "tier_list_label": "Tiers"
   },
   "slash_command": {
     "no_skills_configured": "No skills configured",

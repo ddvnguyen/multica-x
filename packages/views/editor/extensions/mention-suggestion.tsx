@@ -894,6 +894,7 @@ export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem
 
 const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>(
   function TierPickList({ items, command }, ref) {
+    const { t } = useT("editor");
     const [selected, setSelected] = useState(0);
     useEffect(() => setSelected(0), [items]);
     useImperativeHandle(ref, () => ({
@@ -917,7 +918,7 @@ const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command
     }));
     if (items.length === 0) return null;
     return (
-      <div role="listbox" aria-label="Tiers">
+      <div role="listbox" aria-label={t(($) => $.mention.tier_list_label)}>
         {items.map((item, i) => (
           <button
             key={item.id}
@@ -935,7 +936,7 @@ const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command
             <span className="font-medium">#{item.name}</span>
             {item.model ? <span className="truncate text-muted-foreground">{item.model}</span> : null}
             {item.disabled ? (
-              <span className="ml-auto text-muted-foreground">Disabled</span>
+              <span className="ml-auto text-muted-foreground">{t(($) => $.mention.tier_disabled)}</span>
             ) : null}
           </button>
         ))}
