@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -158,6 +160,24 @@ func listTiersAs(t *testing.T, userID string) []ModelTierResponse {
 		newRequestAs(userID, http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/tiers", nil), "id", testWorkspaceID)).
 		Want(http.StatusOK).JSON(&out)
 	return out.Tiers
+}
+
+// TestModelTierResponseCooldown pins the wire shape the Settings → Tiers row
+// reads (M-352): an armed cooldown serializes as RFC3339, an unarmed tier omits
+// the field entirely so the row renders nothing stale.
+func TestModelTierResponseCooldown(t *testing.T) {
+	armed := modelTierToResponse(db.ModelTier{
+		CooldownUntil: pgtype.Timestamptz{Time: time.Unix(1763000000, 0).UTC(), Valid: true},
+	})
+	if armed.CooldownUntil == "" {
+		t.Fatal("armed cooldown is missing from the response")
+	}
+	if _, err := time.Parse(time.RFC3339, armed.CooldownUntil); err != nil {
+		t.Errorf("cooldown_until = %q, want RFC3339: %v", armed.CooldownUntil, err)
+	}
+	if plain := modelTierToResponse(db.ModelTier{}); plain.CooldownUntil != "" {
+		t.Errorf("unarmed tier carries cooldown_until = %q, want omitted", plain.CooldownUntil)
+	}
 }
 
 func TestModelTierCRUDAndAuthz(t *testing.T) {

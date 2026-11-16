@@ -64,6 +64,21 @@ import {
  * (`POST /runtimes/{id}/models`); this tab stores the chosen values only.
  */
 
+/**
+ * `HH:MM` in the viewer's own clock for a tier's cooldown deadline (M-352), or
+ * null when the tier is not cooling. The server sends an absolute timestamp;
+ * an already-expired one renders nothing, since the resolver has the tier back
+ * in idx order at its very next pass and a stale label would be misleading.
+ */
+function cooldownClock(until?: string): string | null {
+  if (!until) return null;
+  const at = new Date(until);
+  if (Number.isNaN(at.getTime()) || at.getTime() <= Date.now()) return null;
+  const hours = String(at.getHours()).padStart(2, "0");
+  const minutes = String(at.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 function TierRow({
   tier,
   position,
@@ -84,6 +99,7 @@ function TierRow({
   movePending: boolean;
 }) {
   const { t } = useT("settings");
+  const coolingUntil = cooldownClock(tier.cooldown_until);
   return (
     <li
       data-testid={`tier-row-${tier.id}`}
@@ -94,6 +110,15 @@ function TierRow({
           <span className="truncate font-medium">{tier.name}</span>
           {!tier.enabled && (
             <Badge variant="secondary">{t(($) => $.tiers.disabled_badge)}</Badge>
+          )}
+          {coolingUntil && (
+            <Badge
+              variant="outline"
+              data-testid={`tier-cooldown-${tier.id}`}
+              title={t(($) => $.tiers.cooling_down_hint)}
+            >
+              {t(($) => $.tiers.cooling_down_until, { time: coolingUntil })}
+            </Badge>
           )}
         </div>
         <span className="truncate text-caption text-muted-foreground">

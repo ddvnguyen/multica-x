@@ -80,6 +80,12 @@ DELETE FROM agent_tier WHERE agent_id = $1;
 -- name: DeleteTierAgentSelections :exec
 DELETE FROM agent_tier WHERE tier_id = $1;
 
+-- M-352: arms a tier's provider cooldown (NULL clears it). Runtime state, not
+-- an edit of the tier, so updated_at is deliberately left alone: the Settings
+-- row keeps showing when an admin last changed the tier itself.
+-- name: SetModelTierCooldown :exec
+UPDATE model_tier SET cooldown_until = $2 WHERE id = $1;
+
 -- M-351: claim-time provider_slots enforcement. A tier-stamped task claimed
 -- inside the runtime capacity lock asks whether its tier is over capacity:
 -- more active rows on the tier's runtime than provider_slots. TRUE means the

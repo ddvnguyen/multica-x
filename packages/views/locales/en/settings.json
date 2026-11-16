@@ -1938,6 +1938,8 @@
     "saving": "Saving…",
     "cancel": "Cancel",
     "disabled_badge": "Disabled",
+    "cooling_down_until": "Cooling down until {{time}}",
+    "cooling_down_hint": "The provider refused work (rate limit or quota). The resolver skips this tier until the cooldown ends.",
     "no_runtime_suffix": "no runtime",
     "move_up": "Move {{name}} up",
     "move_down": "Move {{name}} down",

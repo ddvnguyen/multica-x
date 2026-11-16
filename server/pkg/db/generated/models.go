@@ -1519,6 +1519,7 @@ type ModelTier struct {
 	Enabled       bool               `json:"enabled"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
 }
 
 type NativeQuestionAnswer struct {

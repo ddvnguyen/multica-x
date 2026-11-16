@@ -14,6 +14,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // tierTestSetup builds a workspace with two online runtimes and two tiers
@@ -164,6 +165,137 @@ func TestResolveAgentTier_BothFullStaysQueued(t *testing.T) {
 	}
 	if _, err := svc.resolveAgentTier(ctx, agent); err != errNoTierCapacity {
 		t.Fatalf("resolve err = %v, want errNoTierCapacity", err)
+	}
+}
+
+// TestTierCoolingDown is DB-free: a future deadline cools, a past one and a
+// NULL one do not (the tier re-enters idx order by itself on expiry).
+func TestTierCoolingDown(t *testing.T) {
+	now := time.Now()
+	if !tierCoolingDown(pgtype.Timestamptz{Time: now.Add(time.Minute), Valid: true}, now) {
+		t.Errorf("future deadline must cool")
+	}
+	if tierCoolingDown(pgtype.Timestamptz{Time: now.Add(-time.Second), Valid: true}, now) {
+		t.Errorf("expired deadline must not cool")
+	}
+	if tierCoolingDown(pgtype.Timestamptz{}, now) {
+		t.Errorf("NULL deadline must not cool")
+	}
+}
+
+// TestResolveAgentTier_SkipsCoolingTier pins the M-352 gate in the resolver:
+// an idx-0 tier inside its cooldown is passed over for idx 1, and is picked
+// again the moment its deadline expires — no manual clear needed.
+func TestResolveAgentTier_SkipsCoolingTier(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, rtA, rtB, tierA, _ := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+
+	if err := qq.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{
+		ID:            util.MustParseUUID(tierA),
+		CooldownUntil: pgtype.Timestamptz{Time: time.Now().Add(DefaultTierCooldown), Valid: true},
+	}); err != nil {
+		t.Fatalf("arm cooldown: %v", err)
+	}
+	res, err := svc.resolveAgentTier(ctx, agent)
+	if err != nil {
+		t.Fatalf("resolve with cooling tier: %v", err)
+	}
+	if got := util.UUIDToString(res.runtimeID); got != rtB {
+		t.Errorf("runtime = %s, want tier-B runtime %s (idx 0 is cooling)", got, rtB)
+	}
+
+	// Expire the deadline: the same tier leads again.
+	if err := qq.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{
+		ID:            util.MustParseUUID(tierA),
+		CooldownUntil: pgtype.Timestamptz{Time: time.Now().Add(-time.Second), Valid: true},
+	}); err != nil {
+		t.Fatalf("expire cooldown: %v", err)
+	}
+	res, err = svc.resolveAgentTier(ctx, agent)
+	if err != nil {
+		t.Fatalf("resolve after cooldown: %v", err)
+	}
+	if got := util.UUIDToString(res.runtimeID); got != rtA {
+		t.Errorf("runtime after expiry = %s, want tier-A runtime %s", got, rtA)
+	}
+}
+
+// TestFailTaskArmsTierCooldown pins the recording half of M-352: a tier-stamped
+// task that fails with a capacity/rate-limit or quota reason arms that tier's
+// cooldown for the default window, in the same transaction as the fail. A
+// tier-less task and an unrelated reason arm nothing.
+func TestFailTaskArmsTierCooldown(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, _, _, tierA, _ := tierTestSetup(t, 99)
+	svc := newTierTestService(pool, qq)
+	tierUUID := util.MustParseUUID(tierA)
+
+	cooldownOf := func() pgtype.Timestamptz {
+		t.Helper()
+		var until pgtype.Timestamptz
+		if err := pool.QueryRow(ctx, `SELECT cooldown_until FROM model_tier WHERE id = $1`, tierUUID).Scan(&until); err != nil {
+			t.Fatalf("read cooldown: %v", err)
+		}
+		return until
+	}
+	clearCooldown := func() {
+		t.Helper()
+		if err := qq.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{ID: tierUUID}); err != nil {
+			t.Fatalf("clear cooldown: %v", err)
+		}
+	}
+	// failTierTask inserts a running row carrying tierID (NULL when invalid)
+	// and fails it with reason through the real FailTask path.
+	failTierTask := func(reason string, tierID pgtype.UUID) {
+		t.Helper()
+		var taskID pgtype.UUID
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue
+				(agent_id, runtime_id, status, priority, tier_id, attempt, max_attempts, started_at)
+			VALUES ($1, $2, 'running', 0, $3, 1, 1, now())
+			RETURNING id`, agent.ID, agent.RuntimeID, tierID).Scan(&taskID); err != nil {
+			t.Fatalf("insert tier task: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		})
+		if _, err := svc.FailTask(ctx, taskID, "provider refused", "", "", "", reason, false, "", ""); err != nil {
+			t.Fatalf("FailTask(%s): %v", reason, err)
+		}
+	}
+
+	for _, reason := range []string{
+		taskfailure.ReasonAgentProviderCapacityOrRateLimit.String(),
+		taskfailure.ReasonAgentProviderQuotaLimit.String(),
+	} {
+		clearCooldown()
+		before := time.Now()
+		failTierTask(reason, tierUUID)
+		until := cooldownOf()
+		if !until.Valid {
+			t.Fatalf("%s: cooldown_until is NULL, want an armed deadline", reason)
+		}
+		wantMin, wantMax := before.Add(DefaultTierCooldown), time.Now().Add(DefaultTierCooldown)
+		if until.Time.Before(wantMin) || until.Time.After(wantMax) {
+			t.Errorf("%s: cooldown_until = %s, want ~%s (+%s)", reason, until.Time, wantMin, DefaultTierCooldown)
+		}
+	}
+
+	// A non-provider failure says the work failed, not the provider: no cooldown.
+	clearCooldown()
+	failTierTask(taskfailure.ReasonAgentProviderAuthOrAccess.String(), tierUUID)
+	if until := cooldownOf(); until.Valid {
+		t.Errorf("auth failure armed a cooldown: %s", until.Time)
+	}
+
+	// A tier-less task (legacy agent) has no tier to cool.
+	clearCooldown()
+	failTierTask(taskfailure.ReasonAgentProviderCapacityOrRateLimit.String(), pgtype.UUID{})
+	if until := cooldownOf(); until.Valid {
+		t.Errorf("tier-less failure armed a cooldown: %s", until.Time)
 	}
 }
 

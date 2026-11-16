@@ -46,7 +46,7 @@ INSERT INTO model_tier (
     thinking_level, service_tier, cost, quality, provider_slots, enabled
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
-) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at
+) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until
 `
 
 type CreateModelTierParams struct {
@@ -98,6 +98,7 @@ func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CooldownUntil,
 	)
 	return i, err
 }
@@ -121,7 +122,7 @@ func (q *Queries) DeleteTierAgentSelections(ctx context.Context, tierID pgtype.U
 }
 
 const getModelTierInWorkspace = `-- name: GetModelTierInWorkspace :one
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -149,6 +150,7 @@ func (q *Queries) GetModelTierInWorkspace(ctx context.Context, arg GetModelTierI
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CooldownUntil,
 	)
 	return i, err
 }
@@ -180,7 +182,7 @@ func (q *Queries) ListAgentTierIDs(ctx context.Context, agentID pgtype.UUID) ([]
 
 const listAgentTiers = `-- name: ListAgentTiers :many
 
-SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at FROM model_tier t
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until FROM model_tier t
 JOIN agent_tier at ON at.tier_id = t.id
 WHERE at.agent_id = $1
 ORDER BY t.idx ASC, t.created_at ASC
@@ -218,6 +220,7 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CooldownUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -230,7 +233,7 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 }
 
 const listModelTiers = `-- name: ListModelTiers :many
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
 WHERE workspace_id = $1
 ORDER BY idx ASC, created_at ASC
 `
@@ -260,6 +263,7 @@ func (q *Queries) ListModelTiers(ctx context.Context, workspaceID pgtype.UUID) (
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CooldownUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -304,6 +308,23 @@ func (q *Queries) SetAgentTiers(ctx context.Context, agentID pgtype.UUID) (int64
 	return result.RowsAffected(), nil
 }
 
+const setModelTierCooldown = `-- name: SetModelTierCooldown :exec
+UPDATE model_tier SET cooldown_until = $2 WHERE id = $1
+`
+
+type SetModelTierCooldownParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
+}
+
+// M-352: arms a tier's provider cooldown (NULL clears it). Runtime state, not
+// an edit of the tier, so updated_at is deliberately left alone: the Settings
+// row keeps showing when an admin last changed the tier itself.
+func (q *Queries) SetModelTierCooldown(ctx context.Context, arg SetModelTierCooldownParams) error {
+	_, err := q.db.Exec(ctx, setModelTierCooldown, arg.ID, arg.CooldownUntil)
+	return err
+}
+
 const tierTaskOverCapacity = `-- name: TierTaskOverCapacity :one
 SELECT EXISTS (
     SELECT 1 FROM model_tier t
@@ -346,7 +367,7 @@ SET name = $2,
     enabled = $12,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at
+RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until
 `
 
 type UpdateModelTierParams struct {
@@ -396,6 +417,7 @@ func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CooldownUntil,
 	)
 	return i, err
 }

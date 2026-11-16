@@ -4429,6 +4429,9 @@ export const ModelTierSchema = z.object({
   quality: z.number().int().optional(),
   provider_slots: z.number().int().default(1),
   enabled: z.boolean().default(true),
+  // M-352: set only while a provider-refusal cooldown keeps the tier out of
+  // the resolver's idx order.
+  cooldown_until: z.string().optional(),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 });

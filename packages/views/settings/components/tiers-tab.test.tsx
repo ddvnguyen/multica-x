@@ -95,6 +95,31 @@ describe("TiersTab", () => {
     expect(screen.getByText("Disabled")).toBeInTheDocument();
   });
 
+  it("shows the cooldown badge for a tier whose provider is cooling", () => {
+    const until = new Date(Date.now() + 15 * 60_000);
+    data.tiers = [
+      tier({ id: "tier-1", name: "fast", idx: 0, cooldown_until: until.toISOString() }),
+    ];
+    render(<TiersTab />, { wrapper: Wrapper });
+    const badge = screen.getByTestId("tier-cooldown-tier-1");
+    const hh = String(until.getHours()).padStart(2, "0");
+    const mm = String(until.getMinutes()).padStart(2, "0");
+    expect(badge).toHaveTextContent(`Cooling down until ${hh}:${mm}`);
+  });
+
+  it("hides the cooldown badge once the deadline passed", () => {
+    data.tiers = [
+      tier({
+        id: "tier-1",
+        name: "fast",
+        cooldown_until: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    ];
+    render(<TiersTab />, { wrapper: Wrapper });
+    expect(screen.queryByTestId("tier-cooldown-tier-1")).toBeNull();
+    expect(screen.queryByText(/cooling down/i)).toBeNull();
+  });
+
   it("shows the empty state when no tiers exist", () => {
     data.tiers = [];
     render(<TiersTab />, { wrapper: Wrapper });
