@@ -3060,6 +3060,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// credential_ref travel, never a secret. A `specific` account that is gone
 	// or disabled fails the task here instead of letting it run on whatever
 	// account the runtime defaults to; `any` picks the least busy account.
+	//
+	// `default` means "no account" unless the runtime pins one (M-203): then the
+	// agent falls back to the runtime's `default_account_id`, resolved with the
+	// same rules as `specific` (M-153) and failing just as closed.
 	accountMode := agent.AccountMode
 	if accountMode == "" {
 		accountMode = accountModeDefault
@@ -3077,6 +3081,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, accErr, "account", "")
 		}
 		claimAcct, hasAccount = acct, ok
+	} else {
+		acct, ok, accErr := h.resolveRuntimeDefaultAccount(r.Context(), agent, runtime)
+		switch {
+		case errors.Is(accErr, errAccountUnavailable):
+			return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"The runtime's default account is no longer available (deleted, disabled, disconnected or owned by another runtime). Pick another default on the runtime page, or set this agent to a specific account.",
+				taskfailure.ReasonEnvironmentPrepareFailed, "account_unavailable", http.StatusConflict, "runtime default account unavailable")
+		case accErr != nil:
+			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, accErr, "account", "")
+		case ok:
+			claimAcct, hasAccount = acct, true
+		}
 	}
 	accountID := ""
 	if hasAccount {

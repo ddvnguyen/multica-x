@@ -176,6 +176,68 @@ func (h *Handler) resolveClaimAccount(ctx context.Context, agent db.Agent) (acc 
 	return claimAccount{}, false, nil
 }
 
+// Runtime default account (M-203, Phase 2 of M-199).
+//
+// An agent whose account_mode is `default` used to mean "no account: the
+// runtime's own configuration applies". On a freebuff-desktop runtime that now
+// resolves to the runtime's pinned `metadata.freebuff.default_account_id`, so an
+// admin picks one account for the whole runtime and every `default` agent on it
+// runs there. The pin is stored in the runtime's own Freebuff block: no new
+// column, and no second default concept beside the one the runtime page sets.
+//
+// An empty pin keeps the old behaviour (no account). A pin that names an
+// account which is gone, disabled or owned by another runtime fails the claim
+// instead of silently running on whatever the runtime defaults to: the pin is a
+// promise, so it is validated exactly like a `specific` selection.
+
+// runtimeDefaultAccountID is the runtime's pinned account id ("" when unset).
+func runtimeDefaultAccountID(rt db.AgentRuntime) string {
+	return strings.TrimSpace(freebuffBlockFromRuntime(rt).DefaultAccountID)
+}
+
+// runtimeDefaultClaimAccount turns a pinned workspace account into a claimable
+// one. It applies the same rules as `specific`: enabled, freebuff-desktop, and
+// for daemon-managed accounts the same runtime and a connected state. ok=false
+// means "not usable", so the caller fails the claim closed.
+func runtimeDefaultClaimAccount(runtimeID pgtype.UUID, acc db.WorkspaceAccount) (claimAccount, bool) {
+	if !acc.Enabled || acc.Provider != accountProviderFreebuffDesktop {
+		return claimAccount{}, false
+	}
+	if acc.DaemonAccountID.Valid && (!acc.RuntimeID.Valid || acc.RuntimeID != runtimeID || acc.State != "connected") {
+		return claimAccount{}, false
+	}
+	return claimAccount{ID: acc.ID, Endpoint: acc.Endpoint.String,
+		CredentialRef: acc.CredentialRef.String, DaemonAccountID: acc.DaemonAccountID.String}, true
+}
+
+// resolveRuntimeDefaultAccount resolves the runtime pin for an agent that
+// selected no account. ok=false with no error means the runtime has no pin (or
+// is not a freebuff-desktop runtime), which is the legacy path.
+func (h *Handler) resolveRuntimeDefaultAccount(ctx context.Context, agent db.Agent, rt db.AgentRuntime) (claimAccount, bool, error) {
+	if rt.Provider != accountRuntimeProvider {
+		return claimAccount{}, false, nil
+	}
+	id := runtimeDefaultAccountID(rt)
+	if id == "" {
+		return claimAccount{}, false, nil
+	}
+	accountID, err := util.ParseUUID(id)
+	if err != nil {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	acc, gerr := h.Queries.GetWorkspaceAccountInWorkspace(ctx, db.GetWorkspaceAccountInWorkspaceParams{
+		ID: accountID, WorkspaceID: agent.WorkspaceID,
+	})
+	if gerr != nil {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	acct, ok := runtimeDefaultClaimAccount(rt.ID, acc)
+	if !ok {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	return acct, true, nil
+}
+
 // Account scopes a model-discovery request can ask for.
 const (
 	modelAccountDefault = "default"

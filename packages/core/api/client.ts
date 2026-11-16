@@ -2908,6 +2908,21 @@ export class ApiClient {
     );
   }
 
+  /**
+   * Pin which account a freebuff-desktop runtime's `account_mode = default`
+   * agents fall back to (M-203). An empty id clears the pin. The pin rides on
+   * the runtime's Freebuff block, so the runtime query is what to refetch.
+   */
+  async setFreebuffDesktopDefaultAccount(
+    runtimeId: string,
+    accountId: string,
+  ): Promise<{ default_account_id: string }> {
+    return this.fetch<{ default_account_id: string }>(
+      `/api/runtimes/${runtimeId}/freebuff-desktop/default`,
+      { method: "POST", body: JSON.stringify({ account_id: accountId }) },
+    );
+  }
+
   async setFreebuffDefaultAccount(runtimeId: string, accountId: string): Promise<FreebuffAccounts> {
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/freebuff/accounts/${accountId}/default`,
