@@ -5,7 +5,7 @@ After=network.target multica-be-z.service
 [Service]
 Type=simple
 WorkingDirectory=__MMX_WEB_DIR__
-ExecStart=/home/ddv/.nvm/versions/node/v24.15.0/bin/node __MMX_WEB_DIR__/.next/standalone/apps/web/server.js
+ExecStart=/home/ddv/.nvm/versions/node/v24.15.0/bin/node __MMX_WEB_DIR__/apps/web/server.js
 EnvironmentFile=__MMX_WEB_ENV__
 Restart=on-failure
 RestartSec=5
