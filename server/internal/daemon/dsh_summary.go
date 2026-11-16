@@ -159,6 +159,81 @@ type dshSessionSummaryRecord struct {
 // own store directory — beside the session, never inside its event log.
 const dshSummarySidecarName = "summary.json"
 
+// dshSessionClockSidecarName is the durable memory of which model last ran on
+// a session (F19). The arm record beside it is consumed by fire and by Cancel,
+// so it cannot tell the next run which model's cache it is judging; this file
+// stays until the next run on the session replaces it.
+const dshSessionClockSidecarName = "clock.json"
+
+// dshSessionClockRecord is the model that armed a session's summary clock plus
+// the run end it was armed from. The warm/cold call must use that model's TTL:
+// the cache the session left behind belongs to the model that ran, not to the
+// model the next run will ask for.
+type dshSessionClockRecord struct {
+	Model   string    `json:"model"`
+	EndedAt time.Time `json:"ended_at"`
+}
+
+// writeDshSessionClockRecord stores the arming facts beside the session, with
+// the same temp-file + rename durability as the other sidecars: a crash can
+// never leave a half-written record for the next run to read as a model name.
+func writeDshSessionClockRecord(storeRoot, workDir, sessionID string, record dshSessionClockRecord) error {
+	dir := dshSessionStoreDir(storeRoot, workDir, sessionID)
+	if dir == "" {
+		return errors.New("dsh session clock record: no usable session directory")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create dsh session clock dir: %w", err)
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode dsh session clock record: %w", err)
+	}
+	final := filepath.Join(dir, dshSessionClockSidecarName)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write dsh session clock record: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("publish dsh session clock record: %w", err)
+	}
+	return nil
+}
+
+// readDshSessionClockRecord loads the arming facts beside a session. Any
+// failure — no store root, no directory, unreadable or malformed file, empty
+// model — reads as "unknown", which is the pre-F19 behaviour: judge with the
+// new run's model. A model is never inferred from a half-read record.
+func readDshSessionClockRecord(storeRoot, workDir, sessionID string) (dshSessionClockRecord, bool) {
+	dir := dshSessionStoreDir(storeRoot, workDir, sessionID)
+	if dir == "" {
+		return dshSessionClockRecord{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, dshSessionClockSidecarName))
+	if err != nil {
+		return dshSessionClockRecord{}, false
+	}
+	var record dshSessionClockRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return dshSessionClockRecord{}, false
+	}
+	if strings.TrimSpace(record.Model) == "" {
+		return dshSessionClockRecord{}, false
+	}
+	return record, true
+}
+
+// readDshSessionClockModel answers the question the seeded-session decision
+// asks: which model armed this session's clock?
+func readDshSessionClockModel(storeRoot, workDir, sessionID string) (string, bool) {
+	record, ok := readDshSessionClockRecord(storeRoot, workDir, sessionID)
+	if !ok {
+		return "", false
+	}
+	return record.Model, true
+}
+
 // dshSessionInitPrefixSidecarName stores the session's init-prefix size (the
 // first run's FirstPromptTokens) beside the session, so a later resumed run
 // can measure growth above the init prefix instead of only its own run.
@@ -396,6 +471,24 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 			_ = writeDshSessionInitPrefix(req.StoreRoot, req.WorkDir, req.SessionID, req.FirstPromptTokens)
 		}
 	}
+	// F19: which model's cache did this run leave behind? That is a fact about
+	// the run, not about a timer, so it is recorded before the schedule is
+	// judged — a run that ends past the summarize point arms nothing, and the
+	// next run still has to judge this run's cache with this run's TTL.
+	armedAt := c.now()
+	if !req.EndedAt.IsZero() {
+		armedAt = req.EndedAt
+	}
+	if dshSessionStoreDir(req.StoreRoot, req.WorkDir, req.SessionID) != "" {
+		if err := writeDshSessionClockRecord(req.StoreRoot, req.WorkDir, req.SessionID, dshSessionClockRecord{
+			Model:   req.Model,
+			EndedAt: armedAt,
+		}); err != nil {
+			c.log.Warn("dsh session clock model not recorded; the next run will judge this cache with its own model",
+				"session_id", req.SessionID, "error", err)
+		}
+	}
+
 	delay := c.cfg.ttlForModel(req.Model) - c.cfg.Margin
 	if delay <= 0 {
 		c.log.Warn("dsh summary clock not armed: margin is not shorter than the TTL",
@@ -403,9 +496,7 @@ func (c *dshSummaryClock) Arm(req dshSummaryRequest) {
 		return
 	}
 	armPath := dshArmRecordPath(req.StoreRoot, req.WorkDir, req.SessionID)
-	armedAt := c.now()
 	if !req.EndedAt.IsZero() {
-		armedAt = req.EndedAt
 		delay = c.dueIn(req.Model, req.EndedAt)
 		if delay <= 0 {
 			c.log.Info("dsh summary clock not armed: the run ended past the summarize point",

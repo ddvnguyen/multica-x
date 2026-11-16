@@ -9125,6 +9125,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			ReadSummary: func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool) {
 				return readDshSummarySidecar(dshStoreRoot, candidate.WorkDir, candidate.SessionID)
 			},
+			// F19: judge the cache the candidate's last run left behind with
+			// that run's model TTL, not this run's.
+			ReadClockModel: func(candidate dshSessionCandidate) (string, bool) {
+				return readDshSessionClockModel(dshStoreRoot, candidate.WorkDir, candidate.SessionID)
+			},
 		})
 		taskLog.Info("dsh session start",
 			"verdict", sessionStart.Verdict,

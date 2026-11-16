@@ -126,6 +126,12 @@ type dshSessionStartInput struct {
 	// ReadSummary loads the summary sidecar beside one candidate. Injected so
 	// the decision is pure; production passes readDshSummarySidecar.
 	ReadSummary func(candidate dshSessionCandidate) (dshSessionSummaryRecord, bool)
+	// ReadClockModel loads the model that armed the candidate's summary clock
+	// — the model whose prompt cache the candidate's last run left behind
+	// (F19). Injected for the same reason; production passes
+	// readDshSessionClockModel. A missing record means "unknown", which keeps
+	// the pre-F19 behaviour of judging with this run's model.
+	ReadClockModel func(candidate dshSessionCandidate) (string, bool)
 }
 
 // dshSessionStartPlan is the decision's whole output: the verdict for the run
@@ -167,7 +173,11 @@ func decideDshSessionStart(in dshSessionStartInput) dshSessionStartPlan {
 		return dshSessionStartPlan{Verdict: dshSessionStartFresh, Reason: "no related session"}
 	}
 
-	ttl := in.Cfg.ttlForModel(in.Model)
+	// F19: the TTL this call judges belongs to the model that armed the
+	// candidate's clock, because that model's prompt cache is the one the
+	// session left behind. Judging with this run's model resumes into a cache
+	// that was never armed, or starts fresh over one that is still warm.
+	ttl := in.Cfg.ttlForModel(in.armedModel(candidate))
 	plan := dshSessionStartPlan{
 		Verdict:         dshSessionStartResumed,
 		Candidate:       candidate,
@@ -303,6 +313,22 @@ func applyDshSessionStartPlan(task *Task, taskCtx *execenv.TaskContextForEnv, pl
 		task.PriorWorkDir = plan.Candidate.WorkDir
 	}
 	taskCtx.PriorSessionResumed = task.PriorSessionID != ""
+}
+
+// armedModel is the model whose prompt cache the candidate's last run left
+// behind: the model the summary clock was armed with, when that is recorded
+// beside the session. An unknown record falls back to this run's model — the
+// pre-F19 behaviour, and the only thing available for a session with no local
+// clock record (another runtime's store, or a run older than the sidecar).
+func (in dshSessionStartInput) armedModel(candidate dshSessionCandidate) string {
+	if in.ReadClockModel != nil {
+		if armed, ok := in.ReadClockModel(candidate); ok {
+			if armed = strings.TrimSpace(armed); armed != "" {
+				return armed
+			}
+		}
+	}
+	return strings.TrimSpace(in.Model)
 }
 
 // dshPickSessionCandidate ranks the two related candidates: newest end time

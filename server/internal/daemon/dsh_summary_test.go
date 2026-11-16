@@ -829,3 +829,70 @@ func TestDshSummaryFireSkipsExistingSummary(t *testing.T) {
 		t.Fatalf("summary overwritten: %#v", got)
 	}
 }
+
+// TestDshSummaryArmRecordsArmedModel: F19 needs the model that armed a
+// session's clock to outlive the clock. arm.json is consumed by fire and by
+// Cancel, so the model is recorded separately and kept until the next run on
+// the session replaces it.
+func TestDshSummaryArmRecordsArmedModel(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+	armedAt := *now
+
+	// 4000 -> 4500 stays under the trigger, so the fire never summarizes.
+	armOneShot(clock, storeRoot, workDir, 4000, 4500, neverSummarize(t), nil)
+	rec, ok := readDshSessionClockRecord(storeRoot, workDir, "session-1")
+	if !ok {
+		t.Fatal("the armed model was not recorded")
+	}
+	if rec.Model != "deepseek/deepseek-v4-pro" || !rec.EndedAt.Equal(armedAt) {
+		t.Fatalf("clock record = %#v, want model %q ended_at %v", rec, "deepseek/deepseek-v4-pro", armedAt)
+	}
+
+	// fire consumes arm.json; the model that armed this cache is still the
+	// answer to "was it warm", so it must survive.
+	scheduler.fire(t, 0)
+	if _, ok := readArmRecordFile(t, storeRoot, workDir, "session-1"); ok {
+		t.Fatal("arm.json survived the fire")
+	}
+	rec, ok = readDshSessionClockRecord(storeRoot, workDir, "session-1")
+	if !ok || rec.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("clock record after fire = %#v (present=%v)", rec, ok)
+	}
+
+	// A later run on the same session replaces it: the next warm/cold call
+	// judges the newest cache, not the oldest one.
+	later := *now
+	clock.Arm(dshSummaryRequest{
+		TaskID: "task-2", SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		Model: "deepseek/v4-flash", EndedAt: later, FirstPromptTokens: 4000, LastPromptTokens: 4500,
+		Summarize: neverSummarize(t),
+	})
+	rec, ok = readDshSessionClockRecord(storeRoot, workDir, "session-1")
+	if !ok || rec.Model != "deepseek/v4-flash" || !rec.EndedAt.Equal(later) {
+		t.Fatalf("clock record after re-arm = %#v (present=%v)", rec, ok)
+	}
+}
+
+// TestDshSummaryArmRecordsModelWithoutASchedule: the record is a fact about the
+// run that ended, not about a pending timer. A run that ended past the
+// summarize point arms nothing, and the next run still has to judge its cache
+// with that run's model.
+func TestDshSummaryArmRecordsModelWithoutASchedule(t *testing.T) {
+	storeRoot, workDir := t.TempDir(), t.TempDir()
+	clock, scheduler, now := newTestSummaryClock(t, testSummarySettings())
+
+	endedAt := now.Add(-90 * time.Second) // past the 90 s summarize point
+	clock.Arm(dshSummaryRequest{
+		TaskID: "task-1", SessionID: "session-1", WorkDir: workDir, StoreRoot: storeRoot,
+		Model: "deepseek/v4-flash", EndedAt: endedAt, FirstPromptTokens: 1, LastPromptTokens: 2,
+		Summarize: neverSummarize(t),
+	})
+	if len(scheduler.fires) != 0 {
+		t.Fatalf("scheduled %d fires for a past-due session", len(scheduler.fires))
+	}
+	rec, ok := readDshSessionClockRecord(storeRoot, workDir, "session-1")
+	if !ok || rec.Model != "deepseek/v4-flash" || !rec.EndedAt.Equal(endedAt) {
+		t.Fatalf("clock record = %#v (present=%v), want model deepseek/v4-flash ended_at %v", rec, ok, endedAt)
+	}
+}

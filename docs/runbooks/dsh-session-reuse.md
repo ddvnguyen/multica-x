@@ -28,7 +28,7 @@ The reason string (for example `warm: idle 10m0s < 45m0s`) goes to the daemon lo
 
 ### 2.2 Decision table (`decideDshSessionStart`)
 
-Warm window = TTL for the model minus margin (`server/internal/daemon/dsh_session_start.go:192`). A negative age is clamped to zero (`:187-191`).
+Warm window = TTL for the model that armed the candidate's clock minus margin (`server/internal/daemon/dsh_session_start.go`, `armedModel` then `ttlForModel`), falling back to this run's model when no clock record exists (3.10). A negative age is clamped to zero.
 
 | # | Condition | Verdict | Reason (log only) | Lines |
 |---|---|---|---|---|
@@ -95,7 +95,11 @@ The downgrade fires when a seed was planned and the run result says no fork happ
 2. Else the model's `short` TTL, if above zero.
 3. Else `MULTICA_DSH_SUMMARY_TTL`.
 
-The map key is the model the daemon resolved for the run: agent model, else the runtime entry model (`server/internal/daemon/daemon.go:8698-8704`). The key is trimmed (`server/internal/daemon/dsh_summary.go:88`). The session-start decision uses the same function with the same model (`server/internal/daemon/dsh_session_start.go:159`, `:192`).
+The map key is the model the daemon resolved for the run: agent model, else the runtime entry model (`server/internal/daemon/daemon.go`). The key is trimmed (`server/internal/daemon/dsh_summary.go`, `ttlForModel`).
+
+The two callers use different keys, deliberately. Arming uses the model of the run that just ended, because that run's cache is what it schedules against. The session-start decision uses the model recorded beside the session — the one that armed the prior run's clock — because the cache it judges belongs to that run, not to the new one (3.10).
+
+An unknown prior model is not a guess: the decision then falls back to the new run's model, which is what every run did before F19.
 
 ### 3.4 Trigger and cost rule
 
@@ -167,6 +171,21 @@ Re-arm is skipped if summaries are disabled (`server/internal/daemon/dsh_rearm.g
 - The seed is the stored summary plus the trigger text, capped at 32768 estimated tokens (`server/internal/daemon/dsh_session_start.go:54`; the estimate is `(bytes+3)/4`, `:410`).
 - The trigger keeps at least 512 tokens of room (`:59`, `:348-382`).
 - A summary that does not fit is cut with a `[summary truncated]` marker. The trigger is cut with `[trigger truncated]` if it still does not fit (`server/internal/daemon/dsh_session_start.go:362-380`). This cap is separate from the 4096-token summary cap and applies afterwards.
+
+### 3.10 clock.json: the model that armed the cache (F19)
+
+`arm.json` is consumed by fire and by Cancel, so it cannot tell the next run which model's cache it is judging. The arming facts are therefore also written to a record that outlives the clock.
+
+| Item | Detail |
+|---|---|
+| Path | `<storeRoot>/<ProjectKey(workDir)>/<sessionID>/clock.json` |
+| Fields | `model`, `ended_at` |
+| Written | From `Arm`, before the schedule is judged — a run that ends past the summarize point arms nothing and is still the run whose cache the next start judges |
+| Kept | Until the next run on the same session replaces it. Fire, Cancel and re-arm cleanup do not remove it |
+| Read | By the session-start decision, through `readDshSessionClockModel`, as the model for the warm window |
+| Unreadable or empty model | Reads as unknown → the decision uses the new run's model (pre-F19 behaviour) |
+
+Why it matters: with per-model `MULTICA_DSH_PROMPT_CACHE` entries and a model change between two runs, the old code judged a 30-minute cache with the new run's 4-hour TTL (resuming into a cold prefix) or judged a 4-hour cache with the new run's 30-minute TTL (starting fresh over a warm one). With one model configured, or none, both calls resolve the same TTL and nothing changes.
 
 ## 4. Configuration
 

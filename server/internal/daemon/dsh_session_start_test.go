@@ -720,3 +720,151 @@ func TestDshResumeReachableAgreesWithTheGate(t *testing.T) {
 		})
 	}
 }
+
+// clockModelStore is the fake reader for the model that armed a session's
+// summary clock: session id → model.
+type clockModelStore map[string]string
+
+func (s clockModelStore) read(candidate dshSessionCandidate) (string, bool) {
+	model, ok := s[candidate.SessionID]
+	return model, ok
+}
+
+// TestDecideDshSessionStartUsesArmedModelTTL is F19: the warm/cold call has to
+// judge the cache the PRIOR run left behind, so it must use that run's model
+// TTL — not the new run's model, which has not touched the cache yet. With
+// per-model MULTICA_DSH_PROMPT_CACHE entries and a model change between the
+// runs, the two answers differ.
+func TestDecideDshSessionStartUsesArmedModelTTL(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	const priorID = "sess-prior"
+
+	// The prior run ended 40 minutes ago: warm under v4-pro's 4 h cache
+	// (3 h 45 m window), cold under v4-flash's 30 m one (15 m window).
+	priorEnded := now.Add(-40 * time.Minute)
+	cfg := DshSummaryConfig{
+		Enabled:       true,
+		TTL:           time.Hour,
+		Margin:        15 * time.Minute,
+		SummaryTokens: DefaultDshSummaryTokens,
+		PromptCache: map[string]DshPromptCacheConfig{
+			"deepseek/v4-pro":   {Long: 4 * time.Hour},
+			"deepseek/v4-flash": {Long: 30 * time.Minute},
+		},
+	}
+	// A summary made while the session was still warm under the long cache.
+	freshSummary := summaryStore{priorID: {
+		Summary:       "The parser shipped, the tests are half-written.",
+		Tokens:        12,
+		MadeAt:        priorEnded.Add(2 * time.Hour),
+		ParentSession: priorID,
+	}}
+
+	cases := []struct {
+		name        string
+		armed       clockModelStore
+		newModel    string
+		store       summaryStore
+		wantVerdict string
+		wantResume  string
+		wantFork    string
+	}{
+		{
+			// v4-flash's 30 m cache is long gone, but v4-pro armed this
+			// session with a 4 h one, so the cache is still warm.
+			name:        "the prior model's long TTL keeps the session warm",
+			armed:       clockModelStore{priorID: "deepseek/v4-pro"},
+			newModel:    "deepseek/v4-flash",
+			store:       summaryStore{},
+			wantVerdict: dshSessionStartResumed,
+			wantResume:  priorID,
+		},
+		{
+			// v4-flash's 30 m cache died 25 minutes ago; the new run's 4 h
+			// TTL would call that cache warm and resume into a cold prefix.
+			name:        "the prior model's short TTL makes the session cold",
+			armed:       clockModelStore{priorID: "deepseek/v4-flash"},
+			newModel:    "deepseek/v4-pro",
+			store:       freshSummary,
+			wantVerdict: dshSessionStartSeededPrefix + priorID,
+			wantFork:    priorID,
+		},
+		{
+			// No record (an older session, another runtime's store, a
+			// pre-F19 run): today's behaviour, judged on the new run's model.
+			name:        "an unrecorded model keeps the new run's TTL",
+			newModel:    "deepseek/v4-pro",
+			store:       summaryStore{},
+			wantVerdict: dshSessionStartResumed,
+			wantResume:  priorID,
+		},
+		{
+			name:        "an unrecorded model keeps the new run's short TTL",
+			newModel:    "deepseek/v4-flash",
+			store:       summaryStore{},
+			wantVerdict: dshSessionStartFresh,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := decideDshSessionStart(dshSessionStartInput{
+				Now:            now,
+				Cfg:            cfg,
+				Model:          tc.newModel,
+				PriorSessionID: priorID,
+				PriorEndedAt:   priorEnded.Format(time.RFC3339),
+				ReadSummary:    tc.store.read,
+				ReadClockModel: tc.armed.read,
+			})
+			if plan.Verdict != tc.wantVerdict {
+				t.Fatalf("verdict = %q, want %q (reason %q)", plan.Verdict, tc.wantVerdict, plan.Reason)
+			}
+			if plan.ResumeSessionID != tc.wantResume {
+				t.Errorf("resume session = %q, want %q", plan.ResumeSessionID, tc.wantResume)
+			}
+			if plan.ForkParent != tc.wantFork {
+				t.Errorf("fork parent = %q, want %q", plan.ForkParent, tc.wantFork)
+			}
+			if plan.Margin != cfg.Margin {
+				t.Errorf("margin = %s, want %s", plan.Margin, cfg.Margin)
+			}
+		})
+	}
+}
+
+// TestDecideDshSessionStartSingleModelUnchanged pins F19's blast radius: when
+// only one model's cache is configured, or none is, every run resolves the
+// same TTL and the decision is exactly what it was before the fix.
+func TestDecideDshSessionStartSingleModelUnchanged(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	const priorID = "sess-prior"
+	priorEnded := now.Add(-40 * time.Minute).Format(time.RFC3339)
+	cfg := testSessionStartConfig()
+	cfg.PromptCache = map[string]DshPromptCacheConfig{"deepseek/v4-pro": {Long: 4 * time.Hour}}
+
+	for _, tc := range []struct {
+		name     string
+		armed    clockModelStore
+		newModel string
+	}{
+		{name: "the configured model both runs", armed: clockModelStore{priorID: "deepseek/v4-pro"}, newModel: "deepseek/v4-pro"},
+		{name: "no model on either run", armed: clockModelStore{priorID: "deepseek/v4-pro"}},
+		{name: "no recorded model", newModel: "deepseek/v4-pro"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := decideDshSessionStart(dshSessionStartInput{
+				Now:            now,
+				Cfg:            cfg,
+				Model:          tc.newModel,
+				PriorSessionID: priorID,
+				PriorEndedAt:   priorEnded,
+				ReadSummary:    summaryStore{}.read,
+				ReadClockModel: tc.armed.read,
+			})
+			if plan.Verdict != dshSessionStartResumed || plan.ResumeSessionID != priorID {
+				t.Fatalf("verdict = %q resume = %q, want resumed %q", plan.Verdict, plan.ResumeSessionID, priorID)
+			}
+		})
+	}
+}
