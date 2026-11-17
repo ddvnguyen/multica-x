@@ -119,7 +119,7 @@ function routeLandingLocale(
 // NextResponse / cookies / matcher) is identical; the only behavioral
 // change is the runtime — proxy is forced to nodejs and cannot opt into
 // edge.
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   // Lane-z auth bypass (M-404): no session cookie on a page route means the
   // server signs the fixed Owner account in through the normal code flow
