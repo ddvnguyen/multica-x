@@ -98,6 +98,9 @@ function selectPassage(sectionId: string): void {
   selection.removeAllRanges();
   selection.addRange(range);
   fireEvent(document, new Event("selectionchange"));
+  // A drag ends on pointer-up: the tooltip raises from the settled range,
+  // not from each intermediate selectionchange.
+  fireEvent(document, new Event("pointerup"));
 }
 
 afterEach(() => {
@@ -364,6 +367,7 @@ describe("PlanReviewPanel", () => {
       };
       (shadow as unknown as Record<string, unknown>)["getSelection"] = () => shadowSelection;
       shadow.dispatchEvent(new Event("selectionchange"));
+      shadow.dispatchEvent(new Event("pointerup"));
 
       // The tooltip raises from the root's selection, not the document's.
       const tooltip = await queries.findByRole("button", { name: "Comment" });
@@ -430,5 +434,55 @@ describe("PlanReviewPanel", () => {
     } finally {
       host.remove();
     }
+  });
+
+  it("saves the settled range, not each intermediate pick", async () => {
+    vi.mocked(api.addPlanComment).mockResolvedValue({ comment: COMMENTED.comments![0]! });
+    renderPanel();
+    expect(await screen.findByText("Split the cutover")).toBeInTheDocument();
+
+    // A slow drag fires selectionchange on the first characters ("Two"),
+    // then extends to the full passage before pointer-up. The saved quote
+    // must be the settled range, and the tooltip button must not steal
+    // focus mid-drag (which would freeze the range at its first characters).
+    const body = document.querySelector(
+      '[data-plan-section="s1"] [data-plan-section-body]',
+    );
+    const target = body?.querySelector("p");
+    if (target?.firstChild == null) throw new Error("no section text");
+    const text = target.firstChild;
+    const selection = window.getSelection();
+    if (selection === null) throw new Error("no selection");
+    const partial = document.createRange();
+    partial.setStart(text, 0);
+    partial.setEnd(text, 3);
+    selection.removeAllRanges();
+    selection.addRange(partial);
+    fireEvent(document, new Event("selectionchange"));
+    // No tooltip yet: the pick has not settled.
+    expect(screen.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument();
+
+    const full = document.createRange();
+    full.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(full);
+    fireEvent(document, new Event("pointerup"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
+    expect(await screen.findByText("“Two lanes, z first.”")).toBeInTheDocument();
+    expect(document.activeElement?.tagName).not.toBe("BUTTON");
+    fireEvent.change(screen.getByRole("textbox", { name: "What should change here?" }), {
+      target: { value: "Start with the smaller lane." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+
+    await waitFor(() =>
+      expect(api.addPlanComment).toHaveBeenCalledWith("ws-1", "plan-4", {
+        base_revision: 6,
+        section_id: "s1",
+        quote: "Two lanes, z first.",
+        body: "Start with the smaller lane.",
+      }),
+    );
   });
 });
