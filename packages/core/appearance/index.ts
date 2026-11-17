@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { defaultStorage } from "../platform/storage";
+import { defaultStorage, onDefaultStorageAdapterChanged } from "../platform/storage";
 import { findTheme } from "./installed-themes";
 import { THEME_ID_PATTERN, themeCss } from "./theme-package";
 import { DEFAULT_THEME_ID, findBuiltInTheme } from "./built-in-themes";
@@ -331,6 +331,8 @@ export const useAppearanceStore = create<AppearanceState>()(
     },
   ),
 );
+
+onDefaultStorageAdapterChanged(() => void useAppearanceStore.persist.rehydrate());
 
 /** The saved preferences without the store's actions. */
 export function selectAppearance(state: AppearanceState): AppearancePreferences {

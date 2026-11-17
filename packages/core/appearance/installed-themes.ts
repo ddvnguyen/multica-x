@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { defaultStorage } from "../platform/storage";
+import { defaultStorage, onDefaultStorageAdapterChanged } from "../platform/storage";
 import { parseStoredTheme, type ThemePackageResult } from "./theme-package";
 import { findBuiltInTheme } from "./built-in-themes";
 import type { Theme } from "./themes";
@@ -145,6 +145,8 @@ export const useInstalledThemesStore = create<InstalledThemesState>()(
     },
   ),
 );
+
+onDefaultStorageAdapterChanged(() => void useInstalledThemesStore.persist.rehydrate());
 
 interface ThemeFolderStatus {
   /** Absolute path of Desktop's themes folder; null until read, and on web. */
