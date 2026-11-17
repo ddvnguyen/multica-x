@@ -123,7 +123,7 @@ export async function proxy(req: NextRequest) {
   return proxyInner(req);
 }
 
-async function proxyInner(req: NextRequest, passthroughCookies?: string[]) {
+async function proxyInner(req: NextRequest, passthroughCookies?: string[]): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
   // Lane-z auth bypass (M-404): no session cookie on a page route means the
   // server signs the fixed Owner account in through the normal code flow
