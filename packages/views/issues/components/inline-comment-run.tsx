@@ -32,6 +32,7 @@ import { formatDuration } from "../../agents/components/agent-activity-hover-con
 import { failureNeedsAction, isCancelledOutcome, runOutcomeLabel } from "../../agents/components/tabs/task-failure";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 import { TaskStatusIcon } from "./task-status-icon";
+import { TierBadge } from "./tier-badge";
 import { useStatusLabel } from "./task-run-labels";
 import { commentRunOutput, isActiveCommentRun, showCommentRunInHeader, type CommentRun } from "./comment-runs";
 import { AgentQuestionCard } from "./agent-question-card";
@@ -217,6 +218,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
           showProgress && "sr-only")}
           role="status" data-run-status>
           <TaskStatusIcon status={cancelled ? "cancelled" : task.status} />
+          <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
           {rawError && rawError !== statusText && !needsAction ? <Tooltip>
             <TooltipTrigger render={<span className="truncate">{statusText}</span>} />
             <TooltipContent side="top" className="flex-col items-start">

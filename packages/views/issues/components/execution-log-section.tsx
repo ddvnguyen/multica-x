@@ -594,6 +594,7 @@ export function ActiveTaskRow({
         ) : (
           <span className={`${tone} min-w-0 truncate`}>{label}</span>
         )}
+        <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
       </RowStatus>
       <RowActions>
         <RunSteerControls task={task} issueId={issueId} />
