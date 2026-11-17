@@ -288,7 +288,7 @@ install_unit moct-backend-z.service "$MOCT_BE_Z_UNIT" \
   "MOCT_ROOT=$MOCT_Z_ROOT" \
   "MOCT_ENV=$MOCT_Z_ROOT/env"
 install_unit mmx-pwa-z.service "$MMX_PWA_Z_UNIT" \
-  "MMX_WEB_DIR=$LANE_ROOT/mmx-pwa" \
+  "MMX_WEB_DIR=$LANE_ROOT/mmx-pwa/current" \
   "MMX_WEB_ENV=$LANE_ROOT/mmx-pwa/env"
 install_unit multica-daemon-z.service "$MULTICA_DAEMON_Z_UNIT" \
   "LANE_HOME=$LANE_HOME" \
@@ -675,10 +675,11 @@ log "phase 11: lane web"
 if [ -n "${DSH_Z_WEB_UNIT:-}" ]; then
   if [ -f "$LANE_ROOT/data/.plugin-changed" ]; then
     systemctl --user restart "$DSH_Z_WEB_UNIT"
-    # wait_http on the web root: the shell must answer before acceptance opens it
-    wait_http "http://127.0.0.1:3180/" 60 '' \
-      || { journalctl --user -u "$DSH_Z_WEB_UNIT" -n 30 --no-pager >&2; die "lane web http://127.0.0.1:3180/ did not come up"; }
-    log "lane web up on http://127.0.0.1:3180/ (unit $DSH_Z_WEB_UNIT, profile web, multica row patch applied)"
+    # wait_http on the web root: the shell must answer before acceptance opens it.
+    # The lane web binds LANE_WEB_HOST (podman bridge on lane z), not loopback.
+    wait_http "http://${LANE_WEB_HOST:-127.0.0.1}:3180/" 60 '' \
+      || { journalctl --user -u "$DSH_Z_WEB_UNIT" -n 30 --no-pager >&2; die "lane web http://${LANE_WEB_HOST:-127.0.0.1}:3180/ did not come up"; }
+    log "lane web up on http://${LANE_WEB_HOST:-127.0.0.1}:3180/ (unit $DSH_Z_WEB_UNIT, profile web, multica row patch applied)"
     rm -f "$LANE_ROOT/data/.plugin-changed"
   else
     log "phase 11: plugin bundle unchanged; not restarting $DSH_Z_WEB_UNIT"
