@@ -328,7 +328,7 @@ export function IssuePropertiesSection({
           />
         </PropRow>
         <PropRow label={t(($) => $.detail.prop_assignee)}>
-          <AssigneePicker assigneeType={issue.assignee_type} assigneeId={issue.assignee_id} onUpdate={handleUpdateField} align="start" />
+          <AssigneePicker assigneeType={issue.assignee_type} assigneeId={issue.assignee_id} onUpdate={handleUpdateField} align="start" tierPick />
         </PropRow>
         <PropRow label={t(($) => $.detail.prop_project)}>
           <IssueProjectPicker

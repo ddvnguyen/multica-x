@@ -24,8 +24,9 @@ import {
 
 const key = new PluginKey("test-mention-suggestion");
 const slashKey = new PluginKey("test-slash-suggestion");
+const hashKey = new PluginKey("test-hash-suggestion");
 
-function suggestionProbe(name: string, char: "@" | "/", pluginKey: PluginKey) {
+function suggestionProbe(name: string, char: "@" | "/" | "#", pluginKey: PluginKey) {
   return Extension.create({
     name,
     addProseMirrorPlugins() {
@@ -58,6 +59,7 @@ function makeEditor(content?: object) {
       SuggestionTriggerArmingExtension,
       suggestionProbe("mentionProbe", "@", key),
       suggestionProbe("slashProbe", "/", slashKey),
+      suggestionProbe("hashProbe", "#", hashKey),
     ],
     content: content ?? { type: "doc", content: [{ type: "paragraph" }] },
   });
@@ -187,6 +189,24 @@ describe("suggestion trigger arming", () => {
       type(editor, "/shi");
 
       expect(picker(editor, slashKey)).toEqual({ active: true, query: "shi" });
+    });
+
+    it("typing # arms the hash picker (M-359 tier pick)", () => {
+      const editor = makeEditor();
+      editor.commands.focus("end");
+
+      type(editor, "#fa");
+
+      expect(picker(editor, hashKey)).toEqual({ active: true, query: "fa" });
+    });
+
+    it("pasted text containing # never opens the hash picker", () => {
+      const editor = makeEditor();
+      editor.commands.focus("end");
+
+      paste(editor, "see #fast for details");
+
+      expect(picker(editor, hashKey)).toEqual({ active: false, query: null });
     });
 
     it("keeps multi-word queries alive, so allowSpaces issue search survives", () => {
