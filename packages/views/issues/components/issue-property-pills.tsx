@@ -56,6 +56,7 @@ export function IssuePropertyPills({
         onUpdate={onUpdate}
         triggerRender={<PillButton />}
         align="start"
+        tierPick
       />
       <ProjectPicker
         projectId={issue.project_id}
