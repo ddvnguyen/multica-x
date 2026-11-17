@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { MULTICA_LOCALE_HEADER } from "./lib/locale-routing";
@@ -356,4 +356,105 @@ describe("upload route bypasses the buffering proxy", () => {
     "keeps the existing proxy behavior for %s",
     (url) => expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true),
   );
+});
+
+describe("proxy MMX auth bypass (M-404)", () => {
+  const OLD = { ...process.env };
+
+  function setBypassEnv(env: Record<string, string | undefined>) {
+    for (const k of ["MMX_PWA", "MMX_AUTH_BYPASS", "MMX_BIND_HOST"]) delete process.env[k];
+    Object.assign(process.env, env);
+  }
+
+  afterEach(() => {
+    process.env = { ...OLD };
+    vi.unstubAllGlobals();
+  });
+
+  it("stays off unless MMX PWA build and flag are both on", async () => {
+    const { isAuthBypassEnabled } = await import("./proxy");
+    setBypassEnv({ MMX_PWA: "1", MMX_AUTH_BYPASS: "0" });
+    expect(isAuthBypassEnabled()).toBe(false);
+    setBypassEnv({ MMX_PWA: undefined, MMX_AUTH_BYPASS: "1" });
+    expect(isAuthBypassEnabled()).toBe(false);
+    setBypassEnv({ MMX_PWA: "1", MMX_AUTH_BYPASS: "1" });
+    expect(isAuthBypassEnabled()).toBe(true);
+  });
+
+  it("signs in once and sets the session cookie", async () => {
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      MMX_BIND_HOST: "127.0.0.1",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(url);
+        if (url.endsWith("/auth/send-code")) return new Response("{}", { status: 200 });
+        const headers = new Headers();
+        headers.append("set-cookie", "multica_auth=tok; Path=/; HttpOnly");
+        return new Response(JSON.stringify({ token: "tok", user: { id: "1" } }), {
+          status: 200,
+          headers,
+        });
+      }),
+    );
+    const res = await proxy(makeRequest("/inbox"));
+    expect(calls).toEqual([
+      "http://127.0.0.1:4390/auth/send-code",
+      "http://127.0.0.1:4390/auth/verify-code",
+    ]);
+    expect(res.cookies.get("multica_logged_in")?.value).toBe("1");
+  });
+
+  it("does not loop on logout: with the session cookie it falls through", async () => {
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      MMX_BIND_HOST: "127.0.0.1",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    // /auth/* is excluded from the bypass; the logout POST passes through.
+    await proxy(makeRequest("/auth/logout", { multica_logged_in: "1" }));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls through to login when the backend refuses", async () => {
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      MMX_BIND_HOST: "127.0.0.1",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+    const res = await proxy(makeRequest("/login"));
+    expect(res.status).not.toBe(500);
+    expect(res.cookies.get("multica_logged_in")).toBeUndefined();
+  });
+
+  it("refuses a non-private bind", async () => {
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      MMX_BIND_HOST: "0.0.0.0",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    await proxy(makeRequest("/inbox"));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

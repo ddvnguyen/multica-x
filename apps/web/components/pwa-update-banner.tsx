@@ -16,6 +16,15 @@ export function PwaUpdateBanner() {
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+    // Inside the portal iframe the gateway owns /sw.js (scope "/") and the
+    // app's own worker could never control the page — registering would
+    // throw a scope error on every load. The gateway's worker (already
+    // active at the top level) keeps the offline/update story there.
+    try {
+      if (window.self !== window.top) return;
+    } catch {
+      return;
+    }
     let cancelled = false;
 
     const track = (reg: ServiceWorkerRegistration) => {

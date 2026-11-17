@@ -13,6 +13,36 @@ import {
 } from "./lib/landing-locale-path";
 import { runtimeRewriteDestination } from "./config/runtime-urls";
 import { isOfficialMarketingHost } from "./lib/public-host";
+import { isMmxPwa } from "./lib/pwa-brand";
+
+// Lane-z auth bypass (M-404): when the PWA runs behind the portal with no
+// login screen, the server mints the Owner session itself before any page
+// renders. Config, not UI: the email is fixed here, no request parameter
+// can change it, and logout (which clears the session cookie) re-arms it.
+const BYPASS_EMAIL = "ddvnguyen@gmail.com";
+
+/** True only on MMX PWA builds with the lane flag explicitly on. */
+export function isAuthBypassEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return isMmxPwa(env) && env.MMX_AUTH_BYPASS === "1";
+}
+
+function bypassBindAllowed(): boolean {
+  // The bypassed server must never face the open network: bind loopback or
+  // the private dsh bridge only. PORT is the Next listener; REMOTE_API_URL
+  // is the backend it would hand a session to — both stay off public binds.
+  const bind = (process.env.MMX_BIND_HOST ?? "127.0.0.1").trim().toLowerCase();
+  if (["127.0.0.1", "localhost", "::1"].includes(bind)) return true;
+  return bind.startsWith("10.88.");
+}
+
+function bypassRefusedReason(): string | null {
+  if (!isAuthBypassEnabled()) return "disabled";
+  if (!bypassBindAllowed()) return "non-private bind";
+  return null;
+}
+
 
 // Old workspace-scoped route segments that existed before the URL refactor
 // (pre-#1131). Any URL with these as the FIRST segment is a legacy URL that
@@ -91,6 +121,27 @@ function routeLandingLocale(
 // edge.
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  // Lane-z auth bypass (M-404): no session cookie on a page route means the
+  // server signs the fixed Owner account in through the normal code flow
+  // (send-code with the lane dev code, then verify) and sets the same
+  // session cookies the login page would. Static assets, the backend
+  // rewrites below, and /api//ws//auth handlers bypass this — it only runs
+  // for page navigations, so logout (cookie cleared) re-arms exactly once
+  // per visit. Public build surface is untouched: non-MMX builds and
+  // MMX_AUTH_BYPASS!=1 return the refused reason and fall through.
+  const bypassRefused = bypassRefusedReason();
+  const isPageRoute =
+    !pathname.startsWith("/api/") &&
+    pathname !== "/api" &&
+    !pathname.startsWith("/auth/") &&
+    pathname !== "/auth" &&
+    pathname !== "/ws" &&
+    !pathname.startsWith("/_next/") &&
+    !pathname.includes(".");
+  if (bypassRefused === null && isPageRoute && !req.cookies.has("multica_logged_in")) {
+    return handleAuthBypass(req);
+  }
+
   const runtimeDestination = runtimeRewriteDestination(pathname, process.env);
   if (runtimeDestination) {
     const url = new URL(runtimeDestination);
@@ -155,6 +206,53 @@ export function proxy(req: NextRequest) {
   // --- Default: forward locale header to RSC, no redirect/rewrite ---
   // Covers logged-out root path, /login, /:slug/*, and everything else.
   return nextWithLocale(req);
+}
+
+// Runs the lane sign-in inline: send-code (dev code fills the email, no
+// real mail needed) then verify-code, and replays the backend's Set-Cookie
+// headers onto the page response so the browser holds a normal session.
+// Failures fall through to the regular login page — never a 500 — and are
+// logged server-side with one line per bypass sign-in at success.
+async function handleAuthBypass(req: NextRequest): Promise<NextResponse> {
+  const backend = (
+    process.env.REMOTE_API_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    ""
+  ).replace(/\/+$/, "");
+  const res = nextWithLocale(req);
+  if (!backend) return res;
+  try {
+    const send = await fetch(`${backend}/auth/send-code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: BYPASS_EMAIL }),
+    });
+    // 429 means a fresh code is already outstanding — verify proceeds anyway.
+    if (!send.ok && send.status !== 429) return res;
+    const devCode = (process.env.MULTICA_DEV_VERIFICATION_CODE ?? "").trim();
+    if (!/^\d{6}$/.test(devCode)) return res;
+    const verify = await fetch(`${backend}/auth/verify-code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: BYPASS_EMAIL, code: devCode }),
+    });
+    if (!verify.ok) return res;
+    const setCookies = verify.headers.getSetCookie?.() ?? [];
+    for (const cookie of setCookies) {
+      res.headers.append("set-cookie", cookie);
+    }
+    // The readable marker the proxy's session checks read.
+    res.cookies.set("multica_logged_in", "1", {
+      path: "/",
+      maxAge: 31536000,
+      sameSite: "lax",
+    });
+    // eslint-disable-next-line no-console
+    console.log(`[mmx-auth-bypass] signed in ${BYPASS_EMAIL}`);
+    return res;
+  } catch {
+    return res;
+  }
 }
 
 export const config = {

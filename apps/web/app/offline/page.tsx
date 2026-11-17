@@ -17,7 +17,14 @@ export default function Offline() {
         MMX needs a connection to load your work. Check your network and try again.
       </p>
       <Link
-        href="/inbox"
+        // Plain reload, not router navigation: inside the portal iframe the
+        // history strip hides /p/<port>, so the router base differs from the
+        // gateway URL. A reload replays whatever URL the browser shows.
+        href=""
+        onClick={(e) => {
+          e.preventDefault();
+          window.location.reload();
+        }}
         className="mt-2 inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground"
       >
         Retry

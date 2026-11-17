@@ -638,6 +638,12 @@ umask 077
   echo "PORT=$MMX_PWA_Z_PORT"
   echo "REMOTE_API_URL=http://127.0.0.1:$MULTICA_BE_Z_PORT"
   echo "NEXT_PUBLIC_APP_VERSION=$MMX_SHA"
+  # M-404: lane-z auto sign-in as the Owner (ddvnguyen@gmail.com). The PWA
+  # binds loopback only and the proxy refuses any non-private bind; unset
+  # (or MMX_AUTH_BYPASS=0) restores the normal login page. Lane only — the
+  # main-stack web image never sets this.
+  echo "MMX_AUTH_BYPASS=${MMX_AUTH_BYPASS:-1}"
+  echo "MULTICA_DEV_VERIFICATION_CODE=$MULTICA_Z_DEV_CODE"
 } > "$LANE_ROOT/mmx-pwa/env"
 umask 022
 systemctl --user enable --now "$MMX_PWA_Z_UNIT" >/dev/null 2>&1 || true

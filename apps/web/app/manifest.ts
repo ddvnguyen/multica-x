@@ -6,6 +6,14 @@ import { pwaBrand } from "@/lib/pwa-brand";
  * opens the workspace or login; the marketing host's root would open the landing
  * page even for a signed-in user.
  *
+ * Portal note (M-404): inside the /p/<port>/ iframe the browser installs from
+ * the top-level origin (portal.ddvnguyen.com), whose combined gateway worker
+ * owns the "/" scope — the app manifest is install metadata there, not the
+ * install itself. Users install from the direct lane URL instead
+ * (http://127.0.0.1:3190 on lane z), where scope "/" matches. Asset paths
+ * stay root-relative on purpose: the portal gateway rewrites them per
+ * request, and the installed app at its own origin needs them unprefixed.
+ *
  * Branding comes from `pwaBrand()` (`MMX_PWA=1` selects the MMX installable
  * app: own id/name/icons so it installs beside multica-web). Standard icons
  * share desktop artwork. The maskable SVG supplies full-bleed artwork for
