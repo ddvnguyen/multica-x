@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
-import { NextRequest } from "next/server";
+import { NextRequest, type NextResponse } from "next/server";
 import { MULTICA_LOCALE_HEADER } from "./lib/locale-routing";
 import { config, proxy } from "./proxy";
 
@@ -404,7 +404,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
         });
       }),
     );
-    const res = await proxy(makeRequest("/inbox"));
+    const res = (await proxy(makeRequest("/inbox"))) as NextResponse;
     expect(calls).toEqual([
       "http://127.0.0.1:4390/auth/send-code",
       "http://127.0.0.1:4390/auth/verify-code",
@@ -438,7 +438,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
     vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
-    const res = await proxy(makeRequest("/login"));
+    const res = (await proxy(makeRequest("/login"))) as NextResponse;
     expect(res.status).not.toBe(500);
     expect(res.cookies.get("multica_logged_in")).toBeUndefined();
   });
