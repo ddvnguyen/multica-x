@@ -216,6 +216,10 @@ export function PlanReviewPanel({
   const [showResolved, setShowResolved] = useState(false);
   // An older revision under review: undefined is the current plan.
   const [viewedRevision, setViewedRevision] = useState<number>();
+  // Debounces the tooltip raise until the selection settles: selectionchange
+  // fires on the first picked character of a drag, long before the pick is
+  // done. The effect below owns its lifecycle (clear + reset).
+  const settleTimer = useRef<number | undefined>(undefined);
   // The thread list sits below the plan, closed until the member opens it.
   const [commentsOpen, setCommentsOpen] = useState(false);
 
@@ -263,11 +267,24 @@ export function PlanReviewPanel({
       setTooltip(undefined);
       return;
     }
+    // The tooltip raises only once the selection settles: selectionchange
+    // fires on the first picked character of a drag, and focusing the tooltip
+    // button mid-drag would freeze the range at those first characters
+    // (M-348 lane re-verify). A pointer-up, a collapse, or a quiet 150ms
+    // after the last change all mean the pick is done.
     const capture = (): void => {
       const body = bodyRef.current;
       if (body === null) return;
       const pick = planBodyPick(body);
-      if (pick === null) return;
+      if (pick === null) {
+        // A collapse clears any pending raise: a drag that ends empty shows
+        // nothing instead of a stale quote.
+        if (settleTimer.current !== undefined) {
+          window.clearTimeout(settleTimer.current);
+          settleTimer.current = undefined;
+        }
+        return;
+      }
       const sectionOf = (node: Node | null): HTMLElement | null => {
         const element =
           node instanceof HTMLElement ? node : (node?.parentElement ?? null);
@@ -294,16 +311,47 @@ export function PlanReviewPanel({
       const y = Math.max(8, pick.rect.top - 40);
       setTooltip({ sectionId, quote, x, y });
     };
-    document.addEventListener("selectionchange", capture);
-    // A shadow root fires its own selectionchange for picks inside it; the
-    // document listener alone never sees them.
+    const captureSettled = (): void => {
+      if (settleTimer.current !== undefined) window.clearTimeout(settleTimer.current);
+      settleTimer.current = window.setTimeout(() => {
+        settleTimer.current = undefined;
+        capture();
+      }, 150);
+    };
+    const raiseNow = (): void => {
+      if (settleTimer.current !== undefined) {
+        window.clearTimeout(settleTimer.current);
+        settleTimer.current = undefined;
+      }
+      capture();
+    };
+    // A drag ends on pointer-up (mouse) or collapse; a keyboard pick
+    // (shift+arrows) ends on key-up. Between them the debounced
+    // selectionchange covers engines that emit neither.
+    const settleEvents: Array<readonly [string, () => void]> = [
+      ["pointerup", raiseNow],
+      ["mouseup", raiseNow],
+      ["keyup", raiseNow],
+      ["selectionchange", captureSettled],
+    ];
+    const targets: EventTarget[] = [document];
     const root = bodyRef.current?.getRootNode();
     const shadow =
       typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot ? root : null;
-    shadow?.addEventListener("selectionchange", capture);
+    // A shadow root fires its own selectionchange for picks inside it; the
+    // document listener alone never sees them.
+    if (shadow !== null) targets.push(shadow);
+    for (const target of targets) {
+      for (const [name, handler] of settleEvents) target.addEventListener(name, handler);
+    }
     return () => {
-      document.removeEventListener("selectionchange", capture);
-      shadow?.removeEventListener("selectionchange", capture);
+      for (const target of targets) {
+        for (const [name, handler] of settleEvents) target.removeEventListener(name, handler);
+      }
+      if (settleTimer.current !== undefined) {
+        window.clearTimeout(settleTimer.current);
+        settleTimer.current = undefined;
+      }
     };
   }, [composer, readOnly]);
 
@@ -910,7 +958,9 @@ export function PlanReviewPanel({
 
       {/* M-348: the selection tooltip. Fixed at the picking point, flipped
           above the selection; scrolling dismisses it (see the scroll effect).
-          The composer replaces it, anchored at the same point. */}
+          The composer replaces it, anchored at the same point. The button
+          takes no auto-focus: focusing it mid-drag would collapse the live
+          range and freeze the quote at its first characters. */}
       {tooltip !== undefined && composer === undefined && viewingOld !== true && (
         <div
           role="dialog"
@@ -922,7 +972,6 @@ export function PlanReviewPanel({
             <Button
               size="xs"
               variant="default"
-              autoFocus
               disabled={busy}
               onClick={() => {
                 setComposer({
