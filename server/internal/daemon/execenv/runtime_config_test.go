@@ -797,6 +797,77 @@ func TestAskPlanRuleSectionSkippedForIssueLessKinds(t *testing.T) {
 	}
 }
 
+func TestTurnEndContractSectionPresentForIssueRuns(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID:     "11111111-2222-3333-4444-555555555555",
+		AgentSkills: []SkillContextForEnv{platformSkillFixture()},
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	const header = "## Turn-end contract"
+	if !strings.Contains(out, header) {
+		t.Fatalf("expected Turn-end contract section in issue brief")
+	}
+	for _, want := range []string{
+		"A comment is not a trigger",
+		"The LAST action of every issue run must be exactly one of these",
+		"\"standing by\"",
+		"`multica issue wakeup create --until-*`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Turn-end contract section missing %q", want)
+		}
+	}
+	askIdx := strings.Index(out, "\n## Asking a human\n")
+	turnIdx := strings.Index(out, header)
+	if askIdx == -1 {
+		t.Fatalf("expected Asking a human section in issue brief")
+	}
+	if turnIdx < askIdx {
+		t.Errorf("Turn-end contract must come immediately after Asking a human")
+	}
+	between := out[askIdx+len("\n## Asking a human\n") : turnIdx]
+	if strings.Contains(between, "\n## ") {
+		t.Errorf("Turn-end contract must immediately follow Asking a human, found an intervening section")
+	}
+}
+
+func TestTurnEndContractAvoidsBuiltInStatusesUnderWorkflow(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID:            "11111111-2222-3333-4444-555555555555",
+		AgentSkills:        []SkillContextForEnv{platformSkillFixture()},
+		HasProjectWorkflow: true,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+	if !strings.Contains(out, "## Turn-end contract") {
+		t.Fatalf("workflow brief must keep the Turn-end contract section")
+	}
+	for _, want := range []string{"`in_progress`", "`in_review`"} {
+		if strings.Contains(out, want) {
+			t.Errorf("workflow brief turn-end section still names %s", want)
+		}
+	}
+	if !strings.Contains(out, "[Project workflow]") {
+		t.Errorf("workflow turn-end Finish closer must point at [Project workflow]")
+	}
+}
+
+func TestTurnEndContractSectionSkippedForNonIssueKinds(t *testing.T) {
+	t.Parallel()
+	for _, ctx := range []TaskContextForEnv{
+		{ChatSessionID: "session-1"},
+		{AutopilotRunID: "run-1"},
+		{QuickCreatePrompt: "make an issue"},
+	} {
+		out := buildMetaSkillContent("claude", ctx)
+		if strings.Contains(out, "## Turn-end contract") {
+			t.Errorf("non-issue brief must not carry the Turn-end contract section (ctx %+v)", ctx)
+		}
+	}
+}
+
 func TestSubIssueCreationSectionIsUnconditional(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{
