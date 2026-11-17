@@ -390,6 +390,8 @@ describe("proxy MMX auth bypass (M-404)", () => {
       REMOTE_API_URL: "http://127.0.0.1:4390",
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
+    // Silence the one success line the bypass logs per sign-in.
+    vi.spyOn(console, "log").mockImplementation(() => {});
     const calls: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -409,7 +411,15 @@ describe("proxy MMX auth bypass (M-404)", () => {
       "http://127.0.0.1:4390/auth/send-code",
       "http://127.0.0.1:4390/auth/verify-code",
     ]);
-    expect(res.cookies.get("multica_logged_in")?.value).toBe("1");
+    // Same-request continuation: the bypass replays the backend session
+    // onto the request and routes it as authenticated (/inbox has no slug
+    // yet, so it lands on /login to resolve the workspace list) — while
+    // the response carries the session cookies to the browser.
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("/login");
+    const rawSetCookie = res.headers.get("set-cookie") ?? "";
+    expect(rawSetCookie).toContain("multica_logged_in=1");
+    expect(rawSetCookie).toContain("multica_auth=tok");
   });
 
   it("does not loop on logout: with the session cookie it falls through", async () => {

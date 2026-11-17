@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { LOCALE_COOKIE, type SupportedLocale } from "@multica/core/i18n";
 import {
   isSupportedLocale,
@@ -120,6 +120,10 @@ function routeLandingLocale(
 // change is the runtime — proxy is forced to nodejs and cannot opt into
 // edge.
 export async function proxy(req: NextRequest) {
+  return proxyInner(req);
+}
+
+async function proxyInner(req: NextRequest, passthroughCookies?: string[]) {
   const { pathname } = req.nextUrl;
   // Lane-z auth bypass (M-404): no session cookie on a page route means the
   // server signs the fixed Owner account in through the normal code flow
@@ -139,7 +143,35 @@ export async function proxy(req: NextRequest) {
     !pathname.startsWith("/_next/") &&
     !pathname.includes(".");
   if (bypassRefused === null && isPageRoute && !req.cookies.has("multica_logged_in")) {
-    return handleAuthBypass(req);
+    const freshCookies = await handleAuthBypass(req);
+    if (freshCookies) {
+      // Continue the SAME request authenticated: the backend session is
+      // server-side (HttpOnly), so replay its Set-Cookie headers onto the
+      // request the rest of this function routes — /login then resolves
+      // the workspace list, legacy URLs redirect with last_workspace_slug.
+      // The readable marker the session checks read travels the same way.
+      const headers = new Headers(req.headers);
+      const names = new Set(
+        freshCookies.map((c) => c.split("=", 1)[0]?.trim().toLowerCase()),
+      );
+      const kept = (headers.get("cookie") ?? "")
+        .split(";")
+        .map((p) => p.trim())
+        .filter((p) => p && !names.has(p.split("=", 1)[0]?.trim().toLowerCase()));
+      const jar = freshCookies.map((c) => c.split(";", 1)[0]?.trim()).filter(Boolean);
+      const merged = [...kept, ...jar, "multica_logged_in=1"].join("; ");
+      headers.set("cookie", merged);
+      const authed = new NextRequest(req.nextUrl.clone(), { headers });
+      const res = await proxyInner(authed);
+      for (const cookie of freshCookies) {
+        res.headers.append("set-cookie", cookie);
+      }
+      res.headers.append(
+        "set-cookie",
+        `multica_logged_in=1; Path=/; Max-Age=31536000; SameSite=Lax`,
+      );
+      return res;
+    }
   }
 
   const runtimeDestination = runtimeRewriteDestination(pathname, process.env);
@@ -149,7 +181,7 @@ export async function proxy(req: NextRequest) {
     return NextResponse.rewrite(url);
   }
 
-  const hasSession = req.cookies.has("multica_logged_in");
+  const hasSession = req.cookies.has("multica_logged_in") || passthroughCookies !== undefined;
   const lastSlug = req.cookies.get("last_workspace_slug")?.value;
 
   // --- Legacy URL redirect: /issues/... → /{slug}/issues/... ---
@@ -209,18 +241,22 @@ export async function proxy(req: NextRequest) {
 }
 
 // Runs the lane sign-in inline: send-code (dev code fills the email, no
-// real mail needed) then verify-code, and replays the backend's Set-Cookie
-// headers onto the page response so the browser holds a normal session.
-// Failures fall through to the regular login page — never a 500 — and are
-// logged server-side with one line per bypass sign-in at success.
-async function handleAuthBypass(req: NextRequest): Promise<NextResponse> {
+// real mail needed) then verify-code. Returns the backend's Set-Cookie
+// headers so the caller can continue the SAME request as authenticated:
+// cookie-auth sessions live server-side (HttpOnly multica_auth), so the
+// page must not render until the cookies exist — instead of responding
+// here, the caller replays them onto its own request and falls through to
+// the normal session routing (/login resolves the workspace list, legacy
+// URLs redirect with last_workspace_slug). Failures return null and the
+// request falls through to the regular login page — never a 500.
+// Logged server-side with one line per bypass sign-in at success.
+async function handleAuthBypass(req: NextRequest): Promise<string[] | null> {
   const backend = (
     process.env.REMOTE_API_URL ??
     process.env.NEXT_PUBLIC_API_URL ??
     ""
   ).replace(/\/+$/, "");
-  const res = nextWithLocale(req);
-  if (!backend) return res;
+  if (!backend) return null;
   try {
     const send = await fetch(`${backend}/auth/send-code`, {
       method: "POST",
@@ -228,30 +264,21 @@ async function handleAuthBypass(req: NextRequest): Promise<NextResponse> {
       body: JSON.stringify({ email: BYPASS_EMAIL }),
     });
     // 429 means a fresh code is already outstanding — verify proceeds anyway.
-    if (!send.ok && send.status !== 429) return res;
+    if (!send.ok && send.status !== 429) return null;
     const devCode = (process.env.MULTICA_DEV_VERIFICATION_CODE ?? "").trim();
-    if (!/^\d{6}$/.test(devCode)) return res;
+    if (!/^\d{6}$/.test(devCode)) return null;
     const verify = await fetch(`${backend}/auth/verify-code`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: BYPASS_EMAIL, code: devCode }),
     });
-    if (!verify.ok) return res;
+    if (!verify.ok) return null;
     const setCookies = verify.headers.getSetCookie?.() ?? [];
-    for (const cookie of setCookies) {
-      res.headers.append("set-cookie", cookie);
-    }
-    // The readable marker the proxy's session checks read.
-    res.cookies.set("multica_logged_in", "1", {
-      path: "/",
-      maxAge: 31536000,
-      sameSite: "lax",
-    });
     // eslint-disable-next-line no-console
     console.log(`[mmx-auth-bypass] signed in ${BYPASS_EMAIL}`);
-    return res;
+    return setCookies;
   } catch {
-    return res;
+    return null;
   }
 }
 
