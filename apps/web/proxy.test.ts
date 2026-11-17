@@ -373,11 +373,13 @@ describe("proxy MMX auth bypass (M-404)", () => {
 
   it("stays off unless MMX PWA build and flag are both on", async () => {
     const { isAuthBypassEnabled } = await import("./proxy");
-    setBypassEnv({ MMX_PWA: "1", MMX_AUTH_BYPASS: "0" });
+    setBypassEnv({ MMX_AUTH_BYPASS: "0" });
     expect(isAuthBypassEnabled()).toBe(false);
+    setBypassEnv({ MMX_AUTH_BYPASS: undefined });
+    expect(isAuthBypassEnabled()).toBe(false);
+    // Deliberately not gated on the MMX_PWA build flag (build-time
+    // branding, not runtime env): the lane flag alone enables it.
     setBypassEnv({ MMX_PWA: undefined, MMX_AUTH_BYPASS: "1" });
-    expect(isAuthBypassEnabled()).toBe(false);
-    setBypassEnv({ MMX_PWA: "1", MMX_AUTH_BYPASS: "1" });
     expect(isAuthBypassEnabled()).toBe(true);
   });
 

@@ -13,7 +13,6 @@ import {
 } from "./lib/landing-locale-path";
 import { runtimeRewriteDestination } from "./config/runtime-urls";
 import { isOfficialMarketingHost } from "./lib/public-host";
-import { isMmxPwa } from "./lib/pwa-brand";
 
 // Lane-z auth bypass (M-404): when the PWA runs behind the portal with no
 // login screen, the server mints the Owner session itself before any page
@@ -21,11 +20,16 @@ import { isMmxPwa } from "./lib/pwa-brand";
 // can change it, and logout (which clears the session cookie) re-arms it.
 const BYPASS_EMAIL = "ddvnguyen@gmail.com";
 
-/** True only on MMX PWA builds with the lane flag explicitly on. */
+/** True when the lane flag is explicitly on. Deliberately NOT gated on
+ * the MMX_PWA build flag: that flag is build-time branding (baked into the
+ * bundle), while the bypass is a runtime lane decision read from the unit
+ * env. Gating on both would silently disable the bypass on any lane
+ * server started without the build flag in its runtime env.
+ */
 export function isAuthBypassEnabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
-  return isMmxPwa(env) && env.MMX_AUTH_BYPASS === "1";
+  return env.MMX_AUTH_BYPASS === "1";
 }
 
 function bypassBindAllowed(): boolean {
