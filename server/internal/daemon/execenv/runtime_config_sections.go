@@ -838,6 +838,31 @@ func writeAskPlanRule(b *strings.Builder, kind taskKind) {
 	b.WriteString("If `ask` / `plan` is not in your tool list (runtime cannot call it, task has no issue), do not ask in free text. Set the issue to `blocked` (or `wait_for_decision` where your workflow has it) and post ONE comment that names the missing tool and states the question. Stop.\n\n")
 }
 
+// writeTurnEndContract emits the turn-end hard rule (M-256, 2026-11-16): a
+// comment wakes nobody — only an assign, a real mention link, a native
+// ask/plan call, or an issue wakeup starts the next run. The LAST action of
+// every issue run is exactly one of the five closers below, done with a tool
+// call, not described in text. Caller gates on kind == kindIssue. The Finish
+// closer names no built-in status when the issue follows a project workflow
+// (MUL-8145): the per-turn [Project workflow] block owns the step names.
+// Wording avoids bare "agent"/"worker" outside backticks so the Desktop brief
+// keeps its generated prose.
+func writeTurnEndContract(b *strings.Builder, ctx TaskContextForEnv) {
+	b.WriteString("## Turn-end contract\n\n")
+	b.WriteString("A comment is not a trigger. Text such as \"lane operator needed\", \"Claude Architect needed\", \"waiting for review\" or \"next: someone should…\" wakes nobody. Role names are not addresses. Only these do: `multica issue assign`, a real mention link, a native `ask`/`plan`, or a `multica issue wakeup`.\n\n")
+	b.WriteString("The LAST action of every issue run must be exactly one of these, done with a tool call, not described in text:\n")
+	b.WriteString("- Hand off (`multica issue assign` the card to the next owner, with a comment: what is done, what is asked).\n")
+	b.WriteString("- Advance the stage (status move with evidence).\n")
+	b.WriteString("- Send a question or plan (native `ask` / `plan` for the Owner; assign the card or @mention the one owner who must act for another).\n")
+	b.WriteString("- Wait on a fact (`multica issue wakeup create --until-*` with `--expires-in`).\n")
+	if ctx.HasProjectWorkflow {
+		b.WriteString("- Finish (run the step's terminal command with the evidence block — see `[Project workflow]` — or a result comment for non-code cards).\n\n")
+	} else {
+		b.WriteString("- Finish (`in_review` with the evidence block, or a result comment for non-code cards).\n\n")
+	}
+	b.WriteString("Never end a run with: a summary only, \"standing by\", a to-do for an unnamed person, a card left at a working step with no run and no wakeup, or a \"Next:\" line nobody is triggered to read.\n\n")
+}
+
 func writeSubIssueCreation(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Sub-issue Creation\n\n")
 	b.WriteString(desktopWorkflowCopy("Default to one issue, one PR. Split only when each piece can be merged and verified on its own — another repository, separate code, or a different owner such as a human step or another agent — and slice by user-visible behavior, never by layer: a backend / frontend split of one feature loses the discussion behind it and cannot be verified end to end until every piece lands. A PR that is large to review is not a reason to split; organize it into commits and give reviewers a guide in its description.\n\n", ctx.IsFreebuffDesktop))
@@ -1301,6 +1326,10 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) (string, 
 
 	if kind == kindIssue || kind == kindChat {
 		writeAskPlanRule(&b, kind)
+	}
+
+	if kind == kindIssue {
+		writeTurnEndContract(&b, ctx)
 	}
 
 	if kind.hasIssueContext() && ctx.IssueID != "" {
