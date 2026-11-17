@@ -32,13 +32,21 @@ export function isAuthBypassEnabled(
   return env.MMX_AUTH_BYPASS === "1";
 }
 
-function bypassBindAllowed(): boolean {
-  // The bypassed server must never face the open network: bind loopback or
-  // the private dsh bridge only. PORT is the Next listener; REMOTE_API_URL
-  // is the backend it would hand a session to — both stay off public binds.
-  const bind = (process.env.MMX_BIND_HOST ?? "127.0.0.1").trim().toLowerCase();
-  if (["127.0.0.1", "localhost", "::1"].includes(bind)) return true;
-  return bind.startsWith("10.88.");
+function bypassBindAllowed(env: Record<string, string | undefined> = process.env): boolean {
+  // Fail closed (Architect verdict): an unset bind means refuse, never
+  // "assume loopback". MMX_BIND_HOST is the declared lane bind; HOSTNAME is
+  // what Next's standalone server actually listens on (default 0.0.0.0 when
+  // unset — ss showed 0.0.0.0:3190 while the old default-assuming guard
+  // passed). Both must be explicitly loopback/private.
+  const bind = (env.MMX_BIND_HOST ?? "").trim().toLowerCase();
+  if (!bind) return false;
+  if (!["127.0.0.1", "localhost", "::1"].includes(bind) && !bind.startsWith("10.88.")) {
+    return false;
+  }
+  const hostname = (env.HOSTNAME ?? "").trim().toLowerCase();
+  if (hostname === "" || hostname === "0.0.0.0" || hostname === "::") return false;
+  if (["127.0.0.1", "localhost", "::1"].includes(hostname)) return true;
+  return hostname.startsWith("10.88.");
 }
 
 function bypassRefusedReason(): string | null {

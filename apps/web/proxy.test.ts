@@ -362,7 +362,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
   const OLD = { ...process.env };
 
   function setBypassEnv(env: Record<string, string | undefined>) {
-    for (const k of ["MMX_PWA", "MMX_AUTH_BYPASS", "MMX_BIND_HOST"]) delete process.env[k];
+    for (const k of ["MMX_PWA", "MMX_AUTH_BYPASS", "MMX_BIND_HOST", "HOSTNAME"]) delete process.env[k];
     Object.assign(process.env, env);
   }
 
@@ -389,6 +389,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
       MMX_PWA: "1",
       MMX_AUTH_BYPASS: "1",
       MMX_BIND_HOST: "127.0.0.1",
+      HOSTNAME: "127.0.0.1",
       REMOTE_API_URL: "http://127.0.0.1:4390",
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
@@ -430,6 +431,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
       MMX_PWA: "1",
       MMX_AUTH_BYPASS: "1",
       MMX_BIND_HOST: "127.0.0.1",
+      HOSTNAME: "127.0.0.1",
       REMOTE_API_URL: "http://127.0.0.1:4390",
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
@@ -446,6 +448,7 @@ describe("proxy MMX auth bypass (M-404)", () => {
       MMX_PWA: "1",
       MMX_AUTH_BYPASS: "1",
       MMX_BIND_HOST: "127.0.0.1",
+      HOSTNAME: "127.0.0.1",
       REMOTE_API_URL: "http://127.0.0.1:4390",
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
@@ -461,6 +464,41 @@ describe("proxy MMX auth bypass (M-404)", () => {
       MMX_PWA: "1",
       MMX_AUTH_BYPASS: "1",
       MMX_BIND_HOST: "0.0.0.0",
+      HOSTNAME: "127.0.0.1",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    await proxy(makeRequest("/inbox"));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the bind is unset (fail closed)", async () => {
+    // Architect verdict: unset MMX_BIND_HOST means refuse, not "assume
+    // loopback". No HOSTNAME either — Next would listen on 0.0.0.0.
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      REMOTE_API_URL: "http://127.0.0.1:4390",
+      MULTICA_DEV_VERIFICATION_CODE: "002608",
+    });
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    await proxy(makeRequest("/inbox"));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses when Next listens on 0.0.0.0 despite a private declared bind", async () => {
+    // The lane hole: MMX_BIND_HOST=127.0.0.1 passed the old guard while
+    // Next (HOSTNAME unset → 0.0.0.0) served publicly. Both must agree.
+    const { proxy } = await import("./proxy");
+    setBypassEnv({
+      MMX_PWA: "1",
+      MMX_AUTH_BYPASS: "1",
+      MMX_BIND_HOST: "127.0.0.1",
+      HOSTNAME: "0.0.0.0",
       REMOTE_API_URL: "http://127.0.0.1:4390",
       MULTICA_DEV_VERIFICATION_CODE: "002608",
     });
