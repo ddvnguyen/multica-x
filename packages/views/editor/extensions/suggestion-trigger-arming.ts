@@ -40,8 +40,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
  * did not type is never armed, so it never opens a picker.
  */
 
-/** Trigger characters any suggestion in this editor listens for. */
-const TRIGGER_CHARS = new Set(["@", "/"]);
+/** Trigger characters any suggestion in this editor listens for. `#` is the
+ * M-359 tier pick (after an `@agent` pill); like `@` and `/` it opens only
+ * when actually typed, never on paste. */
+const TRIGGER_CHARS = new Set(["@", "/", "#"]);
 
 /**
  * Latest armed position per editor.
