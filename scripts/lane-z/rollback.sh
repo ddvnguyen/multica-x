@@ -81,6 +81,9 @@ systemctl --user restart "$MULTICA_BE_Z_UNIT"
 SHA="$(jq -r '.sha // empty' "$TARGET/release.json")"
 wait_http "http://127.0.0.1:$MULTICA_BE_Z_PORT/healthz" 120 '"status":"ok"' \
   || die "multica-be z /healthz did not answer ok after the rollback"
-commit="$(curl -fsS --max-time 5 http://127.0.0.1:3180/multica/health | jq -r '.commit // empty' || true)"
-commit_matches "$commit" "$SHA" || die "/multica/health reports '$commit', expected '$SHA'"
+# M-399 repair: dsh 0.2.2-rc.3 fences /multica/* behind a browser-session
+# cookie, so a plain curl always gets 401 and the old /multica/health probe can
+# never answer. The backend's own /health carries the same commit payload.
+commit="$(curl -fsS --max-time 5 "http://127.0.0.1:$MULTICA_BE_Z_PORT/health" | jq -r '.commit // empty' || true)"
+commit_matches "$commit" "$SHA" || die "/health reports '$commit', expected '$SHA'"
 log "lane z is back on ${SHA:0:9} ($(jq -r '.version // "unknown"' "$TARGET/release.json")); the database was NOT touched"
