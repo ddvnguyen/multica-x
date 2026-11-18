@@ -40,9 +40,9 @@ func newAskPlanFixture(t *testing.T) askPlanFixture {
 	dbfx.Cleanup(t, `DELETE FROM agent_question_card WHERE task_id = $1`, taskID)
 	// Plan review threads and section history reference the plan, so they go
 	// first (cleanups run last-registered-first).
-	dbfx.Cleanup(t, `DELETE FROM agent_plan_comment WHERE plan_id IN (SELECT id FROM agent_plan WHERE task_id = $1)`, taskID)
-	dbfx.Cleanup(t, `DELETE FROM agent_plan_section_version WHERE plan_id IN (SELECT id FROM agent_plan WHERE task_id = $1)`, taskID)
-	dbfx.Cleanup(t, `DELETE FROM agent_plan WHERE task_id = $1`, taskID)
+	dbfx.Cleanup(t, `DELETE FROM agent_plan_comment WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM agent_plan_section_version WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM agent_plan WHERE issue_id = $1`, issueID)
 	dbfx.Cleanup(t, `DELETE FROM agent_plan_review WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
 	dbfx.Cleanup(t, `DELETE FROM inbox_item WHERE issue_id = $1 AND type IN ('agent_question','plan_review')`, issueID)
 	return askPlanFixture{runtimeID: runtimeID, agentID: agentID, issueID: issueID, taskID: taskID}
@@ -292,6 +292,67 @@ func TestPlanCreateGateRefusesSecondOpenPlan(t *testing.T) {
 		"title": "Second plan", "outline": []string{"Goal"},
 	})
 	testutil.Call(t, testHandler.CreatePlan, second).Want(http.StatusConflict)
+}
+
+func createPlanForTask(t *testing.T, f askPlanFixture, title string, outline []string) planResponse {
+	t.Helper()
+	var plan planResponse
+	testutil.Call(t, testHandler.CreatePlan,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/plans", map[string]any{
+			"title": title, "outline": outline,
+		}),
+	).Want(http.StatusCreated).JSON(&plan)
+	return plan
+}
+
+func reassignAskPlanTask(t *testing.T, f askPlanFixture) askPlanFixture {
+	t.Helper()
+	next := f
+	next.agentID = dbfx.Agent(t, "Replacement Plan Agent", f.runtimeID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type='agent', assignee_id=$2 WHERE id=$1`, f.issueID, next.agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, f.taskID)
+	next.taskID = dbfx.Task(t, next.agentID, testutil.Cols{
+		"issue_id": f.issueID, "runtime_id": f.runtimeID, "status": "running",
+	})
+	return next
+}
+
+func TestReassignedIssueAssigneeCanSubmitOpenPlanFromEarlierTask(t *testing.T) {
+	f := newAskPlanFixture(t)
+	created := createPlanForTask(t, f, "First task plan", []string{"Goal"})
+
+	next := reassignAskPlanTask(t, f)
+	write := agentPlanRequest(t, next, http.MethodPut, "/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/sections", created.ID, map[string]any{
+		"base_revision": created.Revision,
+		"section":       map[string]any{"section_id": "s1", "heading": "Goal", "markdown": "Updated by current assignee"},
+	})
+	var updated planResponse
+	testutil.Call(t, testHandler.WritePlanSection, write).Want(http.StatusOK).JSON(&updated)
+	var submitted planResponse
+	testutil.Call(t, testHandler.SubmitPlan,
+		agentPlanRequest(t, next, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/submit", created.ID, map[string]any{
+			"revision": updated.Revision,
+		}),
+	).Want(http.StatusAccepted).JSON(&submitted)
+	if submitted.Status != "in_review" || submitted.TaskID != next.taskID {
+		t.Fatalf("submitted plan = %#v, want in_review on task %s", submitted, next.taskID)
+	}
+}
+
+func TestCurrentAssigneeCanReplaceOpenPlanFromEarlierTask(t *testing.T) {
+	f := newAskPlanFixture(t)
+	previous := createPlanForTask(t, f, "First task plan", []string{"Goal"})
+
+	next := reassignAskPlanTask(t, f)
+	replacement := createPlanForTask(t, next, "Replacement plan", []string{"Goal", "Steps"})
+	if replacement.ID == previous.ID {
+		t.Fatalf("replacement reused previous plan id %s", previous.ID)
+	}
+	var previousStatus string
+	dbfx.QueryRow(t, `SELECT status FROM agent_plan WHERE id=$1`, previous.ID).Scan(&previousStatus)
+	if previousStatus != "cancelled" {
+		t.Fatalf("previous plan status = %q, want cancelled", previousStatus)
+	}
 }
 
 func TestPlanWriteSectionRevisionFence(t *testing.T) {
