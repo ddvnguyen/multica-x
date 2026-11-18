@@ -151,6 +151,32 @@ describe("WebTabNavigationProvider adapter", () => {
     );
   });
 
+  // M-413: a row/link click reaches the adapter's `push`, which writes the
+  // session. The sync is what moves the Next router, so a push that never got
+  // projected showed the new tab name over the old page — the agent row click
+  // that "did not open" the agent.
+  it("projects an adapter push onto the router", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().push("/acme/agents/agent-1");
+    });
+    expect(router.replace).toHaveBeenCalledWith("/acme/agents/agent-1");
+  });
+
+  it("projects an adapter replace onto the router", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().replace("/acme/agents/agent-1?view=general");
+    });
+    expect(router.replace).toHaveBeenCalledWith("/acme/agents/agent-1?view=general");
+  });
+
   it("openInNewTab opens a background tab by default", () => {
     act(() => {
       sync();

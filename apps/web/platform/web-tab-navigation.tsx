@@ -165,9 +165,12 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
     // The URL changed but the session didn't → external navigation; the
     // router → store effect owns this commit.
     if (activeUrl === prev) return;
-    // A projection is already in flight to this URL; wait for Next to commit
-    // instead of re-issuing (or, worse, reverting via the effect below).
-    if (projectedRef.current === activeUrl) return;
+    // A projection claimed by the adapter (`push`, `replace`, an activating
+    // `openInNewTab`) is still ours to finish: those writes only move the
+    // session, so the router has to follow here. Skipping them left every
+    // in-app click with a tab that never opened the page it named (M-413).
+    // `projectUrl` below re-records the projection, so the router → store
+    // effect keeps ignoring the stale address-bar URL until Next commits.
     // Sessions never navigate out of their workspace; cross-workspace moves
     // go through switchWorkspace (adapter push) instead.
     if (workspaceSlugForPath(activeUrl) !== workspaceSlugForPath(pathname)) {
