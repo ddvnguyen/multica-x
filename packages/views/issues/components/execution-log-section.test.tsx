@@ -84,7 +84,7 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
   };
 }
 
-function renderRow(task: AgentTask, extra?: { onJump?: (id: string) => void }) {
+function renderRow(task: AgentTask, extra?: { onJump?: () => void }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderWithI18n(
     <QueryClientProvider client={queryClient}>
