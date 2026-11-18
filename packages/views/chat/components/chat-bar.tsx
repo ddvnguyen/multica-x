@@ -19,10 +19,12 @@ import { cn } from "@multica/ui/lib/utils";
 import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
 import { BOTTOM_BAR_ITEM_CLASS } from "../../layout/bottom-bar-styles";
+import { useChatTabsInHeader } from "../../tabs/chat-tabs";
 import { ChatBarHistory } from "./chat-bar-history";
 import { chatActivity, selectChatBarSessions, type ChatBarSession } from "./chat-bar-sessions";
 
 const EMPTY_SESSIONS: ChatSession[] = [];
+const EMPTY_CHIPS: ChatBarSession[] = [];
 const STAR = starPath(STAR_STROKE);
 
 /** The star from the Multica mark, in the text colour. */
@@ -90,6 +92,11 @@ function SessionMark({ item }: { item: ChatBarSession }) {
 export function ChatBar() {
   const { t } = useT("chat");
   const wsId = useWorkspaceId();
+  // The strip above the page already lists the open chats when the shell puts
+  // them there (M-413); a second set of chips under it would be the same list
+  // twice. Ask Multica and the history stay — they start a chat and find an old
+  // one, which the strip does not do.
+  const sessionsInHeader = useChatTabsInHeader();
   const isOpen = useChatStore((s) => s.isOpen);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
@@ -127,6 +134,7 @@ export function ChatBar() {
   );
   const openOnChip = visible.some((item) => item.open);
   const askPressed = isOpen && !openOnChip;
+  const chips: ChatBarSession[] = sessionsInHeader ? EMPTY_CHIPS : visible;
 
   const openSession = (session: ChatSession) => {
     // A chat is bound to its agent, so opening it selects that agent too.
@@ -161,7 +169,7 @@ export function ChatBar() {
 
   return (
     <div ref={rootRef} data-slot="chat-bar" className="flex min-w-0 shrink-0 items-center gap-0.5">
-      {visible.map((item) => {
+      {chips.map((item) => {
         const title = titleOf(item.session);
         const state = stateOf(item);
         return (
@@ -194,7 +202,7 @@ export function ChatBar() {
           </span>
         );
       })}
-      {overflow.length > 0 && (
+      {!sessionsInHeader && overflow.length > 0 && (
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t(($) => $.bar.more, { count: overflow.length })}
@@ -218,7 +226,7 @@ export function ChatBar() {
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-      {(visible.length > 0 || overflow.length > 0) && (
+      {!sessionsInHeader && (visible.length > 0 || overflow.length > 0) && (
         <span aria-hidden className="mx-1.5 h-3.5 w-px shrink-0 bg-surface-border" />
       )}
       <TooltipHint

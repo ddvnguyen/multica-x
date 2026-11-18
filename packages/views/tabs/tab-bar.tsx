@@ -41,8 +41,9 @@ import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabStore, useActiveGroup, type Tab } from "@multica/core/tabs";
-import { paths } from "@multica/core/paths";
+import { paths, parseTabSubject } from "@multica/core/paths";
 import { useT } from "../i18n";
+import { HeaderChatTabs, useChatTabsInHeader } from "./chat-tabs";
 import {
   useTabPresentation,
   ResourceLeadingVisual,
@@ -153,6 +154,7 @@ function SortableTabItem({
   canCloseRight,
   isNew,
   shouldReduceMotion,
+  compact,
   host,
 }: {
   tab: Tab;
@@ -167,6 +169,8 @@ function SortableTabItem({
   canCloseRight: boolean;
   isNew: boolean;
   shouldReduceMotion: boolean;
+  /** Narrower tabs whose issue tabs read as their identifier (M-413). */
+  compact: boolean;
   host: TabBarHostCapabilities;
 }) {
   const { t } = useT("settings");
@@ -192,6 +196,16 @@ function SortableTabItem({
   const tabName = tab.pinned
     ? t(($) => $.desktop.tab_bar.pinned_name, { title })
     : title;
+
+  // A compact strip switches places, so it names the place: an issue's
+  // identifier (`M-413`) with the full title in the tooltip, instead of a
+  // title that costs the width another tab needs. Everything else keeps its
+  // own name — an agent tab is the agent, a page tab is the page.
+  const compactIssue =
+    compact && parseTabSubject(tab.url).kind === "issue"
+      ? title.split(":")[0]?.trim()
+      : undefined;
+  const stripLabel = compactIssue || title;
 
   // Persist each tab's resolved title so it survives as the next
   // session's first-frame fallback. The tab strip itself always renders the
@@ -286,7 +300,8 @@ function SortableTabItem({
       data-tab-entering={isEntering ? "true" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       className={cn(
-        "group relative flex size-full min-w-0 items-center gap-1.5 px-2.5 text-caption transition-colors",
+        "group relative flex size-full min-w-0 items-center gap-1.5 text-caption transition-colors",
+        compact ? "px-2" : "px-2.5",
         "select-none cursor-default",
         isActive
           ? "text-foreground"
@@ -302,7 +317,7 @@ function SortableTabItem({
           WebkitMaskImage: "linear-gradient(to right, black calc(100% - 12px), transparent)",
         }}
       >
-        {title}
+        {stripLabel}
       </span>
       <span
         onClick={handleTogglePin}
@@ -334,7 +349,7 @@ function SortableTabItem({
       style={style}
       data-tab-frame
       data-tab-id={tab.id}
-      className={cn("h-full w-56 min-w-32", isActive && "z-10")}
+      className={cn("h-full min-w-0", compact ? "w-40 min-w-24" : "w-56 min-w-32", isActive && "z-10")}
     >
       <motion.div
         className="group/tab relative size-full"
@@ -347,14 +362,14 @@ function SortableTabItem({
             the content card's own material so it reads as the card's tab
             without having to join it. */}
         <span
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute inset-x-0 inset-y-1.5 rounded-lg transition-colors",
-            isActive
-              ? "bg-page-canvas shadow-[var(--surface-shadow)] ring-1 ring-surface-border"
-              : "bg-page-canvas/50 group-hover/tab:bg-page-canvas/80",
-            isDragging && "opacity-60",
-          )}
+          aria-hidden            className={cn(
+              "pointer-events-none absolute inset-x-0 rounded-lg transition-colors",
+              compact ? "inset-y-1" : "inset-y-1.5",
+              isActive
+                ? "bg-page-canvas shadow-[var(--surface-shadow)] ring-1 ring-surface-border"
+                : "bg-page-canvas/50 group-hover/tab:bg-page-canvas/80",
+              isDragging && "opacity-60",
+            )}
         />
         <ContextMenu>
           <TooltipHint label={tab.pinned ? tabName : undefined} side="bottom">
@@ -523,7 +538,18 @@ function NewTabButton() {
   );
 }
 
-export function TabBar({ host = {} }: { host?: TabBarHostCapabilities } = {}) {
+export function TabBar({
+  host = {},
+  compact = false,
+}: {
+  host?: TabBarHostCapabilities;
+  /**
+   * The SPA's thin strip (M-413): narrower tabs, issue tabs named by their
+   * identifier, and the open chats as tabs beside the page tabs.
+   */
+  compact?: boolean;
+} = {}) {
+  const chatTabsInHeader = useChatTabsInHeader();
   const group = useActiveGroup();
   const moveTab = useTabStore((s) => s.moveTab);
   const activeWorkspaceSlug = useTabStore((s) => s.activeWorkspaceSlug);
@@ -644,6 +670,7 @@ export function TabBar({ host = {} }: { host?: TabBarHostCapabilities } = {}) {
                   <SortableTabItem
                     tab={tab}
                     host={host}
+                    compact={compact}
                     isActive={tab.id === activeTabId}
                     isOnly={tabs.length === 1}
                     canCloseOthers={tabs.some(
@@ -666,6 +693,18 @@ export function TabBar({ host = {} }: { host?: TabBarHostCapabilities } = {}) {
                 </Fragment>
               ))}
             </SortableContext>
+            {/* A chat is the same kind of place as a page, so it belongs in the
+                same strip: the sessions the bottom bar used to chip are tabs
+                here (M-413). The rule keeps "page" and "conversation" apart
+                without a second row. */}
+            {chatTabsInHeader && tabs.length > 0 && (
+              <div
+                aria-hidden
+                data-tab-zone-divider=""
+                className="h-4 w-px shrink-0 bg-surface-border"
+              />
+            )}
+            <HeaderChatTabs />
           </div>
         </DndContext>
         <NewTabEdgeFeedback
