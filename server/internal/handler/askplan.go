@@ -418,6 +418,10 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, gateErr.Error())
 		return
 	}
+	if !h.isCurrentIssueAssignee(r, task.IssueID, task.AgentID) {
+		writeError(w, http.StatusForbidden, "task agent is not the current issue assignee")
+		return
+	}
 	sections := make([]map[string]any, 0, len(req.Outline))
 	for i, heading := range req.Outline {
 		sections = append(sections, map[string]any{
@@ -444,6 +448,28 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 		// idx_ap_one_open: another open plan on this issue.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_ap_one_open" {
+			openPlan, loadErr := h.Queries.GetOpenAgentPlanByIssue(r.Context(), task.IssueID)
+			if loadErr == nil && openPlan.TaskID != task.ID && openPlan.IssueID == task.IssueID &&
+				openPlan.WorkspaceID == workspaceID && h.isCurrentIssueAssignee(r, task.IssueID, task.AgentID) {
+				// A reassigned issue can be restarted as a new task. Let its current
+				// assignee replace the abandoned run's open plan, freeing the
+				// one-open-plan-per-issue index before creating the replacement.
+				if _, cancelErr := h.Queries.CancelAgentPlan(r.Context(), openPlan.ID); cancelErr == nil {
+					plan, err = h.Queries.CreateAgentPlan(r.Context(), db.CreateAgentPlanParams{
+						ID:          dbid.NewV7(),
+						WorkspaceID: workspaceID,
+						IssueID:     task.IssueID,
+						TaskID:      task.ID,
+						AgentID:     task.AgentID,
+						Title:       req.Title,
+						Sections:    sectionsJSON,
+					})
+					if err == nil {
+						writeJSON(w, http.StatusCreated, planToResponse(plan))
+						return
+					}
+				}
+			}
 			writeError(w, http.StatusConflict, "the issue already has an open plan")
 			return
 		}
@@ -491,8 +517,9 @@ func (h *Handler) WritePlanSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "plan not found")
 		return
 	}
-	// Only the proposing agent writes sections (team-room author-only rule).
-	if plan.AgentID != task.AgentID {
+	// The current issue assignee may take over an earlier plan; unrelated issues
+	// and stale assignees remain fenced out.
+	if plan.IssueID != task.IssueID || !h.isCurrentIssueAssignee(r, plan.IssueID, task.AgentID) {
 		writeError(w, http.StatusForbidden, "this plan belongs to another agent")
 		return
 	}
@@ -572,7 +599,7 @@ func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "plan not found")
 		return
 	}
-	if plan.TaskID != task.ID {
+	if plan.IssueID != task.IssueID || !h.isCurrentIssueAssignee(r, plan.IssueID, task.AgentID) {
 		writeError(w, http.StatusForbidden, "this plan belongs to another task")
 		return
 	}
@@ -627,6 +654,13 @@ func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, planToResponse(submitted))
+}
+
+// isCurrentIssueAssignee verifies the task agent still owns the issue.
+func (h *Handler) isCurrentIssueAssignee(r *http.Request, issueID, agentID pgtype.UUID) bool {
+	issue, err := h.Queries.GetIssue(r.Context(), issueID)
+	return err == nil && issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
+		issue.AssigneeID.Valid && issue.AssigneeID == agentID
 }
 
 // ---- human-side handlers ----
