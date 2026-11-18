@@ -636,6 +636,11 @@ ln -sfn "$MMX_REL" "$LANE_ROOT/mmx-pwa/current"
 umask 077
 {
   echo "PORT=$MMX_PWA_Z_PORT"
+  # Fail-closed guard needs both: the declared lane bind AND Next's actual
+  # listener (HOSTNAME unset = 0.0.0.0). Autodeploy rewrites this file every
+  # run, so the live loopback bind must be declared here, not just in env.
+  echo "HOSTNAME=127.0.0.1"
+  echo "MMX_BIND_HOST=127.0.0.1"
   echo "REMOTE_API_URL=http://127.0.0.1:$MULTICA_BE_Z_PORT"
   echo "NEXT_PUBLIC_APP_VERSION=$MMX_SHA"
   # M-404: lane-z auto sign-in as the Owner (ddvnguyen@gmail.com). The PWA
