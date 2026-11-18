@@ -97,6 +97,19 @@ describe("runConfirmIntent — assign", () => {
       runConfirmIntent(issue({ status: "todo" }), { assignee_type: "member", assignee_id: "u-1" }, CATALOG),
     ).toBeNull();
   });
+
+  it("carries the M-359 explicit pick through to the confirm", () => {
+    expect(
+      runConfirmIntent(
+        issue({ status: "todo" }),
+        { assignee_type: "agent", assignee_id: "a-2", tier_id: "tier-1" },
+        CATALOG,
+      ),
+    ).toEqual({
+      issueIds: ["issue-1"], mode: "assign", assigneeType: "agent", assigneeId: "a-2",
+      tierId: "tier-1",
+    });
+  });
 });
 
 describe("runConfirmIntent — promote", () => {

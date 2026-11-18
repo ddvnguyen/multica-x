@@ -67,6 +67,10 @@ interface RunConfirmData {
   assigneeId?: string;
   assigneeName?: string;
   issueRevision?: number;
+  /** M-359 explicit pick for the run this write starts; omitted = auto. */
+  tierId?: string;
+  runtimeId?: string;
+  model?: string;
   /** Runs after every write applies; never on dismiss, failure, or a partial batch. */
   onApplied?: () => void;
 }
@@ -128,6 +132,10 @@ export function RunConfirmModal({
       : {
           assignee_type: d.assigneeType ?? null,
           assignee_id: d.assigneeId ?? null,
+          // M-359 explicit pick from the assign picker; omitted = auto.
+          ...(d.tierId ? { tier_id: d.tierId } : {}),
+          ...(d.runtimeId ? { runtime_id: d.runtimeId } : {}),
+          ...(d.model ? { model: d.model } : {}),
         };
     return { ...base, ...extra };
   };

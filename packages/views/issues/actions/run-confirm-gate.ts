@@ -15,6 +15,10 @@ export type RunConfirmIntent =
       mode: "assign";
       assigneeType: "agent" | "squad";
       assigneeId: string;
+      /** M-359 explicit pick for the run this assign starts; omitted = auto. */
+      tierId?: string;
+      runtimeId?: string;
+      model?: string;
     }
   | {
       issueIds: [string];
@@ -87,6 +91,9 @@ export function runConfirmIntent(
       mode: "assign",
       assigneeType: updates.assignee_type,
       assigneeId: updates.assignee_id,
+      ...(updates.tier_id ? { tierId: updates.tier_id } : {}),
+      ...(updates.runtime_id ? { runtimeId: updates.runtime_id } : {}),
+      ...(updates.model ? { model: updates.model } : {}),
     };
   }
 

@@ -39,6 +39,19 @@ vi.mock("@multica/core/workspace/hooks", () => ({
   }),
 }));
 
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return { ...actual, useCurrentWorkspace: () => ({ id: "ws-1" }) };
+});
+
+const TIERS = [
+  { id: "tier-fast", workspace_id: "ws-1", name: "fast", idx: 0, enabled: true, provider_slots: 1 },
+];
+
+vi.mock("@multica/core/workspace/queries", () => ({
+  modelTiersOptions: () => ({ queryKey: ["tiers", "ws-1"], queryFn: async () => TIERS }),
+}));
+
 import {
   ActiveTaskRow,
   ExecutionLogSection,
@@ -69,6 +82,15 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
     trigger_summary: "Started from comment",
     ...overrides,
   };
+}
+
+function renderRow(task: AgentTask, extra?: { onJump?: () => void }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderWithI18n(
+    <QueryClientProvider client={queryClient}>
+      <ActiveTaskRow task={task} issueId="issue-1" onJump={extra?.onJump} />
+    </QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -293,14 +315,11 @@ describe("subtree execution log", () => {
 
 describe("ActiveTaskRow", () => {
   it("renders running status as elapsed time only", () => {
-    renderWithI18n(
-      <ActiveTaskRow
-        task={makeTask({
-          trigger_comment_id: "comment-3",
-          coalesced_comment_ids: ["comment-1", "comment-2"],
-        })}
-        issueId="issue-1"
-      />,
+    renderRow(
+      makeTask({
+        trigger_comment_id: "comment-3",
+        coalesced_comment_ids: ["comment-1", "comment-2"],
+      }),
     );
 
     expect(screen.getByText("5m 04s")).toBeInTheDocument();
@@ -313,10 +332,19 @@ describe("ActiveTaskRow", () => {
 
   it("makes the trigger a jump button only when given a jump handler", () => {
     const onJump = vi.fn();
-    const { rerender } = renderWithI18n(<ActiveTaskRow task={makeTask({})} issueId="issue-1" />);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ActiveTaskRow task={makeTask({})} issueId="issue-1" />
+      </QueryClientProvider>,
+    );
     expect(screen.queryByRole("button", { name: /Go to run/ })).not.toBeInTheDocument();
 
-    rerender(<ActiveTaskRow task={makeTask({})} issueId="issue-1" onJump={onJump} />);
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ActiveTaskRow task={makeTask({})} issueId="issue-1" onJump={onJump} />
+      </QueryClientProvider>,
+    );
     const jump = screen.getByRole("button", { name: /Go to run/ });
     expect(jump).toHaveTextContent("Started from comment");
     fireEvent.click(jump);
@@ -531,18 +559,29 @@ describe("per-run token usage", () => {
   // running task carries usage in production. Asserting a token figure here
   // would only prove that a hand-written fixture renders.
   it("shows a running row's timer, and no token figure even if usage exists", () => {
-    renderWithI18n(
-      <ActiveTaskRow
-        task={makeTask({ usage: [usageSlice()] })}
-        issueId="issue-1"
-      />,
-    );
+    renderRow(makeTask({ usage: [usageSlice()] }));
 
     expect(screen.getByText("5m 04s")).toBeInTheDocument();
     expect(screen.queryByText("892K")).not.toBeInTheDocument();
     // And no em dash either — mid-run, "no figure yet" is not a claim worth
     // making next to a ticking timer.
     expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it("shows the tier badge with a waiting-for-capacity reason on a parked active row", async () => {
+    // Fake timers (elapsed-time tests above) stall the tiers query + findBy
+    // polling; this row asserts async-loaded content, not the clock.
+    vi.useRealTimers();
+    renderRow(
+      makeTask({
+        status: "queued",
+        tier_id: "tier-fast",
+        tier_explicit: true,
+        tier_parked: true,
+      }),
+    );
+
+    expect(await screen.findByText("fast · waiting")).toBeInTheDocument();
   });
 });
 
