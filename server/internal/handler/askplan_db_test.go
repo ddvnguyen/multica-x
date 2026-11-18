@@ -310,6 +310,7 @@ func reassignAskPlanTask(t *testing.T, f askPlanFixture) askPlanFixture {
 	next := f
 	next.agentID = dbfx.Agent(t, "Replacement Plan Agent", f.runtimeID)
 	dbfx.Exec(t, `UPDATE issue SET assignee_type='agent', assignee_id=$2 WHERE id=$1`, f.issueID, next.agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, f.taskID)
 	next.taskID = dbfx.Task(t, next.agentID, testutil.Cols{
 		"issue_id": f.issueID, "runtime_id": f.runtimeID, "status": "running",
 	})
