@@ -3,7 +3,7 @@
 import { Suspense, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
-import { TabBar } from "@multica/views/tabs";
+import { ChatTabsInHeaderProvider, TabBar } from "@multica/views/tabs";
 import { useNavigationInputBindings } from "@multica/views/tabs";
 import { selectTabByShortcut } from "@multica/views/tabs";
 import {
@@ -30,7 +30,12 @@ import {
 export function WebTabShell({ children }: { children: React.ReactNode }) {
   return (
     <WebTabNavigationProvider>
-      <WebTabShellInner>{children}</WebTabShellInner>
+      {/* Open chats are tabs of the header strip here, not chips under the
+          page (M-413): one strip for "where am I". The bottom bar reads the same
+          provider and keeps only Ask Multica and its history. */}
+      <ChatTabsInHeaderProvider>
+        <WebTabShellInner>{children}</WebTabShellInner>
+      </ChatTabsInHeaderProvider>
     </WebTabNavigationProvider>
   );
 }
@@ -47,10 +52,11 @@ function WebTabShellInner({ children }: { children: React.ReactNode }) {
       <Suspense fallback={null}>
         <WebTabSync validSlugs={validSlugs} />
       </Suspense>
-      {/* Same strip as desktop (shared TabBar, no detached-window host). */}
-      <div className="flex h-10 shrink-0 items-stretch border-b border-surface-border bg-app-shell">
+      {/* Same strip as desktop (shared TabBar, no detached-window host), in
+          its compact form: 28px, narrower tabs, chats included. */}
+      <div className="flex h-7 shrink-0 items-stretch border-b border-surface-border bg-app-shell">
         <div className="min-w-0 flex-1">
-          <TabBar />
+          <TabBar compact />
         </div>
       </div>
       {children}

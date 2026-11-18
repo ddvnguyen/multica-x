@@ -27,6 +27,11 @@ export {
 } from "@multica/core/tabs";
 export { TabBar, type TabBarHostCapabilities } from "./tab-bar";
 export {
+  ChatTabsInHeaderProvider,
+  HeaderChatTabs,
+  useChatTabsInHeader,
+} from "./chat-tabs";
+export {
   selectTabByShortcut,
   useTabSelectionShortcut,
   type TabSelectionShortcutKey,
