@@ -76,12 +76,23 @@ export function useDeferredLayoutRestore({
     }
     if (attempt()) return
     // Observer notifications are event-driven (one per resize), so an
-    // unrestored group retries without a polling loop; unmount disconnects.
+    // unrestored group retries without a polling loop. Defer the retry until
+    // the next frame so every ResizeObserver callback for the first real
+    // measurement (including the panel library's deferred-layout callback)
+    // completes before we decide the saved layout is already restored.
+    let frame: number | null = null
     const observer = new ResizeObserver(() => {
-      if (attempt()) observer.disconnect()
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        frame = null
+        if (attempt()) observer.disconnect()
+      })
     })
     observer.observe(element)
-    return () => observer.disconnect()
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
   }, [elementRef, groupRef])
 }
 

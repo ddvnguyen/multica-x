@@ -30,9 +30,16 @@ const GROUP_WIDTH = 1544
 
 type ObserverRecord = { callback: ResizeObserverCallback; targets: Element[] }
 let records: ObserverRecord[]
+let animationFrames: FrameRequestCallback[]
 
 function installCapturingObserver(): void {
   records = []
+  animationFrames = []
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    animationFrames.push(callback)
+    return animationFrames.length
+  })
+  vi.stubGlobal("cancelAnimationFrame", () => {})
   class CapturingObserver {
     callback: ResizeObserverCallback
     targets: Element[] = []
@@ -182,6 +189,7 @@ describe("deferred layout restore", () => {
         [{ target: group } as unknown as ResizeObserverEntry],
         seam as unknown as ResizeObserver,
       )
+      animationFrames.splice(0).forEach((callback) => callback(0))
       const { promise, resolve } = Promise.withResolvers<void>()
       setTimeout(resolve, 300)
       await promise
@@ -195,6 +203,95 @@ describe("deferred layout restore", () => {
     await act(async () => {
       unmount()
     })
+    host.remove()
+  })
+
+  it("keeps the saved layout when reopened before the deferred measurement callback", async () => {
+    installCapturingObserver()
+    const { storage, value } = memoryStore(JSON.stringify(SAVED))
+    const host = document.createElement("div")
+    document.body.append(host)
+
+    const mount = async () => {
+      const container = document.createElement("div")
+      host.append(container)
+      let unmount!: () => void
+      await act(async () => {
+        ;({ unmount } = render(
+          <HostStorageProvider storage={storage}>
+            <Split />
+          </HostStorageProvider>,
+          { container },
+        ))
+      })
+      const group = container.querySelector<HTMLElement>('[data-group="true"]')!
+      const panels = [...group.querySelectorAll<HTMLElement>("[data-panel]")]
+      for (const panel of panels) {
+        const width = panel.getAttribute("id") === "sidebar" ? 320 : 1224
+        Object.defineProperty(panel, "offsetWidth", {
+          configurable: true,
+          get: () => width,
+        })
+      }
+      group.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          right: GROUP_WIDTH,
+          width: GROUP_WIDTH,
+          top: 0,
+          bottom: 100,
+          height: 100,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect
+      const watching = records.filter((record) => record.targets.includes(group))
+      return { container, group, unmount, library: watching[watching.length - 1]!, seam: watching[watching.length - 2]! }
+    }
+
+    // First open: let the library measure and the seam restore, then close it.
+    let opened = await mount()
+    await act(async () => {
+      opened.library.callback(
+        [{ target: opened.group } as unknown as ResizeObserverEntry],
+        opened.library as unknown as ResizeObserver,
+      )
+      opened.seam.callback(
+        [{ target: opened.group } as unknown as ResizeObserverEntry],
+        opened.seam as unknown as ResizeObserver,
+      )
+      animationFrames.splice(0).forEach((callback) => callback(0))
+      const { promise, resolve } = Promise.withResolvers<void>()
+      setTimeout(resolve, 300)
+      await promise
+    })
+    expect(value()).toBe(JSON.stringify(SAVED))
+    await act(async () => opened.unmount())
+    opened.container.remove()
+
+    // Reopen at 0px. The seam observer can be delivered before the panel
+    // library's deferred observer; restoration must wait until the next frame.
+    records = []
+    animationFrames = []
+    opened = await mount()
+    await act(async () => {
+      opened.seam.callback(
+        [{ target: opened.group } as unknown as ResizeObserverEntry],
+        opened.seam as unknown as ResizeObserver,
+      )
+      opened.library.callback(
+        [{ target: opened.group } as unknown as ResizeObserverEntry],
+        opened.library as unknown as ResizeObserver,
+      )
+      animationFrames.splice(0).forEach((callback) => callback(0))
+      const { promise, resolve } = Promise.withResolvers<void>()
+      setTimeout(resolve, 300)
+      await promise
+    })
+    expect(value()).toBe(JSON.stringify(SAVED))
+
+    await act(async () => opened.unmount())
+    opened.container.remove()
     host.remove()
   })
 })
