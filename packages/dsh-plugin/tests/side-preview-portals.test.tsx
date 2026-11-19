@@ -5,6 +5,8 @@ import { createElement, type ReactElement } from "react";
 vi.mock("../src/fork", () => ({
   IssueSideStack: ({ issueId }: { issueId: string }) =>
     createElement("div", { "data-issue": issueId }),
+  AgentSideStack: ({ agentId }: { agentId: string }) =>
+    createElement("div", { "data-agent": agentId }),
   useCanonicalIssue: () => ({
     issue: { identifier: "M-336", title: "MMX Side preview in dsh right column" },
   }),
@@ -60,6 +62,16 @@ describe("side preview body", () => {
     await flush();
     expect(store.getSidePreviewTargets()).toHaveLength(0);
   });
+
+  it("withdraws an agent target when the tab's lifetime aborts", async () => {
+    const lifetime = new AbortController();
+    mountBody({ view: "agent", id: "agent-1" }, lifetime.signal);
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+    lifetime.abort();
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(0);
+  });
 });
 
 describe("island portal", () => {
@@ -98,6 +110,32 @@ describe("island portal", () => {
     const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
     expect(surface?.querySelector("[data-issue='iss-2']")).not.toBeNull();
     expect(surface?.querySelector("[data-issue='iss-1']")).toBeNull();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+  });
+
+  it("paints the agent side stack for an agent target", async () => {
+    const node = mountBody({ view: "agent", id: "agent-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-agent='agent-1']")).not.toBeNull();
+    expect(surface?.textContent).not.toContain("Preview unavailable");
+  });
+
+  it("swaps the agent in place when the tab is revealed for another one", async () => {
+    const node = mountBody({ view: "agent", id: "agent-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    act(() => {
+      store.publishSidePreview(node, { view: "agent", id: "agent-2" });
+    });
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-agent='agent-2']")).not.toBeNull();
+    expect(surface?.querySelector("[data-agent='agent-1']")).toBeNull();
     expect(store.getSidePreviewTargets()).toHaveLength(1);
   });
 });
