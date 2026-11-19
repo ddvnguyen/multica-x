@@ -66,7 +66,7 @@ export {
 // The side stacks the preview tab renders in dsh's right column (M-336, G6).
 // Each is the view's own composition, not a second one.
 export { IssueSideStack } from "@multica/views/issues/components";
-export { AgentSideStack } from "@multica/views/agents/components";
+export { AgentSideStack } from "@multica/views/agents";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
 // The agent page's extension point, so a host-supplied section (the MOCT
 // Memory tab) rides the fork's own layout instead of a second design.

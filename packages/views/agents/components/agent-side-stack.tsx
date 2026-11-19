@@ -4,11 +4,7 @@ import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Agent, UpdateAgentRequest } from "@multica/core/types";
-import {
-  type AgentPresenceDetail,
-  isAgentRuntimeBound,
-  useWorkspacePresenceMap,
-} from "@multica/core/agents";
+import { type AgentPresenceDetail, useWorkspacePresenceMap } from "@multica/core/agents";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -18,7 +14,6 @@ import {
   agentListOptions,
   cacheAgentResponse,
   memberListOptions,
-  workspaceKeys,
 } from "@multica/core/workspace/queries";
 import { runtimeListOptions } from "@multica/core/runtimes";
 import { useAgentPermissions } from "@multica/core/permissions";
@@ -51,16 +46,16 @@ export function AgentSideStack({ agentId }: { agentId: string }) {
   const agent: Agent | null = listAgent ?? detailAgent ?? null;
   const presence: AgentPresenceDetail | null = agent ? presenceMap.get(agent.id) ?? null : null;
   const runtime = agent ? (runtimes.find((r) => r.id === agent.runtime_id) ?? null) : null;
-  const owner = agent ? (members.find((m) => m.user_id === agent.created_by) ?? null) : null;
-  const runtimeBound = agent ? isAgentRuntimeBound(agent) : false;
-  void runtimeBound;
-  const canEdit = useAgentPermissions(agent, members);
+  const owner = agent
+    ? members.find((m) => m.user_id === (agent.owner_id ?? agent.created_by ?? "")) ?? null
+    : null;
+  const { canEdit } = useAgentPermissions(agent, wsId);
 
   const handleUpdate = useCallback(
     async (id: string, data: Record<string, unknown>) => {
       if (!wsId) return;
       try {
-        const updated = await api.updateAgent(wsId, id, data as UpdateAgentRequest);
+        const updated = await api.updateAgent(id, data as UpdateAgentRequest);
         cacheAgentResponse(qc, wsId, updated);
       } catch (err) {
         toast.error((err as Error).message);
