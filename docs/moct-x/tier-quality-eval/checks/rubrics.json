@@ -1,0 +1,50 @@
+{
+  "V1": {
+    "weight": 5,
+    "ask": "A review of a claim-fence diff that lets any tier-stamped row bypass the agent-runtime fence.",
+    "pass_1": ["identifies `atq.tier_id IS NOT NULL` (or the OR carve-out) as the condition that removes the runtime fence", "states a concrete blast radius: a row claims on a runtime the agent is no longer bound to, or after its tier was deleted/disabled", "proposes one specific test with a scenario and an assertion"],
+    "partial_05": ["names a plausible risk but not the exact column/condition, or gives no test"]
+  },
+  "V2": {
+    "weight": 5,
+    "ask": "A review of a one-line `#` trigger registration plus its two new tests.",
+    "pass_1": ["says TRIGGER_CHARS membership alone does not decide paste safety and points at the typed-position arming path that must be read", "names one concrete remaining risk (e.g. `#123` issue-reference collision, multi-character paste inside the picker, a test that cannot fail)", "proposes one additional test with an exact assertion"],
+    "partial_05": ["notices the tests are weak or the collision risk but does not identify the arming path"]
+  },
+  "V3": {
+    "weight": 5,
+    "ask": "A review of a Postgres up/down migration pair for a NOT NULL constraint plus a parked-row marker.",
+    "pass_1": ["shows the down script re-adds the old CHECK before dropping `tier_parked`, so parked rows violate it / the down fails", "names the irreversible loss (parked marker and tier stamp values are dropped) and where it happens", "gives an ordered fix or pre-step plus a round-trip test on a non-empty database"],
+    "partial_05": ["flags one of ordering or data loss but not both, or gives no test"]
+  },
+  "V4": {
+    "weight": 5,
+    "ask": "A review of an enqueue-time resolver that reads capacity with CountActiveTasksByRuntime and never reserves.",
+    "pass_1": ["describes the read-then-act window: two concurrent enqueues both see `running < slots` and both stamp the same runtime", "names the fix location (transactional reservation at enqueue or re-check at claim) and says why ClaimAgentTask alone does not close it", "proposes a deterministic test with a named seam (no sleeps)"],
+    "partial_05": ["names the race but not where to fix it, or gives a flaky/timing-based test"]
+  },
+  "P1": {
+    "weight": 6.25,
+    "ask": "A plan for an enqueue-time tier resolver plus claim-fence carve-out.",
+    "pass_1": ["all five required sections present and headed exactly (Outcome, Scope, Acceptance, Risks, Files)", "at least three concrete repo file paths", "at least three acceptance checks each with a command or named test", "at least two risks with a mitigation each"],
+    "partial_05": ["missing exactly one of the four content requirements (sections, paths, acceptance, risks)"]
+  },
+  "P2": {
+    "weight": 6.25,
+    "ask": "A plan for a `#` tier picker in the composer.",
+    "pass_1": ["all five required sections present", "trigger rules name the three must-not-open cases (paste, mid-word, disabled tier)", "explicit and justified decision on the `#123` issue-reference collision", "at least three tests including the paste case", "two risks with mitigations"],
+    "partial_05": ["missing exactly one requirement"]
+  },
+  "P3": {
+    "weight": 6.25,
+    "ask": "A plan for provider 429 cooldown with tier fallback.",
+    "pass_1": ["all five sections present", "classification covers 429 with Retry-After, 429 without, 402/quota, 5xx, auth, each with an action", "data path names how the provider's 429 status/headers reach the server and where the cooldown is stored", "tests include fallback to idx 1 and expiry returning to idx 0", "two risks with mitigations"],
+    "partial_05": ["missing exactly one requirement"]
+  },
+  "P4": {
+    "weight": 6.25,
+    "ask": "A plan to prove the Tiers settings screen in the PWA shell.",
+    "pass_1": ["all five sections present", "states lane z / dsh-z serves the proof and dsh-x is excluded", "screenshots specified at >=1300px wide plus light and dark", "cleanup names the throwaway tier rows and how removal is verified", "two risks with mitigations"],
+    "partial_05": ["missing exactly one requirement"]
+  }
+}
