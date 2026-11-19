@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Pencil } from "@multica/ui/icons";
+import { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
@@ -11,6 +12,14 @@ import {
   ObjectSection,
   ObjectSectionAction,
 } from "./object-page";
+
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children, ...props }: any) => <div data-testid="resize-group" {...props}>{children}</div>,
+  Panel: ({ children, ...props }: any) => <div data-testid="resize-panel" {...props}>{children}</div>,
+  Separator: ({ children, ...props }: any) => <div data-testid="resize-handle" {...props}>{children}</div>,
+  useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),
+  usePanelRef: () => ({ current: { isCollapsed: () => false, expand: vi.fn(), collapse: vi.fn() } }),
+}));
 
 function makeAdapter(): NavigationAdapter {
   return {
@@ -24,24 +33,26 @@ function makeAdapter(): NavigationAdapter {
   };
 }
 
-function renderPage(panel?: React.ReactNode) {
+function renderPage(panel?: React.ReactNode, hostStorage?: Storage) {
   return renderWithI18n(
     <NavigationProvider value={makeAdapter()}>
-      <ObjectPage
-        layoutId="test_object_page"
-        segments={[{ href: "/acme/agents", label: "Agents" }]}
-        leaf={<span>Lambda</span>}
-        actions={<button type="button">Assign work</button>}
-        panel={panel}
-      >
-        <ObjectIdentity media={<span />} title="Lambda" description="Design and frontend" />
-        <ObjectSection
-          title="Instructions"
-          action={<ObjectSectionAction icon={Pencil}>Edit</ObjectSectionAction>}
+      <HostStorageProvider storage={hostStorage}>
+        <ObjectPage
+          layoutId="test_object_page"
+          segments={[{ href: "/acme/agents", label: "Agents" }]}
+          leaf={<span>Lambda</span>}
+          actions={<button type="button">Assign work</button>}
+          panel={panel}
         >
-          <p>Mock before you build.</p>
-        </ObjectSection>
-      </ObjectPage>
+          <ObjectIdentity media={<span />} title="Lambda" description="Design and frontend" />
+          <ObjectSection
+            title="Instructions"
+            action={<ObjectSectionAction icon={Pencil}>Edit</ObjectSectionAction>}
+          >
+            <p>Mock before you build.</p>
+          </ObjectSection>
+        </ObjectPage>
+      </HostStorageProvider>
     </NavigationProvider>,
   );
 }
@@ -72,6 +83,23 @@ describe("ObjectPage", () => {
     expect(screen.getByRole("button", { name: "Toggle right sidebar" })).toBeInTheDocument();
     expect(screen.getByText("Runtime")).toBeInTheDocument();
     expect(screen.getByText("MacBook Pro")).toBeInTheDocument();
+  });
+
+  it("preserves pixel size on app-owned origins", () => {
+    const { container } = renderPage(<ObjectProperty label="Runtime">MacBook Pro</ObjectProperty>);
+    const sidebar = container.querySelector('[data-testid="resize-panel"][id="sidebar"]');
+
+    expect(sidebar).toHaveAttribute("groupresizebehavior", "preserve-pixel-size");
+  });
+
+  it("preserves relative size when hosted on a shared origin", () => {
+    const { container } = renderPage(
+      <ObjectProperty label="Runtime">MacBook Pro</ObjectProperty>,
+      window.localStorage,
+    );
+    const sidebar = container.querySelector('[data-testid="resize-panel"][id="sidebar"]');
+
+    expect(sidebar).toHaveAttribute("groupresizebehavior", "preserve-relative-size");
   });
 });
 

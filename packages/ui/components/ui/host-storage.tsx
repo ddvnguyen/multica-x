@@ -40,3 +40,10 @@ export function HostStorageProvider({
 export function useHostStorage(): WidthStorage | undefined {
   return React.use(HostStorageContext)
 }
+
+/** Keep host-owned panel ratios stable as a shared shell resizes its surface. */
+export function getHostGroupResizeBehavior(
+  storage: WidthStorage | undefined,
+): "preserve-relative-size" | "preserve-pixel-size" {
+  return storage ? "preserve-relative-size" : "preserve-pixel-size"
+}

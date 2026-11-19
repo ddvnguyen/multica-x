@@ -10,7 +10,10 @@ import {
   type Ref,
 } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { useHostStorage } from "@multica/ui/components/ui/host-storage";
+import {
+  getHostGroupResizeBehavior,
+  useHostStorage,
+} from "@multica/ui/components/ui/host-storage";
 import { ChevronRight, PanelRight, type IconComponent } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -69,12 +72,17 @@ interface ObjectPageProps {
 export function ObjectPage({ segments, leaf, actions, panel, layoutId, children, scrollRef }: ObjectPageProps) {
   const { t } = useT("layout");
   const isMobile = useIsMobile();
+  const hostStorage = useHostStorage();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     // A host on a shared origin (the dsh island) keeps the layout in its own
     // namespaced store; `undefined` keeps the library's `localStorage` default.
     id: layoutId,
-    storage: useHostStorage(),
+    storage: hostStorage,
   });
+  // The dsh shell animates its rail width after the object panel mounts. Keep
+  // the remembered proportions through that host resize; web and desktop keep
+  // their existing pixel-sized sidebar behavior.
+  const sidebarGroupResizeBehavior = getHostGroupResizeBehavior(hostStorage);
   const panelRef = usePanelRef();
   const shortcutTargetRef = useRef<HTMLDivElement | null>(null);
   // Desktop and mobile keep separate state: a mobile sheet that shared the
@@ -169,7 +177,7 @@ export function ObjectPage({ segments, leaf, actions, panel, layoutId, children,
             minSize={260}
             maxSize={420}
             collapsible
-            groupResizeBehavior="preserve-pixel-size"
+            groupResizeBehavior={sidebarGroupResizeBehavior}
             panelRef={panelRef}
             onResize={handleResize}
           >
