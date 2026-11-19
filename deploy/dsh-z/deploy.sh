@@ -555,14 +555,29 @@ else
   # the lane and never mutates a node_modules copy. The token deliberately
   # stays out of this file (patch files are world-readable): it comes from the
   # unit env as MULTICA_DSH_TOKEN, which the plugin reads in the shell.
+  #
+  # M-419: default the plugin to the main multica-x backend/DB. Lane-z backend
+  # mode is an explicit opt-in (MULTICA_DSH_USE_LANE_BACKEND=1) for rollback.
+  DSH_PLUGIN_SERVER_URL="${MULTICA_DSH_BACKEND_URL:-http://127.0.0.1:3702}"
+  DSH_PLUGIN_WORKSPACE_SLUG="${MULTICA_DSH_WORKSPACE_SLUG:-moct}"
+  DSH_PLUGIN_TOKEN="${MULTICA_DSH_MAIN_PAT:-}"
+  if [ "${MULTICA_DSH_USE_LANE_BACKEND:-0}" = "1" ]; then
+    DSH_PLUGIN_SERVER_URL="http://127.0.0.1:$MULTICA_BE_Z_PORT"
+    DSH_PLUGIN_WORKSPACE_SLUG="$MULTICA_Z_WS_SLUG"
+    DSH_PLUGIN_TOKEN="$MULTICA_Z_PAT"
+  fi
+  if [ -z "$DSH_PLUGIN_TOKEN" ]; then
+    log "WARN: no plugin PAT for $DSH_PLUGIN_SERVER_URL (set MULTICA_DSH_MAIN_PAT in $LANE_RUNTIME_ENV, or MULTICA_DSH_USE_LANE_BACKEND=1 to use MULTICA_Z_PAT); /multica proxy will 503 until configured"
+  fi
+
   umask 022
   {
     echo "- id: multica-dsh-plugin"
     echo "  name: '@multica/dsh-plugin'"
     echo "  config:"
-    echo "    serverUrl: http://127.0.0.1:$MULTICA_BE_Z_PORT"
+    echo "    serverUrl: $DSH_PLUGIN_SERVER_URL"
     echo "    token: ''"
-    echo "    workspaceSlug: $MULTICA_Z_WS_SLUG"
+    echo "    workspaceSlug: $DSH_PLUGIN_WORKSPACE_SLUG"
     # The browser's memory seam (M-121, docs/moct-seam.md out-path 3). Empty
     # keeps /moct answering 503 and the memory surfaces hidden.
     if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
@@ -570,14 +585,14 @@ else
     fi
   } > "$LANE_ROOT/data/multica-row.yml"
 
-  # Unit side: inject the extra env file (MULTICA_DSH_TOKEN = MULTICA_Z_PAT)
-  # and the --patch of the row, both guarded so reruns do not stack lines.
-  # The lane credential refs ride along: this file is rebuilt from scratch
-  # here, so a hand-dropped key would not survive the next plugin deploy
-  # (M-103).
+  # Unit side: inject the extra env file (MULTICA_DSH_TOKEN for the selected
+  # backend) and the --patch of the row, both guarded so reruns do not stack
+  # lines. The lane credential refs ride along: this file is rebuilt from
+  # scratch here, so a hand-dropped key would not survive the next plugin
+  # deploy (M-103).
   umask 077
   {
-    echo "MULTICA_DSH_TOKEN=$MULTICA_Z_PAT"
+    echo "MULTICA_DSH_TOKEN=$DSH_PLUGIN_TOKEN"
     emit_lane_credential_refs
   } > "$LANE_ROOT/data/dsh-web.env"
   umask 022
