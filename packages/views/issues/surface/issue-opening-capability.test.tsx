@@ -10,6 +10,7 @@ import type { StorageAdapter } from "@multica/core/types/storage";
 import {
   IssueOpeningCapabilityProvider,
   useIssueOpeningCapability,
+  type SidePreviewOpenTarget,
 } from "./issue-opening-capability";
 import { IssuePeekActionsContext, useIssuePeekClick } from "./peek-context";
 
@@ -55,7 +56,7 @@ function renderDefaultProvider() {
 }
 
 /** A card-shaped target: the click handler the views give every issue link. */
-function ClickProbe({ onOpened }: { onOpened: (issueId: string) => boolean }) {
+function ClickProbe({ onOpened }: { onOpened: (target: SidePreviewOpenTarget) => boolean }) {
   return (
     <IssueOpeningCapabilityProvider supportsTabs supportsPeek openSidePreview={onOpened}>
       <IssueLink />

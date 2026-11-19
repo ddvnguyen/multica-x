@@ -47,7 +47,7 @@ export function AgentSideStack({ agentId }: { agentId: string }) {
   const presence: AgentPresenceDetail | null = agent ? presenceMap.get(agent.id) ?? null : null;
   const runtime = agent ? (runtimes.find((r) => r.id === agent.runtime_id) ?? null) : null;
   const owner = agent
-    ? members.find((m) => m.user_id === (agent.owner_id ?? agent.created_by ?? "")) ?? null
+    ? members.find((m) => m.user_id === (agent.owner_id ?? "")) ?? null
     : null;
   const { canEdit } = useAgentPermissions(agent, wsId);
 
