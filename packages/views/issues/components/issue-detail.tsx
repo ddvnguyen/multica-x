@@ -2055,7 +2055,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       items.flatMap((it) => {
         if (it.kind === "activity-group" || !it.entry) return [];
         const replies = timelineView.threadReplies.get(it.id) ?? EMPTY_REPLIES;
-        const liveReplies = replies.filter((reply) => !isDeletedComment(reply));
         const resolution = deriveThreadResolution(it.entry, replies);
         return [
           {
@@ -2063,15 +2062,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             entry: it.entry,
             resolved: resolution.kind !== "none",
             participants: collectThreadParticipants(it.entry, replies),
-            // Tombstones render no row, so they get no tick either. Replies
-            // follow the page order: newest-first reverses them so the rail's
-            // top-to-bottom order equals the page order.
-            replies: timelineNewestFirst ? [...liveReplies].reverse() : liveReplies,
+            // Tombstones render no row, so they get no tick either.
+            replies: replies.filter((reply) => !isDeletedComment(reply)),
             resolutionReplyId: resolution.kind === "reply" ? resolution.resolutionId : null,
           },
         ];
       }),
-    [items, timelineView.threadReplies, timelineNewestFirst],
+    [items, timelineView.threadReplies],
   );
 
   // When in-page find renders the timeline flat, there is no
@@ -2129,12 +2126,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (index < 0) return;
     let timer: number | undefined;
     const scrollEnd = () => {
-      if (timelineNewestFirst) {
-        // The new reply lands at the top of its card (under the root);
-        // align the card's top so the root and the fresh reply are in view.
-        virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 });
-        return;
-      }
       const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
       virtuosoRef.current?.scrollToIndex({ index, align: "end", offset: composerHeight });
     };
@@ -2149,7 +2140,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       cancelAnimationFrame(frame);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, timelineNewestFirst]);
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline]);
 
   // Flat mode (find bar) has no Virtuoso, so drive scrollTop by
   // hand: align the row's bottom to the composer's top edge. The comment's
@@ -2163,30 +2154,26 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     let rafId = 0;
     let frames = 0;
     let last = -1;
-    const alignRow = () => {
+    const alignBottom = () => {
       const el = document.getElementById(`comment-${rootId}`);
       const container = scrollContainerEl;
       if (el && container) {
         const c = container.getBoundingClientRect();
         const e = el.getBoundingClientRect();
-        // Newest-first lands the fresh reply at the card's top: align the
-        // top. Oldest-first keeps aligning the bottom to the composer's edge.
         const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
-        const target = timelineNewestFirst
-          ? Math.max(0, container.scrollTop + (e.top - c.top) - 16)
-          : Math.max(0, container.scrollTop + (e.bottom - c.bottom) + composerHeight);
+        const target = Math.max(0, container.scrollTop + (e.bottom - c.bottom) + composerHeight);
         container.scrollTop = target;
         if (Math.abs(target - last) > 1 && ++frames < 30) {
           last = target;
-          rafId = requestAnimationFrame(alignRow);
+          rafId = requestAnimationFrame(alignBottom);
           return;
         }
       }
       setPendingPostedCommentId(null);
     };
-    rafId = requestAnimationFrame(alignRow);
+    rafId = requestAnimationFrame(alignBottom);
     return () => cancelAnimationFrame(rafId);
-  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, scrollContainerEl, timelineNewestFirst]);
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, scrollContainerEl]);
   const jumpFlashTimerRef = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -3170,7 +3157,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
-            newestFirst={timelineNewestFirst}
           />
         </div>
       );

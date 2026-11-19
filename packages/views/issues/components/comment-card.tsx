@@ -166,13 +166,6 @@ interface CommentCardProps {
   onResolvedExpandChange?: (rootId: string, expand: boolean) => void;
   /** ID of the comment to highlight (flash animation). */
   highlightedCommentId?: string | null;
-  /**
-   * Page-level reading order. When true, the thread's replies and run slots
-   * render newest-first under the root (which stays first), and the folded-
-   * replies bar moves to the thread's trailing end — mirroring the top-level
-   * reversal so the rail and the page read in the same order.
-   */
-  newestFirst?: boolean;
 }
 
 // Shared delete confirmation dialog
@@ -1157,7 +1150,6 @@ function CommentCardImpl({
   expandedResolvedIds,
   onResolvedExpandChange,
   highlightedCommentId,
-  newestFirst = false,
 }: CommentCardProps) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -1339,13 +1331,11 @@ function CommentCardImpl({
     ? orderThreadWithRuns(entry, resolutionReply ? [resolutionReply] : [], runs.filter((run) => !run.hasReply
       && (run.anchorCommentId === entry.id || run.anchorCommentId === replyResolutionId)))
     : orderThreadWithRuns(entry, allNestedReplies, runs);
-  // Newest-first threads read newest-first under the root, matching the
-  // page and the rail. The reversal is presentation-only: run slots keep
-  // their adjacency to the reply they answer, and every id-based jump
-  // still resolves through the same anchors.
-  const orderedThreadRows = newestFirst ? [...threadRows].reverse() : threadRows;
-
-  const renderRows = () => orderedThreadRows.map((row) => {
+  // Replies and run slots stay in chronological order under the root even
+  // when the top-level timeline reads newest-first (M-290): a thread reads
+  // top-down like the page around it, and the reply box stays at the
+  // thread's trailing end where the next reply lands.
+  const renderRows = () => threadRows.map((row) => {
     if (!replyScrollParent || threadRows.length < 30) return renderThreadRow(row);
     if (!("run" in row) && isDeletedComment(row)) return null;
     const anchorId = "run" in row
@@ -1357,11 +1347,9 @@ function CommentCardImpl({
     </VirtualThreadRow>;
   });
 
-  // Reply box. Defined once so it can sit at either end of the thread:
-  // newest-first parks it directly under the root (the new reply lands
-  // right below the box), oldest-first keeps it at the trailing end.
-  // The draft lives in the draft store under `reply:${issueId}:${entry.id}`,
-  // so moving the box never loses typed text.
+  // Reply box. Always at the thread's trailing end, where the next
+  // (chronologically latest) reply lands. The draft lives in the draft
+  // store under `reply:${issueId}:${entry.id}`.
   const replyBox = (
     <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
       <ReplyInput
@@ -1686,10 +1674,8 @@ function CommentCardImpl({
           <>
           {replyFolded ? (
             <>
-              {/* reply-mode folded: other replies behind a bar, resolution pinned below.
-                  Newest-first parks the bar at the trailing (older) end, as in
-                  the activity blocks. */}
-              {!newestFirst && foldedReplies.length > 0 && (
+              {/* reply-mode folded: other replies behind a bar, resolution pinned below. */}
+              {foldedReplies.length > 0 && (
                 <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
                   <CommentsFoldBar
                     replies={foldedReplies}
@@ -1698,14 +1684,6 @@ function CommentCardImpl({
                 </div>
               )}
               {renderRows()}
-              {newestFirst && foldedReplies.length > 0 && (
-                <div className="border-t border-border/50 px-4 max-md:px-3 py-2.5">
-                  <CommentsFoldBar
-                    replies={foldedReplies}
-                    onExpand={() => onResolvedExpandChange?.(entry.id, true)}
-                  />
-                </div>
-              )}
             </>
           ) : (
             <>
@@ -1722,13 +1700,10 @@ function CommentCardImpl({
                   {t(($) => $.comment.resolve.collapse)}
                 </button>
               )}
-              {/* Reply input sits directly under the root in newest-first so
-                  the box is adjacent to where the new reply lands; the
-                  oldest-first box stays at the thread's trailing end. */}
-              {newestFirst && replyBox}
-              {/* Replies follow the selected thread order. */}
+              {/* Replies read oldest-first; the reply box stays at the
+                  thread's trailing end. */}
               {renderRows()}
-              {!newestFirst && replyBox}
+              {replyBox}
             </>
           )}
           </>
