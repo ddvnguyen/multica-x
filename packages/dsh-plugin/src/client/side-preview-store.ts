@@ -1,11 +1,12 @@
 import { ISLAND_CSS } from "./popup-seat";
+import type { SidePreviewTargetRef } from "./side-preview";
 
 /**
  * The bridge between a dsh tab body and the island that paints it (M-336).
  *
  * The tab body is shell React 18 and the side stack is the island's React 19
  * inside a shadow root, so the two never share a tree: the body publishes "this
- * container is showing this issue" and the island portals its side stack into
+ * container is showing this target" and the island portals its side stack into
  * the container. One store, one direction.
  *
  * The container is not the element the body renders — it is a surface the body
@@ -29,15 +30,15 @@ export interface SidePreviewTarget {
   readonly container: HTMLElement;
   /** The styled element inside it — where the portal renders. */
   readonly surface: HTMLElement;
-  /** The issue to draw, or `null` while the tab has no params yet. */
-  readonly issueId: string | null;
+  /** The target to draw, or `null` while the tab has no params yet. */
+  readonly target: SidePreviewTargetRef | null;
 }
 
 interface Entry {
   key: string;
   container: HTMLElement;
   surface: HTMLElement;
-  issueId: string | null;
+  target: SidePreviewTargetRef | null;
   signal: AbortSignal | null;
 }
 
@@ -77,7 +78,7 @@ function shellIsDark(doc: Document): boolean {
   return (
     root.classList.contains("dark") ||
     root.dataset.theme === "dark" ||
-    (    root.dataset.theme === undefined &&
+    (root.dataset.theme === undefined &&
       doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches === true)
   );
 }
@@ -101,6 +102,12 @@ function syncTheme(): void {
   }
 }
 
+function sameTarget(a: SidePreviewTargetRef | null, b: SidePreviewTargetRef | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.view === b.view && a.id === b.id;
+}
+
 function publish(): void {
   let changed = false;
   const next: SidePreviewTarget[] = [];
@@ -118,14 +125,14 @@ function publish(): void {
       key: entry.key,
       container: entry.container,
       surface: entry.surface,
-      issueId: entry.issueId,
+      target: entry.target,
     });
     const previous = snapshot[i];
     if (
       previous === undefined ||
       previous.key !== entry.key ||
       previous.surface !== entry.surface ||
-      previous.issueId !== entry.issueId
+      !sameTarget(previous.target, entry.target)
     ) {
       changed = true;
     }
@@ -149,16 +156,16 @@ function schedule(): void {
  * Publish one tab body's container.
  *
  * Called on every render of the body, which is what makes a reveal that hands
- * the tab another issue reach the island: the body re-renders, republishes its
- * container with the new id, and the portal paints the new issue in place.
+ * the tab another target reach the island: the body re-renders, republishes its
+ * container with the new id, and the portal paints the new target in place.
  *
  * @param container - the element the body rendered.
- * @param issueId - the issue the tab is showing; `null` when it has no params.
+ * @param target - the target the tab is showing; `null` when it has no params.
  * @param signal - the tab occurrence's lifetime; aborting withdraws the target.
  */
 export function publishSidePreview(
   container: HTMLElement,
-  issueId: string | null,
+  target: SidePreviewTargetRef | null,
   signal?: AbortSignal | null,
 ): void {
   let entry = entries.find((candidate) => candidate.container === container);
@@ -167,12 +174,12 @@ export function publishSidePreview(
       key: `side-preview-${nextKey++}`,
       container,
       surface: buildSurface(container.ownerDocument, container),
-      issueId,
+      target,
       signal: null,
     };
     entries.push(entry);
   }
-  entry.issueId = issueId;
+  entry.target = target;
   const lifetime = signal ?? null;
   if (lifetime !== null && entry.signal !== lifetime) {
     entry.signal = lifetime;

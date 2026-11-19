@@ -4,6 +4,7 @@ import {
   canOpenSidePreview,
   createSidePreviewOpener,
   issueIdFromParams,
+  sidePreviewTargetFromParams,
 } from "../src/client/side-preview";
 import type {
   SessionsLike,
@@ -19,7 +20,6 @@ interface Opened {
   options?: TabOptions;
 }
 
-/** A sidebar face with the hosted-panel and tab seams the preview needs. */
 function fakeSidebar(
   openTab: SidebarRightLike["openTab"] = () => {},
   overrides: Partial<SidebarRightLike> = {},
@@ -82,6 +82,10 @@ describe("issueIdFromParams", () => {
     expect(issueIdFromParams({ issueId: "iss-1" })).toBe("iss-1");
   });
 
+  it("reads generalized issue params", () => {
+    expect(issueIdFromParams({ view: "issue", id: "iss-2" })).toBe("iss-2");
+  });
+
   it("is null for a tab with no params, a blank id or a non-string", () => {
     expect(issueIdFromParams(undefined)).toBeNull();
     expect(issueIdFromParams(null)).toBeNull();
@@ -89,6 +93,15 @@ describe("issueIdFromParams", () => {
     expect(issueIdFromParams({ issueId: "   " })).toBeNull();
     expect(issueIdFromParams({ issueId: 42 })).toBeNull();
     expect(issueIdFromParams("iss-1")).toBeNull();
+  });
+});
+
+describe("sidePreviewTargetFromParams", () => {
+  it("reads generalized targets", () => {
+    expect(sidePreviewTargetFromParams({ view: "agent", id: "a1" })).toEqual({ view: "agent", id: "a1" });
+  });
+  it("accepts legacy issue params", () => {
+    expect(sidePreviewTargetFromParams({ issueId: "iss-1" })).toEqual({ view: "issue", id: "iss-1" });
   });
 });
 
@@ -123,12 +136,10 @@ describe("createSidePreviewOpener", () => {
     expect(workspaceCreates).toEqual(["/work/acme"]);
     expect(sessionCreates).toHaveLength(1);
     expect(names).toEqual(["s-new"]);
-    // One tab, revealed rather than duplicated, carrying the issue the body
-    // reads back out of `navigation.params` (M-336).
     expect(opened).toEqual([
       {
         kind: SIDE_PREVIEW_KIND,
-        options: { params: { issueId: "iss-7" }, revealIfOpened: true },
+        options: { params: { view: "issue", id: "iss-7" }, revealIfOpened: true },
       },
     ]);
   });
@@ -150,8 +161,6 @@ describe("createSidePreviewOpener", () => {
 
     expect(workspaceCreates).toEqual([]);
     expect(sessionCreates).toEqual([]);
-    // The column already edits that Session, so there is nothing to retarget:
-    // the same rule the header's toggle follows (M-316).
     expect(names).toEqual([]);
   });
 
