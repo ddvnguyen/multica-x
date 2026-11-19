@@ -1898,7 +1898,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       items.flatMap((it) => {
         if (it.kind === "activity-group" || !it.entry) return [];
         const replies = timelineView.threadReplies.get(it.id) ?? EMPTY_REPLIES;
-        const liveReplies = replies.filter((reply) => !isDeletedComment(reply));
         const resolution = deriveThreadResolution(it.entry, replies);
         return [
           {
@@ -1906,15 +1905,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             entry: it.entry,
             resolved: resolution.kind !== "none",
             participants: collectThreadParticipants(it.entry, replies),
-            // Tombstones render no row, so they get no tick either. Replies
-            // follow the page order: newest-first reverses them so the rail's
-            // top-to-bottom order equals the page order.
-            replies: timelineNewestFirst ? [...liveReplies].reverse() : liveReplies,
+            // Tombstones render no row, so they get no tick either.
+            replies: replies.filter((reply) => !isDeletedComment(reply)),
             resolutionReplyId: resolution.kind === "reply" ? resolution.resolutionId : null,
           },
         ];
       }),
-    [items, timelineView.threadReplies, timelineNewestFirst],
+    [items, timelineView.threadReplies],
   );
 
   // When the timeline renders flat (deep-link or in-page find), there is no
@@ -3191,7 +3188,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             expandedResolvedIds={expandedResolved}
             onResolvedExpandChange={toggleResolvedExpand}
             highlightedCommentId={highlightedId}
-            newestFirst={timelineNewestFirst}
           />
         </div>
       );
