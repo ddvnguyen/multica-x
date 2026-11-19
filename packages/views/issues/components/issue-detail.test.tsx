@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
 import { useCommentCollapseStore } from "@multica/core/issues/stores";
 import { useTimelineDisplayStore } from "@multica/core/issues/stores/timeline-display-store";
+import { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
@@ -739,12 +740,14 @@ function createTestQueryClient() {
   });
 }
 
-function renderIssueDetail(issueId = "issue-1") {
+function renderIssueDetail(issueId = "issue-1", hostStorage?: Storage) {
   const queryClient = createTestQueryClient();
   return render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <QueryClientProvider client={queryClient}>
-        <IssueDetail issueId={issueId} />
+        <HostStorageProvider storage={hostStorage}>
+          <IssueDetail issueId={issueId} />
+        </HostStorageProvider>
       </QueryClientProvider>
     </I18nProvider>,
   );
@@ -4578,5 +4581,30 @@ describe("groupSubIssuesByStage", () => {
   it("omits the unstaged group when every child is staged", () => {
     const groups = groupSubIssuesByStage([child("s1", 1), child("s2", 2)]);
     expect(groups.map((g) => g.stage)).toEqual([1, 2]);
+  });
+});
+
+describe("IssueDetail sidebar group resize behavior", () => {
+  async function getSidebarResizeBehavior(container: HTMLElement) {
+    const sidebar = await waitFor(() => {
+      const panel = container.querySelector<HTMLElement>(
+        '[data-testid="panel"][id="sidebar"]',
+      );
+      expect(panel).not.toBeNull();
+      return panel!;
+    });
+    return sidebar.getAttribute("groupresizebehavior");
+  }
+
+  it("preserves pixel size when the app owns its origin", async () => {
+    const { container } = renderIssueDetail();
+
+    expect(await getSidebarResizeBehavior(container)).toBe("preserve-pixel-size");
+  });
+
+  it("preserves relative size when hosted on a shared origin", async () => {
+    const { container } = renderIssueDetail("issue-1", window.localStorage);
+
+    expect(await getSidebarResizeBehavior(container)).toBe("preserve-relative-size");
   });
 });
