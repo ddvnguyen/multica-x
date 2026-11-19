@@ -2,12 +2,18 @@ import { prepareHostedColumn, type HostedColumnFaces } from "./hosted-column";
 import type { SidebarRightLike } from "./shell-link";
 
 /**
- * The side preview tab type (M-336, generalized in M-336 G6).
+ * The side preview tab type (M-336, generalized in G6).
  *
- * `Side preview` is a tab in dsh's right column: the plugin registers one page
- * type, the island opens it with navigation params describing what to show, and
- * the tab body hands the column a container the island portals the matching
- * side stack into.
+ * `Side preview` used to be the fork's floating peek inside MMX's own column —
+ * the surface the Owner rejected (M-313). It is now a tab in dsh's right
+ * column: the plugin registers one page type, the island opens it with the
+ * target as its navigation params, and the tab body hands the column a
+ * container the island portals the matching side stack into.
+ *
+ * The chip is generic on purpose. dsh captures `title(address)` when the tab
+ * opens and never rewrites it, and the only address a page type has is
+ * `sidebar://<kind>` — so the identifier belongs in the body's header, where it
+ * can follow a reveal that hands the same tab another target.
  */
 
 /** The tab kind `openTab` names (kept for compatibility). */
@@ -48,7 +54,7 @@ export function sidePreviewTargetFromParams(params: unknown): SidePreviewTargetR
   return null;
 }
 
-/** The issue a tab is showing (compat helper). */
+/** The issue a tab is showing (compat helper), read out of dsh's navigation params. */
 export function issueIdFromParams(params: unknown): string | null {
   const target = sidePreviewTargetFromParams(params);
   return target?.view === "issue" ? target.id : null;
@@ -66,6 +72,18 @@ export type SidePreviewOpener = (issueId: string) => Promise<void>;
 /** Generic opener for any supported side-preview view. */
 export type SidePreviewTargetOpener = (target: SidePreviewTargetRef) => Promise<void>;
 
+/**
+ * Open a preview target in dsh's right column.
+ *
+ * Two steps, both required: the column has to have a Session surface to act on
+ * (a hosted panel with no Session cannot be opened into), and the tab type has
+ * to be registered for `openTab` to find — it is, when this module runs at all.
+ * `revealIfOpened` is the default and the point: a second press on another
+ * target focuses the one preview tab and hands it the new id, so the column
+ * never fills with copies of itself.
+ *
+ * @throws when the column cannot be prepared, or the shell has no `openTab`.
+ */
 async function openTarget(
   input: SidePreviewOpenInput,
   target: SidePreviewTargetRef,

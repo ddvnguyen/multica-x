@@ -11,6 +11,18 @@ import type { SidePreviewTargetRef } from "./side-preview";
 
 /**
  * The island's half of the side preview (M-336, generalized in G6).
+ *
+ * Every dsh tab body of the preview kind publishes its container here, and the
+ * island paints the matching side stack into it. The portal keeps the island's
+ * providers — the query client, the workspace pointer, the fork's contexts —
+ * around content that lives in another React tree (the shell's), which a second
+ * root would not have: the preview is the same composition the detail page's
+ * sidebar renders, so it must resolve the same queries and mutations.
+ *
+ * The id and view a stack needs come from the tab's own navigation params,
+ * which can change while the tab stays open (a reveal hands the same tab
+ * another target). React keys the portal by container, not by target, so a
+ * reveal swaps the content of one pane instead of remounting it.
  */
 export function SidePreviewPortals() {
   const targets = useSyncExternalStore(subscribeSidePreview, getSidePreviewTargets, getSidePreviewTargets);
@@ -33,13 +45,25 @@ export function SidePreviewPortals() {
   );
 }
 
+/** Dispatches one preview target to its view-specific side stack. */
 function SidePreviewContent({ target }: { target: SidePreviewTargetRef }) {
   if (target.view === "issue") {
     return <SidePreviewIssue issueId={target.id} />;
   }
+  // G6: non-issue stacks are wired progressively. Keep the tab functional
+  // (no crash) until a view's real side stack lands.
   return <SidePreviewPending target={target} />;
 }
 
+/**
+ * One issue preview: the identifier header over the fork's side stack.
+ *
+ * The tab chip is generic because dsh captures it once at open time and never
+ * rewrites it, and one tab serves every target a reveal hands it — the
+ * identifier therefore lives here, where it follows the params. The read is the
+ * same detail query the side stack resolves, so the header costs no second
+ * request.
+ */
 function SidePreviewIssue({ issueId }: { issueId: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -49,6 +73,7 @@ function SidePreviewIssue({ issueId }: { issueId: string }) {
   );
 }
 
+/** The identifier and title above the stack; nothing renders until the issue reads. */
 function SidePreviewIssueHeader({ issueId }: { issueId: string }) {
   const wsId = useWorkspaceId();
   const { issue } = useCanonicalIssue(wsId, issueId, { enabled: wsId !== "" });
@@ -80,6 +105,10 @@ function labelForView(view: SidePreviewTargetRef["view"]): string {
   }
 }
 
+/**
+ * A preview target whose real side stack is not wired yet. The body header
+ * keeps the identifier position consistent with the issue preview.
+ */
 function SidePreviewPending({ target }: { target: SidePreviewTargetRef }) {
   return (
     <div className="flex h-full flex-col">
@@ -99,6 +128,10 @@ function SidePreviewPending({ target }: { target: SidePreviewTargetRef }) {
   );
 }
 
+/**
+ * A preview tab with no target: a restored layout, or a tab dsh opened without
+ * params. Says what it is instead of rendering an empty column.
+ */
 function SidePreviewEmpty() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
