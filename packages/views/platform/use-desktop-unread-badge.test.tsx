@@ -40,3 +40,53 @@ it("adds Chat messages to Inbox unread while backgrounded and clears read/logout
   await waitFor(() => expect(setUnreadBadge).toHaveBeenLastCalledWith(0));
   qc.clear();
 });
+
+it("relays the unread count to the hosting portal", async () => {
+  setApiInstance({
+    getInboxUnreadSummary: async () => [{ workspace_id: "ws-a", count: 4 }],
+    listChatSessions: async () => [] as ChatSession[],
+  } as unknown as ApiClient);
+  const postMessage = vi.fn();
+  const original = Object.getOwnPropertyDescriptor(window, "parent");
+  Object.defineProperty(window, "parent", { configurable: true, value: { postMessage } });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  try {
+    const view = renderHook(() => useDesktopUnreadBadge("ws-a"), { wrapper });
+    await waitFor(() => expect(postMessage).toHaveBeenLastCalledWith(
+      { type: "portal:badge", count: 4 }, window.location.origin));
+    view.rerender();
+    // The first paint reports 0 (clearing any stale badge) before the queries
+    // resolve; nothing other than the live count may reach the parent.
+    const counts = postMessage.mock.calls.map(([message]) => (message as { count: number }).count);
+    expect(counts[counts.length - 1]).toBe(4);
+    expect(counts.every((count) => count === 0 || count === 4)).toBe(true);
+    for (const [, origin] of postMessage.mock.calls) {
+      expect(origin).toBe(window.location.origin);
+    }
+  } finally {
+    if (original) Object.defineProperty(window, "parent", original);
+    else delete (window as unknown as Record<string, unknown>).parent;
+    qc.clear();
+  }
+});
+
+it("stays silent when it is not embedded in a portal", async () => {
+  setApiInstance({
+    getInboxUnreadSummary: async () => [{ workspace_id: "ws-a", count: 4 }],
+    listChatSessions: async () => [] as ChatSession[],
+  } as unknown as ApiClient);
+  const postMessage = vi.spyOn(window, "postMessage").mockImplementation(() => {});
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+  try {
+    const view = renderHook(() => useDesktopUnreadBadge("ws-a"), { wrapper });
+    await waitFor(() => expect(qc.getQueryData(chatKeys.sessions("ws-a"))).toBeDefined());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(postMessage).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    postMessage.mockRestore();
+    qc.clear();
+  }
+});
