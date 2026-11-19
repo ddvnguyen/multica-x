@@ -1520,12 +1520,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // later save). It still needs the failure toast, or a failed upload just
   // erases its own placeholder and the file disappears unexplained.
   const { uploadWithToast } = useEditorUpload();
+  const hostStorage = useHostStorage();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: layoutId,
     // A host on a shared origin (the dsh island) keeps the layout in its own
     // namespaced store; `undefined` keeps the library's `localStorage` default.
-    storage: useHostStorage(),
+    storage: hostStorage,
   });
+  // The dsh shell animates its rail width after the issue panel mounts. Keep
+  // the remembered proportions while that host-owned group grows; preserving
+  // pixels would rewrite the saved ratio at each animation step. Web and
+  // desktop retain their existing pixel-sized sidebar behavior.
+  const sidebarGroupResizeBehavior = hostStorage
+    ? "preserve-relative-size"
+    : "preserve-pixel-size";
   const sidebarRef = usePanelRef();
   const isMobile = useIsMobile();
   const desktopSidebarInitialOpen = getAnimatedRightSidebarInitialOpen(
@@ -4101,7 +4109,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         minSize={260}
         maxSize={420}
         collapsible
-        groupResizeBehavior="preserve-pixel-size"
+        groupResizeBehavior={sidebarGroupResizeBehavior}
         panelRef={sidebarRef}
         onResize={handleDesktopSidebarResize}
       >
