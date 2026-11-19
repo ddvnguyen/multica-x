@@ -146,6 +146,16 @@ valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 > 0 && 10#$1 <= 65535 )); 
 valid_port "$BACKEND_PORT" || die "invalid BACKEND_PORT in $ENV_FILE"
 valid_port "$FRONTEND_PORT" || die "invalid FRONTEND_PORT in $ENV_FILE"
 
+# Reclaim dangling image layers/build cache before the space gate (M-426).
+# Dangling images are untagged intermediates not referenced by any container or
+# tagged release; pruning them is safe and prevents repeated 10 GiB check failures.
+if command -v podman >/dev/null 2>&1; then
+  pruned="$(podman image prune -f 2>/dev/null || true)"
+  if [ -n "$pruned" ]; then
+    log "pruned dangling images before free-space check"
+  fi
+fi
+
 for path in "$CONTAINERS_ROOT" "$WORKSPACE_ROOT"; do
   [ -d "$path" ] || die "required mount is missing: $path"
   available="$(free_kb "$path")"
