@@ -292,7 +292,7 @@ func (s *TaskService) remindAskPlanMembers(ctx context.Context, task db.AgentTas
 	}
 	detailsJSON := json.RawMessage(details)
 	for _, m := range members {
-		item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
+		_, _, err := inbox.Deliver(ctx, s.Queries, s.Bus, inbox.Notification{Params: db.CreateInboxItemParams{
 			ID:            dbid.NewV7(),
 			WorkspaceID:   issue.WorkspaceID,
 			RecipientType: "member",
@@ -304,35 +304,11 @@ func (s *TaskService) remindAskPlanMembers(ctx context.Context, task db.AgentTas
 			Body:          pgtype.Text{String: "waiting with no answer yet", Valid: true},
 			ActorType:     pgtype.Text{String: "system", Valid: true},
 			Details:       detailsJSON,
-		})
+		}})
 		if err != nil {
 			slog.Warn("ask/plan reminder: inbox creation failed",
 				"issue_id", util.UUIDToString(issue.ID), "error", err)
 			continue
-		}
-		if inserted && s.Bus != nil {
-			s.Bus.Publish(events.Event{
-				Type:        protocol.EventInboxNew,
-				WorkspaceID: util.UUIDToString(issue.WorkspaceID),
-				ActorType:   "system",
-				Payload: map[string]any{"item": map[string]any{
-					"id":             util.UUIDToString(item.ID),
-					"workspace_id":   util.UUIDToString(item.WorkspaceID),
-					"recipient_type": item.RecipientType,
-					"recipient_id":   util.UUIDToString(item.RecipientID),
-					"type":           item.Type,
-					"severity":       item.Severity,
-					"issue_id":       util.UUIDToPtr(item.IssueID),
-					"title":          item.Title,
-					"body":           util.TextToPtr(item.Body),
-					"read":           item.Read,
-					"archived":       item.Archived,
-					"created_at":     util.TimestampToString(item.CreatedAt),
-					"actor_type":     util.TextToPtr(item.ActorType),
-					"actor_id":       util.UUIDToPtr(item.ActorID),
-					"details":        json.RawMessage(item.Details),
-				}},
-			})
 		}
 	}
 	slog.Info("parked ask/plan reminded",
@@ -456,7 +432,7 @@ func (s *TaskService) escalateAskPlanToLead(ctx context.Context, task db.AgentTa
 			slog.Warn("ask/plan escalation: inbox details encode failed", "error", err)
 			return
 		}
-		item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
+		_, _, err = inbox.Deliver(ctx, s.Queries, s.Bus, inbox.Notification{Params: db.CreateInboxItemParams{
 			ID:            dbid.NewV7(),
 			WorkspaceID:   issue.WorkspaceID,
 			RecipientType: "member",
@@ -471,35 +447,11 @@ func (s *TaskService) escalateAskPlanToLead(ctx context.Context, task db.AgentTa
 			Title:     "Ask/plan escalation: " + issue.Title,
 			ActorType: pgtype.Text{String: "system", Valid: true},
 			Details:   details,
-		})
+		}})
 		if err != nil {
 			slog.Warn("ask/plan escalation: lead inbox creation failed",
 				"issue_id", util.UUIDToString(issue.ID), "lead_user_id", util.UUIDToString(leadID), "error", err)
 			return
-		}
-		if inserted && s.Bus != nil {
-			s.Bus.Publish(events.Event{
-				Type:        protocol.EventInboxNew,
-				WorkspaceID: util.UUIDToString(issue.WorkspaceID),
-				ActorType:   "system",
-				Payload: map[string]any{"item": map[string]any{
-					"id":             util.UUIDToString(item.ID),
-					"workspace_id":   util.UUIDToString(item.WorkspaceID),
-					"recipient_type": item.RecipientType,
-					"recipient_id":   util.UUIDToString(item.RecipientID),
-					"type":           item.Type,
-					"severity":       item.Severity,
-					"issue_id":       util.UUIDToPtr(item.IssueID),
-					"title":          item.Title,
-					"body":           util.TextToPtr(item.Body),
-					"read":           item.Read,
-					"archived":       item.Archived,
-					"created_at":     util.TimestampToString(item.CreatedAt),
-					"actor_type":     util.TextToPtr(item.ActorType),
-					"actor_id":       util.UUIDToPtr(item.ActorID),
-					"details":        json.RawMessage(item.Details),
-				}},
-			})
 		}
 	default:
 		slog.Warn("ask/plan escalation: unknown project lead type; comment only",

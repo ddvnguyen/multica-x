@@ -345,6 +345,7 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
   if (!agent && (agentsLoading || detailQuery.isPending)) {
     return (
       <ObjectPage
+        type="agent"
         layoutId={AGENT_DETAIL_LAYOUT_ID}
         segments={[listSegment]}
         leaf={<Skeleton className="h-4 w-40" />}
@@ -358,6 +359,7 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
   if (!agent && isForbidden) {
     return (
       <ObjectPage
+        type="agent"
         layoutId={AGENT_DETAIL_LAYOUT_ID}
         segments={[listSegment]}
         leaf={
@@ -393,6 +395,7 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
       : t(($) => $.detail.load_failed_title);
     return (
       <ObjectPage
+        type="agent"
         layoutId={AGENT_DETAIL_LAYOUT_ID}
         segments={[listSegment]}
         leaf={<span className="truncate text-muted-foreground">{title}</span>}
@@ -646,6 +649,7 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
   return (
     <>
       <ObjectPage
+        type="agent"
         scrollRef={setScrollParent}
         layoutId={AGENT_DETAIL_LAYOUT_ID}
         segments={[listSegment]}

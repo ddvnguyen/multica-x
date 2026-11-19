@@ -78,6 +78,11 @@ const sourceSerif = Source_Serif_4({
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // Draw under the camera, rounded corners and home indicator instead of
+  // letterboxing the page inside the safe area. Without it iOS reports every
+  // env(safe-area-inset-*) as 0. globals.css keeps content clear of those
+  // regions.
+  viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#05070b" },

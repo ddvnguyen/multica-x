@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import jaDocs from "./ja/docs.json";
 import jaCommon from "./ja/common.json";
 import jaAuth from "./ja/auth.json";
 import jaSettings from "./ja/settings.json";
@@ -27,6 +28,7 @@ import jaBilling from "./ja/billing.json";
 import jaDecisions from "./ja/decisions.json";
 
 const resources: LocaleResources = {
+  docs: jaDocs,
   common: jaCommon,
   auth: jaAuth,
   settings: jaSettings,

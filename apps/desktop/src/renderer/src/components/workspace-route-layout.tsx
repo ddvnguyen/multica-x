@@ -12,6 +12,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 import { WorkspacePresencePrefetch } from "@multica/views/layout";
 import { IssueOpeningCapabilityProvider } from "@multica/views/issues/issue-opening-capability";
+import { VoiceWorkspaceWords } from "@multica/views/voice";
 import { SourceBackfillModal } from "@multica/views/onboarding";
 import { useTabStore } from "@multica/core/tabs";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
@@ -179,6 +180,7 @@ export function WorkspaceRouteLayout() {
       <WorkspacePresencePrefetch />
       {/* Web and desktop keep the upstream open modes (Full page + Side
           preview): the provider wires the persisted preference through. */}
+      <VoiceWorkspaceWords />
       <IssueOpeningCapabilityProvider>
         <Outlet />
       </IssueOpeningCapabilityProvider>

@@ -244,7 +244,7 @@ func TestBuildQuickCreatePromptLargestAcceptedSourceContextFitsBudget(t *testing
 
 func TestIssuePromptsKeepSourceContextRuleOutOfPerTurnMessage(t *testing.T) {
 	const rule = "If the issue JSON contains `source_context`"
-	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude", false)
+	assignment := buildPromptBody(Task{IssueID: "issue-1"}, "claude")
 	comment := buildCommentPrompt(Task{IssueID: "issue-1", TriggerCommentID: "comment-1"}, "claude")
 	if strings.Contains(assignment, rule) || strings.Contains(comment, rule) {
 		t.Fatal("source-context precedence rule must live in the cache-stable runtime brief, not per-turn prompts")

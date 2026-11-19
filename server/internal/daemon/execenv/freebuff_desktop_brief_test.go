@@ -81,8 +81,8 @@ func TestDesktopCommentFormattingKeepsFileFirstRule(t *testing.T) {
 
 func TestDesktopMentionGuidancePreservesRequiredSyntax(t *testing.T) {
 	var desktop, ordinary strings.Builder
-	writeMentions(&desktop, true)
-	writeMentions(&ordinary, false)
+	writeMentions(&desktop, true, false)
+	writeMentions(&ordinary, false, false)
 	if !strings.Contains(desktop.String(), "mention://agent/<agent-id>") {
 		t.Fatal("required mention syntax was changed")
 	}

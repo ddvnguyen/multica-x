@@ -11,9 +11,14 @@ on:
     branches: [main, multica-moct]
   workflow_dispatch:
 
+# Only a PR's runs supersede each other. A push filters paths against the
+# commit just before it, so a cancelled main run's scope is never re-checked
+# and a breaking commit lands green (MUL-8798). A shared group is not enough
+# either: with cancel-in-progress off, a new run still cancels a pending one,
+# so every non-PR run gets its own group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # PRs and pushes select scopes by path; workflow_dispatch forces them all.
@@ -26,6 +31,7 @@ jobs:
       pull-requests: read
     outputs:
       frontend: ${{ steps.decide.outputs.frontend }}
+      docs: ${{ steps.decide.outputs.docs }}
       backend: ${{ steps.decide.outputs.backend }}
       sqlc: ${{ steps.decide.outputs.sqlc }}
       runtime: ${{ steps.decide.outputs.runtime }}
@@ -209,8 +215,8 @@ jobs:
       - name: Verify generated SQL is up to date
         run: |
           make sqlc
-          git diff --exit-code -- server/pkg/db/generated
-          untracked="$(git ls-files --others --exclude-standard -- server/pkg/db/generated)"
+          git diff --exit-code -- server/pkg/db/generated server/ee
+          untracked="$(git ls-files --others --exclude-standard -- server/pkg/db/generated server/ee)"
           if [ -n "$untracked" ]; then
             printf 'Untracked generated SQL files:\n%s\n' "$untracked"
             exit 1
@@ -682,9 +688,37 @@ jobs:
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
 
+  # The jobs above exclude docs because a per-PR `next build` of the docs site
+  # was too heavy (#1279). Its Vitest suite is not: it guards content such as
+  # unrendered CJK bold and finishes in seconds. It gets its own scope so a
+  # content-only PR runs it and an unrelated PR pays nothing, and installs only
+  # the docs package so the job stays far off the frontend critical path.
+  docs-test:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install docs dependencies
+        run: pnpm install --frozen-lockfile --filter @multica/docs
+
+      - name: Test docs
+        run: pnpm --filter @multica/docs test
+
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
-    needs: [changes, frontend-typecheck, frontend-lint, frontend-build, frontend-test, frontend-views-test, frontend-quality]
+    needs: [changes, frontend-typecheck, frontend-lint, frontend-build, frontend-test, frontend-views-test, frontend-quality, docs-test]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -693,7 +727,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-typecheck":"frontend","frontend-lint":"frontend","frontend-build":"frontend","frontend-test":"frontend","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-typecheck":"frontend","frontend-lint":"frontend","frontend-build":"frontend","frontend-test":"frontend","frontend-views-test":"frontend","frontend-quality":"quality_only","docs-test":"docs"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches stay explicit rather than setup-go's `cache: true`: setup-go
@@ -926,6 +960,22 @@ jobs:
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
+      - name: Build
+        run: cd server && go build -race ./...
+
+      # The open-source server, without the commercial packages in server/ee.
+      - name: Build without ee
+        run: cd server && go build -race -tags oss ./cmd/...
+
+      # The `agentintegration` files execute real agent CLIs, so no CI job runs
+      # them. Nothing compiled them either, which let them rot silently: a
+      # helper renamed in an ordinary test file, or two branches each defining
+      # the same helper in one package, breaks the tagged build with every
+      # untagged job still green. vet type-checks test files, so this is the
+      # cheapest gate that keeps them honest without needing an agent CLI.
+      - name: Vet tag-gated agent integration tests
+        run: cd server && go vet -race -tags agentintegration ./...
+
       - name: Run migrations
         run: cd server && go run ./cmd/migrate up
 
@@ -1094,12 +1144,49 @@ jobs:
       - name: Test shell installers
         run: bash scripts/install.test.sh
 
+  # Every other backend job builds for Linux, so a `_darwin.go` file or a
+  # `//go:build darwin` test that falls out of step with a shared signature
+  # stayed green until the release build compiled it. Cross-vetting from
+  # ubuntu type-checks the whole module, tests included, the way macOS builds
+  # it, without paying for a macOS runner. arm64 because that is what Apple
+  # silicon users run; cgo is off when cross-compiling, as in the release.
+  # Its own runner rather than a backend-tests step: a cold darwin vet adds
+  # ~1 GB to the build cache that job publishes (see MUL-7547), and here it
+  # runs in parallel with the long pole instead of extending it.
+  backend-darwin-vet:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Vet darwin build
+        working-directory: server
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go vet ./...
+
   # Preserve the existing required-check name while allowing the shards,
   # generated SQL verification and the script checks to report independently.
   # The platform jobs, the vulnerability scan and -race moved to nightly.yml
   # (M-161), so this gate no longer waits on them.
   backend:
-    needs: [changes, backend-build, backend-test-db, backend-test-pkg, backend-agent-tests, sqlc-check, go-vulnerability-scan, script-checks, installer]
+    needs: [changes, backend-build, backend-test-db, backend-test-pkg, backend-agent-tests, backend-darwin-vet, sqlc-check, go-vulnerability-scan, script-checks, installer]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1108,7 +1195,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-build":"backend","backend-test-db":"backend","backend-test-pkg":"backend","backend-agent-tests":"backend","sqlc-check":"sqlc","go-vulnerability-scan":"backend","script-checks":"scripts","installer":"installer"}'
+          JOB_SCOPES: '{"backend-build":"backend","backend-test-db":"backend","backend-test-pkg":"backend","backend-agent-tests":"backend","backend-darwin-vet":"backend","sqlc-check":"sqlc","go-vulnerability-scan":"backend","script-checks":"scripts","installer":"installer"}'
         run: node scripts/ci-scope.mjs gate
 
   script-checks:
