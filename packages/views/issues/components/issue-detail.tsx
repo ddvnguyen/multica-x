@@ -13,7 +13,10 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useState, useEffect, useCallback, useMemo, useRef, useId, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { useHostStorage } from "@multica/ui/components/ui/host-storage";
+import {
+  getHostGroupResizeBehavior,
+  useHostStorage,
+} from "@multica/ui/components/ui/host-storage";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import { OpenQuestionsSection } from "./open-questions-section";
@@ -1531,9 +1534,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // the remembered proportions while that host-owned group grows; preserving
   // pixels would rewrite the saved ratio at each animation step. Web and
   // desktop retain their existing pixel-sized sidebar behavior.
-  const sidebarGroupResizeBehavior = hostStorage
-    ? "preserve-relative-size"
-    : "preserve-pixel-size";
+  const sidebarGroupResizeBehavior = getHostGroupResizeBehavior(hostStorage);
   const sidebarRef = usePanelRef();
   const isMobile = useIsMobile();
   const desktopSidebarInitialOpen = getAnimatedRightSidebarInitialOpen(

@@ -3,7 +3,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
-import { useHostStorage } from "@multica/ui/components/ui/host-storage";
+import {
+  getHostGroupResizeBehavior,
+  useHostStorage,
+} from "@multica/ui/components/ui/host-storage";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@multica/ui/components/ui/resizable";
 import { useT } from "../../i18n";
@@ -17,12 +20,14 @@ export function BuilderWorkspaceLayout({ conversation, configuration, footer }: 
   const isMobile = useIsMobile();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+  const hostStorage = useHostStorage();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     // A host on a shared origin (the dsh island) keeps the layout in its own
     // namespaced store; `undefined` keeps the library's `localStorage` default.
     id: "multica_agent_builder_layout",
-    storage: useHostStorage(),
+    storage: hostStorage,
   });
+  const configGroupResizeBehavior = getHostGroupResizeBehavior(hostStorage);
 
   // The breakpoint resolves after hydration. Do not briefly mount a desktop
   // group on phones and persist its constrained sizes over the desktop layout.
@@ -61,7 +66,7 @@ export function BuilderWorkspaceLayout({ conversation, configuration, footer }: 
     >
       <ResizablePanel id="conversation" minSize="30%">{conversation}</ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel id="config" defaultSize={420} minSize={340} groupResizeBehavior="preserve-pixel-size">
+      <ResizablePanel id="config" defaultSize={420} minSize={340} groupResizeBehavior={configGroupResizeBehavior}>
         <div className="flex h-full min-h-0 flex-col border-l">
           <div className="min-h-0 flex-1">{configuration}</div>
           {footer}
