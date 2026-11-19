@@ -272,6 +272,14 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
 				sessionID = msg.SessionID
+				// A failed CodeBuddy result carries no `result` text: the
+				// reason lives in `errors` / `errors_info`. Without this the
+				// failure reaches the reader as "returned an error result
+				// without details" — a classification with no cause — while
+				// the CLI actually spelled the cause out.
+				if resultIsError && strings.TrimSpace(finalResultText) == "" {
+					finalResultText = codebuddyResultErrorText(msg)
+				}
 				if resultUsage := codebuddyResultUsage(msg, opts.Model); len(resultUsage) > 0 {
 					usage = resultUsage
 				}
@@ -624,8 +632,12 @@ type codebuddySDKMessage struct {
 	// result fields — CodeBuddy failures use is_error + errors/errors_info;
 	// there is no Claude-style terminal_reason=prompt_too_long signal in the
 	// shipped @tencent-ai/codebuddy-code 2.150.0 protocol.
-	ResultText string                               `json:"result,omitempty"`
-	IsError    bool                                 `json:"is_error,omitempty"`
+	ResultText string `json:"result,omitempty"`
+	IsError    bool   `json:"is_error,omitempty"`
+	// Errors and ErrorsInfo carry the reason of a failed run. The shipped
+	// protocol puts the upstream's message here and leaves `result` empty.
+	Errors     []string                             `json:"errors,omitempty"`
+	ErrorsInfo []codebuddyErrorInfo                 `json:"errors_info,omitempty"`
 	DurationMs float64                              `json:"duration_ms,omitempty"`
 	NumTurns   int                                  `json:"num_turns,omitempty"`
 	Usage      *codebuddyUsage                      `json:"usage,omitempty"`
@@ -725,4 +737,42 @@ func codebuddyResultUsage(msg codebuddySDKMessage, fallbackModel string) map[str
 
 func codebuddyUsageHasTokens(input, output, cacheRead, cacheWrite int64) bool {
 	return input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0
+}
+
+// codebuddyErrorInfo is one structured error from a failed CodeBuddy result.
+type codebuddyErrorInfo struct {
+	Status  int    `json:"status,omitempty"`
+	Code    int    `json:"code,omitempty"`
+	Details string `json:"details,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// codebuddyResultErrorText renders the reason of a failed result.
+//
+// The failure arrives in one of two places: `errors` (plain strings, one per
+// error) and `errors_info` (the same errors with a status code and a
+// `details` body). Either is enough to name the cause; a reader who gets
+// "402 Out of credits" can act on it, while "an error result without details"
+// names nothing at all.
+func codebuddyResultErrorText(msg codebuddySDKMessage) string {
+	parts := make([]string, 0, len(msg.Errors)+len(msg.ErrorsInfo))
+	for _, err := range msg.Errors {
+		if trimmed := strings.TrimSpace(err); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	for _, info := range msg.ErrorsInfo {
+		detail := strings.TrimSpace(info.Details)
+		if detail == "" {
+			detail = strings.TrimSpace(info.Message)
+		}
+		if detail == "" {
+			continue
+		}
+		if info.Status != 0 && !strings.Contains(detail, fmt.Sprintf("%d", info.Status)) {
+			detail = fmt.Sprintf("HTTP %d: %s", info.Status, detail)
+		}
+		parts = append(parts, detail)
+	}
+	return strings.Join(parts, "; ")
 }
