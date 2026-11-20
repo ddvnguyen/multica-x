@@ -2675,7 +2675,10 @@ const createAgentTask = `-- name: CreateAgentTask :one
 WITH enqueue_agent AS MATERIALIZED (
     SELECT a.id, CASE
         WHEN COALESCE($29::boolean, FALSE) THEN NULL
-        WHEN $28::uuid IS NOT NULL OR $24::text IS NOT NULL OR $25::text IS NOT NULL OR $26::text IS NOT NULL
+        WHEN $28::uuid IS NOT NULL
+          OR $25::text IS NOT NULL
+          OR $26::text IS NOT NULL
+          OR $27::text IS NOT NULL
         THEN $33::uuid
         ELSE COALESCE(a.runtime_id, $33::uuid)
     END AS runtime_id
@@ -2683,7 +2686,10 @@ WITH enqueue_agent AS MATERIALIZED (
     WHERE a.id = $1
       AND lock_task_owner_rows(a.id, $2, CASE
         WHEN COALESCE($29::boolean, FALSE) THEN NULL
-        WHEN $28::uuid IS NOT NULL OR $24::text IS NOT NULL OR $25::text IS NOT NULL OR $26::text IS NOT NULL
+        WHEN $28::uuid IS NOT NULL
+          OR $25::text IS NOT NULL
+          OR $26::text IS NOT NULL
+          OR $27::text IS NOT NULL
         THEN $33::uuid
         ELSE COALESCE(a.runtime_id, $33::uuid)
       END)
