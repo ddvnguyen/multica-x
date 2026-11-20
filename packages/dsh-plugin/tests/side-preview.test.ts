@@ -101,6 +101,7 @@ describe("sidePreviewTargetFromParams", () => {
   it("reads generalized targets", () => {
     expect(sidePreviewTargetFromParams({ view: "agent", id: "a1" })).toEqual({ view: "agent", id: "a1" });
     expect(sidePreviewTargetFromParams({ view: "runtime", id: "rt-1" })).toEqual({ view: "runtime", id: "rt-1" });
+    expect(sidePreviewTargetFromParams({ view: "skill", id: "sk-1" })).toEqual({ view: "skill", id: "sk-1" });
   });
   it("accepts legacy issue params", () => {
     expect(sidePreviewTargetFromParams({ issueId: "iss-1" })).toEqual({ view: "issue", id: "iss-1" });
@@ -157,6 +158,7 @@ describe("createSidePreviewOpener", () => {
 
     await open({ view: "agent", id: "agent-1" });
     await open({ view: "runtime", id: "rt-1" });
+    await open({ view: "skill", id: "sk-1" });
 
     expect(opened).toEqual([
       {
@@ -166,6 +168,10 @@ describe("createSidePreviewOpener", () => {
       {
         kind: SIDE_PREVIEW_KIND,
         options: { params: { view: "runtime", id: "rt-1" }, revealIfOpened: true },
+      },
+      {
+        kind: SIDE_PREVIEW_KIND,
+        options: { params: { view: "skill", id: "sk-1" }, revealIfOpened: true },
       },
     ]);
   });

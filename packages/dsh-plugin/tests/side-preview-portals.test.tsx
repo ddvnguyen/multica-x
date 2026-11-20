@@ -9,6 +9,8 @@ vi.mock("../src/fork", () => ({
     createElement("div", { "data-agent": agentId }),
   RuntimeSideStack: ({ runtimeId }: { runtimeId: string }) =>
     createElement("div", { "data-runtime": runtimeId }),
+  SkillSideStack: ({ skillId }: { skillId: string }) =>
+    createElement("div", { "data-skill": skillId }),
   useCanonicalIssue: () => ({
     issue: { identifier: "M-336", title: "MMX Side preview in dsh right column" },
   }),
@@ -78,6 +80,16 @@ describe("side preview body", () => {
   it("withdraws a runtime target when the tab's lifetime aborts", async () => {
     const lifetime = new AbortController();
     mountBody({ view: "runtime", id: "rt-1" }, lifetime.signal);
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+    lifetime.abort();
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(0);
+  });
+
+  it("withdraws a skill target when the tab's lifetime aborts", async () => {
+    const lifetime = new AbortController();
+    mountBody({ view: "skill", id: "sk-1" }, lifetime.signal);
     await flush();
     expect(store.getSidePreviewTargets()).toHaveLength(1);
     lifetime.abort();
@@ -174,6 +186,32 @@ describe("island portal", () => {
     const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
     expect(surface?.querySelector("[data-runtime='rt-2']")).not.toBeNull();
     expect(surface?.querySelector("[data-runtime='rt-1']")).toBeNull();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+  });
+
+  it("paints the skill side stack for a skill target", async () => {
+    const node = mountBody({ view: "skill", id: "sk-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-skill='sk-1']")).not.toBeNull();
+    expect(surface?.textContent).not.toContain("Preview unavailable");
+  });
+
+  it("swaps the skill in place when the tab is revealed for another one", async () => {
+    const node = mountBody({ view: "skill", id: "sk-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    act(() => {
+      store.publishSidePreview(node, { view: "skill", id: "sk-2" });
+    });
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-skill='sk-2']")).not.toBeNull();
+    expect(surface?.querySelector("[data-skill='sk-1']")).toBeNull();
     expect(store.getSidePreviewTargets()).toHaveLength(1);
   });
 });
