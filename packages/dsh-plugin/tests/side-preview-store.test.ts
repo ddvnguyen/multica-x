@@ -71,6 +71,20 @@ describe("side preview targets", () => {
     expect(targets[0]?.target).toEqual({ view: "agent", id: "agent-2" });
   });
 
+  it("swaps params in place for a runtime target", async () => {
+    const node = body();
+    publishSidePreview(node, { view: "runtime", id: "rt-1" });
+    await flush();
+    const first = getSidePreviewTargets()[0]!;
+
+    publishSidePreview(node, { view: "runtime", id: "rt-2" });
+    await flush();
+    const targets = getSidePreviewTargets();
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.key).toBe(first.key);
+    expect(targets[0]?.target).toEqual({ view: "runtime", id: "rt-2" });
+  });
+
   it("keeps one target per container, so two panes show two targets", async () => {
     const left = body();
     const right = body();
@@ -105,6 +119,17 @@ describe("side preview targets", () => {
     const node = body();
     const lifetime = new AbortController();
     publishSidePreview(node, { view: "agent", id: "agent-1" }, lifetime.signal);
+    await flush();
+    expect(getSidePreviewTargets()).toHaveLength(1);
+    lifetime.abort();
+    await flush();
+    expect(getSidePreviewTargets()).toHaveLength(0);
+  });
+
+  it("withdraws a runtime target when the tab's lifetime aborts", async () => {
+    const node = body();
+    const lifetime = new AbortController();
+    publishSidePreview(node, { view: "runtime", id: "rt-1" }, lifetime.signal);
     await flush();
     expect(getSidePreviewTargets()).toHaveLength(1);
     lifetime.abort();

@@ -7,6 +7,8 @@ vi.mock("../src/fork", () => ({
     createElement("div", { "data-issue": issueId }),
   AgentSideStack: ({ agentId }: { agentId: string }) =>
     createElement("div", { "data-agent": agentId }),
+  RuntimeSideStack: ({ runtimeId }: { runtimeId: string }) =>
+    createElement("div", { "data-runtime": runtimeId }),
   useCanonicalIssue: () => ({
     issue: { identifier: "M-336", title: "MMX Side preview in dsh right column" },
   }),
@@ -66,6 +68,16 @@ describe("side preview body", () => {
   it("withdraws an agent target when the tab's lifetime aborts", async () => {
     const lifetime = new AbortController();
     mountBody({ view: "agent", id: "agent-1" }, lifetime.signal);
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+    lifetime.abort();
+    await flush();
+    expect(store.getSidePreviewTargets()).toHaveLength(0);
+  });
+
+  it("withdraws a runtime target when the tab's lifetime aborts", async () => {
+    const lifetime = new AbortController();
+    mountBody({ view: "runtime", id: "rt-1" }, lifetime.signal);
     await flush();
     expect(store.getSidePreviewTargets()).toHaveLength(1);
     lifetime.abort();
@@ -136,6 +148,32 @@ describe("island portal", () => {
     const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
     expect(surface?.querySelector("[data-agent='agent-2']")).not.toBeNull();
     expect(surface?.querySelector("[data-agent='agent-1']")).toBeNull();
+    expect(store.getSidePreviewTargets()).toHaveLength(1);
+  });
+
+  it("paints the runtime side stack for a runtime target", async () => {
+    const node = mountBody({ view: "runtime", id: "rt-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-runtime='rt-1']")).not.toBeNull();
+    expect(surface?.textContent).not.toContain("Preview unavailable");
+  });
+
+  it("swaps the runtime in place when the tab is revealed for another one", async () => {
+    const node = mountBody({ view: "runtime", id: "rt-1" });
+    render(createElement(SidePreviewPortals));
+    await flush();
+
+    act(() => {
+      store.publishSidePreview(node, { view: "runtime", id: "rt-2" });
+    });
+    await flush();
+
+    const surface = node.shadowRoot?.querySelector<HTMLElement>(".multica-island-surface");
+    expect(surface?.querySelector("[data-runtime='rt-2']")).not.toBeNull();
+    expect(surface?.querySelector("[data-runtime='rt-1']")).toBeNull();
     expect(store.getSidePreviewTargets()).toHaveLength(1);
   });
 });
