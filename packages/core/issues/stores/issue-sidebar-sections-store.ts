@@ -14,6 +14,7 @@ export const ISSUE_SIDEBAR_SECTIONS = [
   // Fork-owned: the ask/plan questions a run is parked on. Kept high in the
   // default order, right under the parent card.
   "open_questions",
+  "sub_issues",
   "duplicates",
   "pull_requests",
   "environments",

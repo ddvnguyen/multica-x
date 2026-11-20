@@ -334,6 +334,9 @@ func (h *Handler) callerRunningIssueTask(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusForbidden, "task does not belong to this workspace")
 		return db.AgentTaskQueue{}, false
 	}
+	if !h.requireTaskVisible(w, r, uuidToString(workspaceID), task, http.StatusNotFound, "task not found") {
+		return db.AgentTaskQueue{}, false
+	}
 	return task, true
 }
 
@@ -1405,6 +1408,9 @@ func (h *Handler) GetIssueAskPlan(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+	if !h.requireProjectVisible(w, r, uuidToString(workspaceID), issue.ProjectID, http.StatusNotFound, "issue not found") {
 		return
 	}
 	cards, err := h.Queries.ListOpenQuestionCardsByIssue(r.Context(), issue.ID)

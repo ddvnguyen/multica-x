@@ -4,6 +4,7 @@ import { Pencil } from "@multica/ui/icons";
 import { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
+import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../platform";
 import { renderWithI18n } from "../test/i18n";
 import {
   ObjectIdentity,
@@ -33,16 +34,30 @@ function makeAdapter(): NavigationAdapter {
   };
 }
 
-function renderPage(panel?: React.ReactNode, hostStorage?: Storage) {
+function renderPage(
+  panel?: React.ReactNode,
+  {
+    hostStorage,
+    scroll = { get: () => undefined },
+    scrollRef,
+  }: {
+    hostStorage?: Storage;
+    scroll?: ScrollRestorationAdapter;
+    scrollRef?: (el: HTMLDivElement | null) => void;
+  } = {},
+) {
   return renderWithI18n(
     <NavigationProvider value={makeAdapter()}>
       <HostStorageProvider storage={hostStorage}>
+      <ScrollRestorationProvider adapter={scroll}>
         <ObjectPage
+          type="agent"
           layoutId="test_object_page"
           segments={[{ href: "/acme/agents", label: "Agents" }]}
           leaf={<span>Lambda</span>}
           actions={<button type="button">Assign work</button>}
           panel={panel}
+          scrollRef={scrollRef}
         >
           <ObjectIdentity media={<span />} title="Lambda" description="Design and frontend" />
           <ObjectSection
@@ -52,6 +67,7 @@ function renderPage(panel?: React.ReactNode, hostStorage?: Storage) {
             <p>Mock before you build.</p>
           </ObjectSection>
         </ObjectPage>
+        </ScrollRestorationProvider>
       </HostStorageProvider>
     </NavigationProvider>,
   );
@@ -78,6 +94,21 @@ describe("ObjectPage", () => {
     expect(screen.queryByRole("button", { name: "Toggle right sidebar" })).toBeNull();
   });
 
+  it("brings the body back to where it was scrolled and still hands it to scrollRef", () => {
+    const scrollRef = vi.fn();
+    renderPage(undefined, {
+      scroll: { get: (key) => (key === "object" ? { top: 480, height: 1600 } : undefined) },
+      scrollRef,
+    });
+
+    const body = screen.getByText("Mock before you build.").closest<HTMLElement>("[data-tab-scroll-root]")!;
+    // Marked so the tab coordinator captures it on the way out …
+    expect(body.getAttribute("data-tab-scroll-root")).toBe("object");
+    // … and given the saved offset back when it attaches.
+    expect(body.scrollTop).toBe(480);
+    expect(scrollRef).toHaveBeenCalledWith(body);
+  });
+
   it("renders the properties panel beside the body", () => {
     renderPage(<ObjectProperty label="Runtime">MacBook Pro</ObjectProperty>);
     expect(screen.getByRole("button", { name: "Toggle right sidebar" })).toBeInTheDocument();
@@ -93,10 +124,9 @@ describe("ObjectPage", () => {
   });
 
   it("preserves relative size when hosted on a shared origin", () => {
-    const { container } = renderPage(
-      <ObjectProperty label="Runtime">MacBook Pro</ObjectProperty>,
-      window.localStorage,
-    );
+    const { container } = renderPage(<ObjectProperty label="Runtime">MacBook Pro</ObjectProperty>, {
+      hostStorage: window.localStorage,
+    });
     const sidebar = container.querySelector('[data-testid="resize-panel"][id="sidebar"]');
 
     expect(sidebar).toHaveAttribute("groupresizebehavior", "preserve-relative-size");

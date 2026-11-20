@@ -16,8 +16,11 @@ import { CSS } from "@dnd-kit/utilities";
 import { CheckCheck, ExternalLink, Link2, RotateCcw, Settings, Users, type IconComponent } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { useChatStore } from "@multica/core/chat";
+import { useMarkAllChatSessionsRead } from "@multica/core/chat/mutations";
 import { chatSessionsOptions } from "@multica/core/chat/queries";
 import { countUnreadChatMessages } from "@multica/core/chat/unread";
+import { useFeatureEnabled } from "@multica/core/config";
+import { DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import {
   deduplicateInboxItems,
   inboxListOptions,
@@ -25,6 +28,8 @@ import {
 } from "@multica/core/inbox/queries";
 import { useMarkAllInboxRead } from "@multica/core/inbox/mutations";
 import { decisionsOptions } from "@multica/core/decisions";
+import { useInboxSnoozeWake } from "@multica/core/inbox/use-snooze-wake";
+import { useSidebarTreeStore } from "@multica/core/issues/stores/sidebar-tree-store";
 import { resolveRailOrder, useRailOrderStore } from "@multica/core/navigation";
 import {
   RAIL_SPACES,
@@ -64,8 +69,10 @@ type RailBadge =
   | { kind: "dot" };
 
 /**
- * Rail badges. Inbox counts unread, Decisions counts awaiting answers, Chat
- * counts unread; Team only flags that something needs a look — the panel says
+ * Rail badges. Work counts unread notifications (its panel heads with the
+ * Inbox) unless the Inbox settings turn that off, Decisions counts awaiting
+ * answers, and Chat counts unread messages; Team only flags that something
+ * needs a look — the panel says
  * what. A dot must be something the user can clear, so a failed autopilot run
  * is shown in the Autopilots panel only.
  */
@@ -74,6 +81,8 @@ function useRailBadges(): Partial<Record<RailSpaceId, RailBadge>> {
   const p = useWorkspacePaths();
   const { pathname } = useNavigation();
   const inboxUnread = useInboxUnreadCount(wsId);
+  useInboxSnoozeWake(wsId);
+  const inboxBadge = useSidebarTreeStore((s) => s.inboxSettings.railBadge);
 
   const { data: chatSessions = [] } = useQuery({
     ...chatSessionsOptions(wsId ?? ""),
@@ -106,7 +115,7 @@ function useRailBadges(): Partial<Record<RailSpaceId, RailBadge>> {
   const decisionsPending = decisionPages?.pages[0]?.pending_count ?? 0;
 
   const badges: Partial<Record<RailSpaceId, RailBadge>> = {};
-  if (inboxUnread > 0) badges.inbox = { kind: "count", value: inboxUnread, tone: "brand" };
+  if (inboxBadge && inboxUnread > 0) badges.work = { kind: "count", value: inboxUnread, tone: "brand" };
   if (chatUnread > 0) badges.chat = { kind: "count", value: chatUnread, tone: "neutral" };
   if (stuck.length > 0) badges.team = { kind: "dot" };
   if (decisionsPending > 0) badges.decisions = { kind: "count", value: decisionsPending, tone: "neutral" };
@@ -141,18 +150,19 @@ function RailBadgeMark({ badge }: { badge: RailBadge }) {
 }
 
 /**
- * The Inbox item returns to the last notification opened there. Once that
- * notification has left the active list (archived here, on another device, or
- * by the server), the Inbox page treats `?issue=` as a shared link and
- * replaces itself with the issue, so the click looks like it did nothing.
+ * Work can return to the Inbox page at the last notification opened there.
+ * Once that notification has left the active list (archived here, on another
+ * device, or by the server), the Inbox page treats `?issue=` as a shared link
+ * and replaces itself with the issue, so the click looks like it did nothing.
  * Drop a selection the cached list no longer holds; with no cached list the
  * page still decides.
  */
 function useInboxReturnHref(href: string, wsId: string | undefined): string {
+  const p = useWorkspacePaths();
   const { data: items } = useQuery({ ...inboxListOptions(wsId ?? ""), enabled: false });
   return useMemo(() => {
     const queryAt = href.indexOf("?");
-    if (!items || queryAt < 0) return href;
+    if (!items || queryAt < 0 || href.slice(0, queryAt) !== p.inbox()) return href;
     const params = new URLSearchParams(href.slice(queryAt + 1));
     const key = params.get("issue");
     if (!key || params.has("view")) return href;
@@ -161,7 +171,7 @@ function useInboxReturnHref(href: string, wsId: string | undefined): string {
     const query = params.toString();
     const path = href.slice(0, queryAt);
     return query ? `${path}?${query}` : path;
-  }, [href, items]);
+  }, [href, items, p]);
 }
 
 /** Hover previews of a collapsed nav. Mouse only: a touch tap navigates. */
@@ -220,7 +230,7 @@ function RailSpaceLink({
   // bubble through it; a press inside the menu must not start a drag.
   const menu = rowMenu.menu.point && (
     <span className="contents" onPointerDown={(event) => event.stopPropagation()}>
-      <RailSpaceMenu space={space} href={href} title={fullLabel} unread={badge?.kind === "count" ? badge.value : 0} state={rowMenu} />
+      <RailSpaceMenu space={space} href={href} title={fullLabel} state={rowMenu} />
     </span>
   );
   // A label the same as the full name still needs the tooltip whenever a
@@ -250,13 +260,11 @@ function RailSpaceMenu({
   space,
   href,
   title,
-  unread,
   state,
 }: {
   space: RailSpaceId;
   href: string;
   title: string;
-  unread: number;
   state: ReturnType<typeof useRowMenu>;
 }) {
   const { t } = useT("layout");
@@ -266,7 +274,15 @@ function RailSpaceMenu({
   const copyLink = async () => {
     if (await copyText(getShareableUrl(href))) toast.success(t(($) => $.rail.link_copied));
   };
+  const wsId = useCurrentWorkspace()?.id;
   const markAllRead = useMarkAllInboxRead();
+  const inboxUnread = useInboxUnreadCount(wsId);
+  const markAllChatsRead = useMarkAllChatSessionsRead();
+  const { data: chatSessions = [] } = useQuery({
+    ...chatSessionsOptions(wsId ?? ""),
+    enabled: space === "chat" && !!wsId,
+  });
+  const unreadChatIds = chatSessions.filter((s) => (s.unread_count ?? 0) > 0).map((s) => s.id);
   const customOrder = useRailOrderStore((s) => s.order !== null);
   const setOrder = useRailOrderStore((s) => s.setOrder);
   return (
@@ -280,12 +296,27 @@ function RailSpaceMenu({
           <Link2 />
           {t(($) => $.rail.copy_link)}
         </DropdownMenuItem>
-        {space === "inbox" && unread > 0 && (
+        {space === "work" && inboxUnread > 0 && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() =>
                 markAllRead.mutate(undefined, {
+                  onError: () => toast.error(t(($) => $.rail.mark_all_read_failed)),
+                })
+              }
+            >
+              <CheckCheck />
+              {t(($) => $.rail.mark_all_read)}
+            </DropdownMenuItem>
+          </>
+        )}
+        {space === "chat" && unreadChatIds.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() =>
+                markAllChatsRead.mutate(unreadChatIds, {
                   onError: () => toast.error(t(($) => $.rail.mark_all_read_failed)),
                 })
               }
@@ -323,19 +354,16 @@ function SortableRailItem({ id, children }: { id: RailSpaceId; children: React.R
 const DRAG_MODIFIERS = [restrictToVerticalAxis, restrictToFirstScrollableAncestor];
 
 /**
- * The app rail: workspaces, New issue and search, the five spaces in the
+ * The app rail: workspaces, New issue and search, the four spaces in the
  * user's order (drag to reorder), then help, settings and the account. It
  * sits on the app shell, outside the content card, and stays put while the
- * panel beside it collapses. Desktop passes `globalActions={false}`: its
- * title bar carries New issue and search.
+ * panel beside it collapses.
  */
 export function AppRail({
   topSlot,
-  globalActions = true,
   className,
 }: {
   topSlot?: React.ReactNode;
-  globalActions?: boolean;
   className?: string;
 }) {
   const { t } = useT("layout");
@@ -344,11 +372,18 @@ export function AppRail({
   const badges = useRailBadges();
   const space = shell?.space ?? null;
   const wsId = useCurrentWorkspace()?.id;
-  const inboxHref = useInboxReturnHref(shell?.spaceHref("inbox", p.inbox()) ?? p.inbox(), wsId);
+  const workHref = useInboxReturnHref(shell?.spaceHref("work", p.issues()) ?? p.issues(), wsId);
   const settingsPeek = usePeekHandlers("settings", space === "settings");
   const savedOrder = useRailOrderStore((s) => s.order);
   const setOrder = useRailOrderStore((s) => s.setOrder);
   const order = useMemo(() => resolveRailOrder(savedOrder), [savedOrder]);
+  // Docs stays in the saved order while docs_v1 is off, so it comes back in
+  // place when the flag is turned on; it is only left out of what renders.
+  const docsEnabled = useFeatureEnabled(DOCS_V1_FLAG, false);
+  const visibleOrder = useMemo(
+    () => (docsEnabled ? order : order.filter((id) => id !== "docs")),
+    [docsEnabled, order],
+  );
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
   const { arm: armClickGuard, release: releaseClickGuard } = useDragClickGuard();
 
@@ -365,17 +400,17 @@ export function AppRail({
   );
 
   const items: Record<RailSpaceId, { href: string; icon: IconComponent; label: string; fullLabel: string }> = {
-    inbox: {
-      href: p.inbox(),
-      icon: routeIconForPath(p.inbox()),
-      label: t(($) => $.rail.inbox),
-      fullLabel: t(($) => $.nav.inbox),
-    },
     work: {
       href: p.issues(),
       icon: routeIconForPath(p.issues()),
       label: t(($) => $.rail.work),
       fullLabel: t(($) => $.spaces.work),
+    },
+    docs: {
+      href: p.docs(),
+      icon: routeIconForPath(p.docs()),
+      label: t(($) => $.rail.docs),
+      fullLabel: t(($) => $.nav.docs),
     },
     team: {
       href: p.agents(),
@@ -419,14 +454,10 @@ export function AppRail({
     >
       {topSlot}
       <RailWorkspaces />
-      {globalActions ? (
-        <div className="my-2 flex flex-col items-center gap-1">
-          <NewIssueButton className={RAIL_ICON_BUTTON_CLASS} tooltipSide="right" />
-          <SearchButton className={RAIL_ICON_BUTTON_CLASS} tooltipSide="right" />
-        </div>
-      ) : (
-        <div className="h-2 shrink-0" />
-      )}
+      <div className="my-2 flex flex-col items-center gap-1">
+        <NewIssueButton className={RAIL_ICON_BUTTON_CLASS} tooltipSide="right" />
+        <SearchButton className={RAIL_ICON_BUTTON_CLASS} tooltipSide="right" />
+      </div>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -435,14 +466,14 @@ export function AppRail({
         onDragEnd={onDragEnd}
         onDragCancel={releaseClickGuard}
       >
-        <SortableContext items={order} strategy={verticalListSortingStrategy}>
+        <SortableContext items={visibleOrder} strategy={verticalListSortingStrategy}>
           <ul className="flex flex-col items-center gap-0.5">
-            {order.map((id) => (
+            {visibleOrder.map((id) => (
               <SortableRailItem key={id} id={id}>
                 <RailSpaceLink
                   space={id}
                   {...items[id]}
-                  href={id === "inbox" ? inboxHref : (shell?.spaceHref(id, items[id].href) ?? items[id].href)}
+                  href={id === "work" ? workHref : (shell?.spaceHref(id, items[id].href) ?? items[id].href)}
                   active={space === id}
                   badge={badges[id]}
                 />

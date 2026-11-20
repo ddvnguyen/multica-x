@@ -37,9 +37,7 @@ func TestCheckOpenCodeResumeClock(t *testing.T) {
 [ "$PWD" = "$CLOCK_EXPECTED_CWD" ] && [ "$(pwd)" = "$CLOCK_EXPECTED_CWD" ] || exit 3
 [ "$XDG_DATA_HOME" = clock-test-storage ] || exit 4
 ` + tc.body + "\n"
-			if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			writeTestExecutable(t, bin, []byte(body))
 			cfg := Config{ExecutablePath: bin, BuiltinRuntime: true, CLIVersion: "1.18.30", Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Env: map[string]string{"CLOCK_EXPECTED_CWD": cwd, "XDG_DATA_HOME": "clock-test-storage"}}
 			opts := ExecOptions{Cwd: cwd, ResumeSessionID: "ses-test"}
 			ctx := context.Background()
@@ -105,9 +103,7 @@ else
   printf '%s' '{"info":{"id":"ses-test","time":{"updated":1}},"messages":[{"info":{"time":{"created":9999999999999}}}]}'
 fi
 `
-			if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			writeTestExecutable(t, bin, []byte(body))
 			cfg := Config{ExecutablePath: bin, BuiltinRuntime: true, CLIVersion: tc.version, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Env: map[string]string{"CLOCK_EXPECTED_COMMAND": tc.command, "CLOCK_STANDALONE": fmt.Sprint(tc.standalone)}}
 			opts := ExecOptions{ResumeSessionID: "ses-test"}
 			if tc.standalone {
@@ -137,9 +133,7 @@ if [ -n "$3" ]; then
 fi
 printf '%s' '{"info":{"id":"ses-test","time":{"updated":1}},"messages":[{"info":{"time":{"created":9999999999999}},"parts":[{"text":"private transcript"}]}]}'
 `
-			if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			writeTestExecutable(t, bin, []byte(body))
 			cfg := Config{ExecutablePath: bin, BuiltinRuntime: true, CLIVersion: "1.1.54", Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Env: map[string]string{"CLOCK_CALLS": calls, "CLOCK_UNSUPPORTED": fmt.Sprint(unsupported)}}
 			err := CheckOpenCodeResumeClock(context.Background(), cfg, ExecOptions{ResumeSessionID: "ses-test"})
 			if errors.Is(err, ErrOpenCodeClockSkew) != unsupported || err == nil || strings.Contains(err.Error(), "private") {

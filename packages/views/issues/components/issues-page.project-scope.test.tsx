@@ -12,6 +12,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { PageChromeProvider } from "../../layout/page-chrome";
 import { IssuesPage } from "./issues-page";
 
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+
 vi.mock("../../i18n", () => ({
   useT: () => ({ t: (selector: (dictionary: unknown) => string) => selector({}) }),
 }));

@@ -18,9 +18,27 @@
     "scripts/mmx-version.mjs",
     "scripts/mmx-version.test.mjs"
   ],
+  "docs": [
+    "apps/docs/**",
+    "package.json",
+    ".npmrc",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "patches/**",
+    ".github/workflows/ci.yml",
+    ".github/ci-paths.json",
+    "scripts/ci-scope.mjs",
+    "scripts/ci-scope.test.mjs"
+  ],
   "backend": [
     "server/**",
+    "packages/core/issues/__fixtures__/agent-question-cases.json",
     "packages/core/runtimes/cli-version.ts",
+    "packages/core/types/inbox.ts",
+    ".multica/environments.toml",
+    "examples/plugins/**",
+    ".env.example",
+    "docker-compose.selfhost.yml",
     "scripts/agent-cli-command-names.txt",
     "scripts/go-test-with-agent-cli-guard.sh",
     "scripts/test-go.sh",
@@ -34,6 +52,7 @@
   "sqlc": [
     "server/pkg/db/queries/**",
     "server/pkg/db/generated/**",
+    "server/ee/**",
     "server/migrations/**",
     "server/sqlc.yaml",
     "Makefile",
@@ -81,13 +100,16 @@
     "scripts/pr-shots",
     "server/cmd/multica/cmd_auth.go",
     "docs/assets/logo-*.svg",
-    ".github/workflows/mobile-verify.yml",
     ".github/workflows/ci.yml",
     ".github/ci-paths.json"
   ],
   "scripts": [
     "scripts/deploy-main.sh",
     "scripts/deploy-main.test.sh",
+    ".goreleaser.yml",
+    ".github/workflows/promote-release.yml",
+    "scripts/promote-release.mjs",
+    "scripts/promote-release.test.mjs",
     "scripts/generate-attachment-text-preview.mjs",
     "scripts/generate-reserved-slugs.mjs",
     "scripts/selfhost-config.test.sh",

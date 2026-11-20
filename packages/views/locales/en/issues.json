@@ -56,7 +56,7 @@
   },
   "relation_filter_error": {
     "title": "Couldn't load the \"Relation to me\" filter",
-    "hint": "Issues filtered by \"Subscribed by me\" or \"Assigned to my agents\" can't be shown until your subscriptions and agents load."
+    "hint": "Issues filtered by \"Subscribed by me\" or \"My agents' work\" can't be shown until your subscriptions and agents load."
   },
   "source_context": {
     "create_action": "Create sub-issue from here",
@@ -194,10 +194,11 @@
     "section_relation": "Relation to me",
     "relation_assigned": "Assigned to me",
     "relation_created": "Created by me",
-    "relation_my_agents": "Assigned to my agents",
+    "relation_my_agents": "My agents' work",
     "relation_subscribed": "Subscribed by me",
     "section_agent_status": "Agent status",
     "agent_status_running": "Running",
+    "agent_status_idle": "Idle",
     "section_read_state": "Read state",
     "read_state_unread": "Unread",
     "operator_label": "Match",
@@ -278,8 +279,7 @@
     "advanced_group_match_trailing": "of these",
     "advanced_group_hint": "Conditions in this group are joined with “{{word}}”",
     "advanced_add_to_group": "Add to group",
-    "advanced_turn_into_group": "Turn into group",
-    "agent_status_idle": "Idle"
+    "advanced_turn_into_group": "Turn into group"
   },
   "display": {
     "tooltip": "Display settings",
@@ -322,9 +322,9 @@
     "card_project": "Project",
     "card_labels": "Labels",
     "card_child_progress": "Sub-issue progress",
+    "card_pull_requests": "Pull requests",
     "show_sub_issues": "Show sub-issues",
-    "layout_options": "{{layout}} options",
-    "card_pull_requests": "Pull requests"
+    "layout_options": "{{layout}} options"
   },
   "view": {
     "tooltip_board": "Board view",
@@ -394,8 +394,8 @@
       "created_at": "Created",
       "updated_at": "Updated",
       "child_progress": "Sub-issue progress",
-      "creator": "Created by",
-      "pull_requests": "Pull requests"
+      "pull_requests": "Pull requests",
+      "creator": "Created by"
     },
     "calculation": {
       "label": "Calculate",
@@ -504,6 +504,18 @@
     "section_pull_requests": "Pull requests",
     "section_metadata": "Metadata",
     "section_details": "Details",
+    "sidebar_settings": {
+      "open": "Customize sidebar",
+      "title": "Sidebar",
+      "reset": "Reset",
+      "footer": "Drag to reorder. Applies to every issue.",
+      "always_shown": "Always shown",
+      "empty": "None on this issue",
+      "customize": "Customize",
+      "drag_handle": "Reorder {{section}}",
+      "hidden_count_one": "{{count}} section hidden",
+      "hidden_count_other": "{{count}} sections hidden"
+    },
     "section_quick_actions": "Quick Actions",
     "quick_actions_more": "Show {{count}} more",
     "quick_action_runs_as": "Runs as {{name}}",
@@ -517,6 +529,7 @@
     "quick_action_blocked_body": "“{{name}}” runs as an agent you’re not allowed to trigger. Ask a workspace admin to make that agent available to the team, or to point this action at a shared one.",
     "quick_action_blocked_ok": "Got it",
     "pull_requests_loading": "Loading…",
+    "pull_request_state_open": "Open",
     "pull_request_state_draft": "Draft",
     "pull_request_state_merged": "Merged",
     "pull_request_state_closed": "Closed",
@@ -554,7 +567,14 @@
     "subscribe": "Subscribe",
     "unsubscribe": "Unsubscribe",
     "delegated_subscription_badge": "Watching via agent",
-    "delegated_subscription_hint": "Your agent created this issue on your behalf, so you're subscribed to it. You'll get notified when it needs review, finishes, or gets stuck.",
+    "delegated_subscription_hint": "Your agent created this issue on your behalf, so you're subscribed to it. With Status changes on, you'll get notified when it needs review, finishes, or gets stuck.",
+    "key_updates_subscription_badge": "Key updates only",
+    "key_updates_subscription_hint": "This issue is someone else's, and you follow it because you created, commented on or were mentioned in it. You'll hear about @mentions, replies in your threads, and, with Status changes on, when it needs review, gets stuck or finishes.",
+    "key_updates_follow_all": "Get all activity",
+    "key_updates_follow_all_done": "You'll get all activity on this issue",
+    "key_updates_settings": "Change the default",
+    "project_subscription_badge": "Via project",
+    "project_subscription_hint": "You're subscribed to every issue in this project. Unsubscribing here stops notifications for this issue only.",
     "unsubscribe_this": "Unsubscribe from this issue",
     "unsubscribe_subtree": "Unsubscribe from this issue and its sub-issues",
     "unsubscribe_subtree_failed": "Could not unsubscribe from the sub-issues. Please try again.",
@@ -572,6 +592,9 @@
     "quick_jump_label": "Quick navigation",
     "description_nav_label": "Issue description",
     "sub_issues_nav_progress": "{{done}}/{{total}} completed",
+    "sub_issues_show_more_one": "Show {{count}} more",
+    "sub_issues_show_more_other": "Show {{count}} more",
+    "sub_issues_show_less": "Collapse",
     "thread_nav_label": "Jump to comment thread",
     "thread_nav_resolved_label": "{{title}} (resolved)",
     "thread_nav_reply_label": "{{author}}: {{title}}",
@@ -589,6 +612,7 @@
     },
     "update_failed": "Failed to update issue",
     "link_copied": "Link copied",
+    "title_link_copied": "Link copied with title",
     "link_copy_failed": "Failed to copy link",
     "workdir_path_copied": "Workdir path copied",
     "project_directory_path_copied": "Project directory path copied",
@@ -596,34 +620,20 @@
     "workdir_path_copy_failed": "Failed to copy workdir path",
     "workdir_path_unavailable": "No local workdir yet — issue has not been run by a local agent",
     "pull_requests_empty_title": "No linked pull requests.",
-    "restore_to_inbox_tooltip": "Restore to inbox",
-    "sidebar_settings": {
-      "open": "Customize sidebar",
-      "title": "Sidebar",
-      "reset": "Reset",
-      "footer": "Drag to reorder. Applies to every issue.",
-      "always_shown": "Always shown",
-      "empty": "None on this issue",
-      "customize": "Customize",
-      "drag_handle": "Reorder {{section}}",
-      "hidden_count_one": "{{count}} section hidden",
-      "hidden_count_other": "{{count}} sections hidden"
-    },
-    "pull_request_state_open": "Open",
-    "project_subscription_badge": "Via project",
-    "project_subscription_hint": "You're subscribed to every issue in this project. Unsubscribing here stops notifications for this issue only."
+    "restore_to_inbox_tooltip": "Restore to inbox"
   },
   "timeline": {
     "loading": "Loading...",
     "jump_to_latest": "Jump to latest",
+    "new_comments_one": "{{count}} new comment",
+    "new_comments_other": "{{count}} new comments",
     "order_oldest_first": "Oldest first",
     "order_newest_first": "Newest first",
-    "order_toggle_hint": "Toggle timeline order",
-    "new_comments_one": "{{count}} new comment",
-    "new_comments_other": "{{count}} new comments"
+    "order_toggle_hint": "Toggle timeline order"
   },
   "activity": {
     "created": "created this issue",
+    "created_on_behalf_of": "created this issue on behalf of {{name}}",
     "self_assigned": "self-assigned this issue",
     "assigned_to": "assigned to {{name}}",
     "removed_assignee": "removed assignee",
@@ -683,7 +693,6 @@
     "wakeup_checkin_coalesced_other": "{{count}} silent checks · latest: {{note}}",
     "wakeup_chip_created_by": "{{name}}'s wakeup",
     "wakeup_chip_system": "System rule",
-    "created_on_behalf_of": "created this issue on behalf of {{name}}",
     "environment_stopped": "stopped the environment {{name}}",
     "environment_restarted": "restarted the environment {{name}}",
     "environment_started": "started the environment {{name}}"
@@ -722,8 +731,6 @@
     "trigger_blocked_runtime_profile_missing": "This target's agent CLI is missing a runtime profile on its machine — install it there",
     "trigger_blocked_agent_runtime_required": "This target has no runtime — bind one to run it",
     "trigger_blocked_runtime_access_denied": "This target's agent can't run on its private runtime — make the runtime public, or rebind/copy the agent to one its owner can use",
-    "trigger_blocked_tier_unavailable": "The selected tier doesn't exist, is disabled, or isn't available to this agent — fix the name",
-    "trigger_blocked_tier_waiting_capacity": "The selected tier is full or offline — the run is queued and starts when a slot frees",
     "trigger_blocked_generic": "This target won't be triggered",
     "trigger_blocked_short_invocation_not_allowed": "Not found or no permission",
     "trigger_blocked_short_target_unavailable": "Unavailable",
@@ -732,8 +739,6 @@
     "trigger_blocked_short_runtime_profile_missing": "Runtime profile missing",
     "trigger_blocked_short_agent_runtime_required": "Needs a runtime",
     "trigger_blocked_short_runtime_access_denied": "No runtime access",
-    "trigger_blocked_short_tier_unavailable": "Bad tier",
-    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued",
     "trigger_blocked_short_generic": "Won't start",
     "send_reply_failed": "Failed to send reply",
     "delete_failed": "Failed to delete comment",
@@ -797,7 +802,11 @@
     "restart_failed": "Couldn't stop the current run. Your message wasn't sent.",
     "reply_action": "Reply",
     "actions_label": "Comment actions",
-    "create_issue_from_selection": "Create sub-issue from selection"
+    "create_issue_from_selection": "Create sub-issue from selection",
+    "trigger_blocked_tier_unavailable": "The selected tier doesn't exist, is disabled, or isn't available to this agent — fix the name",
+    "trigger_blocked_tier_waiting_capacity": "The selected tier is full or offline — the run is queued and starts when a slot frees",
+    "trigger_blocked_short_tier_unavailable": "Bad tier",
+    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued"
   },
   "reply": {
     "recipients_changed": "Reply target changed. Review the recipients before sending again.",
@@ -870,11 +879,6 @@
     "cancel_failed": "Failed to cancel run"
   },
   "execution_log": {
-    "memory_report": "Injected memory",
-    "memory_loading": "Loading memory report...",
-    "memory_load_failed": "Could not load the memory report.",
-    "memory_retry": "Retry",
-    "memory_empty": "No memory was injected.",
     "latest": "Latest",
     "include_children": "Include sub-issues",
     "loading": "Loading runs...",
@@ -906,11 +910,6 @@
     "status_completed": "Completed",
     "status_failed": "Failed",
     "status_cancelled": "Cancelled",
-    "tier_parked_short": "{{name}} · waiting",
-    "tier_explicit_short": "{{name}} · explicit",
-    "tier_parked_detail": "Pinned to tier {{name}} — waiting for a free slot. The run starts on this tier, never another.",
-    "tier_explicit_detail": "Pinned to tier {{name}} by the sender.",
-    "tier_auto_detail": "Tier {{name}}, picked by the resolver.",
     "attribution": {
       "on_behalf_of": "On behalf of {{name}}",
       "someone": "someone",
@@ -935,6 +934,16 @@
     "strip_no_usage": "No usage recorded",
     "queued_count_one": "{{count}} queued",
     "queued_count_other": "{{count}} queued",
+    "memory_report": "Injected memory",
+    "memory_loading": "Loading memory report...",
+    "memory_load_failed": "Could not load the memory report.",
+    "memory_retry": "Retry",
+    "memory_empty": "No memory was injected.",
+    "tier_parked_short": "{{name}} · waiting",
+    "tier_explicit_short": "{{name}} · explicit",
+    "tier_parked_detail": "Pinned to tier {{name}} — waiting for a free slot. The run starts on this tier, never another.",
+    "tier_explicit_detail": "Pinned to tier {{name}} by the sender.",
+    "tier_auto_detail": "Tier {{name}}, picked by the resolver.",
     "open_session_tooltip": "Open session",
     "steer_aria": "Send a message to this run",
     "steer_tooltip": "Steer or queue a message",
@@ -1054,12 +1063,47 @@
     "delete_dialog_desc_one": "This action cannot be undone. This will permanently delete the selected issue and all associated data.",
     "delete_dialog_desc_other": "This action cannot be undone. This will permanently delete the selected issues and all associated data.",
     "cancel": "Cancel",
-    "delete_dialog_warning": "Any workspace member can delete issues.",
     "copy_links": "Copy links",
     "links_copied_one": "Copied {{count}} link",
     "links_copied_other": "Copied {{count}} links",
     "delete_count_one": "Delete {{count}} issue",
-    "delete_count_other": "Delete {{count}} issues"
+    "delete_count_other": "Delete {{count}} issues",
+    "labels": "Labels",
+    "project": "Project",
+    "due_date": "Due date",
+    "more": "More actions",
+    "stage": "Stage",
+    "custom_properties": "Custom properties",
+    "pick_date": "Pick a date…",
+    "property_edit": "Set value…",
+    "result_unknown": "Couldn't confirm which issues changed. Check the list before retrying.",
+    "property_clear": "Clear ({{count}} set)",
+    "labels_search": "Add or remove labels…",
+    "clear_labels_one": "Remove all labels from {{count}} issue",
+    "clear_labels_other": "Remove all labels from {{count}} issues",
+    "set_parent_title_one": "Set parent for {{count}} issue",
+    "set_parent_title_other": "Set parent for {{count}} issues",
+    "set_parent_description_one": "Search for an issue to make it the parent of the selected issue.",
+    "set_parent_description_other": "Search for an issue to make it the parent of the {{count}} selected issues.",
+    "skipped_title_one": "Updated {{updated}}, skipped {{count}} issue",
+    "skipped_title_other": "Updated {{updated}}, skipped {{count}} issues",
+    "skipped_more": "and {{count}} more",
+    "select_skipped_one": "Select only this issue",
+    "select_skipped_other": "Select only these {{count}}",
+    "server_outdated": "This server can't change labels or custom properties in bulk yet. Update the server and try again.",
+    "skip_reason": {
+      "invalid_id": "Not a valid issue",
+      "not_found": "Not found, or you can't see it",
+      "invalid_value": "The value isn't valid for this issue",
+      "parent_self": "An issue can't be its own parent",
+      "parent_not_found": "Parent issue not found",
+      "parent_cycle": "The parent is one of its sub-issues",
+      "workflow_rejected": "Its project's workflow doesn't allow this change",
+      "assignee_not_allowed": "Can't be assigned to this assignee",
+      "properties_too_large": "Its custom properties would exceed the size limit",
+      "write_failed": "Couldn't save this issue"
+    },
+    "delete_dialog_warning": "Any workspace member can delete issues."
   },
   "card": {
     "update_failed": "Failed to update issue",
@@ -1089,6 +1133,7 @@
     "mark_read": "Mark as read",
     "mark_unread": "Mark as unread",
     "copy_link": "Copy link",
+    "copy_title_as_link": "Copy link with title",
     "copy_workdir_path": "Copy local workdir path",
     "copy_project_directory_path": "Copy project directory path",
     "copy_identifier": "Copy identifier",
@@ -1096,20 +1141,16 @@
     "stop_agent_run": "Stop {{name}}’s run",
     "relations": "Relations",
     "create_sub_issue": "Create sub-issue",
+    "quick_actions": "Quick actions",
     "set_parent_issue": "Set parent issue...",
     "remove_parent_issue": "Remove parent issue",
     "remove_parent_issue_success": "Removed parent issue",
     "add_sub_issue": "Add sub-issue...",
     "delete_issue": "Delete issue",
     "mark_duplicate": "Mark as duplicate...",
-    "quick_actions": "Quick actions",
     "open_in_new_window": "Open in new window"
   },
   "pickers": {
-    "tier": {
-      "tier_group": "Tier for this run",
-      "tier_auto": "Auto (resolver picks)"
-    },
     "custom_property": {
       "empty": "Empty",
       "none": "No value",
@@ -1161,6 +1202,10 @@
     "status": {
       "mark_duplicate": "Mark as duplicate",
       "change_original": "Change original"
+    },
+    "tier": {
+      "tier_group": "Tier for this run",
+      "tier_auto": "Auto (resolver picks)"
     }
   },
   "labels_panel": {
@@ -1203,7 +1248,7 @@
     "variant_my_any": "Any relation",
     "variant_my_assigned": "Assigned to me",
     "variant_my_created": "Created by me",
-    "variant_my_involved": "Involved",
+    "variant_my_involved": "My agents' work",
     "title": "Save as view",
     "hint_workspace": "Based on all workspace issues",
     "hint_my_any": "Based on My issues · All",
@@ -1515,8 +1560,8 @@
       "enable": "On for this issue",
       "toggle": "Wake the assignee when sub-issues finish",
       "save_error": "Could not save the system rule.",
-      "default_on": "On by default in this workspace. Change the default in Settings → Wakeups.",
-      "default_off": "Off by default in this workspace. Change the default in Settings → Wakeups.",
+      "default_on": "On by default in this workspace.",
+      "default_off": "Off by default in this workspace.",
       "notify_member": "Notify {{name}} in their inbox",
       "instruction": "What to do when woken",
       "instruction_edit": "Edit instruction",
@@ -1604,15 +1649,6 @@
     "unmark": "Not a duplicate",
     "section_title": "Duplicates",
     "unmark_toast": "Reopened as Todo"
-  },
-  "questions": {
-    "section_title": "Waiting on you",
-    "expires_at": "Expires at {{time}}",
-    "multi_select_hint": "Select all that apply",
-    "other_placeholder": "Or type an answer",
-    "submit": "Answer",
-    "answered_toast": "Answer sent",
-    "answer_failed": "Could not send the answer"
   },
   "pr_automation": {
     "link_action": "Link pull request",
@@ -1912,10 +1948,6 @@
       "name_placeholder": "Status name",
       "add": "Add"
     },
-    "menu": {
-      "view_flow": "View full flow",
-      "switch": "Switch workflow"
-    },
     "flow": {
       "title": "{{workflow}} workflow",
       "scope_own": "Only this project uses this workflow.",
@@ -1950,6 +1982,10 @@
           "waiting": "Waiting on reporter"
         }
       }
+    },
+    "menu": {
+      "view_flow": "View full flow",
+      "switch": "Switch workflow"
     }
   },
   "hover_card": {
@@ -1960,6 +1996,10 @@
       "my_issues": "My Issues",
       "my_agents": "My agents' work",
       "all_issues": "All issues",
+      "my_work": "My work",
+      "working": "Working",
+      "subscribed": "Subscribed",
+      "snoozed": "Snoozed",
       "unread": "Unread"
     },
     "untitled": "Untitled view",
@@ -2157,6 +2197,15 @@
     "focus_failed": "Couldn't switch to {{name}}",
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "questions": {
+    "section_title": "Waiting on you",
+    "expires_at": "Expires at {{time}}",
+    "multi_select_hint": "Select all that apply",
+    "other_placeholder": "Or type an answer",
+    "submit": "Answer",
+    "answered_toast": "Answer sent",
+    "answer_failed": "Could not send the answer"
   },
   "agent_question": {
     "ask_title": "The agent needs your answer",

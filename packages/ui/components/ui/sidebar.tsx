@@ -26,10 +26,13 @@ import {
 } from "@multica/ui/components/ui/tooltip"
 import { PanelLeftIcon } from "@multica/ui/icons"
 
-const SIDEBAR_WIDTH_DEFAULT = 240
+const SIDEBAR_WIDTH_DEFAULT = 280
 const SIDEBAR_WIDTH_MIN = 200
 const SIDEBAR_WIDTH_MAX = 320
 const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar_width"
+// Until the person drags the edge, a theme picks the width (docs/theming.md).
+// Keep the bounds and default in step with the three constants above.
+const SIDEBAR_WIDTH_THEMED = "clamp(200px, var(--sidebar-panel-width, 280px), 320px)"
 // List columns (Inbox, Chat) hold two-line rows with an avatar, so they get
 // their own width instead of the nav's: one shared value is either too narrow
 // for the rows or too wide for the nav's short labels.
@@ -100,6 +103,7 @@ function useStoredWidth(
 ) {
   const store = storage === undefined ? browserWidthStorage() : storage
   const [width, setWidth] = React.useState(defaultWidth)
+  const [stored, setStored] = React.useState(false)
   React.useEffect(() => {
     let stored: string | null = null
     try {
@@ -112,6 +116,7 @@ function useStoredWidth(
       const storedWidth = Number(stored)
       if (Number.isFinite(storedWidth)) {
         setWidth(clamp(storedWidth))
+        setStored(true)
       }
     }
   }, [storageKey, clamp, store])
@@ -123,11 +128,11 @@ function useStoredWidth(
         store?.setItem(storageKey, String(clamped))
       } catch {
         // See the read above.
-      }
-    },
+          }
+      },
     [storageKey, clamp, store]
   )
-  return [width, commit] as const
+  return [width, commit, stored] as const
 }
 
 type SidebarContextProps = {
@@ -222,7 +227,7 @@ function SidebarProvider({
   const isCompact = useIsCompact()
   const [openMobile, setOpenMobile] = React.useState(false)
 
-  const [width, commitWidth] = useStoredWidth(
+  const [width, commitWidth, widthStored] = useStoredWidth(
     SIDEBAR_WIDTH_STORAGE_KEY,
     SIDEBAR_WIDTH_DEFAULT,
     clampSidebarWidth,
@@ -338,7 +343,7 @@ function SidebarProvider({
           data-slot="sidebar-wrapper"
           style={
             {
-              "--sidebar-width": `${width}px`,
+              "--sidebar-width": widthStored ? `${width}px` : SIDEBAR_WIDTH_THEMED,
               "--list-column-width": `${listWidth}px`,
               "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
               ...style,
@@ -490,7 +495,6 @@ function SidebarTrigger({
   return (
     <IconButton
       data-sidebar="trigger"
-      data-slot="sidebar-trigger"
       label={t(($) => $.toggle_sidebar)}
       shortcut={shortcut}
       tooltipSide="bottom"

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bell,
   Blocks,
@@ -12,6 +12,7 @@ import {
   ListPlus,
   Lock,
   MessagesSquare,
+  Mic,
   Palette,
   Plug,
   Search,
@@ -36,6 +37,7 @@ import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { cn } from "@multica/ui/lib/utils";
 import { resolveSettingsLocation, settingsHref } from "./settings-navigation";
 import { AppLink, useNavigation } from "../../navigation";
+import { useRestoredScrollRef } from "../../platform/scroll-restoration";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
 import { AppearanceTab } from "./appearance-tab";
@@ -51,6 +53,8 @@ import { WorkflowsTab } from "../../workflows/workflows-tab";
 import { PropertiesTab } from "./properties-tab";
 import { QuickActionsTab } from "./quick-actions-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
+import { localVoiceAPI } from "../../platform/local-voice";
+import { VoiceInputTab } from "./voice-input-tab";
 import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
 import { TiersTab } from "./tiers-tab";
@@ -169,7 +173,7 @@ interface SettingsScopeGroup {
 const SETTINGS_HEADER_RAIL = cn(
   "flex min-w-0 flex-1 items-center gap-2",
   "md:pl-[max(1rem,calc(50%-var(--settings-column)/2+2rem))]",
-  "md:group-has-[[data-slot=sidebar-trigger]]/settings-header:pl-[max(0px,calc(50%-var(--settings-column)/2-0.25rem))]",
+  "md:group-has-[[data-sidebar=trigger]]/settings-header:pl-[max(0px,calc(50%-var(--settings-column)/2-0.25rem))]",
   "md:pr-[max(1.5rem,calc(50%-var(--settings-column)/2+2.5rem))]",
 );
 
@@ -196,6 +200,7 @@ export function SettingsPage({
     false,
   );
   const appsAvailable = useComposioAvailable();
+  const voiceInputAvailable = localVoiceAPI() !== undefined;
   const entry = (
     value: string,
     label: string,
@@ -237,6 +242,9 @@ export function SettingsPage({
               Keyboard,
               <KeyboardShortcutsTab />,
             ),
+            ...(voiceInputAvailable
+              ? [entry("voice-input", t(($) => $.page.tabs.voice_input), Mic, <VoiceInputTab />)]
+              : []),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
           ],
         },
@@ -430,6 +438,16 @@ export function SettingsPage({
   // page. Tab content can still be loading on the first frame, so wait briefly
   // for the anchor before scrolling it into view and flashing it.
   const contentRef = useRef<HTMLDivElement>(null);
+  // Every settings page shares the route, so each restores its own offset.
+  const contentKey = `${active.value}:${location.integration ?? ""}`;
+  const restoreScrollRef = useRestoredScrollRef(`settings:${contentKey}`);
+  const attachContent = useCallback(
+    (el: HTMLDivElement | null) => {
+      contentRef.current = el;
+      restoreScrollRef(el);
+    },
+    [restoreScrollRef],
+  );
   useEffect(() => {
     const anchor = location.section;
     if (!anchor) return;
@@ -682,8 +700,9 @@ export function SettingsPage({
         </PageHeader>
         <SettingsHeaderContext.Provider value={headerSlots}>
           <div
-            ref={contentRef}
-            key={`${active.value}:${location.integration ?? ""}`}
+            ref={attachContent}
+            key={contentKey}
+            data-tab-scroll-root={`settings:${contentKey}`}
             className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
           >
             <div className="mx-auto w-full max-w-(--settings-column) px-4 py-6 sm:px-6 md:px-10 md:py-8">

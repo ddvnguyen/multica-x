@@ -49,7 +49,7 @@ func TestDetachedShutdownReport(t *testing.T) {
 				}
 				return TaskResult{Status: "cancelled"}, nil
 			})
-			d.handleTask(root, Task{ID: "task", WorkspaceID: "ws", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, 0)
+			d.handleTask(root, Task{ID: "task", WorkspaceID: "ws", RuntimeID: "rt", IssueID: "issue", Agent: &AgentData{Name: "test"}}, newTestTaskSlot(0))
 			if got := fail.Load(); got != tc.wantFail {
 				t.Fatalf("failure reports = %d, want %d", got, tc.wantFail)
 			}

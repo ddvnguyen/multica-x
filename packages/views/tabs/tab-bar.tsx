@@ -181,12 +181,15 @@ function SortableTabItem({
   const { getShareableUrl } = useNavigation();
   const togglePin = useTabStore((s) => s.togglePin);
   const updateTab = useTabStore((s) => s.updateTab);
+  const rememberIssueIdentity = useTabStore((s) => s.rememberIssueIdentity);
+  const tabAttention = useTabStore((s) => s.tabAttention);
+  const clearTabAttention = useTabStore((s) => s.clearTabAttention);
   const issueWindowPath = host.parseIssueWindowPath?.(tab.url) ?? null;
   // The tab's leading visual and title are derived live from its URL and the
   // query cache — a resource's own icon/status/avatar and its real title,
   // updated as the cache updates. `tab.title` is only a persisted first-frame
   // fallback. See @multica/views useTabPresentation.
-  const { visual, title, titleResolved } = useTabPresentation(tab.url, tab.title, { fetch: true });
+  const { visual, title, titleResolved, issueIdentity } = useTabPresentation(tab.url, tab.title, { fetch: true });
   const pinLabel = tab.pinned
     ? t(($) => $.desktop.tab_bar.unpin)
     : t(($) => $.desktop.tab_bar.pin);
@@ -216,6 +219,26 @@ function SortableTabItem({
     if (!titleResolved) return;
     if (tab.title !== title) updateTab(tab.id, { title });
   }, [titleResolved, title, tab.id, tab.title, updateTab]);
+
+  const rememberedIssueIdentity = useRef<string | null>(null);
+  useEffect(() => {
+    if (!issueIdentity) return;
+    const key = `${issueIdentity.id}:${issueIdentity.identifier}`;
+    if (rememberedIssueIdentity.current === key) return;
+    rememberedIssueIdentity.current = key;
+    rememberIssueIdentity(tab.id, issueIdentity.id, issueIdentity.identifier);
+  }, [issueIdentity, rememberIssueIdentity, tab.id]);
+
+  const attentionSequence =
+    tabAttention?.tabId === tab.id ? tabAttention.sequence : null;
+  useEffect(() => {
+    if (attentionSequence === null) return;
+    const timeout = window.setTimeout(
+      () => clearTabAttention(attentionSequence),
+      900,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [attentionSequence, clearTabAttention]);
 
   const {
     attributes,
@@ -319,13 +342,17 @@ function SortableTabItem({
       >
         {stripLabel}
       </span>
+      {/* group-active keeps Pin/Close shown while pressed. In macOS fullscreen on a
+          secondary display, Electron sends an offset pointermove right after
+          pointerdown (electron/electron#55100); that drops :hover, hides the
+          button before mouseup, and the click lands on the tab instead. */}
       <span
         onClick={handleTogglePin}
         onPointerDown={stopDragOnAction}
         role="button"
         aria-label={pinLabel}
         title={pinLabel}
-        className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex hover:bg-muted-foreground/20 hover:text-foreground"
+        className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex group-active:flex hover:bg-muted-foreground/20 hover:text-foreground"
       >
         {tab.pinned ? <PinOff className="size-2.5" /> : <Pin className="size-2.5" />}
       </span>
@@ -335,7 +362,7 @@ function SortableTabItem({
           onPointerDown={stopDragOnAction}
           role="button"
           aria-label={closeLabel}
-          className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex hover:bg-muted-foreground/20 hover:text-foreground"
+          className="hidden size-3.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors group-hover:flex group-active:flex hover:bg-muted-foreground/20 hover:text-foreground"
         >
           <X className="size-2.5" />
         </span>
@@ -349,6 +376,9 @@ function SortableTabItem({
       style={style}
       data-tab-frame
       data-tab-id={tab.id}
+      data-mc="tab"
+      data-active={isActive ? "true" : "false"}
+      data-pinned={tab.pinned ? "true" : "false"}
       className={cn("h-full min-w-0", compact ? "w-40 min-w-24" : "w-56 min-w-32", isActive && "z-10")}
     >
       <motion.div
@@ -358,6 +388,16 @@ function SortableTabItem({
         transition={{ duration: isEntering ? 0.18 : 0, ease: TAB_ENTRY_EASE }}
         onAnimationComplete={() => setIsEntering(false)}
       >
+        {attentionSequence !== null && (
+          <motion.span
+            aria-hidden="true"
+            data-tab-attention
+            className="pointer-events-none absolute inset-x-0 inset-y-0 rounded-lg ring-2 ring-primary/70"
+            initial={{ opacity: 0.8 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.9 }}
+          />
+        )}
         {/* Every tab is a pill on the title bar; the active one is made of
             the content card's own material so it reads as the card's tab
             without having to join it. */}

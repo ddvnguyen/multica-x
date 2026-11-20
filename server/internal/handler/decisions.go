@@ -180,6 +180,16 @@ func (h *Handler) GetDecisionDetail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if kind == "status" {
+		issue, err := h.Queries.GetIssue(r.Context(), id)
+		if err != nil || issue.WorkspaceID != ws {
+			writeError(w, http.StatusNotFound, "decision not found")
+			return
+		}
+		if !h.requireProjectVisible(w, r, uuidToString(ws), issue.ProjectID, http.StatusNotFound, "decision not found") {
+			return
+		}
+	}
 	var response pgtype.UUID
 	var seq int32
 	if len(parts) == 2 {
