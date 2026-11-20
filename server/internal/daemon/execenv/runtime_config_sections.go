@@ -690,7 +690,11 @@ func writeWorkflowChat(b *strings.Builder, desktop bool) {
 	b.WriteString("- If asked about the workspace, use `multica workspace get --output json`\n")
 	b.WriteString("- If asked to perform actions (create issues, update status, etc.), use the appropriate CLI commands\n")
 	b.WriteString("- If the task requires code changes, use `multica repo checkout <url>` to get the code first. Use `--ref <branch-or-sha>` when you need an exact revision\n")
-	b.WriteString("- When you act toward someone else for the user (ask a person or agent something, hand off work, request a review, send an email or message) and they want the outcome back (a decision, an answer, a review, work done), or whenever you promise to report back later, create a chat wakeup before you reply — read `multica chat wakeup create --help` first. If they only wanted someone told, don't; when unsure, ask in your reply\n")
+	if desktop {
+		b.WriteString("- When you act toward someone for the user (ask them something, hand off work, request a review, send an email or message) and they want the outcome back (a decision, an answer, a review, work done), or whenever you promise to report back later, create a chat wakeup before you reply — read `multica chat wakeup create --help` first. If they only wanted someone told, don't; when unsure, ask in your reply\n")
+	} else {
+		b.WriteString("- When you act toward someone else for the user (ask a person or agent something, hand off work, request a review, send an email or message) and they want the outcome back (a decision, an answer, a review, work done), or whenever you promise to report back later, create a chat wakeup before you reply — read `multica chat wakeup create --help` first. If they only wanted someone told, don't; when unsure, ask in your reply\n")
+	}
 	b.WriteString("- Keep responses concise and direct\n\n")
 }
 

@@ -619,12 +619,15 @@ func (h *Handler) SetProjectInteractions(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if !isWorkspaceAdmin(member) {
-		writeError(w, http.StatusForbidden, "only workspace owners and admins can change a project's interaction timeout")
-		return
-	}
 	projectUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
 	if !ok {
+		return
+	}
+	if !h.requireProjectVisible(w, r, workspaceID, projectUUID, http.StatusNotFound, "project not found") {
+		return
+	}
+	if !isWorkspaceAdmin(member) {
+		writeError(w, http.StatusForbidden, "only workspace owners and admins can change a project's interaction timeout")
 		return
 	}
 	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectUUID, WorkspaceID: wsUUID})

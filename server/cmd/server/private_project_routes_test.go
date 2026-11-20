@@ -71,7 +71,10 @@ type outsideProjectParam struct {
 // it cannot name a private project's object. A route declaring only these is
 // not probed.
 var routeParamsOutsideProjects = map[string]outsideProjectParam{
-	"workspaces/{id}":                {why: "the workspace itself"},
+	"workspaces/{id}":                {why: "the workspace itself", value: func(f *privateRouteFixture) string { return f.fx.WorkspaceID }},
+	"plans/{planId}":                 {why: "a workspace plan; its issue is checked when a route loads it"},
+	"question-cards/{cardId}":        {why: "a workspace question card; its issue is checked when a route loads it"},
+	"sections/{sectionId}":           {why: "a workspace plan section; its issue is checked when a route loads it"},
 	"members/{memberId}":             {why: "a workspace membership"},
 	"invitations/{id}":               {why: "the caller's own workspace invitation"},
 	"invitations/{invitationId}":     {why: "a workspace invitation"},
@@ -147,6 +150,8 @@ var routePrefixesNotProbed = map[string]string{
 var privateProjectRoutesNotProbed = map[string]string{
 	"GET /api/attachments/{id}/signed-download": "the signed URL is the credential, not a session; it is minted only by the attachment routes probed here",
 	"POST /api/projects/{id}/join":              "the workspace owner's way into a private project they cannot see; TestWorkspaceOwnerJoinsPrivateProject covers who may call it",
+	"POST /api/workspaces/{id}/tasks/{taskId}/ask": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a question card",
+	"POST /api/workspaces/{id}/tasks/{taskId}/plans": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a plan",
 }
 
 // privateRouteRequest shapes the probe for a route an empty request cannot
@@ -158,6 +163,9 @@ type privateRouteRequest struct {
 }
 
 var privateProjectRouteRequests = map[string]privateRouteRequest{
+	"PUT /api/projects/{id}/interactions": {body: func(*privateRouteFixture, string) string { return `{"timeout_seconds":60}` }},
+	"GET /api/workspaces/{id}/issues/{issueId}/ask-plan": {},
+	"POST /api/workspaces/{id}/issues/{issueId}/decision-response": {body: func(*privateRouteFixture, string) string { return `{}` }},
 	"POST /api/issues/{id}/labels": {body: func(f *privateRouteFixture, _ string) string {
 		return fmt.Sprintf(`{"label_id":%q}`, f.shared.labelID)
 	}},

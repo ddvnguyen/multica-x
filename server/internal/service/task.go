@@ -1591,6 +1591,12 @@ func (s *TaskService) EnqueueTaskForSquadLeader(ctx context.Context, issue db.Is
 	return s.enqueueMentionTask(ctx, issue, leaderID, triggerCommentID, true, squadID, false, "", pgtype.UUID{}, pgtype.UUID{}, origin)
 }
 
+// EnqueueTaskForSquadLeaderWithTier preserves the leader role while applying
+// an explicit tier selected on an @agent mention (M-359).
+func (s *TaskService) EnqueueTaskForSquadLeaderWithTier(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, triggerCommentID pgtype.UUID, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithOverride(ctx, issue, leaderID, triggerCommentID, true, squadID, false, "", pgtype.UUID{}, pgtype.UUID{}, origin, override)
+}
+
 // EnqueueTaskForSquadLeaderByActor is the assign/promote variant of
 // EnqueueTaskForSquadLeader. actorUserID is the member who performed the
 // assign/promote and becomes the accountable human (MUL-4302 §4); invalid when

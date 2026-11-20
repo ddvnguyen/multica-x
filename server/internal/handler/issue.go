@@ -4477,18 +4477,20 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil && req.StopPreviousAssigneeRuns {
 		h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
 	}
+	var override service.TierTriggerOverride
 	if willRun {
 		// M-359: explicit tier / runtime+model pick for the assign run.
 		// Unknown names fail the write (409, tier_unavailable) — the
 		// assignee change itself is already applied above; only the run
 		// is refused, never silently re-resolved.
-		override, oerr := h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
+		var oerr error
+		override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
 		if oerr != nil {
 			h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
 			return
 		}
-		resp.RunOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.SuppressRun, actorType, actorID, workspaceID, handoffNote, override)
 	}
+	resp.RunOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.SuppressRun, actorType, actorID, workspaceID, handoffNote, override)
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
 	// conditions): the write recorded the change; process it now. A failure
@@ -5319,12 +5321,16 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil && req.Updates.StopPreviousAssigneeRuns {
 				h.stopPreviousAssigneeRuns(r.Context(), prevIssue, issue, actorType, actorID)
 			}
-			// M-359: explicit tier / runtime+model pick for this issue's run.
-			// Unknown names fail the whole batch write (409, tier_unavailable).
-			override, oerr := h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.Updates.TierID, req.Updates.RuntimeID, req.Updates.Model)
-			if oerr != nil {
-				h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
-				return
+			var override service.TierTriggerOverride
+			if willRun {
+				// M-359: explicit tier / runtime+model pick for this issue's run.
+				// Unknown names fail the whole batch write (409, tier_unavailable).
+				var oerr error
+				override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.Updates.TierID, req.Updates.RuntimeID, req.Updates.Model)
+				if oerr != nil {
+					h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
+					return
+				}
 			}
 			runOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.Updates.SuppressRun, actorType, actorID, workspaceID, batchHandoffNote, override)
 

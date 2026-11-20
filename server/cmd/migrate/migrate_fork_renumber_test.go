@@ -88,14 +88,31 @@ func TestForkMigrationRenameOrderChainsGenerations(t *testing.T) {
 		}
 		return rows
 	}
+	rowsBetween := func(first, last string) []string {
+		start, end := -1, -1
+		for i, pair := range forkMigrationRenames {
+			if pair[0] == first {
+				start = i
+			}
+			if pair[0] == last {
+				end = i
+			}
+		}
+		if start < 0 || end < start {
+			t.Fatalf("migration generation %q..%q is missing or out of order", first, last)
+		}
+		rows := make([]string, 0, end-start+1)
+		for _, pair := range forkMigrationRenames[start : end+1] {
+			rows = append(rows, pair[0])
+		}
+		return rows
+	}
 
 	cases := map[string][]string{
 		"lane on v0.8.1 stems": append(rowsFor(617, 636),
 			"637_agent_plan_review_threads", "638_issue_workflow_continue_unfinished", "640_agent_question_card_trigger_comment"),
-		"lane on v0.8.2 stems": append([]string{
-			"637_runtime_profile_add_freebuff", "638_agent_question_card",
-			"639_agent_plan", "640_agent_plan_review",
-		}, rowsFor(641, 667)...),
+		"lane on v0.8.2 stems": rowsBetween("637_runtime_profile_add_freebuff", "667_ask_plan_reminder"),
+		"lane on v0.9.0 stems": rowsBetween("658_runtime_profile_add_freebuff", "696_drop_pending_issue_agent_thread_v3"),
 		"lane still on pre-v0.8.1 stems": rowsFor(595, 616),
 	}
 

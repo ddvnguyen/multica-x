@@ -2772,9 +2772,12 @@ func (h *Handler) enqueueSingleCommentTriggerWithOutcome(ctx context.Context, is
 				"tier", trigger.TierName)
 			return fail(oerr)
 		}
-		task, err := h.TaskService.EnqueueTaskForMentionWithTier(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed, override)
+		var task db.AgentTaskQueue
+		var err error
 		if trigger.Squad != nil {
-			task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+			task, err = h.TaskService.EnqueueTaskForSquadLeaderWithTier(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed, override)
+		} else {
+			task, err = h.TaskService.EnqueueTaskForMentionWithTier(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed, override)
 		}
 		if err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
@@ -3553,8 +3556,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 		}
-		addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID)})
-	add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending, TierName: tierName, TierID: tierID})
+		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending, TierName: tierName, TierID: tierID})
 	addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID), ExecTierID: uuidToString(tierID)})
 	}
 	return triggers, targets
