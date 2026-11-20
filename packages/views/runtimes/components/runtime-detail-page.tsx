@@ -14,7 +14,6 @@ import {
   agentListOptions,
   memberListOptions,
 } from "@multica/core/workspace/queries";
-import type { MemberWithUser } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
@@ -25,15 +24,12 @@ import {
 } from "@multica/ui/components/ui/dropdown-menu";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
-import { ActorAvatar } from "../../common/actor-avatar";
 import { CollectionPageState } from "../../layout/collection-page";
 import {
   OBJECT_PAGE_BODY,
   ObjectIconMark,
   ObjectIdentity,
   ObjectPage,
-  ObjectPanelSection,
-  ObjectProperty,
   ObjectSection,
   ObjectSectionAction,
   ObjectSectionCard,
@@ -44,10 +40,10 @@ import { buildWorkloadIndex, RuntimeList } from "./runtime-list";
 import {
   buildRuntimeMachines,
   sharedCustomName,
-  type RuntimeMachine,
 } from "./runtime-machines";
 import { RenameMachineDialog } from "./rename-machine-dialog";
 import { RuntimeProfilesDialog } from "./runtime-profiles-dialog";
+import { MachinePropertiesPanel } from "./machine-properties-panel";
 import { pendingRuntimesForProfiles } from "./pending-runtime";
 import {
   MachineCliSection,
@@ -56,13 +52,10 @@ import {
 } from "./machine-cli-section";
 import { isQoderLocator, QoderDetailPage } from "./qoder-detail-page";
 import {
-  HealthIcon,
-  ProviderIconStack,
   machineIcon,
-  shortDaemonId,
   useHealthLabel,
 } from "./shared";
-import { useT, useTimeAgo } from "../../i18n";
+import { useT } from "../../i18n";
 
 const LAYOUT_ID = "multica_runtime_detail_layout";
 
@@ -296,7 +289,7 @@ export function RuntimeDetailPage({
             <MachineActionsMenu onRename={() => setRenameOpen(true)} />
           ) : undefined
         }
-        panel={<MachineProperties machine={machine} members={members} />}
+        panel={<MachinePropertiesPanel machine={machine} members={members} />}
       >
         <div className={cn(OBJECT_PAGE_BODY, "space-y-8")}>
           <ObjectIdentity
@@ -421,80 +414,6 @@ function MachineActionsMenu({ onRename }: { onRename: () => void }) {
   );
 }
 
-function MachineProperties({
-  machine,
-  members,
-}: {
-  machine: RuntimeMachine;
-  members: MemberWithUser[];
-}) {
-  const { t } = useT("runtimes");
-  const { t: tLayout } = useT("layout");
-  const healthLabel = useHealthLabel();
-  const timeAgo = useTimeAgo();
-  const ownerId = machine.runtimes[0]?.owner_id ?? null;
-  const owner = ownerId
-    ? members.find((member) => member.user_id === ownerId) ?? null
-    : null;
-  const busy = machine.runningCount + machine.queuedCount > 0;
-  const daemonShort = shortDaemonId(machine.daemonId);
-
-  return (
-    <ObjectPanelSection title={tLayout(($) => $.object_page.properties)}>
-      <ObjectProperty label={t(($) => $.page.columns.status)}>
-        <HealthIcon health={machine.health} />
-        <span className="truncate">
-          {healthLabel(machine.health)}
-          {machine.lastSeenAt && machine.health !== "online"
-            ? ` · ${timeAgo(machine.lastSeenAt)}`
-            : null}
-        </span>
-      </ObjectProperty>
-      <ObjectProperty label={t(($) => $.detail.fact_owner)}>
-        {owner ? (
-          <>
-            <ActorAvatar
-              actorType="member"
-              actorId={owner.user_id}
-              size="xs"
-              enableHoverCard
-            />
-            <span className="truncate">{owner.name}</span>
-          </>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </ObjectProperty>
-      <ObjectProperty label={t(($) => $.detail.fact_device)}>
-        <span className={machine.deviceSummary ? "truncate" : "text-muted-foreground"}>
-          {machine.deviceSummary ?? "—"}
-        </span>
-      </ObjectProperty>
-      <ObjectProperty label={t(($) => $.page.columns.harness)}>
-        {machine.providerNames.length > 0 ? (
-          <ProviderIconStack providers={machine.providerNames} />
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </ObjectProperty>
-      <ObjectProperty label={t(($) => $.page.columns.workload)}>
-        <span className={busy ? "truncate tabular-nums" : "text-muted-foreground"}>
-          {busy
-            ? t(($) => $.machine.metrics.workload_hint, {
-                running: machine.runningCount,
-                queued: machine.queuedCount,
-              })
-            : t(($) => $.machine.metrics.workload_idle)}
-        </span>
-      </ObjectProperty>
-      {daemonShort && (
-        <ObjectProperty label={t(($) => $.detail.fact_daemon_id)}>
-          <span className="truncate font-mono">{daemonShort}</span>
-        </ObjectProperty>
-      )}
-    </ObjectPanelSection>
-  );
-}
 
 function PropertiesSkeleton() {
   return (
