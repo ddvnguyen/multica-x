@@ -93,7 +93,10 @@ fi
 SHA="$TARGET_SHA"
 wait_http "http://127.0.0.1:$MULTICA_BE_Z_PORT/healthz" 120 '"status":"ok"' \
   || die "multica-be z /healthz did not answer ok after the rollback"
-commit="$(curl -fsS --max-time 5 http://127.0.0.1:3180/multica/health | jq -r '.commit // empty' || true)"
+# The lane web binds the podman bridge (10.88.0.1 on lane z), not loopback, so
+# a hardcoded 127.0.0.1:3180 curl can never pass there and every rollback
+# printed ROLLBACK FAILED over a correctly switched backend (M-458).
+commit="$(curl -fsS --max-time 5 "$(resolve_lane_web_url)/multica/health" | jq -r '.commit // empty' || true)"
 commit_matches "$commit" "$SHA" || die "/multica/health reports '$commit', expected '$SHA'"
 log "lane z backend is on ${SHA:0:9} ($(jq -r '.version // "unknown"' "$TARGET/release.json")); the database was NOT touched"
 

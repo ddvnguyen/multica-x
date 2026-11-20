@@ -40,6 +40,9 @@ chmod +x "$SANDBOX/mock-bin/systemctl"
 
 # curl: backend health from the CURRENT backend release.json; PWA health from
 # the CURRENT PWA tree so post-switch gates pass when the tree is correct.
+# The commit check is matched by path and logs the full URL: it must hit the
+# lane-web host resolved from the unit (M-458), which a fixed host assertion
+# would bake in instead of checking.
 cat > "$SANDBOX/mock-bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -47,7 +50,8 @@ url="${*: -1}"
 case "$url" in
   http://127.0.0.1:4390/healthz)
     printf '{"status":"ok"}\n' ;;
-  http://127.0.0.1:3180/multica/health)
+  */multica/health)
+    printf '%s\n' "$url" >> "$TEST_LANE_ROOT/curl.log"
     sha="$(jq -r '.sha // empty' "$LANE_ROOT/multica-be/current/release.json" 2>/dev/null || true)"
     printf '{"commit":"%s"}\n' "$sha" ;;
   http://127.0.0.1:3190/manifest.webmanifest)
@@ -149,6 +153,8 @@ test "$(readlink -f "$TEST_LANE_ROOT/mmx-pwa/current")" = "$TEST_LANE_ROOT/mmx-p
 grep -qx "NEXT_PUBLIC_APP_VERSION=$FALLBACK_SHA" "$TEST_LANE_ROOT/mmx-pwa/env"
 echo "$out" | grep -q "mmx-pwa z is on ${FALLBACK_SHA:0:9}"
 grep -q "restart mmx-pwa-z.service" "$TEST_LANE_ROOT/systemctl.log"
+# No lane-web unit is configured here, so the 127.0.0.1:3180 fallback is used.
+grep -qx 'http://127.0.0.1:3180/multica/health' "$TEST_LANE_ROOT/curl.log"
 
 # Case 2: explicit --to keeps exact pairing (no fallback).
 new_lane explicit
@@ -187,5 +193,20 @@ out="$("$SANDBOX/bin/rollback.sh" 2>&1)"
 echo "$out" | grep -q "whose sw.js is not stamped with that SHA"
 echo "$out" | grep -q "no usable mmx-pwa/previous-release marker"
 test "$(readlink -f "$TEST_LANE_ROOT/mmx-pwa/current")" = "$TEST_LANE_ROOT/mmx-pwa/releases/$NEW_SHA"
+
+# Case 7 (M-458): the lane web binds the podman bridge, not loopback. With
+# dsh-z.service's ExecStart naming 10.88.0.1:3180 the commit check must hit that
+# host; the old hardcoded 127.0.0.1:3180 could never pass there, so every
+# rollback printed ROLLBACK FAILED over a correctly switched backend.
+new_lane fallback-ok
+export DSH_Z_WEB_UNIT=dsh-z.service
+mkdir -p "$HOME/.config/systemd/user"
+printf 'ExecStart=/usr/bin/dsh web --host 10.88.0.1 --port 3180\n' > "$HOME/.config/systemd/user/dsh-z.service"
+out="$("$SANDBOX/bin/rollback.sh" 2>&1)"
+echo "$out" | grep -q "lane z backend is on ${TARGET_SHA:0:9}"
+test "$(readlink -f "$TEST_LANE_ROOT/multica-be/current")" = "$TEST_LANE_ROOT/multica-be/releases/$TARGET_SHA"
+grep -qx 'http://10.88.0.1:3180/multica/health' "$TEST_LANE_ROOT/curl.log"
+! grep -q '127.0.0.1:3180' "$TEST_LANE_ROOT/curl.log"
+rm -f "$HOME/.config/systemd/user/dsh-z.service"
 
 printf 'rollback mmx-pwa fallback tests passed\n'

@@ -50,23 +50,6 @@ ENV_FILE="$SCRIPT_DIR/dsh-z.env"
 
 log() { printf '[autodeploy %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
-# Resolve the lane web's actual bind address/port from its systemd unit's
-# ExecStart (lane z binds the podman bridge, not loopback); fall back to
-# 127.0.0.1:3180 when the unit file is unavailable.
-resolve_lane_web_url() {
-  local unit_file="" host port
-  if [ -n "${DSH_Z_WEB_UNIT:-}" ]; then
-    for c in "$HOME/.config/systemd/user/$DSH_Z_WEB_UNIT" "/etc/systemd/user/$DSH_Z_WEB_UNIT" "$HOME/.local/share/systemd/user/$DSH_Z_WEB_UNIT"; do
-      if [ -f "$c" ]; then unit_file="$c"; break; fi
-    done
-  fi
-  host="$(sed -n 's/^ExecStart=.*--host \([^ ]*\).*/\1/p' "$unit_file" 2>/dev/null | head -1)"
-  [ -n "$host" ] || host="127.0.0.1"
-  port="$(sed -n 's/^ExecStart=.*--port \([^ ]*\).*/\1/p' "$unit_file" 2>/dev/null | head -1)"
-  [ -n "$port" ] || port="3180"
-  printf 'http://%s:%s' "$host" "$port"
-}
-
 # Every failure goes through fail(): it records why and returns non-zero so the
 # ERR trap runs the rollback and the red report. A bare `exit 1` skips the trap
 # and leaves a half-switched lane with nobody told.
@@ -340,7 +323,7 @@ promote_staged() { # $1 = live release dir, $2 = staged dir ($1.tmp.$$)
   return 1
 }
 assert_health() { # $1 = sha the lane must report
-  local sha="$1" commit
+  local sha="$1" commit web
   if [ "$DRILL_FAIL_HEALTH" = 1 ]; then
     log "drill: forcing the post-switch health assertion to fail"
     return 1
@@ -351,8 +334,11 @@ assert_health() { # $1 = sha the lane must report
   web="$(resolve_lane_web_url)"
   wait_http "$web/multica/healthz" 60 '' \
     || { log "lane web /multica/healthz did not answer"; return 1; }
-  wait_http "$web/moct/status" 60 '' \
-    || { log "lane web /moct/status did not answer"; return 1; }
+  # No /moct/status probe: the moct status route is only served under the
+  # authenticated /multica/api/workspaces/<id>/moct/status, so a bare
+  # /moct/status 404s on every deploy and failed a healthy lane (M-458).
+  # /healthz + /multica/healthz prove the backend and web are up, and the
+  # /multica/health commit match below proves the release that is up.
   commit="$(curl -fsS --max-time 5 "$web/multica/health" | jq -r '.commit // empty')" \
     || { log "lane web /multica/health did not answer"; return 1; }
   commit_matches "$commit" "$sha" \
@@ -456,7 +442,7 @@ report() { # $1 = green|red
       printf -- '- version: `%s` (built %s)\n' "$(release_version)" "${BUILT_AT:-unknown}"
       printf -- '- CI: [run %s](%s), build %s\n' "$RUN_ID" "${RUN_URL:-n/a}" "${BUILD_TIME:-unknown}"
       printf -- '- migrations applied: %s\n' "$applied"
-      printf -- '- health: `/multica/health` commit `%s`, `/multica/healthz` ok, `/moct/status` ok\n' "${LANE_COMMIT:-$SHA}"
+      printf -- '- health: `/multica/health` commit `%s`, `/multica/healthz` ok\n' "${LANE_COMMIT:-$SHA}"
       printf -- '- mmx-pwa: %s (manifest MMX, sw.js stamped `%s`)\n' "$mmx_note" "${SHA:0:9}"
       printf -- '- plugin: %s\n' "$plugin_note"
       printf -- '- daemon: %s\n' "$daemon_note"

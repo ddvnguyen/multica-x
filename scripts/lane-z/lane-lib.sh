@@ -187,6 +187,25 @@ refresh_lane_daemon_after_deploy() { # $1 = target sha
   return 1
 }
 
+# resolve_lane_web_url prints the lane web's actual bind address/port from the
+# systemd unit's ExecStart (lane z binds the podman bridge, not loopback); it
+# falls back to 127.0.0.1:3180 when the unit file is unavailable. Shared by
+# autodeploy.sh (post-switch gate) and rollback.sh (commit check) so neither
+# script hardcodes an address the lane may not bind.
+resolve_lane_web_url() {
+  local unit_file="" host port
+  if [ -n "${DSH_Z_WEB_UNIT:-}" ]; then
+    for c in "$HOME/.config/systemd/user/$DSH_Z_WEB_UNIT" "/etc/systemd/user/$DSH_Z_WEB_UNIT" "$HOME/.local/share/systemd/user/$DSH_Z_WEB_UNIT"; do
+      if [ -f "$c" ]; then unit_file="$c"; break; fi
+    done
+  fi
+  host="$(sed -n 's/^ExecStart=.*--host \([^ ]*\).*/\1/p' "$unit_file" 2>/dev/null | head -1)"
+  [ -n "$host" ] || host="127.0.0.1"
+  port="$(sed -n 's/^ExecStart=.*--port \([^ ]*\).*/\1/p' "$unit_file" 2>/dev/null | head -1)"
+  [ -n "$port" ] || port="3180"
+  printf 'http://%s:%s' "$host" "$port"
+}
+
 wait_http() { # $1=url $2=timeout $3=expected substring
   local deadline=$((SECONDS + $2)) body
   while [ "$SECONDS" -lt "$deadline" ]; do
