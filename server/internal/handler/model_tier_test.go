@@ -338,6 +338,7 @@ func TestModelTierQualityClearToUnknown(t *testing.T) {
 		t.Fatalf("created-with-null quality = %+v, want nil", fresh.Quality)
 	}
 }
+
 func TestModelTierRuntimeScoping(t *testing.T) {
 	foreignWorkspaceID, _ := newTierTestEnv(t)
 	ctx := context.Background()

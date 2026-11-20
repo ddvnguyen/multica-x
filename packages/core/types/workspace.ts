@@ -101,6 +101,7 @@ export interface ModelTierInput {
    * floor, never unknown.
    */
   quality?: number | null;
+  provider_slots?: number;
   enabled?: boolean;
   roles?: string[];
   manual_only?: boolean;
