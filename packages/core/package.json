@@ -220,7 +220,6 @@
     "./issues/ask-plan": "./issues/ask-plan.ts",
     "./runtimes/freebuff": "./runtimes/freebuff.ts",
     "./runtimes/accounts": "./runtimes/accounts.ts",
-    "./issue-views/unread-view": "./issue-views/unread-view.ts",
     "./tabs": "./tabs/index.ts"
   },
   "dependencies": {

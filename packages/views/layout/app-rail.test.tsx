@@ -208,8 +208,15 @@ describe("AppRail order", () => {
     useRailOrderStore.getState().setOrder(order);
     configStore.getState().setFeatureFlags({});
     renderRail();
-    expect(railOrder()).toEqual(["chat", "work", "team", "autopilots"]);
-    expect(useRailOrderStore.getState().order).toEqual(order);
+    expect(railOrder()).toEqual(["chat", "decisions", "work", "team", "autopilots"]);
+    expect(useRailOrderStore.getState().order).toEqual([
+      "chat",
+      "decisions",
+      "docs",
+      "work",
+      "team",
+      "autopilots",
+    ]);
   });
 
   // dnd-kit stops the release's click at the document without cancelling

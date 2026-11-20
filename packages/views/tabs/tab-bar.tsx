@@ -376,6 +376,9 @@ function SortableTabItem({
       style={style}
       data-tab-frame
       data-tab-id={tab.id}
+      data-mc="tab"
+      data-active={isActive ? "true" : "false"}
+      data-pinned={tab.pinned ? "true" : "false"}
       className={cn("h-full min-w-0", compact ? "w-40 min-w-24" : "w-56 min-w-32", isActive && "z-10")}
     >
       <motion.div

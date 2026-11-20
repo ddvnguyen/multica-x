@@ -12,6 +12,7 @@ import {
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { MulticaBleedMark } from "@multica/ui/components/common/multica-graphics";
+import { useSidebarSafe } from "@multica/ui/components/ui/sidebar";
 import { ApiError, errorCode } from "@multica/core/api";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useModalStore } from "@multica/core/modals";
@@ -101,7 +102,7 @@ import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
 import { CollapsedNavTrigger, PAGE_GUTTER, PageHeader } from "../../layout/page-header";
 import { PanelHeader } from "../../layout/panel-nav";
-import { useListColumnCollapsed } from "../../layout/app-shell-context";
+import { useAppShell, useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
 import { InboxDeleteDialog } from "./inbox-delete-dialog";
 import { useTimeAgo } from "./inbox-list-item";
@@ -418,9 +419,13 @@ export function InboxPage() {
   ]);
 
   const listCollapsed = useListColumnCollapsed();
+  const hasAppShell = useAppShell() !== null;
+  const hasSidebarProvider = useSidebarSafe() !== null;
   // Desktop shows the live Inbox in the Work panel; only the archive needs
-  // a list of its own on the page.
-  const archiveSplit = !isCompact && isArchivedView;
+  // a list of its own on the page. Standalone hosts (the dsh island) have no
+  // Work panel, so they keep the live list beside the detail page too.
+  const archiveSplit =
+    !isCompact && (isArchivedView || (!hasAppShell && hasSidebarProvider));
   const unreadCount = useInboxUnreadCount(wsId);
 
   const markReadMutation = useMarkInboxRead();

@@ -266,7 +266,6 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
             draftKey={`ask:${task.id}:${ask.seq}`}
           />
         )}
-        {output && <div className="mt-2 text-body"><ReadonlyContent content={redactSecrets(output)} /></div>}
         {output && <div className="mt-2 text-body" data-find-unit={runOutputKey(task.id)}><ReadonlyContent content={redactSecrets(output)} /></div>}
         {needsAction && rawError && <TruncatedTooltip content={rawError} focusable>
           <p

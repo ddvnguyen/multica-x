@@ -28,6 +28,10 @@ vi.mock("@multica/core/workspace/hooks", () => ({
   useActorName: () => ({ getActorName: () => "Ada" }),
 }));
 
+vi.mock("./ask-plan-panel", () => ({
+  ThreadAskCards: () => null,
+}));
+
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => null,
 }));

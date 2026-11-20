@@ -116,7 +116,8 @@
     },
     "not_found_description": "Возможно, он удалён или у вас нет доступа.",
     "back_to_list": "Все автопилоты",
-    "paused_project_archived": "Приостановлен, потому что его проект архивирован. Восстановите проект, затем снова активируйте этот автопилот."
+    "paused_project_archived": "Приостановлен, потому что его проект архивирован. Восстановите проект, затем снова активируйте этот автопилот.",
+    "run_blocked_issue_limit_reached": "Не запущен — рабочее пространство достигло лимита задач"
   },
   "access": {
     "title": "Управление доступом",
@@ -399,7 +400,8 @@
     "event_filter_condition_value_placeholder": "например, main",
     "event_filter_condition_values_placeholder": "main, release",
     "event_filter_condition_ignore_case": "Без учёта регистра",
-    "event_filter_condition_all": "И содержимое соответствует всем условиям"
+    "event_filter_condition_all": "И содержимое соответствует всем условиям",
+    "event_filter_add": "Добавить"
   },
   "schedule_editor": {
     "time_label": "Время",
