@@ -369,10 +369,26 @@ LIMIT @page_limit;
 -- Lock the selected agent tuple so a rebind that commits during the owner-fence
 -- wait refreshes the runtime used by INSERT. Materialize that locked route once.
 WITH enqueue_agent AS MATERIALIZED (
-    SELECT a.id, COALESCE(sqlc.narg(runtime_id)::uuid, a.runtime_id) AS runtime_id
+    SELECT a.id, CASE
+        WHEN COALESCE(sqlc.narg(tier_parked)::boolean, FALSE) THEN NULL
+        WHEN sqlc.narg(tier_id)::uuid IS NOT NULL
+          OR sqlc.narg(model_override)::text IS NOT NULL
+          OR sqlc.narg(thinking_level_override)::text IS NOT NULL
+          OR sqlc.narg(service_tier_override)::text IS NOT NULL
+        THEN sqlc.narg(runtime_id)::uuid
+        ELSE COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid)
+    END AS runtime_id
     FROM agent a
     WHERE a.id = sqlc.arg(agent_id)
-      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(sqlc.narg(runtime_id)::uuid, a.runtime_id))
+      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), CASE
+        WHEN COALESCE(sqlc.narg(tier_parked)::boolean, FALSE) THEN NULL
+        WHEN sqlc.narg(tier_id)::uuid IS NOT NULL
+          OR sqlc.narg(model_override)::text IS NOT NULL
+          OR sqlc.narg(thinking_level_override)::text IS NOT NULL
+          OR sqlc.narg(service_tier_override)::text IS NOT NULL
+        THEN sqlc.narg(runtime_id)::uuid
+        ELSE COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid)
+      END)
     FOR KEY SHARE OF a
 )
 INSERT INTO agent_task_queue (

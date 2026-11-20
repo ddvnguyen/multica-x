@@ -57,6 +57,7 @@ var projectScopedRouteParams = map[string]privateRouteResolver{
 	// The inbox is where a member route names an issue as {issueId}; the
 	// caller has a notification about it, so marking it read has an effect.
 	"issues/{issueId}": func(f *privateRouteFixture, caller string) string { f.inboxItem(caller); return f.issue() },
+	"decisions/{sourceId}": func(f *privateRouteFixture, _ string) string { return f.issue() },
 }
 
 // outsideProjectParam is a route parameter that cannot name an object inside a
