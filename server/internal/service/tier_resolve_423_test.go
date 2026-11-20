@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -26,6 +28,7 @@ type tier423Setup struct {
 	agent db.Agent
 	wsID  string
 	fx    *testutil.Fixture
+	pool  *pgxpool.Pool
 }
 
 func tier423Fixture(t *testing.T) *tier423Setup {
@@ -37,8 +40,8 @@ func tier423Fixture(t *testing.T) *tier423Setup {
 	ownerMember := fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
 	_ = ownerMember
 	qq := db.New(pool)
-	svc := &TaskService{Queries: qq, TxStarter: pool, Bus: nil}
-	return &tier423Setup{qq: qq, svc: svc, wsID: fx.WorkspaceID, fx: fx}
+	svc := &TaskService{Queries: qq, TxStarter: pool, Bus: events.New()}
+	return &tier423Setup{qq: qq, svc: svc, wsID: fx.WorkspaceID, fx: fx, pool: pool}
 }
 
 func (s *tier423Setup) runtime(t *testing.T, name string) pgtype.UUID {
@@ -286,5 +289,160 @@ func TestDifficultyFromProperties423(t *testing.T) {
 	gotI, gotC = s.svc.difficultyFromProperties(ctx, wsUUID, fracBytes)
 	if gotI != 1 || gotC != 1 {
 		t.Errorf("fractional/OOR = %d/%d, want 1/1", gotI, gotC)
+	}
+}
+
+// M-443: measured qualifying tiers and unknown-quality tiers share ONE
+// idx/creation pass. The M-423 defect tried every known tier before any
+// unknown one, so a free unknown idx 0 lost to a paid known idx 7. Both
+// orderings are pinned here, and the unknown stamp carries unverified.
+func TestResolve443_UnknownAndKnownKeepIdxOrder(t *testing.T) {
+	s := tier423Fixture(t)
+	rt := s.runtime(t, "t443 rt")
+	ctx := context.Background()
+
+	// Unknown earlier than measured: idx order wins, stamp is unverified.
+	eng := s.agentWithRole(t, "eng agent", rt, "engineer")
+	unknown0 := s.tier(t, "unknown-0", 0, rt, []string{"engineer"}, false, nil)
+	known1 := s.tier(t, "known-1", 1, rt, []string{"engineer"}, false, i32(60))
+	s.selectTiers(t, eng, unknown0, known1)
+	res := mustResolve423(t, s, eng)
+	if got := tierName423(t, s, res.tierID); got != "unknown-0" {
+		t.Errorf("resolved %s, want unknown-0 (earlier unknown beats later measured)", got)
+	}
+	if !res.qualityUnverified || res.qualityFallback {
+		t.Errorf("flags = unverified %v fallback %v, want unverified true fallback false", res.qualityUnverified, res.qualityFallback)
+	}
+
+	// Measured earlier than unknown: idx order still wins, no unverified.
+	known0 := s.tier(t, "known-0", 0, rt, []string{"engineer"}, false, i32(60))
+	unknown2 := s.tier(t, "unknown-2", 2, rt, []string{"engineer"}, false, nil)
+	eng2 := s.agentWithRole(t, "eng agent 2", rt, "engineer")
+	s.selectTiers(t, eng2, known0, unknown2)
+	res = mustResolve423(t, s, eng2)
+	if got := tierName423(t, s, res.tierID); got != "known-0" {
+		t.Errorf("resolved %s, want known-0 (earlier measured beats later unknown)", got)
+	}
+	if res.qualityUnverified || res.qualityFallback {
+		t.Errorf("flags = unverified %v fallback %v, want both false", res.qualityUnverified, res.qualityFallback)
+	}
+	_ = ctx
+}
+
+// M-443: an unavailable candidate is skipped in idx order, not by partition.
+// A cooling unknown idx 0 yields a measured idx 1 (no unverified); a cooling
+// measured idx 0 yields an unknown idx 1 (unverified). A full-slot earlier
+// tier is skipped the same way.
+func TestResolve443_UnavailableCandidatesSkippedInIdxOrder(t *testing.T) {
+	s := tier423Fixture(t)
+	rt := s.runtime(t, "t443 rt")
+	ctx := context.Background()
+	cool := pgtype.Timestamptz{Time: time.Now().Add(10 * time.Minute), Valid: true}
+
+	// Cooling unknown idx 0 → measured idx 1 stamps, no unverified.
+	eng := s.agentWithRole(t, "eng agent", rt, "engineer")
+	unknown0 := s.tier(t, "unknown-0", 0, rt, []string{"engineer"}, false, nil)
+	known1 := s.tier(t, "known-1", 1, rt, []string{"engineer"}, false, i32(60))
+	s.selectTiers(t, eng, unknown0, known1)
+	if err := s.qq.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{ID: unknown0.ID, CooldownUntil: cool}); err != nil {
+		t.Fatalf("cool unknown-0: %v", err)
+	}
+	res := mustResolve423(t, s, eng)
+	if got := tierName423(t, s, res.tierID); got != "known-1" {
+		t.Errorf("resolved %s, want known-1 (cooling unknown-0 skipped)", got)
+	}
+	if res.qualityUnverified || res.qualityFallback {
+		t.Errorf("flags = unverified %v fallback %v, want both false", res.qualityUnverified, res.qualityFallback)
+	}
+
+	// Cooling measured idx 0 → unknown idx 1 stamps, unverified.
+	known0 := s.tier(t, "known-0", 0, rt, []string{"engineer"}, false, i32(60))
+	unknown1 := s.tier(t, "unknown-1", 1, rt, []string{"engineer"}, false, nil)
+	eng2 := s.agentWithRole(t, "eng agent 2", rt, "engineer")
+	s.selectTiers(t, eng2, known0, unknown1)
+	if err := s.qq.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{ID: known0.ID, CooldownUntil: cool}); err != nil {
+		t.Fatalf("cool known-0: %v", err)
+	}
+	res = mustResolve423(t, s, eng2)
+	if got := tierName423(t, s, res.tierID); got != "unknown-1" {
+		t.Errorf("resolved %s, want unknown-1 (cooling known-0 skipped)", got)
+	}
+	if !res.qualityUnverified || res.qualityFallback {
+		t.Errorf("flags = unverified %v fallback %v, want unverified true fallback false", res.qualityUnverified, res.qualityFallback)
+	}
+
+	// Full earlier tier: unknown idx 0 at one slot, occupied → measured idx 1.
+	rtSlot := s.runtime(t, "t443 rt slot")
+	eng3 := s.agentWithRole(t, "eng agent 3", rtSlot, "engineer")
+	unknownA := s.tier(t, "unknown-a", 0, rtSlot, []string{"engineer"}, false, nil)
+	knownB := s.tier(t, "known-b", 1, rtSlot, []string{"engineer"}, false, i32(60))
+	s.selectTiers(t, eng3, unknownA, knownB)
+	if _, err := s.pool.Exec(ctx, `UPDATE model_tier SET provider_slots = 1 WHERE id = $1`, unknownA.ID); err != nil {
+		t.Fatalf("shrink unknown-a: %v", err)
+	}
+	var blocker pgtype.UUID
+	if err := s.pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, eng3.ID, util.MustParseUUID(util.UUIDToString(rtSlot))).Scan(&blocker); err != nil {
+		t.Fatalf("insert blocker: %v", err)
+	}
+	t.Cleanup(func() { _, _ = s.qq.CancelAgentTask(context.Background(), blocker) })
+	res = mustResolve423(t, s, eng3)
+	if got := tierName423(t, s, res.tierID); got != "known-b" {
+		t.Errorf("resolved %s, want known-b (full unknown-a skipped)", got)
+	}
+	if res.qualityUnverified || res.qualityFallback {
+		t.Errorf("flags = unverified %v fallback %v, want both false", res.qualityUnverified, res.qualityFallback)
+	}
+}
+
+// M-443: the capacity-freed restamp applies the same single idx pass and
+// flags: a parked auto row stamps the earlier unknown idx 0 (unverified, not
+// fallback) instead of waiting for the later measured tier.
+func TestRestamp443_UnknownIdx0StampsUnverified(t *testing.T) {
+	s := tier423Fixture(t)
+	ctx := context.Background()
+	rt := s.runtime(t, "t443 rt sweep")
+	eng := s.agentWithRole(t, "eng agent", rt, "engineer")
+	unknown0 := s.tier(t, "unknown-0", 0, rt, []string{"engineer"}, false, nil)
+	known1 := s.tier(t, "known-1", 1, rt, []string{"engineer"}, false, i32(60))
+	s.selectTiers(t, eng, unknown0, known1)
+	// One slot per tier runtime; occupy it so both candidates are full.
+	if _, err := s.pool.Exec(ctx, `UPDATE model_tier SET provider_slots = 1 WHERE workspace_id = $1`, util.MustParseUUID(s.wsID)); err != nil {
+		t.Fatalf("shrink slots: %v", err)
+	}
+	var blocker pgtype.UUID
+	if err := s.pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, eng.ID, util.MustParseUUID(util.UUIDToString(rt))).Scan(&blocker); err != nil {
+		t.Fatalf("insert blocker: %v", err)
+	}
+	t.Cleanup(func() { _, _ = s.qq.CancelAgentTask(context.Background(), blocker) })
+
+	issueID := util.MustParseUUID(newTierTestIssue(t, s.pool, eng))
+	issueRow, err := s.qq.GetIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	task, err := s.svc.enqueueIssueTask(ctx, issueRow, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	if err != nil {
+		t.Fatalf("enqueue with full tiers: %v", err)
+	}
+	if task.RuntimeID.Valid || task.TierID.Valid {
+		t.Fatalf("stamped despite full tiers: runtime %v tier %v", task.RuntimeID.Valid, task.TierID.Valid)
+	}
+	if _, err := s.qq.CancelAgentTask(ctx, blocker); err != nil {
+		t.Fatalf("free slot: %v", err)
+	}
+	stamped := s.svc.RestampRuntimelessTierTasks(ctx)
+	if len(stamped) != 1 {
+		t.Fatalf("sweep stamped %d rows, want 1", len(stamped))
+	}
+	got := stamped[0]
+	if got.ID != task.ID {
+		t.Fatalf("sweep stamped %s, want %s", util.UUIDToString(got.ID), util.UUIDToString(task.ID))
+	}
+	if util.UUIDToString(got.TierID) != util.UUIDToString(unknown0.ID) {
+		t.Errorf("stamped tier = %s, want unknown-0 (idx order on restamp)", util.UUIDToString(got.TierID))
+	}
+	if !got.TierQualityUnverified || got.TierQualityFallback {
+		t.Errorf("restamp flags = unverified %v fallback %v, want unverified true fallback false",
+			got.TierQualityUnverified, got.TierQualityFallback)
 	}
 }
