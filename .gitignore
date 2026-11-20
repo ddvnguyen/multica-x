@@ -7,6 +7,8 @@ dist
 # build outputs
 .turbo
 .next
+# scripts/build-mmx-pwa-artifact.sh stages the mmx-pwa upload root here
+mmx-pwa-stage
 out
 build
 bin
