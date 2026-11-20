@@ -169,6 +169,16 @@ run_for_sha() { # $1 = sha; run id of the successful push run for that sha
     | jq -r --arg sha "$1" '[.[] | select(.headSha == $sha)][0].databaseId // empty'
 }
 
+assert_mmx_health() { # $1 = sha the PWA must serve (full sha; sw.js carries it)
+  local sha="$1" manifest port="${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
+  manifest="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/manifest.webmanifest")" \
+    || { log "mmx-pwa z manifest did not answer"; return 1; }
+  printf '%s' "$manifest" | grep -q '"name":"MMX"' \
+    || { log "mmx-pwa z manifest is not the MMX brand"; return 1; }
+  curl -fsS --max-time 10 "http://127.0.0.1:$port/sw.js" | grep -q "$sha" \
+    || { log "mmx-pwa z sw.js is not stamped with $sha"; return 1; }
+  log "mmx-pwa health ok: brand MMX, sw.js stamped $sha"
+}
 assert_health() { # $1 = sha the lane must report
   local sha="$1" commit
   if [ "$DRILL_FAIL_HEALTH" = 1 ]; then
@@ -269,12 +279,12 @@ notify_reporter() { # no args; uses CARD. Non-zero means the evidence was not de
 
 report() { # $1 = green|red
   # A dry run is not a deploy: it must never leave evidence behind.
-  if [ "$DRY_RUN" = 1 ]; then return 0; fi
-  local kind="$1" body="$LANE_ROOT/data/autodeploy-comment.md" dur applied plugin_note
+  local kind="$1" body="$LANE_ROOT/data/autodeploy-comment.md" dur applied plugin_note mmx_note
   dur=$(( $(date +%s) - STARTED ))
   applied="$( [ -s "$LANE_ROOT/data/autodeploy-migrations.applied" ] && paste -sd', ' "$LANE_ROOT/data/autodeploy-migrations.applied" || true )"
   [ -n "$applied" ] || applied="none"
   plugin_note="$(cat "$LANE_ROOT/data/autodeploy-plugin.note" 2>/dev/null || printf 'unchanged')"
+  mmx_note="$(cat "$LANE_ROOT/data/autodeploy-mmx-pwa.note" 2>/dev/null || printf 'unchanged')"
   daemon_note="running $(printf '%s' "$(daemon_health_json)" | jq -r '.cli_commit // "unknown"' 2>/dev/null || printf 'unknown')"
   if [ -f "$(daemon_refresh_pending_file)" ]; then
     daemon_note="refresh pending for $(cat "$(daemon_refresh_pending_file)" 2>/dev/null || printf 'unknown') (deferred, no active-task interruption)"
@@ -287,6 +297,7 @@ report() { # $1 = green|red
       printf -- '- CI: [run %s](%s), build %s\n' "$RUN_ID" "${RUN_URL:-n/a}" "${BUILD_TIME:-unknown}"
       printf -- '- migrations applied: %s\n' "$applied"
       printf -- '- health: `/multica/health` commit `%s`, `/multica/healthz` ok, `/moct/status` ok\n' "${LANE_COMMIT:-$SHA}"
+      printf -- '- mmx-pwa: %s (manifest MMX, sw.js stamped `%s`)\n' "$mmx_note" "${SHA:0:9}"
       printf -- '- plugin: %s\n' "$plugin_note"
       printf -- '- daemon: %s\n' "$daemon_note"
       printf -- '- DB backup: `%s` (never auto-restored)\n' "${DUMP:-none taken}"
@@ -397,18 +408,27 @@ if [ "$DRY_RUN" = 1 ] && [ "$(release_sha)" = "$SHA" ]; then
 fi
 
 if [ "$(release_sha)" = "$SHA" ]; then
-  log "lane z already runs $SHA; backend is current"
-  # M-301: a previous deploy may have deferred the daemon refresh because a
-  # task was running. Complete it now (no interruption) so the daemon advances
-  # to the deployed release without a manual restart.
-  if daemon_runs_release "$(daemon_health_json)" "$SHA" && [ ! -f "$(daemon_refresh_pending_file)" ]; then
-    log "daemon z already running ${SHA:0:9}; nothing to do"
+  # M-451: backend-current does not mean PWA-current (pre-fix deploys never
+  # installed the PWA). When the PWA is not on this SHA, fall through to the
+  # normal deploy path below — the backend install is a no-op copy of the
+  # same SHA, the PWA installs and switches, the daemon gate stays shared.
+  if [ -n "${MMX_PWA_Z_PORT:-}" ] && [ -n "${MMX_PWA_Z_UNIT:-}" ] \
+    && ! assert_mmx_health "$SHA" 2>/dev/null; then
+    log "backend is current but mmx-pwa z is not on $SHA; continuing to converge the PWA"
+  else
+    log "lane z already runs $SHA; backend is current"
+    # M-301: a previous deploy may have deferred the daemon refresh because a
+    # task was running. Complete it now (no interruption) so the daemon advances
+    # to the deployed release without a manual restart.
+    if daemon_runs_release "$(daemon_health_json)" "$SHA" && [ ! -f "$(daemon_refresh_pending_file)" ]; then
+      log "daemon z already running ${SHA:0:9}; nothing to do"
+      exit 0
+    fi
+    step "daemon-refresh"
+    refresh_lane_daemon_after_deploy "$SHA" || exit 1
+    log "daemon refresh complete for ${SHA:0:9}"
     exit 0
   fi
-  step "daemon-refresh"
-  refresh_lane_daemon_after_deploy "$SHA" || exit 1
-  log "daemon refresh complete for ${SHA:0:9}"
-  exit 0
 fi
 
 if [ -f "$LANE_ROOT/data/autodeploy.failed" ] && [ "$(cat "$LANE_ROOT/data/autodeploy.failed")" = "$SHA" ]; then
@@ -444,6 +464,7 @@ if [ "$DRY_RUN" = 1 ]; then
   gh api "repos/$AUTODEPLOY_REPO/actions/runs/$RUN_ID/artifacts" \
     --jq '.artifacts[] | "  - \(.name) \(.size_in_bytes / 1048576 | floor) MB"' 2>/dev/null || log "  (artifact list unavailable)"
   log "dry-run: would download to $ART, back up the DB to $AUTODEPLOY_BACKUP_DIR, install releases/${SHA:0:9}, migrate, switch current, restart $MULTICA_BE_Z_UNIT,"
+  log "dry-run: would install mmx-pwa-$SHA to mmx-pwa/releases/${SHA:0:9}, flip mmx-pwa/current, restart ${MMX_PWA_Z_UNIT:-mmx-pwa-z.service}, and assert the MMX brand + sw.js stamp,"
   log "dry-run: would sync the plugin bundle and restart $DSH_Z_WEB_UNIT only if its content changed, then assert health and comment on $(resolve_card "$SHA" || printf 'no card')"
   log "dry-run: disk ${DF_BEFORE}G free (refuse below ${AUTODEPLOY_MIN_FREE_GB}G), keeping $AUTODEPLOY_KEEP_RELEASES releases"
   prune_backups
@@ -461,11 +482,12 @@ fi
 
 step "download"
 PREV_REL="$(readlink -f "$LANE_ROOT/multica-be/current" 2>/dev/null || true)"
-rm -rf "$ART"; mkdir -p "$ART/multica-be" "$ART/web-dist"
+PREV_MMX_REL="$(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || true)"
+rm -rf "$ART"; mkdir -p "$ART/multica-be" "$ART/mmx-pwa"
 log "downloading multica-be-$SHA"
 gh run download "$RUN_ID" --repo "$AUTODEPLOY_REPO" -n "multica-be-$SHA" -D "$ART/multica-be"
-log "downloading web-dist-$SHA"
-gh run download "$RUN_ID" --repo "$AUTODEPLOY_REPO" -n "web-dist-$SHA" -D "$ART/web-dist"
+log "downloading mmx-pwa-$SHA"
+gh run download "$RUN_ID" --repo "$AUTODEPLOY_REPO" -n "mmx-pwa-$SHA" -D "$ART/mmx-pwa"
 # The plugin bundle is optional: a push that touches nothing under packages/
 # never runs the frontend job, and then the lane's current bundle is correct.
 PLUGIN_PRESENT=0
@@ -479,6 +501,12 @@ step "verify-artifact"
 ART_SHA="$(jq -r '.sha // empty' "$ART/multica-be/release.json")"
 [ "$ART_SHA" = "$SHA" ] || fail "artifact release.json sha '$ART_SHA' != run sha '$SHA'"
 BUILT_AT="$(jq -r '.builtAt // "unknown"' "$ART/multica-be/release.json")"
+MMX_ART_SHA="$(jq -r '.sha // empty' "$ART/mmx-pwa/release.json" 2>/dev/null || true)"
+[ "$MMX_ART_SHA" = "$SHA" ] || fail "mmx-pwa artifact release.json sha '$MMX_ART_SHA' != run sha '$SHA'"
+[ -f "$ART/mmx-pwa/standalone/apps/web/server.js" ] || fail "mmx-pwa artifact has no standalone/apps/web/server.js"
+grep -rq 'mmx-install' "$ART/mmx-pwa/standalone" || fail "mmx-pwa artifact is not the MMX brand build (no mmx-install marker)"
+grep -q "$SHA" "$ART/mmx-pwa/standalone/apps/web/public/sw.js" 2>/dev/null || fail "mmx-pwa artifact sw.js is not stamped with $SHA"
+log "mmx-pwa artifact verified: sha $SHA, MMX brand, sw.js stamped"
 log "artifact verified: sha $SHA, built $BUILT_AT"
 
 step "supersede-check"
@@ -509,11 +537,26 @@ cp -a "$ART/multica-be/." "$REL/"
 : > "$REL/.complete"
 printf '%s\n' "$PREV_REL" > "$LANE_ROOT/multica-be/previous-release"
 log "release installed at $REL"
+step "install-mmx-pwa"
+# M-451: the MMX PWA is a second brand of apps/web (MMX_PWA=1), so the
+# default-brand web-dist can never serve it. CI publishes the branded
+# mmx-pwa-$SHA artifact; install it beside the backend release, keyed by the
+# same SHA, and flip `current` only when the full tree verifies — the same
+# atomicity rule the backend release follows.
+MMX_REL="$LANE_ROOT/mmx-pwa/releases/$SHA"
+rm -rf "$MMX_REL"; mkdir -p "$MMX_REL"
+cp -a "$ART/mmx-pwa/standalone/." "$MMX_REL/"
+[ -f "$MMX_REL/apps/web/server.js" ] || fail "installed mmx-pwa release has no apps/web/server.js"
+grep -rq 'mmx-install' "$MMX_REL/apps/web/.next/" || fail "installed mmx-pwa release lost its MMX brand"
+: > "$MMX_REL/.complete"
+printf '%s\n' "$PREV_MMX_REL" > "$LANE_ROOT/mmx-pwa/previous-release"
+log "mmx-pwa release installed at $MMX_REL"
 
 step "migrate"
 # shellcheck source=/dev/null
 if [ -f "$LANE_RUNTIME_ENV" ]; then . "$LANE_RUNTIME_ENV"; fi
 [ -n "${MULTICA_Z_DB_PASSWORD:-}" ] || fail "no MULTICA_Z_DB_PASSWORD in $LANE_RUNTIME_ENV"
+[ -n "${MULTICA_Z_DEV_CODE:-}" ] || fail "no MULTICA_Z_DEV_CODE in $LANE_RUNTIME_ENV"
 DSN="${MULTICA_Z_DSN_TEMPLATE/PASSWORD/$MULTICA_Z_DB_PASSWORD}"
 ( cd "$REL" && DATABASE_URL="$DSN" "$REL/bin/migrate" up )
 podman exec "$MULTICA_Z_DB_CONTAINER" psql -U hydra -d "$MULTICA_Z_DB_NAME" -tAc \
@@ -534,6 +577,29 @@ systemctl --user restart "$MULTICA_BE_Z_UNIT"
 
 step "health"
 assert_health "$SHA" || fail "health check failed after the switch"
+
+step "switch-mmx-pwa"
+# Flip mmx-pwa/current only after the backend is healthy on the new SHA, so
+# a backend failure never leaves the PWA ahead of the API it proxies. The
+# env carries only runtime values (REMOTE_API_URL, bypass, bind): the brand
+# is baked into the artifact at CI build time, never re-selected here.
+ln -sfn "$MMX_REL" "$LANE_ROOT/mmx-pwa/current"
+[ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$MMX_REL" ] || fail "mmx-pwa current does not resolve to $MMX_REL"
+umask 077
+{
+  echo "PORT=${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
+  echo "HOSTNAME=127.0.0.1"
+  echo "MMX_BIND_HOST=127.0.0.1"
+  echo "REMOTE_API_URL=http://127.0.0.1:${MULTICA_BE_Z_PORT:?MULTICA_BE_Z_PORT is not set}"
+  echo "NEXT_PUBLIC_APP_VERSION=$SHA"
+  echo "MMX_AUTH_BYPASS=${MMX_AUTH_BYPASS:-1}"
+  echo "MULTICA_DEV_VERIFICATION_CODE=${MULTICA_Z_DEV_CODE:?MULTICA_Z_DEV_CODE is not set}"
+} > "$LANE_ROOT/mmx-pwa/env"
+umask 022
+systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"
+assert_mmx_health "$SHA" || fail "mmx-pwa health check failed after the switch"
+printf 'updated (mmx-pwa-z restarted to %s)\n' "${SHA:0:9}" > "$LANE_ROOT/data/autodeploy-mmx-pwa.note"
+log "mmx-pwa z -> releases/${SHA:0:9}; restarted and healthy"
 
 step "daemon-refresh"
 # M-301: ordinary autodeploy must refresh the z daemon so session logic becomes

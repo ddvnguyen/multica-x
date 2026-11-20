@@ -39,8 +39,14 @@ unit_release() { # release path the installed backend unit runs, or nothing
 }
 
 prune_releases() {
-  local keep="$AUTODEPLOY_KEEP_RELEASES" current daemon_pid daemon_exe daemon_release proc_root
-  current="$(readlink -f "$LANE_ROOT/multica-be/current" 2>/dev/null || true)"
+  prune_release_tree "$LANE_ROOT/multica-be/releases" "$LANE_ROOT/multica-be/current" "$AUTODEPLOY_KEEP_RELEASES" "pruned-backend"
+  prune_release_tree "$LANE_ROOT/mmx-pwa/releases" "$LANE_ROOT/mmx-pwa/current" "$AUTODEPLOY_KEEP_RELEASES" "pruned-mmx-pwa"
+}
+
+prune_release_tree() { # $1 = releases dir, $2 = current symlink, $3 = keep, $4 = log tag
+  local releases_dir="$1" current_link="$2" keep="$3" tag="$4"
+  local current daemon_pid daemon_exe daemon_release proc_root
+  current="$(readlink -f "$current_link" 2>/dev/null || true)"
   daemon_release=""
   proc_root="${MULTICA_LANE_PROC_ROOT:-/proc}"
   daemon_pid="$(systemctl --user show --property=MainPID --value "$MULTICA_DAEMON_Z_UNIT" 2>/dev/null || true)"
@@ -54,11 +60,12 @@ prune_releases() {
     esac
   fi
 
+  [ -d "$releases_dir" ] || return 0
   # shellcheck disable=SC2012
-  ls -1dt "$LANE_ROOT"/multica-be/releases/*/ 2>/dev/null | tail -n "+$((keep + 1))" | while read -r dir; do
+  ls -1dt "$releases_dir"/*/ 2>/dev/null | tail -n "+$((keep + 1))" | while read -r dir; do
     [ "$(readlink -f "$dir")" = "$current" ] && continue
-    [ "$(readlink -f "$dir")" = "$daemon_release" ] && continue
-    log "pruning old release $(basename "$dir")"
+    [ -n "$daemon_release" ] && [ "$(readlink -f "$dir")" = "$daemon_release" ] && continue
+    log "$tag: pruning old release $(basename "$dir")"
     rm -rf "$dir"
   done
 }
