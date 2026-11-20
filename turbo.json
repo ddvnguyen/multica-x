@@ -22,7 +22,10 @@
     "DESKTOP_APP_SUFFIX",
     // Apps/web emits the standalone bundle only when set; without it in the
     // hash a cache entry from a non-standalone build could satisfy the CI
-    // build that packages web-dist (M-161).
+    // build that packages web-dist (M-161). MMX_PWA is the lane-z MMX brand
+    // switch (M-451): without it in the hash, a cached default-brand build
+    // could satisfy the branded build.
+    "MMX_PWA",
     "STANDALONE"
   ],
   "tasks": {
