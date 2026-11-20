@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   NavigationProvider,
@@ -8,7 +8,12 @@ import {
   type NavigationAdapter,
 } from "@multica/views/navigation";
 import { workspaceSlugForPath } from "@multica/core/paths";
-import { getActiveTab, useTabStore } from "@multica/core/tabs";
+import {
+  findTabForUrl,
+  getActiveTab,
+  sanitizeTabPath,
+  useTabStore,
+} from "@multica/core/tabs";
 import { canGoBackInApp } from "./in-app-history";
 
 /**
@@ -52,6 +57,29 @@ function transitionPath(pathname: string): boolean {
 
 function fullUrl(pathname: string, search: string, hash: string): string {
   return `${pathname}${search ? `?${search}` : ""}${hash}`;
+}
+
+/**
+ * The address bar's fragment, as state.
+ *
+ * `usePathname`/`useSearchParams` do not report the hash and do not re-render
+ * on an in-page anchor click, so reading `window.location.hash` during render
+ * missed it: the session kept the pre-anchor URL and the next projection
+ * dropped the fragment (a comment deeplink lost its target on tab switch).
+ */
+function useAddressBarHash(): string {
+  const [hash, setHash] = useState("");
+  useEffect(() => {
+    const sync = () => setHash(window.location.hash);
+    sync();
+    window.addEventListener("hashchange", sync);
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("hashchange", sync);
+      window.removeEventListener("popstate", sync);
+    };
+  }, []);
+  return hash;
 }
 
 /**
@@ -101,7 +129,7 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const search = searchParams.toString();
-  const hash = typeof window === "undefined" ? "" : window.location.hash;
+  const hash = useAddressBarHash();
   const url = fullUrl(pathname, search, hash);
 
   const activeUrl = useTabStore((s) => {
@@ -118,9 +146,20 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
   // current URL wins over the persisted active workspace: a reload, deep
   // link, or new browser tab must open what the address bar says, not the
   // tab another browser tab persisted last.
+  //
+  // Runs once, after the workspace list arrives. The address bar is not just
+  // a workspace hint: with several restored tabs, the tab the URL names has to
+  // become the active one, or the first router commit below records the URL on
+  // whichever tab happened to be persisted as active and the reload lands the
+  // page in the wrong tab.
+  const seededRef = useRef(false);
   useEffect(() => {
     if (validSlugs.length === 0) return;
     if (transitionPath(pathname)) return;
+    if (seededRef.current) return;
+    // A projection in flight owns the location until the router commits it.
+    if (pendingProjection.current !== null) return;
+    seededRef.current = true;
     const store = useTabStore.getState();
     store.validateWorkspaceSlugs(new Set(validSlugs));
     const current = useTabStore.getState();
@@ -132,11 +171,24 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
       validSlugs.includes(current.activeWorkspaceSlug)
         ? current.activeWorkspaceSlug
         : validSlugs[0]);
-    if (target && target !== current.activeWorkspaceSlug) {
-      current.switchWorkspace(target, urlSlug === target ? url : undefined);
-    } else if (target && !current.byWorkspace[target]) {
-      current.switchWorkspace(target, urlSlug === target ? url : undefined);
+    if (!target) return;
+    const group = current.byWorkspace[target];
+    const named = urlSlug === target ? url : undefined;
+    if (!group || target !== current.activeWorkspaceSlug) {
+      // Entering the workspace (or reviving it) is the store's call: it seeds
+      // a group with the address bar's URL, or opens it as a tab.
+      current.switchWorkspace(target, named);
+      return;
     }
+    // Same workspace as the address bar: a URL that names one of the restored
+    // tabs activates that tab. A URL that names nothing is an external
+    // navigation, and the router → store effect below records it on the active
+    // session — adding a tab here would resurrect every stale deep link as an
+    // extra tab beside the restored ones.
+    const clean = named ? sanitizeTabPath(named) : null;
+    if (!clean) return;
+    const match = findTabForUrl(group, clean);
+    if (match) current.setActiveTab(match.id);
   }, [validSlugs, launchSlug, url, pathname]);
 
   // store → router: project the active session URL. A ref holding the last
@@ -171,14 +223,20 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
     // in-app click with a tab that never opened the page it named (M-413).
     // `projectUrl` below re-records the projection, so the router → store
     // effect keeps ignoring the stale address-bar URL until Next commits.
-    // Sessions never navigate out of their workspace; cross-workspace moves
-    // go through switchWorkspace (adapter push) instead.
-    if (workspaceSlugForPath(activeUrl) !== workspaceSlugForPath(pathname)) {
-      return;
-    }
+    //
+    // The active session may name another workspace than the address bar: the
+    // rail's workspace link, a tab click on a tab of another workspace, or a
+    // cross-workspace content link all switch the store group and leave the
+    // router to follow. Guarding on "same workspace as the address bar" made
+    // exactly those clicks leave the page on the old workspace (M-413 round 2).
+    // A slug the user cannot access is not a destination: the seed effect
+    // drops such groups.
+    const targetSlug = workspaceSlugForPath(activeUrl);
+    if (!targetSlug) return;
+    if (validSlugs.length > 0 && !validSlugs.includes(targetSlug)) return;
     projectUrl(activeUrl, url);
     router.replace(activeUrl);
-  }, [activeUrl, pathname, url, router]);
+  }, [activeUrl, pathname, url, router, validSlugs]);
 
   // router → store: record navigations the sync did not start. Skipped while
   // a projection is in flight — unless the address bar shows a third URL,
@@ -241,6 +299,12 @@ export function WebTabSync(props: WebTabSyncOptions): null {
  * (what the shell's back button reads), so the browser's own back button —
  * which pops the real history the sync wrote with replace — may need an
  * extra press to leave a long tab session.
+ *
+ * The provider sits above the whole dashboard shell (the strip is a layout
+ * header, not part of the page), so it must not add a Suspense boundary of its
+ * own: a route commit would replace the entire chrome — strip, rail and all —
+ * with the fallback. Route pages bring their own boundaries for
+ * `useSearchParams`.
  */
 export function WebTabNavigationProvider({
   children,
@@ -339,9 +403,7 @@ export function WebTabNavigationProvider({
   }, [activeUrl, back, router]);
 
   return (
-    <NavigationProvider value={adapter}>
-      <Suspense>{children}</Suspense>
-    </NavigationProvider>
+    <NavigationProvider value={adapter}>{children}</NavigationProvider>
   );
 }
 

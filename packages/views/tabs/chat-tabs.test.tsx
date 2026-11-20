@@ -6,7 +6,11 @@ import type { ChatSession } from "@multica/core/types";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
 import { ChatBar } from "../chat/components/chat-bar";
-import { ChatTabsInHeaderProvider, HeaderChatTabs } from "./chat-tabs";
+import {
+  ChatTabsInHeaderProvider,
+  HeaderChatControls,
+  HeaderChatTabs,
+} from "./chat-tabs";
 
 const WS = "ws-test";
 
@@ -128,6 +132,42 @@ describe("header chat tabs (M-413)", () => {
   it("renders nothing in a shell that keeps its chats in the bottom bar", () => {
     renderIn(<HeaderChatTabs />);
     expect(screen.queryByRole("button", { name: /Weekly report/ })).toBeNull();
+  });
+
+  // M-413 round 2: the footer is gone in this shell, so starting a chat and
+  // finding an old one have to be reachable from the strip.
+  it("starts a new chat from the strip's control", () => {
+    renderIn(
+      <ChatTabsInHeaderProvider>
+        <HeaderChatControls />
+      </ChatTabsInHeaderProvider>,
+    );
+
+    const start = screen.getByRole("button", { name: "New chat" });
+    fireEvent.click(start);
+    expect(h.chat.startNewChat).toHaveBeenCalledTimes(1);
+    // The floating window anchors to the control that started it.
+    expect(start).toHaveAttribute("data-chat-anchor", "new");
+  });
+
+  it("opens an old chat as the page from the strip's history", async () => {
+    renderIn(
+      <ChatTabsInHeaderProvider>
+        <HeaderChatControls />
+      </ChatTabsInHeaderProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Read and done/ }));
+
+    expect(adapter.push).toHaveBeenCalledWith("/acme/chat?session=Read%20and%20done");
+    expect(h.chat.setActiveSession).toHaveBeenCalledWith("Read and done");
+    expect(h.chat.setOpen).not.toHaveBeenCalledWith(true);
+  });
+
+  it("renders no chat controls in a shell without the header placement", () => {
+    renderIn(<HeaderChatControls />);
+    expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
   });
 
   it("takes the sessions out of the bottom bar it merged into", () => {

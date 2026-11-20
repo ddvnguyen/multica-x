@@ -23,17 +23,27 @@ interface DashboardLayoutProps {
   extra?: ReactNode;
   /** Loading indicator */
   loadingIndicator?: ReactNode;
+  /**
+   * A strip above the content card, spanning the section panel and the page
+   * (M-413). The web SPA puts its tab strip here so it covers the section menu
+   * instead of starting at the card's leading edge; desktop builds its own
+   * layout, so nothing renders here unless a host passes it.
+   */
+  header?: ReactNode;
 }
 
 /**
  * The content card: the space panel and the page share one surface on the
- * app shell, split by a single hairline. From `md` up the bottom bar sits
- * under it, in place of a bottom margin; below `md` the card is the whole
- * window. Desktop builds the same card in its own layout, under the tab bar.
+ * app shell, split by a single hairline. From `md` up the card is inset by a
+ * gutter on every side, with the bottom bar below it; below `md` the card is
+ * the whole window. The bottom gutter stays whether or not the bar renders —
+ * the web shell can drop the bar entirely (M-413), and a card flush against
+ * the window edge lost its ring and its rounded bottom corners. Desktop
+ * builds the same card in its own layout, under the tab bar.
  */
 export function AppShellCard({ children }: { children: ReactNode }) {
   return (
-    <main data-mc="page" className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-page-canvas md:mt-2 md:mr-2 md:rounded-page md:shadow-[var(--page-shadow,var(--surface-shadow))] md:ring-1 md:ring-page-border">
+    <main data-mc="page" className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-page-canvas md:my-2 md:mr-2 md:rounded-page md:shadow-[var(--page-shadow,var(--surface-shadow))] md:ring-1 md:ring-page-border">
       <SpacePanel />
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </main>
@@ -44,6 +54,7 @@ export function DashboardLayout({
   children,
   extra,
   loadingIndicator,
+  header,
 }: DashboardLayoutProps) {
   return (
     <>
@@ -70,6 +81,7 @@ export function DashboardLayout({
               <AppRail className="hidden md:flex" />
               <CompactNavSheet />
               <div className="flex min-w-0 flex-1 flex-col">
+                {header}
                 <AppShellCard>
                   <NavigationProgress />
                   <WorkspaceTrialNotices />

@@ -92,7 +92,16 @@ beforeEach(() => {
   router.back.mockReset();
   navState.pathname = "/acme/issues";
   navState.search = "";
+  window.history.replaceState(null, "", "/acme/issues");
 });
+
+function activeTab() {
+  const state = useTabStore.getState();
+  const group = state.activeWorkspaceSlug
+    ? state.byWorkspace[state.activeWorkspaceSlug]
+    : undefined;
+  return group?.tabs.find((tab) => tab.id === group.activeTabId);
+}
 
 describe("web tab router sync", () => {
   it("seeds a default tab for a workspace with no group", () => {
@@ -127,6 +136,77 @@ describe("web tab router sync", () => {
       useTabStore.getState().navigateActiveSession("/acme/inbox");
     });
     expect(router.replace).toHaveBeenCalledWith("/acme/inbox");
+  });
+
+  // M-413 round 2: the rail's workspace entry, a content link into another
+  // workspace, and a click on a tab belonging to another workspace all switch
+  // the store group and leave the router to follow. The sync used to refuse to
+  // project any URL from a workspace other than the address bar's, so those
+  // clicks renamed the tab and left the page where it was.
+  it("projects a switch to another workspace", () => {
+    act(() => {
+      sync(["acme", "beta"]);
+    });
+    router.replace.mockClear();
+
+    act(() => {
+      useTabStore.getState().switchWorkspace("beta", "/beta/projects");
+    });
+
+    expect(router.replace).toHaveBeenCalledWith("/beta/projects");
+  });
+
+  it("does not project a workspace the user cannot open", () => {
+    act(() => {
+      sync(["acme"]);
+    });
+    router.replace.mockClear();
+
+    act(() => {
+      useTabStore.getState().switchWorkspace("beta", "/beta/projects");
+    });
+
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  // A reload with several restored tabs: the address bar names one of them, and
+  // that tab has to become the active one. Recording the URL onto whichever tab
+  // was persisted as active put the reloaded page in the wrong tab.
+  it("activates the restored tab the address bar names", () => {
+    act(() => {
+      const store = useTabStore.getState();
+      store.switchWorkspace("acme");
+      store.openTab("/acme/projects", "Projects");
+    });
+    const before = useTabStore.getState().byWorkspace["acme"]!;
+    expect(before.tabs).toHaveLength(2);
+    expect(activeTab()?.url).toBe("/acme/issues");
+
+    navState.pathname = "/acme/projects";
+    act(() => {
+      sync();
+    });
+
+    expect(activeTab()?.url).toBe("/acme/projects");
+    const after = useTabStore.getState().byWorkspace["acme"]!;
+    // The tab that was active kept its own URL instead of being rewritten.
+    expect(after.tabs.find((tab) => tab.url === "/acme/issues")).toBeDefined();
+  });
+
+  // An in-page anchor (a comment deeplink) changes only the fragment, which
+  // `usePathname`/`useSearchParams` do not report. Reading the hash during a
+  // render missed it, and the next projection dropped the fragment.
+  it("records an in-page anchor in the active tab", () => {
+    act(() => {
+      sync();
+    });
+
+    act(() => {
+      window.history.replaceState(null, "", "/acme/issues#comment-1");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+
+    expect(activeTab()?.url).toBe("/acme/issues#comment-1");
   });
 });
 
@@ -201,5 +281,54 @@ describe("WebTabNavigationProvider adapter", () => {
     expect(useTabStore.getState().byWorkspace["acme"]?.tabs[0]?.url).toBe(
       "/acme/inbox",
     );
+  });
+
+  it("projects closing the active tab onto the tab that takes its place", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().openInNewTab?.("/acme/projects", "Projects", { activate: true });
+    });
+    const closed = activeTab();
+    expect(closed?.url).toBe("/acme/projects");
+
+    // Next commits the projection: the address bar now shows the new tab.
+    navState.pathname = "/acme/projects";
+    resetPendingProjectionForTests();
+    act(() => {
+      sync();
+    });
+    router.replace.mockClear();
+
+    act(() => {
+      useTabStore.getState().closeTab(closed!.id);
+    });
+
+    expect(activeTab()?.url).toBe("/acme/issues");
+    expect(router.replace).toHaveBeenCalledWith("/acme/issues");
+  });
+
+  it("keeps a pinned tab parked and projects the tab an in-app push opens", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    const pinned = useTabStore.getState().byWorkspace["acme"]?.tabs[0];
+    act(() => {
+      useTabStore.getState().togglePin(pinned!.id);
+    });
+
+    act(() => {
+      nav().push("/acme/projects");
+    });
+
+    const group = useTabStore.getState().byWorkspace["acme"]!;
+    expect(group.tabs.find((tab) => tab.id === pinned!.id)?.url).toBe(
+      "/acme/issues",
+    );
+    expect(activeTab()?.url).toBe("/acme/projects");
+    expect(router.replace).toHaveBeenCalledWith("/acme/projects");
   });
 });

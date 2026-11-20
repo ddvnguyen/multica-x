@@ -4,11 +4,12 @@ import { TriangleAlert } from "@multica/ui/icons";
 import { useChatStore } from "@multica/core/chat";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
-import { TrialStatus } from "../billing/trial-status";
+import { TrialStatus, useTrialStatusVisible } from "../billing/trial-status";
 import { ChatBar } from "../chat/components/chat-bar";
 import { isFloatingChatRouteSuppressed } from "../chat/floating-chat-visibility";
 import { useT } from "../i18n";
 import { AppLink, useNavigation } from "../navigation";
+import { useChatTabsInHeader } from "../tabs/chat-tabs";
 import { useAppShell } from "./app-shell-context";
 import { useTeamAgentStatus } from "./panels/team-status";
 
@@ -28,17 +29,19 @@ function TeamStatus({ wsId }: { wsId: string }) {
     0,
   );
 
+  // Nothing stuck, nothing to say: the footer measures its content to decide
+  // whether it exists at all, and an empty row would keep it on screen.
+  if (waitingTasks === 0) return null;
+
   return (
     <div className="flex min-w-0 items-center gap-1">
-      {waitingTasks > 0 && (
-        <AppLink
-          href={teamHref}
-          className="inline-flex h-[22px] min-w-0 items-center gap-1.5 rounded-md bg-page-canvas pr-2 pl-1.5 text-caption font-medium text-foreground ring-1 ring-surface-border outline-none transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          <TriangleAlert aria-hidden className="size-3.5 shrink-0 text-warning" />
-          <span className="truncate">{t(($) => $.panels.team.stuck, { count: waitingTasks })}</span>
-        </AppLink>
-      )}
+      <AppLink
+        href={teamHref}
+        className="inline-flex h-[22px] min-w-0 items-center gap-1.5 rounded-md bg-page-canvas pr-2 pl-1.5 text-caption font-medium text-foreground ring-1 ring-surface-border outline-none transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <TriangleAlert aria-hidden className="size-3.5 shrink-0 text-warning" />
+        <span className="truncate">{t(($) => $.panels.team.stuck, { count: waitingTasks })}</span>
+      </AppLink>
     </div>
   );
 }
@@ -48,19 +51,33 @@ function TeamStatus({ wsId }: { wsId: string }) {
  * stuck work) on the left, quick chat on the right. It sits on the app shell, in the strip the card's bottom margin
  * used to take. Below `md` there is no bar and quick chat is the floating
  * launcher.
+ *
+ * When the shell puts the chats in the header strip, the bar drops its quick
+ * chat entirely (M-413): the chips and Ask Multica would be the second tab
+ * strip the merge removed. What is left is status, and status is often empty —
+ * so the bar renders nothing at all then, instead of an empty row under the
+ * page.
  */
 export function AppBottomBar() {
   const { t } = useT("layout");
   const wsId = useCurrentWorkspace()?.id;
   const isMobile = useIsMobile();
+  const chatInHeader = useChatTabsInHeader();
   const floatingChatEnabled = useChatStore((s) => s.floatingChatEnabled);
   const { pathname } = useNavigation();
   const chatPath = useWorkspacePaths().chat();
+  const trialVisible = useTrialStatusVisible(wsId);
+  const { stuck } = useTeamAgentStatus(wsId);
 
   if (!wsId || isMobile) return null;
   // Same gates as the floating window: the Settings preference, and the Chat
-  // tab, which already shows the conversation full-page.
-  const showChat = floatingChatEnabled && !isFloatingChatRouteSuppressed(pathname, chatPath);
+  // tab, which already shows the conversation full-page. The header strip
+  // owns the chat when it lists the sessions.
+  const showChat =
+    !chatInHeader &&
+    floatingChatEnabled &&
+    !isFloatingChatRouteSuppressed(pathname, chatPath);
+  if (!showChat && !trialVisible && stuck.length === 0) return null;
 
   return (
     <footer

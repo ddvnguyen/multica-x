@@ -8,7 +8,11 @@ import { FloatingChat } from "@multica/views/chat/floating-chat";
 import { StarPrompt } from "@multica/views/star-prompt";
 import { WhatsNewDeck } from "@multica/views/whats-new";
 import { WebNotificationBridge } from "@/components/web-notification-bridge";
-import { WebTabShell } from "@/components/web-tab-shell";
+import {
+  WebTabProvider,
+  WebTabShell,
+  WebTabStrip,
+} from "@/components/web-tab-shell";
 import { WorkspaceDocumentTitle } from "@/platform/workspace-document-title";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -20,20 +24,26 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <Suspense fallback={null}>
         <WorkspaceDocumentTitle />
       </Suspense>
-      <DashboardLayout
-        loadingIndicator={<MulticaIcon mode="think" size={40} />}
-        extra={
-          <>
-            <SearchCommand />
-            <WebNotificationBridge />
-            <FloatingChat />
-            <StarPrompt />
-            <WhatsNewDeck />
-          </>
-        }
-      >
-        <WebTabShell>{children}</WebTabShell>
-      </DashboardLayout>
+      {/* The tab adapter wraps the whole dashboard, not just the page: the
+          strip mounts in the layout's header slot, and the rail and section
+          panel navigate through the same sessions the strip shows (M-413). */}
+      <WebTabProvider>
+        <DashboardLayout
+          header={<WebTabStrip />}
+          loadingIndicator={<MulticaIcon mode="think" size={40} />}
+          extra={
+            <>
+              <SearchCommand />
+              <WebNotificationBridge />
+              <FloatingChat />
+              <StarPrompt />
+              <WhatsNewDeck />
+            </>
+          }
+        >
+          <WebTabShell>{children}</WebTabShell>
+        </DashboardLayout>
+      </WebTabProvider>
     </>
   );
 }

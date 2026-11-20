@@ -410,8 +410,13 @@ function canonicalResourceKey(
   return `${segments.join("/")}${suffix}`;
 }
 
-/** The tab in `group` showing the resource `url` opens, if any. */
-function findTabForUrl(
+/**
+ * The tab in `group` showing the resource `url` opens, if any. Exported so a
+ * host that owns "which tab does the address bar name" (the web shell's first
+ * paint) matches tabs exactly the way the store's own dedupe does, issue
+ * identifier aliases included.
+ */
+export function findTabForUrl(
   group: WorkspaceTabGroup,
   url: string,
 ): TabSession | undefined {
