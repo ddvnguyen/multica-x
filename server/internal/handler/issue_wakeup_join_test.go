@@ -36,6 +36,30 @@ func setStatusAsRun(t *testing.T, issueID, status, agentID, taskID string) {
 	}
 }
 
+// closeIssueAsPlatform closes an issue the way the platform itself would: a
+// server-side write, outside any agent's request, that still records the
+// agent run it acted for. An agent run can no longer write a done-category
+// status over HTTP — only a human can — so a completion that belongs to a run
+// reaches the wakeup engine this way.
+func closeIssueAsPlatform(t *testing.T, issueID, sourceTaskID string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin platform close: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('multica.source_task_id', $1, true)`, sourceTaskID); err != nil {
+		t.Fatalf("set source task: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE issue SET status = 'done' WHERE id = $1`, issueID); err != nil {
+		t.Fatalf("platform close: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit platform close: %v", err)
+	}
+}
+
 func commentOn(t *testing.T, issueID, content, agentID, taskID string) {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -113,6 +137,10 @@ func createRule(t *testing.T, issueID, agentID string, source pgtype.UUID, in se
 // run on the parent. That run knows, so the rule records the stage without
 // queuing a second run; once that run has ended, or when someone else closes
 // the stage, the agent is woken as before.
+//
+// An agent run cannot close a sub-issue over HTTP any more — only a human can
+// (see issue_completion_guard.go) — so the run-attributed close is made the
+// way the platform makes one: a server-side write carrying the run.
 func TestChildDoneDoesNotWakeTheRunThatClosedTheStage(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -132,7 +160,8 @@ func TestChildDoneDoesNotWakeTheRunThatClosedTheStage(t *testing.T) {
 			setIssueAssigneeDirect(t, fx.parent.ID, "agent", agentID)
 			run := dbfx.Task(t, agentID, testutil.Cols{"issue_id": fx.parent.ID, "runtime_id": testRuntimeID, "status": tc.runStatus})
 			if tc.byAgent {
-				setStatusAsRun(t, fx.child.ID, "done", agentID, run)
+				closeIssueAsPlatform(t, fx.child.ID, run)
+				testHandler.processChildEvents(context.Background(), parseUUID(fx.parent.ID))
 			} else {
 				updateChildStatus(t, fx.child.ID, "done")
 			}
