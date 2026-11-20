@@ -2,7 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +27,10 @@ type tierResolution struct {
 	serviceTier   pgtype.Text
 	tierID        pgtype.UUID
 	hasCapacity   bool
+	// M-423: floor missed (fallback stamp) / stamped tier has no measured
+	// quality (unknown). Both ride the task row for the run badge.
+	qualityFallback   bool
+	qualityUnverified bool
 }
 
 // errNoTierCapacity signals "agent uses tiers but no selected tier has a free
@@ -75,81 +83,329 @@ func tierCoolingDown(until pgtype.Timestamptz, now time.Time) bool {
 	return until.Valid && until.Time.After(now)
 }
 
+// M-423: role bands for required quality. Lo..hi per agent role; difficulty
+// (important_level/complexity 1..5, set during planning via issue Properties)
+// interpolates within the band: required = lo + ceil((hi-lo)*(i+c-2)/8).
+// Orchestrator follows the Leader band (Owner grouped them).
+var tierQualityBands = map[string][2]int{
+	"architect":    {72, 75},
+	"leader":       {65, 70},
+	"reviewer":     {68, 72},
+	"orchestrator": {65, 70},
+	"engineer":     {50, 65},
+	"planning":     {65, 80},
+}
+
+// validTierRoles is the closed role vocabulary shared by agent.role and
+// tier.roles (mirrors the 735 CHECK constraints).
+var validTierRoles = map[string]bool{
+	"architect": true, "leader": true, "reviewer": true,
+	"orchestrator": true, "engineer": true, "planning": true,
+}
+
+// tierAgentRole normalizes agent.Role: set + valid → that role; anything
+// else (NULL, empty, unknown) → "" meaning legacy/unfiltered.
+func tierAgentRole(agent db.Agent) string {
+	if !agent.Role.Valid {
+		return ""
+	}
+	if validTierRoles[agent.Role.String] {
+		return agent.Role.String
+	}
+	return ""
+}
+
+// difficultyFromProperties reads important_level/complexity (1..5) from the
+// issue's Properties bag. Definition lookup is deterministic: active,
+// workspace-scoped, number-type defs named (case-insensitively)
+// important_level / complexity; on duplicates the lowest property-UUID
+// (lexicographic) wins. Values parse as JSON numbers; anything missing,
+// invalid, fractional-non-integral, or out of 1..5 → 1.
+func (s *TaskService) difficultyFromProperties(ctx context.Context, workspaceID pgtype.UUID, properties []byte) (important, complex int) {
+	important, complex = 1, 1
+	if len(properties) == 0 {
+		return 1, 1
+	}
+	defs, err := s.Queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return 1, 1
+	}
+	wanted := map[string]*string{}
+	for _, d := range defs {
+		if d.ArchivedAt.Valid || d.Type != "number" {
+			continue
+		}
+		switch lowerTierPropName(d.Name) {
+		case "important_level", "complexity":
+			id := util.UUIDToString(d.ID)
+			if prev, ok := wanted[d.Name]; !ok || id < *prev {
+				c := id
+				wanted[lowerTierPropName(d.Name)] = &c
+			}
+		}
+	}
+	var bag map[string]json.RawMessage
+	if err := json.Unmarshal(properties, &bag); err != nil {
+		return 1, 1
+	}
+	if id, ok := wanted["important_level"]; ok {
+		important = tierPropLevel(bag[*id])
+	}
+	if id, ok := wanted["complexity"]; ok {
+		complex = tierPropLevel(bag[*id])
+	}
+	return important, complex
+}
+
+func lowerTierPropName(n string) string {
+	return strings.ToLower(strings.TrimSpace(n))
+}
+
+// tierPropLevel coerces one JSON number to a 1..5 level; garbage → 1.
+func tierPropLevel(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 1
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return 1
+	}
+	if f != math.Trunc(f) || f < 1 || f > 5 {
+		return 1
+	}
+	return int(f)
+}
+
+// requiredTierQuality interpolates the role band by difficulty. Unknown or
+// legacy (empty) role → 0: no floor, everything eligible.
+func requiredTierQuality(role string, important, complex int) int {
+	band, ok := tierQualityBands[role]
+	if !ok {
+		return 0
+	}
+	lo, hi := band[0], band[1]
+	return lo + int(math.Ceil(float64(hi-lo)*float64(important+complex-2)/8))
+}
+
+// isWorkspaceOwner reports whether userID holds the owner role in workspace.
+// Manual-only tiers are owner-only (admins excluded): the Owner's rule is
+// "manually selected by owner only".
+func (s *TaskService) isWorkspaceOwner(ctx context.Context, workspaceID, userID pgtype.UUID) bool {
+	if !userID.Valid {
+		return false
+	}
+	m, err := s.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return false
+	}
+	return m.Role == "owner"
+}
+
 // resolveAgentTier picks the first usable tier for a use_tiers agent at
-// enqueue (M-351). Candidates are the agent's selected tiers that are enabled,
-// ordered by tier idx — index 0 runs first while it still has provider_slots
-// free. A tier qualifies only when its runtime is online (fresh heartbeat)
-// and its dispatched/running count on that runtime is below provider_slots.
-// A cooling tier (M-352: cooldown_until still in the future) is skipped
-// whatever its capacity, so the next task falls to the next idx instead of
-// retrying a provider that is refusing. Returns errNoTierCapacity when every
-// candidate is cooling, offline or full so the caller can leave the task
-// queued; a use_tiers=false agent never reaches here and keeps the legacy
+// enqueue (M-351, role/quality-aware in M-423). Candidates are the agent's
+// selected tiers that are enabled AND role-matched, ordered by tier idx.
+// Role match: agent with no role (legacy) keeps all selections; an agent
+// with a role matches only tiers carrying that role — tiers with empty roles
+// never match a role-set agent. Manual-only tiers never auto-resolve.
+// Within survivors the required quality floor (role band + difficulty from
+// the task issue's Properties) drops measured tiers below the floor; tiers
+// with unknown (NULL) quality stay eligible in idx order but stamp
+// unverified. When no eligible tier has capacity, the resolver falls back to
+// the highest known-quality available role-matched non-manual tier below the
+// floor (deterministic idx/creation tie-break) and stamps fallback; if none
+// is available it returns errNoTierCapacity and the caller queues. Cooling,
+// online/freshness and slot checks (M-352/M-351) apply to every candidate
+// including fallback, and the claim fence re-checks at dispatch.
+// A use_tiers=false agent never reaches here and keeps the legacy
 // agent.RuntimeID path untouched.
 func (s *TaskService) resolveAgentTier(ctx context.Context, agent db.Agent) (tierResolution, error) {
+	return s.resolveAgentTierForIssue(ctx, agent, pgtype.UUID{}, nil)
+}
+
+// resolveAgentTierForIssue is resolveAgentTier with the task issue attached
+// so difficulty (important_level/complexity Properties) can raise the floor.
+// Empty issueID or nil properties → levels default to 1.
+func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Agent, issueID pgtype.UUID, properties []byte) (tierResolution, error) {
 	var none tierResolution
-	selections, err := s.Queries.ListAgentTiers(ctx, agent.ID)
+	role := tierAgentRole(agent)
+	selections, err := s.Queries.ListAgentTiersForRole(ctx, db.ListAgentTiersForRoleParams{
+		AgentID: agent.ID,
+		Role:    role,
+	})
 	if err != nil {
 		return none, err
 	}
 	enabled := make([]db.ModelTier, 0, len(selections))
 	for _, sel := range selections {
-		if sel.Enabled {
-			enabled = append(enabled, sel)
+		if !sel.Enabled || sel.ManualOnly {
+			continue
 		}
+		enabled = append(enabled, sel)
 	}
 	if len(enabled) == 0 {
 		return none, errNoTierCapacity
 	}
-	runtimeIDs := make([]pgtype.UUID, 0, len(enabled))
-	for _, t := range enabled {
-		if t.RuntimeID.Valid {
-			runtimeIDs = append(runtimeIDs, t.RuntimeID)
-		}
+	important, complex := 1, 1
+	if issueID.Valid {
+		important, complex = s.difficultyFromProperties(ctx, agent.WorkspaceID, properties)
 	}
-	runtimes := map[string]db.AgentRuntime{}
-	if len(runtimeIDs) > 0 {
-		rows, err := s.Queries.GetAgentRuntimes(ctx, runtimeIDs)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return none, err
-		}
-		for _, rt := range rows {
-			runtimes[util.UUIDToString(rt.ID)] = rt
-		}
+	required := requiredTierQuality(role, important, complex)
+	eligible, unknown, _ := splitTiersByFloor(enabled, required)
+	runtimes := s.batchTierRuntimes(ctx, enabled)
+	if res, ok := firstTierWithCapacity(ctx, s.Queries, eligible, runtimes, time.Now()); ok {
+		return tierResolutionFor(res, false, !res.tier.Quality.Valid), nil
 	}
-	now := time.Now()
-	for _, t := range enabled {
-		if tierCoolingDown(t.CooldownUntil, now) {
-			continue
-		}
-		rt, ok := runtimes[util.UUIDToString(t.RuntimeID)]
-		if !t.RuntimeID.Valid || !ok {
-			continue
-		}
-		if !isRuntimeClaimable(rt) {
-			continue
-		}
-		running, err := s.Queries.CountActiveTasksByRuntime(ctx, rt.ID)
-		if err != nil {
-			return none, err
-		}
-		slots := int64(t.ProviderSlots)
-		if slots < 1 {
-			slots = 1
-		}
-		if running >= slots {
-			continue
-		}
-		return tierResolution{
-			runtimeID:     rt.ID,
-			modelOverride: pgtype.Text{String: t.Model, Valid: t.Model != ""},
-			thinkingLevel: tierTextOrNull(t.ThinkingLevel),
-			serviceTier:   tierTextOrNull(t.ServiceTier),
-			tierID:        t.ID,
-			hasCapacity:   true,
-		}, nil
+	if res, ok := firstTierWithCapacity(ctx, s.Queries, unknown, runtimes, time.Now()); ok {
+		return tierResolutionFor(res, false, true), nil
+	}
+	if res, ok := fallbackTier(ctx, s.Queries, enabled, runtimes, required, time.Now()); ok {
+		return tierResolutionFor(res, true, false), nil
 	}
 	return none, errNoTierCapacity
+}
+
+// tierAvailability is one role-matched candidate tier with its runtime and
+// active-task count resolved for the capacity check.
+type tierAvailability struct {
+	tier    db.ModelTier
+	runtime db.AgentRuntime
+}
+
+// tierResolutionFor builds the enqueue stamp, carrying the M-423 quality
+// signal: fallback (floor missed) and unverified (NULL quality).
+func tierResolutionFor(av tierAvailability, fallback, unverified bool) tierResolution {
+	return tierResolution{
+		runtimeID:         av.runtime.ID,
+		modelOverride:     pgtype.Text{String: av.tier.Model, Valid: av.tier.Model != ""},
+		thinkingLevel:     tierTextOrNull(av.tier.ThinkingLevel),
+		serviceTier:       tierTextOrNull(av.tier.ServiceTier),
+		tierID:            av.tier.ID,
+		hasCapacity:       true,
+		qualityFallback:   fallback,
+		qualityUnverified: unverified,
+	}
+}
+
+// splitTiersByFloor partitions role-matched tiers at the required floor:
+// eligible (measured quality >= floor, idx order kept), unknown (NULL
+// quality), below (measured < floor, for fallback ranking). Tiers arrive in
+// idx/creation order from ListAgentTiersForRole and each partition keeps it.
+func splitTiersByFloor(tiers []db.ModelTier, required int) (eligible, unknown, below []db.ModelTier) {
+	for _, t := range tiers {
+		if !t.Quality.Valid {
+			unknown = append(unknown, t)
+			continue
+		}
+		if required > 0 && int(t.Quality.Int32) < required {
+			below = append(below, t)
+			continue
+		}
+		eligible = append(eligible, t)
+	}
+	return eligible, unknown, below
+}
+
+// batchTierRuntimes fetches the distinct runtimes behind candidate tiers once.
+func (s *TaskService) batchTierRuntimes(ctx context.Context, tiers []db.ModelTier) map[string]db.AgentRuntime {
+	runtimes := map[string]db.AgentRuntime{}
+	ids := make([]pgtype.UUID, 0, len(tiers))
+	for _, t := range tiers {
+		if t.RuntimeID.Valid {
+			ids = append(ids, t.RuntimeID)
+		}
+	}
+	if len(ids) == 0 {
+		return runtimes
+	}
+	rows, err := s.Queries.GetAgentRuntimes(ctx, ids)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return runtimes
+	}
+	for _, rt := range rows {
+		runtimes[util.UUIDToString(rt.ID)] = rt
+	}
+	return runtimes
+}
+
+// firstTierWithCapacity returns the first tier (idx/creation order) that is
+// not cooling, bound to an online/fresh runtime, and below provider_slots.
+// The caller threads the same now through the whole pass so a tier cooling
+// at pass start is judged consistently.
+func firstTierWithCapacity(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runtimes map[string]db.AgentRuntime, now time.Time) (tierAvailability, bool) {
+	for _, t := range tiers {
+		av, ok := tierCapacity(ctx, q, t, runtimes, now)
+		if ok {
+			return av, true
+		}
+	}
+	return tierAvailability{}, false
+}
+
+// tierCapacity applies the M-351/M-352 availability chain to one tier.
+func tierCapacity(ctx context.Context, q *db.Queries, t db.ModelTier, runtimes map[string]db.AgentRuntime, now time.Time) (tierAvailability, bool) {
+	if tierCoolingDown(t.CooldownUntil, now) {
+		return tierAvailability{}, false
+	}
+	rt, ok := runtimes[util.UUIDToString(t.RuntimeID)]
+	if !t.RuntimeID.Valid || !ok {
+		return tierAvailability{}, false
+	}
+	if !isRuntimeClaimable(rt) {
+		return tierAvailability{}, false
+	}
+	running, err := q.CountActiveTasksByRuntime(ctx, rt.ID)
+	if err != nil {
+		return tierAvailability{}, false
+	}
+	slots := int64(t.ProviderSlots)
+	if slots < 1 {
+		slots = 1
+	}
+	if running >= slots {
+		return tierAvailability{}, false
+	}
+	return tierAvailability{tier: t, runtime: rt}, true
+}
+
+// fallbackTier picks the highest known-quality available tier below the
+// floor when nothing eligible has capacity. Deterministic: quality desc,
+// then idx asc, then created_at asc. Unknown-quality tiers never serve as
+// fallback (they ran in the eligible pass, flagged unverified); manual-only
+// tiers never serve as fallback. Returns false when none is available, and
+// the caller queues (errNoTierCapacity).
+func fallbackTier(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runtimes map[string]db.AgentRuntime, required int, now time.Time) (tierAvailability, bool) {
+	_, _, below := splitTiersByFloor(tiers, required)
+	if len(below) == 0 {
+		return tierAvailability{}, false
+	}
+	ordered := append([]db.ModelTier(nil), below...)
+	sortTiersByQualityDesc(ordered)
+	for _, t := range ordered {
+		if av, ok := tierCapacity(ctx, q, t, runtimes, now); ok {
+			return av, true
+		}
+	}
+	return tierAvailability{}, false
+}
+
+// sortTiersByQualityDesc orders measured tiers quality-desc, idx-asc,
+// created_at-asc. Callers only pass measured tiers (no NULL quality).
+func sortTiersByQualityDesc(tiers []db.ModelTier) {
+	sort.SliceStable(tiers, func(i, j int) bool {
+		qi, qj := tiers[i].Quality.Int32, tiers[j].Quality.Int32
+		if qi != qj {
+			return qi > qj
+		}
+		if tiers[i].Idx != tiers[j].Idx {
+			return tiers[i].Idx < tiers[j].Idx
+		}
+		return tiers[i].CreatedAt.Time.Before(tiers[j].CreatedAt.Time)
+	})
 }
 
 // isRuntimeClaimable mirrors the online/freshness half of the ClaimAgentTask
@@ -179,16 +435,25 @@ func tierTextOrNull(v pgtype.Text) pgtype.Text {
 }
 
 // resolveExplicitTier stamps one named tier for an `@agent#tier` trigger
-// (M-359). The tier must exist in the agent's workspace and be enabled;
-// when the agent uses tiers it must also be among the agent's selections
-// (plain `@agent` keeps the idx-ranked resolver; the explicit pick only
-// narrows, never widens). A use_tiers=false agent may name any enabled
-// workspace tier: the pick overrides the single runtime for that run.
-// Missing/disabled/unselected → errUnknownTier (blocked, no fallback).
+// (M-359, owner-gated in M-423). The tier must exist in the agent's
+// workspace, be enabled, and — when the agent uses tiers — be among the
+// agent's selections. Manual-only tiers additionally require the requester
+// to be a workspace owner; anyone else gets errUnknownTier (blocked, no
+// fallback, no information leak). A use_tiers=false agent may name any
+// enabled workspace tier: the pick overrides the single runtime for that run.
+// Missing/disabled/unselected/non-owner-manual → errUnknownTier (blocked).
 // Cooling, offline or full → errNoExplicitTierCapacity (parked, no fallback).
 func (s *TaskService) resolveExplicitTier(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string) (tierResolution, error) {
+	return s.resolveExplicitTierAs(ctx, agent, workspaceID, tierName, pgtype.UUID{})
+}
+
+// resolveExplicitTierAs is resolveExplicitTier with the triggering
+// requester's user id for the manual-only owner check. Callers that know who
+// triggered (comment mentions, assign writes, chat tier picks, quick-create)
+// MUST pass it; an invalid (unknown) requester never satisfies manual-only.
+func (s *TaskService) resolveExplicitTierAs(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string, requester pgtype.UUID) (tierResolution, error) {
 	var none tierResolution
-	tier, err := s.LookupExplicitTier(ctx, agent, workspaceID, tierName)
+	tier, err := s.LookupExplicitTierAs(ctx, agent, workspaceID, tierName, requester)
 	if err != nil {
 		return none, err
 	}
@@ -197,8 +462,18 @@ func (s *TaskService) resolveExplicitTier(ctx context.Context, agent db.Agent, w
 
 // resolveExplicitTierByID is resolveExplicitTier for an already-validated
 // tier UUID (tier picker, API override). Same semantics: unknown/disabled/
-// unselected → errUnknownTier, cooling/offline/full → errNoExplicitTierCapacity.
+// unselected/non-owner-manual → errUnknownTier, cooling/offline/full →
+// errNoExplicitTierCapacity.
 func (s *TaskService) resolveExplicitTierByID(ctx context.Context, agent db.Agent, tierID pgtype.UUID) (tierResolution, error) {
+	return s.resolveExplicitTierByIDAs(ctx, agent, tierID, pgtype.UUID{})
+}
+
+// resolveExplicitTierByIDAs is resolveExplicitTierByID with the triggering
+// requester's user id for the manual-only owner check. The parked-explicit
+// restamp path passes the task's stored originator (trusted at restamp: the
+// stamp was owner-authorized at enqueue, and membership is re-checked below);
+// any other invalid requester fails manual-only tiers.
+func (s *TaskService) resolveExplicitTierByIDAs(ctx context.Context, agent db.Agent, tierID pgtype.UUID, requester pgtype.UUID) (tierResolution, error) {
 	var none tierResolution
 	tier, err := s.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{
 		ID:          tierID,
@@ -213,8 +488,11 @@ func (s *TaskService) resolveExplicitTierByID(ctx context.Context, agent db.Agen
 	if !tier.Enabled {
 		return none, errUnknownTier
 	}
+	if tier.ManualOnly && !s.isWorkspaceOwner(ctx, agent.WorkspaceID, requester) {
+		return none, errUnknownTier
+	}
 	if agent.UseTiers {
-		return s.resolveExplicitTier(ctx, agent, agent.WorkspaceID, tier.Name)
+		return s.resolveExplicitTierAs(ctx, agent, agent.WorkspaceID, tier.Name, requester)
 	}
 	return s.stampExplicitTier(ctx, tier)
 }
@@ -224,7 +502,18 @@ func (s *TaskService) resolveExplicitTierByID(ctx context.Context, agent db.Agen
 // — for a use_tiers agent — be among the agent's selections. Anything else is
 // errUnknownTier (blocked, no fallback). Case-insensitive exact match: the
 // (workspace_id, lower(name)) unique index admits at most one row.
+// Manual-only tiers are validated here too: the unknown-requester form never
+// satisfies them (use LookupExplicitTierAs with the requester instead).
 func (s *TaskService) LookupExplicitTier(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string) (db.ModelTier, error) {
+	return s.LookupExplicitTierAs(ctx, agent, workspaceID, tierName, pgtype.UUID{})
+}
+
+// LookupExplicitTierAs is LookupExplicitTier with the triggering requester's
+// user id. Manual-only tiers require a workspace owner requester; every other
+// validation is identical. Role mismatch is NOT checked on the explicit path:
+// the pick narrows to a named tier (M-359) and the owner/assignee chose it
+// deliberately, so role filtering applies to auto-resolve only.
+func (s *TaskService) LookupExplicitTierAs(ctx context.Context, agent db.Agent, workspaceID pgtype.UUID, tierName string, requester pgtype.UUID) (db.ModelTier, error) {
 	var none db.ModelTier
 	tier, err := s.Queries.GetModelTierByNameInWorkspace(ctx, db.GetModelTierByNameInWorkspaceParams{
 		WorkspaceID: workspaceID,
@@ -237,6 +526,9 @@ func (s *TaskService) LookupExplicitTier(ctx context.Context, agent db.Agent, wo
 		return none, err
 	}
 	if !tier.Enabled {
+		return none, errUnknownTier
+	}
+	if tier.ManualOnly && !s.isWorkspaceOwner(ctx, workspaceID, requester) {
 		return none, errUnknownTier
 	}
 	if agent.UseTiers {
@@ -254,7 +546,9 @@ func (s *TaskService) LookupExplicitTier(ctx context.Context, agent db.Agent, wo
 	return tier, nil
 }
 
-// stampExplicitTier applies the capacity gate to one validated tier row.
+// stampExplicitTier applies the capacity gate to one validated tier row. The
+// stamp carries the M-423 quality signal: an explicit pick of an unmeasured
+// (NULL quality) tier stamps unverified — never described as meeting a floor.
 func (s *TaskService) stampExplicitTier(ctx context.Context, tier db.ModelTier) (tierResolution, error) {
 	var none tierResolution
 	if tierCoolingDown(tier.CooldownUntil, time.Now()) {
@@ -285,11 +579,12 @@ func (s *TaskService) stampExplicitTier(ctx context.Context, tier db.ModelTier) 
 		return none, errNoExplicitTierCapacity
 	}
 	return tierResolution{
-		runtimeID:     rt.ID,
-		modelOverride: pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
-		thinkingLevel: tierTextOrNull(tier.ThinkingLevel),
-		serviceTier:   tierTextOrNull(tier.ServiceTier),
-		tierID:        tier.ID,
-		hasCapacity:   true,
+		runtimeID:         rt.ID,
+		modelOverride:     pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
+		thinkingLevel:     tierTextOrNull(tier.ThinkingLevel),
+		serviceTier:       tierTextOrNull(tier.ServiceTier),
+		tierID:            tier.ID,
+		hasCapacity:       true,
+		qualityUnverified: !tier.Quality.Valid,
 	}, nil
 }

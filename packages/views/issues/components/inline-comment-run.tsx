@@ -219,7 +219,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
           showProgress && "sr-only")}
           role="status" data-run-status>
           <TaskStatusIcon status={cancelled ? "cancelled" : task.status} />
-          <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
+          <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} fallback={task.tier_quality_fallback} unverified={task.tier_quality_unverified} />
           {rawError && rawError !== statusText && !needsAction ? <Tooltip>
             <TooltipTrigger render={<span className="truncate">{statusText}</span>} />
             <TooltipContent side="top" className="flex-col items-start">

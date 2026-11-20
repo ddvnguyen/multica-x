@@ -389,6 +389,17 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 					return fmt.Errorf("promote plan into issue description: %w", err)
 				}
 				promoted = &updated
+				// M-423: planning sets difficulty. After the promotion (so
+				// the property writes below cannot trip its ExpectedRevision
+				// fence — SetIssuePropertyValue bumps revision on change),
+				// ensure the two number definitions exist and default
+				// missing/invalid issue values to 1, in the same
+				// transaction as the verdict. Human-set 2..5 values are
+				// never overwritten.
+				if derr := ensureDifficultyPropertiesTx(ctx, qtx, workspaceID, approved.IssueID); derr != nil {
+					slog.Warn("plan approve: difficulty defaults failed",
+						"plan_id", util.UUIDToString(planID), "error", derr)
+				}
 			}
 		case "changes_requested":
 			changed, err := qtx.RequestAgentPlanChanges(ctx, db.RequestAgentPlanChangesParams{

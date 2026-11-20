@@ -1000,7 +1000,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator and the run's originator —
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
-	override, oerr := h.resolveIssueRunTierOverride(r.Context(), session.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
+	override, oerr := h.resolveIssueRunTierOverride(r.Context(), session.WorkspaceID, req.TierID, req.RuntimeID, req.Model, memberActorUserID(actorType, actorID))
 	if oerr != nil {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
 		return

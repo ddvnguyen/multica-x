@@ -594,7 +594,7 @@ export function ActiveTaskRow({
         ) : (
           <span className={`${tone} min-w-0 truncate`}>{label}</span>
         )}
-        <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
+        <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} fallback={task.tier_quality_fallback} unverified={task.tier_quality_unverified} />
       </RowStatus>
       <RowActions>
         <RunSteerControls task={task} issueId={issueId} />
@@ -743,7 +743,7 @@ function PastRow({ task, issueId, showIssue = false }: { task: AgentTask; issueI
           <TaskCommentCoverage task={task} />
           <RowStatus title={statusTitle} wrap={!!usage?.credits.size}>
             <TaskStatusIcon status={task.status} />
-            <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} />
+            <TierBadge tierId={task.tier_id} explicit={task.tier_explicit} parked={task.tier_parked} fallback={task.tier_quality_fallback} unverified={task.tier_quality_unverified} />
             <span className="sr-only">{[label, time].filter(Boolean).join(" · ")}</span>
             {usage ? (
               <span className="tabular-nums">{formatSpend(usage)}</span>

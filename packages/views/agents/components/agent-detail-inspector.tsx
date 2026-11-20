@@ -50,6 +50,7 @@ import {
 } from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./inspector/runtime-picker";
 import { TierPicker } from "./inspector/tier-picker";
+import { RolePicker } from "./inspector/role-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
 import { useExecutionControls } from "./inspector/use-execution-controls";
@@ -325,6 +326,16 @@ export function AgentDetailInspector({
                   aria-label={t(($) => $.inspector.prop_use_tiers)}
                 />
               </SettingsRow>
+              <SettingsRow
+                label={t(($) => $.inspector.prop_role)}
+                description={t(($) => $.inspector.role_hint)}
+              >
+                <RolePicker
+                  value={agent.role ?? ""}
+                  canEdit={canEdit}
+                  onChange={(role) => update({ role })}
+                />
+              </SettingsRow>
               {agent.use_tiers ? (
                 <SettingsRow
                   label={t(($) => $.inspector.prop_tiers)}
@@ -332,6 +343,7 @@ export function AgentDetailInspector({
                 >
                   <TierPicker
                     value={agent.tier_ids ?? []}
+                    agentRole={agent.role ?? ""}
                     canEdit={canEdit}
                     onChange={(tier_ids) => update({ tier_ids })}
                   />

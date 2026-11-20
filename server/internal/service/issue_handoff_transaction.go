@@ -29,6 +29,10 @@ type PreparedIssueHandoff struct {
 	tierID         pgtype.UUID
 	tierQueuedOnly bool
 	tierExplicit   pgtype.Bool
+	// M-423: quality signal from the tier stamp (fallback = floor missed,
+	// unverified = NULL quality).
+	tierFallback   bool
+	tierUnverified bool
 }
 
 func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, agentID, actorID pgtype.UUID) (PreparedIssueHandoff, error) {
@@ -49,7 +53,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 	}
 	// M-351: resolve tiers outside the tx (pool capacity reads); the tx
 	// insert below only stamps.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolution(ctx, agent)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, TierTriggerOverride{})
 	if tierErr != nil {
 		return PreparedIssueHandoff{}, tierErr
 	}
@@ -57,9 +61,10 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 		agent: agent, attr: attr,
 		overlay:       s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
 		head:          headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
-		tierRuntimeID: tierRuntimeID, tierModel: tierModel, tierThinking: tierThinking,
-		tierService: tierService, tierID: tierID, tierQueuedOnly: tierQueuedOnly,
-		tierParked: tierParked, tierExplicit: tierExplicitFlag(tierID, TierTriggerOverride{}),
+		tierRuntimeID: tierRes.runtimeID, tierModel: tierRes.modelOverride, tierThinking: tierRes.thinkingLevel,
+		tierService: tierRes.serviceTier, tierID: tierRes.tierID, tierQueuedOnly: tierQueuedOnly,
+		tierParked: tierParked, tierExplicit: tierExplicitFlag(tierRes.tierID, TierTriggerOverride{}),
+		tierFallback: tierRes.qualityFallback, tierUnverified: tierRes.qualityUnverified,
 	}, nil
 }
 
@@ -86,7 +91,9 @@ func (s *TaskService) EnqueuePreparedIssueHandoffInTx(ctx context.Context, q *db
 		ModelOverride: prepared.tierModel, ThinkingLevelOverride: prepared.tierThinking,
 		ServiceTierOverride: prepared.tierService, TierID: prepared.tierID,
 		TierParked: prepared.tierParked, TierExplicit: prepared.tierExplicit,
-		Priority: priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
+		TierQualityFallback:   pgtype.Bool{Bool: prepared.tierFallback, Valid: prepared.tierFallback},
+		TierQualityUnverified: pgtype.Bool{Bool: prepared.tierUnverified, Valid: prepared.tierUnverified},
+		Priority:              priorityToInt(issue.Priority), IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: squadID.Valid},
 		SquadID: squadID, OriginatorUserID: prepared.attr.UserID, AccountableUserID: prepared.attr.AccountableUserID,
 		RuleVersionID: prepared.attr.RuleVersionID, RuntimeMcpOverlay: prepared.overlay.Overlay,
 		RuntimeConnectedApps: prepared.overlay.ConnectedApps, OriginatorSource: source,

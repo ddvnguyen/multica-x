@@ -2185,6 +2185,15 @@
     "save_failed_toast": "Could not save the tier",
     "remove_failed_toast": "Could not remove the tier",
     "reorder_failed_toast": "Could not reorder tiers",
-    "name_taken": "A tier with this name already exists."
+    "name_taken": "A tier with this name already exists.",
+    "roles_label": "Roles",
+    "roles_hint": "Only agents with one of these roles resolve this tier. Empty matches legacy agents with no role.",
+    "manual_label": "Manual only (owner)",
+    "manual_hint": "Never auto-resolved. Explicit picks require a workspace owner.",
+    "manual_badge": "manual only",
+    "quota_label": "Quota kind",
+    "free_label": "Free tier",
+    "unconfigured_badge": "unconfigured",
+    "roles_invalid": "Roles must come from architect, leader, reviewer, orchestrator, engineer, planning."
   }
 }

@@ -43,10 +43,15 @@ const createModelTier = `-- name: CreateModelTier :one
 
 INSERT INTO model_tier (
     workspace_id, name, idx, runtime_id, provider, model,
-    thinking_level, service_tier, cost, quality, provider_slots, enabled
+    thinking_level, service_tier, cost, quality, provider_slots, enabled,
+    roles, manual_only, quota_kind, is_free
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
-) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    COALESCE($13::text[], '{}'::text[]),
+    COALESCE($14::boolean, FALSE),
+    COALESCE($15::text, 'none'),
+    COALESCE($16::boolean, TRUE)
+) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
 `
 
 type CreateModelTierParams struct {
@@ -62,10 +67,19 @@ type CreateModelTierParams struct {
 	Quality       pgtype.Int4    `json:"quality"`
 	ProviderSlots int32          `json:"provider_slots"`
 	Enabled       bool           `json:"enabled"`
+	Roles         []string       `json:"roles"`
+	ManualOnly    pgtype.Bool    `json:"manual_only"`
+	QuotaKind     pgtype.Text    `json:"quota_kind"`
+	IsFree        pgtype.Bool    `json:"is_free"`
 }
 
 // Workspace model tiers (M-350). No FKs per repo rule: related rows are
 // validated and cleaned up in application code.
+// M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
+// rows land with roles '{}', manual_only false, quota_kind 'none'.
+// M-423: COALESCE guards so pre-423 callers passing zero values land on the
+// column DEFAULTs instead of NULLs (roles/manual_only/quota_kind/is_free
+// are NOT NULL with defaults since 735).
 func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams) (ModelTier, error) {
 	row := q.db.QueryRow(ctx, createModelTier,
 		arg.WorkspaceID,
@@ -80,6 +94,10 @@ func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams
 		arg.Quality,
 		arg.ProviderSlots,
 		arg.Enabled,
+		arg.Roles,
+		arg.ManualOnly,
+		arg.QuotaKind,
+		arg.IsFree,
 	)
 	var i ModelTier
 	err := row.Scan(
@@ -99,6 +117,10 @@ func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CooldownUntil,
+		&i.Roles,
+		&i.ManualOnly,
+		&i.QuotaKind,
+		&i.IsFree,
 	)
 	return i, err
 }
@@ -122,7 +144,7 @@ func (q *Queries) DeleteTierAgentSelections(ctx context.Context, tierID pgtype.U
 }
 
 const getModelTierByNameInWorkspace = `-- name: GetModelTierByNameInWorkspace :one
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
 WHERE workspace_id = $1 AND lower(name) = lower($2)
 `
 
@@ -153,12 +175,16 @@ func (q *Queries) GetModelTierByNameInWorkspace(ctx context.Context, arg GetMode
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CooldownUntil,
+		&i.Roles,
+		&i.ManualOnly,
+		&i.QuotaKind,
+		&i.IsFree,
 	)
 	return i, err
 }
 
 const getModelTierInWorkspace = `-- name: GetModelTierInWorkspace :one
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -187,6 +213,10 @@ func (q *Queries) GetModelTierInWorkspace(ctx context.Context, arg GetModelTierI
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CooldownUntil,
+		&i.Roles,
+		&i.ManualOnly,
+		&i.QuotaKind,
+		&i.IsFree,
 	)
 	return i, err
 }
@@ -218,7 +248,7 @@ func (q *Queries) ListAgentTierIDs(ctx context.Context, agentID pgtype.UUID) ([]
 
 const listAgentTiers = `-- name: ListAgentTiers :many
 
-SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until FROM model_tier t
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free FROM model_tier t
 JOIN agent_tier at ON at.tier_id = t.id
 WHERE at.agent_id = $1
 ORDER BY t.idx ASC, t.created_at ASC
@@ -257,6 +287,70 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CooldownUntil,
+			&i.Roles,
+			&i.ManualOnly,
+			&i.QuotaKind,
+			&i.IsFree,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentTiersForRole = `-- name: ListAgentTiersForRole :many
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free FROM model_tier t
+JOIN agent_tier at ON at.tier_id = t.id
+WHERE at.agent_id = $1::uuid
+  AND ($2::text IS NULL OR $2::text = ''
+    OR $2::text = ANY (t.roles))
+ORDER BY t.idx ASC, t.created_at ASC
+`
+
+type ListAgentTiersForRoleParams struct {
+	AgentID pgtype.UUID `json:"agent_id"`
+	Role    string      `json:"role"`
+}
+
+// M-423: role-filtered selection for the resolver. One agent role, one pass:
+// an agent with a role set matches only tiers carrying that role; a legacy
+// agent with no role (NULL/empty) keeps its existing selections unfiltered.
+// A role-set agent NEVER matches a tier with empty roles (unconfigured rows
+// stay invisible until an admin assigns them a role).
+func (q *Queries) ListAgentTiersForRole(ctx context.Context, arg ListAgentTiersForRoleParams) ([]ModelTier, error) {
+	rows, err := q.db.Query(ctx, listAgentTiersForRole, arg.AgentID, arg.Role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ModelTier{}
+	for rows.Next() {
+		var i ModelTier
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Idx,
+			&i.RuntimeID,
+			&i.Provider,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ServiceTier,
+			&i.Cost,
+			&i.Quality,
+			&i.ProviderSlots,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CooldownUntil,
+			&i.Roles,
+			&i.ManualOnly,
+			&i.QuotaKind,
+			&i.IsFree,
 		); err != nil {
 			return nil, err
 		}
@@ -269,7 +363,7 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 }
 
 const listModelTiers = `-- name: ListModelTiers :many
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
 WHERE workspace_id = $1
 ORDER BY idx ASC, created_at ASC
 `
@@ -300,6 +394,10 @@ func (q *Queries) ListModelTiers(ctx context.Context, workspaceID pgtype.UUID) (
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CooldownUntil,
+			&i.Roles,
+			&i.ManualOnly,
+			&i.QuotaKind,
+			&i.IsFree,
 		); err != nil {
 			return nil, err
 		}
@@ -401,9 +499,13 @@ SET name = $2,
     quality = $10,
     provider_slots = $11,
     enabled = $12,
+    roles = COALESCE($13::text[], roles),
+    manual_only = COALESCE($14::boolean, manual_only),
+    quota_kind = COALESCE($15::text, quota_kind),
+    is_free = COALESCE($16::boolean, is_free),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until
+RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
 `
 
 type UpdateModelTierParams struct {
@@ -419,6 +521,10 @@ type UpdateModelTierParams struct {
 	Quality       pgtype.Int4    `json:"quality"`
 	ProviderSlots int32          `json:"provider_slots"`
 	Enabled       bool           `json:"enabled"`
+	Roles         []string       `json:"roles"`
+	ManualOnly    pgtype.Bool    `json:"manual_only"`
+	QuotaKind     pgtype.Text    `json:"quota_kind"`
+	IsFree        pgtype.Bool    `json:"is_free"`
 }
 
 func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams) (ModelTier, error) {
@@ -435,6 +541,10 @@ func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams
 		arg.Quality,
 		arg.ProviderSlots,
 		arg.Enabled,
+		arg.Roles,
+		arg.ManualOnly,
+		arg.QuotaKind,
+		arg.IsFree,
 	)
 	var i ModelTier
 	err := row.Scan(
@@ -454,6 +564,10 @@ func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CooldownUntil,
+		&i.Roles,
+		&i.ManualOnly,
+		&i.QuotaKind,
+		&i.IsFree,
 	)
 	return i, err
 }

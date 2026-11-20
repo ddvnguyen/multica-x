@@ -127,7 +127,7 @@ func (h *Handler) resolveIssueRun(r *http.Request, issue db.Issue, trigger servi
 	case willRun && suppressRun:
 		status, reason = DispatchDeferred, ReasonDeferred
 	case willRun:
-	status, reason = h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote, override)
+		status, reason = h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, handoffNote, override)
 	case trigger.DeclineReason != "":
 		status, reason = declinedRunStatus(trigger.DeclineReason), trigger.DeclineReason
 	default:
@@ -205,7 +205,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 // assign write (tier_id, or runtime_id+model one-off). Empty = zero
 // override, plain assign. Unknown tier or runtime → typed error the caller
 // surfaces as a structured block (no silent fallback).
-func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID pgtype.UUID, tierID, runtimeID, model string) (service.TierTriggerOverride, error) {
+func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID pgtype.UUID, tierID, runtimeID, model string, requester pgtype.UUID) (service.TierTriggerOverride, error) {
 	if tierID == "" && runtimeID == "" && model == "" {
 		return service.TierTriggerOverride{}, nil
 	}
@@ -214,10 +214,21 @@ func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID p
 		if err != nil {
 			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
 		}
-		if _, err := h.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: workspaceID}); err != nil {
+		// M-423: manual-only tiers fail closed for non-owners here (not just
+		// at enqueue) so the picker surfaces tier_unavailable immediately.
+		// Role mismatch is not checked: the explicit pick narrows to a named
+		// tier the requester chose deliberately.
+		tier, err := h.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: workspaceID})
+		if err != nil {
 			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
 		}
-		return service.TierTriggerOverride{TierID: tierUUID}, nil
+		if !tier.Enabled {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		if tier.ManualOnly && !h.isWorkspaceOwnerMember(ctx, workspaceID, requester) {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		return service.TierTriggerOverride{TierID: tierUUID, Requester: requester}, nil
 	}
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
@@ -226,7 +237,23 @@ func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID p
 	if _, err := h.Queries.GetAgentRuntime(ctx, runtimeUUID); err != nil {
 		return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
 	}
-	return service.TierTriggerOverride{RuntimeID: runtimeUUID, Model: model}, nil
+	return service.TierTriggerOverride{RuntimeID: runtimeUUID, Model: model, Requester: requester}, nil
+}
+
+// isWorkspaceOwnerMember reports whether userID holds the owner role in the
+// workspace (handler-side twin of the service check; strict owner, no admin).
+func (h *Handler) isWorkspaceOwnerMember(ctx context.Context, workspaceID, userID pgtype.UUID) bool {
+	if !userID.Valid {
+		return false
+	}
+	m, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return false
+	}
+	return m.Role == "owner"
 }
 
 // dispatchIssueRunWithTier is dispatchIssueRun with an M-359 explicit pick

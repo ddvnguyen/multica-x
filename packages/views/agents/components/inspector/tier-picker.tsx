@@ -21,11 +21,19 @@ import { useT } from "../../../i18n";
  */
 export function TierPicker({
   value,
+  agentRole = "",
   canEdit = true,
   onChange,
 }: {
   /** Selected tier ids. */
   value: string[];
+  /**
+   * Agent role for match display (M-423). A role-set agent only resolves
+   * tiers carrying its role; a legacy ("") agent keeps all selections.
+   * This picker never filters — mismatches render a badge but stay
+   * selectable, since the server enforces the match at enqueue.
+   */
+  agentRole?: string;
   /** When false, render a static read-only display and skip the popover. */
   canEdit?: boolean;
   onChange: (next: string[]) => Promise<void> | void;
@@ -100,6 +108,17 @@ export function TierPicker({
                   {!tier.enabled && (
                     <span className="ml-1.5 text-micro text-muted-foreground">
                       {t(($) => $.inspector.tiers_disabled_badge)}
+                    </span>
+                  )}
+                  {agentRole !== "" &&
+                    !(tier.roles ?? []).includes(agentRole) && (
+                      <span className="ml-1.5 text-micro text-amber-600 dark:text-amber-400">
+                        {t(($) => $.inspector.tiers_role_mismatch_badge)}
+                      </span>
+                    )}
+                  {tier.manual_only && (
+                    <span className="ml-1.5 text-micro text-muted-foreground">
+                      {t(($) => $.inspector.tiers_manual_badge)}
                     </span>
                   )}
                 </span>

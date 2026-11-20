@@ -327,18 +327,18 @@ func TestApplyTierResolution_LegacyAgentUntouched(t *testing.T) {
 		t.Fatalf("load agent: %v", err)
 	}
 	svc := newTierTestService(pool, qq)
-	runtimeID, model, thinking, service, tierID, parked, queuedOnly, rerr := svc.applyTierResolution(ctx, agent)
+	res, parked, queuedOnly, rerr := svc.applyTierResolution(ctx, agent)
 	if rerr != nil {
 		t.Fatalf("apply: %v", rerr)
 	}
 	if queuedOnly {
 		t.Fatalf("legacy agent must not be queuedOnly")
 	}
-	if got := util.UUIDToString(runtimeID); got != rt {
+	if got := util.UUIDToString(res.runtimeID); got != rt {
 		t.Errorf("runtime = %s, want %s", got, rt)
 	}
-	if model.Valid || thinking.Valid || service.Valid || tierID.Valid || parked.Valid {
-		t.Errorf("legacy stamps must be empty, got %+v %+v %+v %+v parked=%+v", model, thinking, service, tierID, parked)
+	if res.modelOverride.Valid || res.thinkingLevel.Valid || res.serviceTier.Valid || res.tierID.Valid || parked.Valid {
+		t.Errorf("legacy stamps must be empty, got %+v %+v %+v %+v parked=%+v", res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, parked)
 	}
 }
 

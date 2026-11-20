@@ -3082,7 +3082,7 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		parentIssueUUID = pid
 	}
 
-	override, oerr := h.resolveIssueRunTierOverride(r.Context(), wsUUID, req.TierID, req.RuntimeID, req.Model)
+	override, oerr := h.resolveIssueRunTierOverride(r.Context(), wsUUID, req.TierID, req.RuntimeID, req.Model, requesterUUID)
 	if oerr != nil {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
 		return
@@ -4484,7 +4484,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// assignee change itself is already applied above; only the run
 		// is refused, never silently re-resolved.
 		var oerr error
-		override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.TierID, req.RuntimeID, req.Model)
+		override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.TierID, req.RuntimeID, req.Model, memberActorUserID(actorType, actorID))
 		if oerr != nil {
 			h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
 			return
@@ -5326,7 +5326,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				// M-359: explicit tier / runtime+model pick for this issue's run.
 				// Unknown names fail the whole batch write (409, tier_unavailable).
 				var oerr error
-				override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.Updates.TierID, req.Updates.RuntimeID, req.Updates.Model)
+				override, oerr = h.resolveIssueRunTierOverride(r.Context(), issue.WorkspaceID, req.Updates.TierID, req.Updates.RuntimeID, req.Updates.Model, memberActorUserID(actorType, actorID))
 				if oerr != nil {
 					h.writeDispatchBlocked(w, http.StatusConflict, ReasonTierUnavailable)
 					return

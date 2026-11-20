@@ -21,12 +21,12 @@ const TIERS: ModelTier[] = [
   {
     id: "tier-a", workspace_id: "ws", name: "fast", idx: 0,
     runtime_id: "rt-a", provider: "codebuddy", model: "model-a",
-    provider_slots: 1, enabled: true, created_at: "", updated_at: "",
+    provider_slots: 1, enabled: true, roles: [], manual_only: false, quota_kind: "none", is_free: true, created_at: "", updated_at: "",
   },
   {
     id: "tier-b", workspace_id: "ws", name: "slow", idx: 1,
     runtime_id: "rt-b", provider: "codebuddy", model: "model-b",
-    provider_slots: 1, enabled: false, created_at: "", updated_at: "",
+    provider_slots: 1, enabled: false, roles: [], manual_only: false, quota_kind: "none", is_free: true, created_at: "", updated_at: "",
   },
 ];
 
