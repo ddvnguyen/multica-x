@@ -173,7 +173,7 @@ func (h *Handler) callerCanInvokeIssueAssignee(r *http.Request, issue db.Issue, 
 	if err != nil {
 		return true
 	}
-	return h.invokeAgentDecision(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID)
+	return h.invokeAgentDecision(r.Context(), h.Queries, agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID)
 }
 
 // dispatchIssueRun executes the enqueue side effect for a decision produced by

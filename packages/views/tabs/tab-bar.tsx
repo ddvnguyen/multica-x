@@ -181,12 +181,15 @@ function SortableTabItem({
   const { getShareableUrl } = useNavigation();
   const togglePin = useTabStore((s) => s.togglePin);
   const updateTab = useTabStore((s) => s.updateTab);
+  const rememberIssueIdentity = useTabStore((s) => s.rememberIssueIdentity);
+  const tabAttention = useTabStore((s) => s.tabAttention);
+  const clearTabAttention = useTabStore((s) => s.clearTabAttention);
   const issueWindowPath = host.parseIssueWindowPath?.(tab.url) ?? null;
   // The tab's leading visual and title are derived live from its URL and the
   // query cache — a resource's own icon/status/avatar and its real title,
   // updated as the cache updates. `tab.title` is only a persisted first-frame
   // fallback. See @multica/views useTabPresentation.
-  const { visual, title, titleResolved } = useTabPresentation(tab.url, tab.title, { fetch: true });
+  const { visual, title, titleResolved, issueIdentity } = useTabPresentation(tab.url, tab.title, { fetch: true });
   const pinLabel = tab.pinned
     ? t(($) => $.desktop.tab_bar.unpin)
     : t(($) => $.desktop.tab_bar.pin);
@@ -216,6 +219,26 @@ function SortableTabItem({
     if (!titleResolved) return;
     if (tab.title !== title) updateTab(tab.id, { title });
   }, [titleResolved, title, tab.id, tab.title, updateTab]);
+
+  const rememberedIssueIdentity = useRef<string | null>(null);
+  useEffect(() => {
+    if (!issueIdentity) return;
+    const key = `${issueIdentity.id}:${issueIdentity.identifier}`;
+    if (rememberedIssueIdentity.current === key) return;
+    rememberedIssueIdentity.current = key;
+    rememberIssueIdentity(tab.id, issueIdentity.id, issueIdentity.identifier);
+  }, [issueIdentity, rememberIssueIdentity, tab.id]);
+
+  const attentionSequence =
+    tabAttention?.tabId === tab.id ? tabAttention.sequence : null;
+  useEffect(() => {
+    if (attentionSequence === null) return;
+    const timeout = window.setTimeout(
+      () => clearTabAttention(attentionSequence),
+      900,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [attentionSequence, clearTabAttention]);
 
   const {
     attributes,
@@ -362,6 +385,16 @@ function SortableTabItem({
         transition={{ duration: isEntering ? 0.18 : 0, ease: TAB_ENTRY_EASE }}
         onAnimationComplete={() => setIsEntering(false)}
       >
+        {attentionSequence !== null && (
+          <motion.span
+            aria-hidden="true"
+            data-tab-attention
+            className="pointer-events-none absolute inset-x-0 inset-y-0 rounded-lg ring-2 ring-primary/70"
+            initial={{ opacity: 0.8 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.9 }}
+          />
+        )}
         {/* Every tab is a pill on the title bar; the active one is made of
             the content card's own material so it reads as the card's tab
             without having to join it. */}

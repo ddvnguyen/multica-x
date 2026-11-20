@@ -59,3 +59,10 @@ func createIfEligible(ctx context.Context, queries *db.Queries, params db.Create
 	}
 	return item, true, nil
 }
+
+// CreateIfEligible creates a workspace inbox item only when its recipient is
+// still a member of the workspace. inserted is false when the eligibility
+// check rejects the recipient.
+func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (db.InboxItem, bool, error) {
+	return createIfEligible(ctx, queries, params)
+}

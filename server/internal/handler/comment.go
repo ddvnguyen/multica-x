@@ -2773,12 +2773,9 @@ func (h *Handler) enqueueSingleCommentTriggerWithOutcome(ctx context.Context, is
 			return fail(oerr)
 		}
 		task, err := h.TaskService.EnqueueTaskForMentionWithTier(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed, override)
-	var err error
-	if trigger.Squad != nil {
-		_, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
-	} else {
-		_, err = h.TaskService.EnqueueTaskForMentionWithTier(ctx, issue, trigger.Agent.ID, triggerCommentID, service.OriginNamed, override)
-	}
+		if trigger.Squad != nil {
+			task, err = h.TaskService.EnqueueTaskForSquadLeader(ctx, issue, trigger.Agent.ID, trigger.Squad.ID, triggerCommentID, service.OriginNamed)
+		}
 		if err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),

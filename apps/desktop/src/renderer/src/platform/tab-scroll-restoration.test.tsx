@@ -4,7 +4,7 @@ import {
   ScrollRestorationProvider,
   useRestoredScrollRef,
 } from "@multica/views/platform";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 import {
   __resetTabCoordinatorForTests,
   createScrollRestorationAdapter,

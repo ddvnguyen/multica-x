@@ -9,7 +9,7 @@ import { useAuthStore } from "@multica/core/auth";
 import { DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import { workspaceListOptions } from "@multica/core/workspace";
 import { RESOURCES } from "@multica/views/locales";
-import { useTabStore } from "@/stores/tab-store";
+import { useTabStore } from "@multica/core/tabs";
 import { getAppRouter } from "@/platform/tab-coordinator";
 import { createDesktopLocaleAdapter } from "@/platform/i18n-adapter";
 import { DesktopShell } from "./desktop-layout";
@@ -96,7 +96,11 @@ const server = createServer((request, response) => {
   requests.push({ path, workspace });
   const payload = payloadFor(path, workspace);
   response.setHeader("Content-Type", "application/json");
-  if (holdA && workspace === "synthetic-a" && path.endsWith("/search")) {
+  if (
+    holdA &&
+    workspace === "synthetic-a" &&
+    (path === "/api/issues/search" || path === "/api/projects/search")
+  ) {
     held.push({ response, payload });
     return;
   }

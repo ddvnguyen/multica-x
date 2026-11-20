@@ -680,7 +680,7 @@ func (h *Handler) SetProjectInteractions(w http.ResponseWriter, r *http.Request)
 // event payload; sending zeros would blank a row the reader is looking at.
 func (h *Handler) projectResponseWithCounts(r *http.Request, project db.Project) ProjectResponse {
 	resp := projectToResponse(project)
-	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), project.WorkspaceID, project.ID)
+	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	return resp
 }

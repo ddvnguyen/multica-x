@@ -3,7 +3,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { useActiveIssueViewStore } from "@multica/core/issue-views/active-view-store";
 import { ScrollRestorationProvider, useRestoredScrollRef } from "@multica/views/platform";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@/stores/window-overlay-store", () => ({
