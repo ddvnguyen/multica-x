@@ -49,7 +49,7 @@ prune_release_tree() { # $1 = releases dir, $2 = current symlink, $3 = keep, $4 
   current="$(readlink -f "$current_link" 2>/dev/null || true)"
   daemon_release=""
   proc_root="${MULTICA_LANE_PROC_ROOT:-/proc}"
-  daemon_pid="$(systemctl --user show --property=MainPID --value "$MULTICA_DAEMON_Z_UNIT" 2>/dev/null || true)"
+  daemon_pid="$(systemctl --user show --property=MainPID --value "${MULTICA_DAEMON_Z_UNIT:-multica-daemon-z.service}" 2>/dev/null || true)"
   if [[ "$daemon_pid" =~ ^[0-9]+$ ]] && [ "$daemon_pid" -gt 1 ] && [ -r "$proc_root/$daemon_pid/exe" ]; then
     daemon_exe="$(readlink "$proc_root/$daemon_pid/exe" 2>/dev/null || true)"
     daemon_exe="${daemon_exe% (deleted)}"

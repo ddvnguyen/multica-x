@@ -5,8 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SANDBOX="$REPO_ROOT/.autodeploy-safety-test.$$"
 trap 'rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/mock-bin"
-cp "$REPO_ROOT/scripts/lane-z/autodeploy.sh" "$REPO_ROOT/scripts/lane-z/lane-lib.sh" "$SANDBOX/bin/"
-
+cp "$REPO_ROOT/scripts/lane-z/autodeploy.sh" "$REPO_ROOT/scripts/lane-z/rollback.sh" "$REPO_ROOT/scripts/lane-z/lane-lib.sh" "$SANDBOX/bin/"
 cat > "$SANDBOX/bin/dsh-z.env" <<'EOF'
 LANE_ROOT="$TEST_LANE_ROOT"
 AUTODEPLOY_LOG_DIR="$TEST_LANE_ROOT/logs"
@@ -20,7 +19,10 @@ AUTODEPLOY_MIN_FREE_GB=0
 AUTODEPLOY_KEEP_RELEASES=5
 AUTODEPLOY_BACKUP_KEEP_COUNT=10
 MULTICA_BE_Z_UNIT=multica-be-z.service
+MMX_PWA_Z_PORT=3190
+MMX_PWA_Z_UNIT=mmx-pwa-z.service
 DSH_Z_WEB_UNIT=dsh-z.service
+DSH_Z_PLUGIN_BUNDLE="$TEST_LANE_ROOT/bundles/plugin"
 MULTICA_BE_Z_PORT=3180
 MULTICA_Z_DB_NAME=multica_z
 MULTICA_Z_DB_CONTAINER=multica-z-db
@@ -46,6 +48,34 @@ case "$1 $2" in
     ;;
   "run download")
     [ "${TEST_FAIL_DOWNLOAD:-0}" = 0 ] || exit 1
+    # Materialize a fake tree per artifact name so verify-artifact and the
+    # staged installs exercise real files: backend gets bin/server +
+    # migrations + release.json, PWA gets standalone + brand + stamp.
+    dest="${*: -1}"
+    name=""
+    for arg in "$@"; do
+      case "$arg" in -n) want_name=1;; *) [ "${want_name:-0}" = 1 ] && { name="$arg"; want_name=0; };; esac
+    done
+    sha="${name##*-}"
+    case "$name" in
+      multica-be-*)
+        mkdir -p "$dest/bin" "$dest/migrations"
+        printf '#!/bin/sh\nexit 0\n' > "$dest/bin/server"; chmod +x "$dest/bin/server"
+        printf '#!/bin/sh\nexit 0\n' > "$dest/bin/migrate"; chmod +x "$dest/bin/migrate"
+        # Lane CLI: the deployed daemon reports running this artifact's SHA,
+        # idle — so the daemon-refresh gate passes with no restart and no poll.
+        printf '#!/usr/bin/env bash\nprintf \x27{"status":"running","cli_commit":"%s","active_task_count":0}\x27\n' "$sha" > "$dest/bin/multica"
+        chmod +x "$dest/bin/multica"
+        printf '{"sha":"%s","version":"test","builtAt":"test"}\n' "$sha" > "$dest/release.json"
+        ;;
+      mmx-pwa-*)
+        mkdir -p "$dest/standalone/apps/web/public" "$dest/standalone/apps/web/.next"
+        printf 'server\n' > "$dest/standalone/apps/web/server.js"
+        printf 'const VERSION = "%s";\n' "$sha" > "$dest/standalone/apps/web/public/sw.js"
+        printf 'mmx-install\n' > "$dest/standalone/apps/web/.next/brand-marker"
+        printf '{"sha":"%s","version":"test"}\n' "$sha" > "$dest/release.json"
+        ;;
+    esac
     ;;
   "run view") printf '{"headSha":"%s","url":"https://example.invalid/run/123","createdAt":"2026-11-15T00:00:00Z","updatedAt":"2026-11-15T00:01:00Z","conclusion":"success"}\n' "$TEST_TARGET_SHA" ;;
   *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 2 ;;
@@ -60,9 +90,13 @@ export PATH="$SANDBOX/mock-bin:$PATH" TEST_TARGET_SHA="$TARGET_SHA"
 new_lane() {
   TEST_LANE_ROOT="$SANDBOX/lane-$1"
   export TEST_LANE_ROOT
-  mkdir -p "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/data" "$TEST_LANE_ROOT/backups"
+  mkdir -p "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/public" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next" "$TEST_LANE_ROOT/data" "$TEST_LANE_ROOT/backups"
   printf '{"sha":"%s","version":"test"}\n' "$CURRENT_SHA" > "$TEST_LANE_ROOT/multica-be/releases/current/release.json"
   ln -s "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/multica-be/current"
+  printf 'server\n' > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/server.js"
+  printf 'const VERSION = "%s";\n' "$CURRENT_SHA" > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/public/sw.js"
+  printf 'mmx-install\n' > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next/brand-marker"
+  ln -s "$TEST_LANE_ROOT/mmx-pwa/releases/current" "$TEST_LANE_ROOT/mmx-pwa/current"
 }
 
 # A stale green run exits successfully before artifacts, reports, or backup work.
@@ -108,6 +142,77 @@ rc=$?
 set -e
 test "$rc" -ne 0
 test "$(cat "$TEST_LANE_ROOT/data/autodeploy.failed")" = "$TARGET_SHA"
+# Full deploy path under mocks: staged installs, migration (mocked), switch,
+# health (mocked), report. Only podman (DB), systemctl (units) and curl (HTTP)
+# are mocked — jq, df, gh and the rest are real so date math, release.json
+# reads and sha comparisons exercise the production code paths.
+new_lane full
+export TEST_COMPARE_STATUS=ahead TEST_FAIL_DOWNLOAD=0
+mkdir -p "$SANDBOX/mock-full"
+cat > "$SANDBOX/mock-full/podman" <<'MOCKEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"pg_dump"*) printf 'fake-dump\n' ;;
+  *"select version from schema_migrations"*) printf '001\n' ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+# systemctl: restarts succeed; `unit_release` (`systemctl --user cat`) reports
+# the ExecStart of whatever mmx-pwa/current or multica-be/current resolves
+# to, like a unit file following the symlink would.
+cat > "$SANDBOX/mock-full/systemctl" <<'MOCKEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *"show --property=MainPID"*) printf '1\n' ;;
+  *"cat multica-be-z.service"*) printf 'ExecStart=%s/bin/server\n' "$TEST_LANE_ROOT/multica-be/current" ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+# curl: every health endpoint answers from the CURRENT lane state, like the
+# real lane would — backend healthz ok, manifests from disk.
+cat > "$SANDBOX/mock-full/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+url="${*: -1}"
+case "$url" in
+  *"/healthz"*) printf '{"status":"ok"}\n' ;;
+  *"/multica/healthz"*) printf '{"status":"ok"}\n' ;;
+  *"/moct/status"*) printf '{"status":"ok"}\n' ;;
+  *"/manifest.webmanifest"*) cat "$TEST_LANE_ROOT/mmx-pwa/current/apps/web/../manifest.json" 2>/dev/null || printf '{"id":"/?mmx-install","name":"MMX"}\n' ;;
+  *"/sw.js"*) cat "$TEST_LANE_ROOT/mmx-pwa/current/apps/web/public/sw.js" 2>/dev/null ;;
+  *"/multica/health"*) printf '{"commit":"%s","status":"ok"}\n' "$(jq -r '.sha' "$TEST_LANE_ROOT/multica-be/current/release.json")" ;;
+  *"/"*) printf 'ok' ;;
+  *) printf '{}\n' ;;
+esac
+MOCKEOF
+chmod +x "$SANDBOX/mock-full/podman" "$SANDBOX/mock-full/systemctl" "$SANDBOX/mock-full/curl"
+export PATH="$SANDBOX/mock-full:$SANDBOX/mock-bin:$PATH"
+export LANE_RUNTIME_ENV="$TEST_LANE_ROOT/runtime.env"
+export MULTICA_Z_DEV_CODE=123456 MULTICA_Z_DB_PASSWORD=test MULTICA_Z_PROFILE=z
+export LANE_HOME="$TEST_LANE_ROOT/home"
+export LANE_ROOT="$TEST_LANE_ROOT" MULTICA_Z_DB_CONTAINER=x MULTICA_Z_DSN_TEMPLATE='postgres://u:PASSWORD@h/db'
+export MULTICA_Z_DB_NAME=multica_z AUTODEPLOY_BIN_DIR="$SANDBOX/bin"
+export HOME="$SANDBOX/home-full"; mkdir -p "$HOME/.config/systemd/user"
+# The artifact's lane CLI (see the mock above) reports the deployed SHA once
+# the new release is live, so the daemon-refresh gate passes with no restart.
+"$SANDBOX/bin/autodeploy.sh" > "$SANDBOX/full.log" 2>&1
+grep -q 'mmx-pwa artifact verified' "$SANDBOX/full.log"
+grep -q 'backend release staged' "$SANDBOX/full.log"
+grep -q 'mmx-pwa release staged' "$SANDBOX/full.log"
+grep -q 'mmx-pwa z -> releases/' "$SANDBOX/full.log"
+# Both live trees flipped to the target SHA; markers name the previous release.
+test "$(readlink -f "$TEST_LANE_ROOT/multica-be/current")" = "$TEST_LANE_ROOT/multica-be/releases/$TARGET_SHA"
+test "$(readlink -f "$TEST_LANE_ROOT/mmx-pwa/current")" = "$TEST_LANE_ROOT/mmx-pwa/releases/$TARGET_SHA"
+test "$(cat "$TEST_LANE_ROOT/multica-be/previous-release")" = "$TEST_LANE_ROOT/multica-be/releases/current"
+test "$(cat "$TEST_LANE_ROOT/mmx-pwa/previous-release")" = "$TEST_LANE_ROOT/mmx-pwa/releases/current"
+# Env follows the target SHA; the staged temp dirs are gone.
+grep -qx "NEXT_PUBLIC_APP_VERSION=$TARGET_SHA" "$TEST_LANE_ROOT/mmx-pwa/env"
+test -z "$(find "$TEST_LANE_ROOT/multica-be/releases" "$TEST_LANE_ROOT/mmx-pwa/releases" -maxdepth 1 -name '*.tmp.*' -print -quit)"
+grep -q 'mmx-pwa:' "$TEST_LANE_ROOT/reports/latest.md"
+grep -q "lane z is on \`${TARGET_SHA:0:9}\`" "$TEST_LANE_ROOT/reports/latest.md"
+export PATH="$SANDBOX/mock-bin:$PATH"
 
 # Exercise the real pruning function with synthetic timestamps. The old dump
 # for the running release survives alongside the two newest other dumps.
