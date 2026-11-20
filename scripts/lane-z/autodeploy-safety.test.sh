@@ -173,20 +173,21 @@ case "$*" in
 esac
 MOCKEOF
 # curl: every health endpoint answers from the CURRENT lane state, like the
-# real lane would — backend healthz ok, manifests from disk.
+# real lane would — backend healthz ok, manifests from disk. An unknown route
+# is a 404 (curl -f's non-zero exit): the lane serves no /moct/status, so a
+# gate that probes one must fail here instead of passing on a mock (M-458).
 cat > "$SANDBOX/mock-full/curl" <<'MOCKEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 url="${*: -1}"
 case "$url" in
-  *"/healthz"*) printf '{"status":"ok"}\n' ;;
   *"/multica/healthz"*) printf '{"status":"ok"}\n' ;;
-  *"/moct/status"*) printf '{"status":"ok"}\n' ;;
+  *"/multica/health"*) printf '{"commit":"%s","status":"ok"}\n' "$(jq -r '.sha' "$TEST_LANE_ROOT/multica-be/current/release.json")" ;;
+  *"/healthz"*) printf '{"status":"ok"}\n' ;;
   *"/manifest.webmanifest"*) cat "$TEST_LANE_ROOT/mmx-pwa/current/apps/web/../manifest.json" 2>/dev/null || printf '{"id":"/?mmx-install","name":"MMX"}\n' ;;
   *"/sw.js"*) cat "$TEST_LANE_ROOT/mmx-pwa/current/apps/web/public/sw.js" 2>/dev/null ;;
-  *"/multica/health"*) printf '{"commit":"%s","status":"ok"}\n' "$(jq -r '.sha' "$TEST_LANE_ROOT/multica-be/current/release.json")" ;;
-  *"/"*) printf 'ok' ;;
-  *) printf '{}\n' ;;
+  */) printf 'ok' ;;
+  *) printf 'curl: (22) 404 %s\n' "$url" >&2; exit 22 ;;
 esac
 MOCKEOF
 chmod +x "$SANDBOX/mock-full/podman" "$SANDBOX/mock-full/systemctl" "$SANDBOX/mock-full/curl"
@@ -214,6 +215,39 @@ grep -qx "NEXT_PUBLIC_APP_VERSION=$TARGET_SHA" "$TEST_LANE_ROOT/mmx-pwa/env"
 test -z "$(find "$TEST_LANE_ROOT/multica-be/releases" "$TEST_LANE_ROOT/mmx-pwa/releases" -maxdepth 1 -name '*.tmp.*' -print -quit)"
 grep -q 'mmx-pwa:' "$TEST_LANE_ROOT/reports/latest.md"
 grep -q "lane z is on \`${TARGET_SHA:0:9}\`" "$TEST_LANE_ROOT/reports/latest.md"
+# The evidence must not claim a /moct/status that was never probed.
+! grep -q 'moct/status' "$TEST_LANE_ROOT/reports/latest.md"
+export PATH="$SANDBOX/mock-bin:$PATH"
+
+# M-458 regression: the post-switch gate passes with the lane web answering
+# only /healthz, /multica/healthz and /multica/health. /moct/status is not a
+# server route (the real one is authenticated under /multica/api/...), so it
+# 404s; a reintroduced probe must fail here rather than on a healthy lane.
+new_lane health-gate
+mkdir -p "$SANDBOX/mock-gate"
+cat > "$SANDBOX/mock-gate/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+url="${*: -1}"
+printf '%s\n' "$url" >> "$TEST_LANE_ROOT/curl.log"
+case "$url" in
+  *"/healthz") printf '{"status":"ok"}\n' ;;
+  *"/multica/healthz") printf '{"status":"ok"}\n' ;;
+  *"/multica/health") printf '{"commit":"%s"}\n' "$(jq -r '.sha' "$TEST_LANE_ROOT/multica-be/current/release.json")" ;;
+  *) printf 'curl: (22) 404 %s\n' "$url" >&2; exit 22 ;;
+esac
+MOCKEOF
+chmod +x "$SANDBOX/mock-gate/curl"
+export PATH="$SANDBOX/mock-gate:$SANDBOX/mock-bin:$PATH"
+export MULTICA_BE_Z_PORT=3180 DRILL_FAIL_HEALTH=0
+log() { printf '%s\n' "$*"; }
+source "$SANDBOX/bin/lane-lib.sh"
+sed -n '/^assert_health() {/,/^}/p' "$SANDBOX/bin/autodeploy.sh" > "$SANDBOX/assert-health-function.sh"
+source "$SANDBOX/assert-health-function.sh"
+assert_health "$CURRENT_SHA"
+test "$LANE_COMMIT" = "$CURRENT_SHA"
+test -s "$TEST_LANE_ROOT/curl.log"
+! grep -q 'moct/status' "$TEST_LANE_ROOT/curl.log"
 export PATH="$SANDBOX/mock-bin:$PATH"
 
 # Exercise the real pruning function with synthetic timestamps. The old dump
