@@ -1154,11 +1154,13 @@ func taskErrorType(reason string) string {
 // TierTriggerOverride is the M-359 per-trigger pick: at most one of TierID
 // (explicit `@agent#tier` or tier picker) or RuntimeID+Model (one-off
 // runtime+model override) is set. Zero value = plain trigger, normal
-// resolver.
+// resolver. Requester is the triggering member's user id (invalid = unknown);
+// manual-only tiers fail closed for an unknown requester.
 type TierTriggerOverride struct {
 	TierID    pgtype.UUID
 	RuntimeID pgtype.UUID
 	Model     string
+	Requester pgtype.UUID
 }
 
 func (o TierTriggerOverride) IsZero() bool {
@@ -1176,26 +1178,37 @@ func tierExplicitFlag(tierID pgtype.UUID, override TierTriggerOverride) pgtype.B
 	return pgtype.Bool{}
 }
 
-func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, parked pgtype.Bool, queuedOnly bool, err error) {
-	return s.applyTierResolutionWithOverride(ctx, agent, TierTriggerOverride{})
+func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (tierResolution, pgtype.Bool, bool, error) {
+	return s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, TierTriggerOverride{})
 }
 
 // applyTierResolutionWithOverride is applyTierResolution plus the M-359
-// explicit pick. TierID selects one tier without ranking; RuntimeID+Model
-// stamps a one-off override without any tier at all.
-func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent db.Agent, override TierTriggerOverride) (runtimeID pgtype.UUID, model, thinking, service pgtype.Text, tierID pgtype.UUID, parked pgtype.Bool, queuedOnly bool, err error) {
+// explicit pick, M-423 role/quality aware. TierID selects one tier without
+// ranking (owner-gated for manual-only via override.Requester); RuntimeID+
+// Model stamps a one-off override that is still blocked when it targets a
+// manual-only tier's runtime for a non-owner. issueID/properties carry the
+// task issue for difficulty-aware auto-resolve; zero values mean legacy
+// behavior (levels default to 1).
+func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent db.Agent, issueID pgtype.UUID, properties []byte, override TierTriggerOverride) (res tierResolution, parked pgtype.Bool, queuedOnly bool, err error) {
+	var none tierResolution
 	if override.RuntimeID.Valid {
-		// One-off runtime+model override: stamp directly, no tier involved.
+		// One-off runtime+model override: allowed unless it targets a
+		// manual-only tier's runtime for a non-owner — the equivalent-tier
+		// rule, so a raw override cannot bypass manual-only protection.
+		if s.runtimeGuardedByManualOnlyTier(ctx, agent.WorkspaceID, override.RuntimeID) &&
+			!s.isWorkspaceOwner(ctx, agent.WorkspaceID, override.Requester) {
+			return none, pgtype.Bool{}, false, errUnknownTier
+		}
 		var modelText pgtype.Text
 		if override.Model != "" {
 			modelText = pgtype.Text{String: override.Model, Valid: true}
 		}
-		return override.RuntimeID, modelText, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, nil
+		return tierResolution{runtimeID: override.RuntimeID, modelOverride: modelText, hasCapacity: true}, pgtype.Bool{}, false, nil
 	}
 	if override.TierID.Valid {
-		res, rerr := s.resolveExplicitTierByID(ctx, agent, override.TierID)
+		r, rerr := s.resolveExplicitTierByIDAs(ctx, agent, override.TierID, override.Requester)
 		if rerr == nil {
-			return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, pgtype.Bool{}, false, nil
+			return r, pgtype.Bool{}, false, nil
 		}
 		if errors.Is(rerr, errNoExplicitTierCapacity) {
 			// Parked with the tier stamped: queued, visible, no fallback.
@@ -1204,24 +1217,48 @@ func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent
 				WorkspaceID: agent.WorkspaceID,
 			})
 			if terr != nil {
-				return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, terr
+				return none, pgtype.Bool{}, false, terr
 			}
-			return pgtype.UUID{}, pgtype.Text{String: tier.Model, Valid: tier.Model != ""}, tierTextOrNull(tier.ThinkingLevel), tierTextOrNull(tier.ServiceTier), tier.ID, pgtype.Bool{Bool: true, Valid: true}, true, nil
+			return tierResolution{
+				modelOverride:     pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
+				thinkingLevel:     tierTextOrNull(tier.ThinkingLevel),
+				serviceTier:       tierTextOrNull(tier.ServiceTier),
+				tierID:            tier.ID,
+				qualityUnverified: !tier.Quality.Valid,
+			}, pgtype.Bool{Bool: true, Valid: true}, true, nil
 		}
-		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, rerr
+		return none, pgtype.Bool{}, false, rerr
 	}
 
 	if !agent.UseTiers {
-		return agent.RuntimeID, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, nil
+		return tierResolution{runtimeID: agent.RuntimeID, hasCapacity: true}, pgtype.Bool{}, false, nil
 	}
-	res, rerr := s.resolveAgentTier(ctx, agent)
+	r, rerr := s.resolveAgentTierForIssue(ctx, agent, issueID, properties)
 	if rerr == nil {
-		return res.runtimeID, res.modelOverride, res.thinkingLevel, res.serviceTier, res.tierID, pgtype.Bool{}, false, nil
+		return r, pgtype.Bool{}, false, nil
 	}
 	if errors.Is(rerr, errNoTierCapacity) {
-		return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{Bool: true, Valid: true}, true, nil
+		return none, pgtype.Bool{Bool: true, Valid: true}, true, nil
 	}
-	return pgtype.UUID{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.UUID{}, pgtype.Bool{}, false, rerr
+	return none, pgtype.Bool{}, false, rerr
+}
+
+// runtimeGuardedByManualOnlyTier reports whether any enabled manual-only tier
+// in the workspace binds the given runtime. A one-off runtime override onto
+// such a runtime is the functional equivalent of picking that tier, so the
+// owner gate applies to the override too.
+func (s *TaskService) runtimeGuardedByManualOnlyTier(ctx context.Context, workspaceID, runtimeID pgtype.UUID) bool {
+	tiers, err := s.Queries.ListModelTiers(ctx, workspaceID)
+	if err != nil {
+		return false
+	}
+	for _, t := range tiers {
+		if t.Enabled && t.ManualOnly && t.RuntimeID.Valid &&
+			util.UUIDToString(t.RuntimeID) == util.UUIDToString(runtimeID) {
+			return true
+		}
+	}
+	return false
 }
 
 // notifyTierQueuedOnly wakes the runtime-less queued task's watchers through
@@ -1427,8 +1464,8 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 	// first selected tier with a free provider slot. Full tiers are
 	// backpressure: the row is still inserted (queued) but carries no
 	// runtime, so no daemon can claim it until promotion re-resolves.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
-	tierExplicit := tierExplicitFlag(tierID, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override)
+	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1436,13 +1473,15 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 	createParams := db.CreateAgentTaskParams{
 		ID:                    dbid.NewV7(),
 		AgentID:               issue.AssigneeID,
-		RuntimeID:             tierRuntimeID,
-		ModelOverride:         tierModel,
-		ThinkingLevelOverride: tierThinking,
-		ServiceTierOverride:   tierService,
-		TierID:                tierID,
+		RuntimeID:             tierRes.runtimeID,
+		ModelOverride:         tierRes.modelOverride,
+		ThinkingLevelOverride: tierRes.thinkingLevel,
+		ServiceTierOverride:   tierRes.serviceTier,
+		TierID:                tierRes.tierID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
+		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
+		TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1655,8 +1694,8 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
-	tierExplicit := tierExplicitFlag(tierID, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override)
+	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1664,13 +1703,15 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 	params := db.CreateAgentTaskParams{
 		ID:                    dbid.NewV7(),
 		AgentID:               agentID,
-		RuntimeID:             tierRuntimeID,
-		ModelOverride:         tierModel,
-		ThinkingLevelOverride: tierThinking,
-		ServiceTierOverride:   tierService,
-		TierID:                tierID,
+		RuntimeID:             tierRes.runtimeID,
+		ModelOverride:         tierRes.modelOverride,
+		ThinkingLevelOverride: tierRes.thinkingLevel,
+		ServiceTierOverride:   tierRes.serviceTier,
+		TierID:                tierRes.tierID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
+		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
+		TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -1889,8 +1930,8 @@ func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, wo
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
-	tierExplicit := tierExplicitFlag(tierID, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override)
+	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
@@ -1898,13 +1939,15 @@ func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, wo
 	createParams := db.CreateQuickCreateTaskParams{
 		ID:                    taskID,
 		AgentID:               agentID,
-		RuntimeID:             tierRuntimeID,
-		ModelOverride:         tierModel,
-		ThinkingLevelOverride: tierThinking,
-		ServiceTierOverride:   tierService,
-		TierID:                tierID,
+		RuntimeID:             tierRes.runtimeID,
+		ModelOverride:         tierRes.modelOverride,
+		ThinkingLevelOverride: tierRes.thinkingLevel,
+		ServiceTierOverride:   tierRes.serviceTier,
+		TierID:                tierRes.tierID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
+		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
+		TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
 		Priority:              priorityToInt("high"),
 		Context:               contextJSON,
 		OriginatorUserID:      requesterID,
@@ -2364,21 +2407,24 @@ func (s *TaskService) enqueueChatTaskTxWithOverride(
 	}
 
 	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, agent, override)
-	tierExplicit := tierExplicitFlag(tierID, override)
+	// Chat has no issue: difficulty-unaware (levels default to 1).
+	tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override)
+	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
 	}
 	task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
 		ID:                    dbid.NewV7(),
 		AgentID:               chatSession.AgentID,
-		RuntimeID:             tierRuntimeID,
-		ModelOverride:         tierModel,
-		ThinkingLevelOverride: tierThinking,
-		ServiceTierOverride:   tierService,
-		TierID:                tierID,
+		RuntimeID:             tierRes.runtimeID,
+		ModelOverride:         tierRes.modelOverride,
+		ThinkingLevelOverride: tierRes.thinkingLevel,
+		ServiceTierOverride:   tierRes.serviceTier,
+		TierID:                tierRes.tierID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
+		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
+		TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
 		Priority:              2,
 		ChatSessionID:         chatSession.ID,
 		InitiatorUserID:       initiatorUserID,
@@ -2764,8 +2810,9 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 		// M-351 auto path, or the M-359 explicit pick when override is set.
 		// Uses the pool (not qtx) for the capacity reads; the insert below
 		// still runs in this tx so the row is atomic with the rest of the send.
-		tierRuntimeID, tierModel, tierThinking, tierService, tierID, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, override)
-		tierExplicit := tierExplicitFlag(tierID, override)
+		// Chat has no issue: difficulty-unaware (levels default to 1).
+		tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, pgtype.UUID{}, nil, override)
+		tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 		if tierErr != nil {
 			return tierErr
 		}
@@ -2788,27 +2835,29 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 			// A string-to-string map has no fallible JSON encoders.
 			chatContext, _ := json.Marshal(map[string]string{"chat_input_actor_type": uploaderType})
 			task, err = qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
-				Context:              chatContext,
-				ID:                   dbid.NewV7(),
+				Context:               chatContext,
+				ID:                    dbid.NewV7(),
 				AgentID:               session.AgentID,
-				RuntimeID:            tierRuntimeID,
-				ModelOverride:        tierModel,
-				ThinkingLevelOverride: tierThinking,
-				ServiceTierOverride:  tierService,
-				TierID:               tierID,
-				TierParked:           tierParked,
-				TierExplicit:         tierExplicit,
-				Priority:             2, // medium priority for chat; matches EnqueueChatTask
-				ChatSessionID:        session.ID,
-				InitiatorUserID:      initiatorUserID,
-				OriginatorUserID:     attr.UserID,
-				AccountableUserID:    attr.AccountableUserID,
-				ForceFreshSession:    pgtype.Bool{Bool: false, Valid: true},
-				RuntimeMcpOverlay:    overlay.Overlay,
-				RuntimeConnectedApps: overlay.ConnectedApps,
-				OriginatorSource:     attrSource,
-				TriggerEvidenceKind:  attrEvidenceKind,
-				TriggerEvidenceRefID: attrEvidenceRef,
+				RuntimeID:             tierRes.runtimeID,
+				ModelOverride:         tierRes.modelOverride,
+				ThinkingLevelOverride: tierRes.thinkingLevel,
+				ServiceTierOverride:   tierRes.serviceTier,
+				TierID:                tierRes.tierID,
+				TierParked:            tierParked,
+				TierExplicit:          tierExplicit,
+				TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
+				TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
+				Priority:              2, // medium priority for chat; matches EnqueueChatTask
+				ChatSessionID:         session.ID,
+				InitiatorUserID:       initiatorUserID,
+				OriginatorUserID:      attr.UserID,
+				AccountableUserID:     attr.AccountableUserID,
+				ForceFreshSession:     pgtype.Bool{Bool: false, Valid: true},
+				RuntimeMcpOverlay:     overlay.Overlay,
+				RuntimeConnectedApps:  overlay.ConnectedApps,
+				OriginatorSource:      attrSource,
+				TriggerEvidenceKind:   attrEvidenceKind,
+				TriggerEvidenceRefID:  attrEvidenceRef,
 			})
 			if err != nil {
 				return fmt.Errorf("create direct chat task: %w", err)
@@ -4955,6 +5004,12 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 // when tiers are still full or the agent left use_tiers — the row stays
 // queued and a later capacity change retries. Tier selection errors fail
 // loudly: unlike full tiers they are not backpressure.
+// M-423: explicit rows re-resolve with the task's stored originator as the
+// trusted requester — the stamp was owner-authorized at enqueue, and
+// membership/tier protection is re-checked here (changed membership or a
+// newly manual-only tier keeps the row queued, never silently downgraded to
+// auto-resolve). Auto rows re-resolve with their issue's context so the
+// difficulty floor applies on restamp too.
 func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTaskQueue) (db.AgentTaskQueue, bool) {
 	agent, err := s.Queries.GetAgent(ctx, task.AgentID)
 	if err != nil {
@@ -4965,15 +5020,23 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 	// row keeps it too (plain rows never park).
 	var res tierResolution
 	if task.TierExplicit && task.TierID.Valid {
-		res, err = s.resolveExplicitTierByID(ctx, agent, task.TierID)
+		res, err = s.resolveExplicitTierByIDAs(ctx, agent, task.TierID, task.OriginatorUserID)
 	} else {
 		if !agent.UseTiers {
 			return task, false
 		}
-		res, err = s.resolveAgentTier(ctx, agent)
+		var issueProps []byte
+		var issueID pgtype.UUID
+		if task.IssueID.Valid {
+			issueID = task.IssueID
+			if issue, ierr := s.Queries.GetIssue(ctx, task.IssueID); ierr == nil {
+				issueProps = issue.Properties
+			}
+		}
+		res, err = s.resolveAgentTierForIssue(ctx, agent, issueID, issueProps)
 	}
 	if err != nil {
-		if errors.Is(err, errNoTierCapacity) || errors.Is(err, errNoExplicitTierCapacity) {
+		if errors.Is(err, errNoTierCapacity) || errors.Is(err, errNoExplicitTierCapacity) || errors.Is(err, errUnknownTier) {
 			return task, false
 		}
 		slog.Warn("tier restamp failed: task stays queued",
@@ -4987,6 +5050,8 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 		ThinkingLevelOverride: res.thinkingLevel,
 		ServiceTierOverride:   res.serviceTier,
 		TierID:                res.tierID,
+		TierQualityFallback:   res.qualityFallback,
+		TierQualityUnverified: res.qualityUnverified,
 	})
 	if serr != nil {
 		slog.Warn("tier restamp write failed: task stays queued",
@@ -7705,21 +7770,23 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		// tier set resolves to queuedOnly: the row is still inserted (queued,
 		// runtime-less) and the capacity-freed sweep restamps it when a slot
 		// frees — the recovery is not lost, only parked.
-		recRuntimeID, recModel, recThinking, recService, recTierID, recParked, _, recErr := s.applyTierResolution(ctx, target.agent)
-		recExplicit := tierExplicitFlag(recTierID, TierTriggerOverride{})
+		recRes, recParked, _, recErr := s.applyTierResolution(ctx, target.agent)
+		recExplicit := tierExplicitFlag(recRes.tierID, TierTriggerOverride{})
 		if recErr != nil {
 			return delegatedFailureRecoveryCovered, recErr
 		}
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                    dbid.NewV7(),
 			AgentID:               target.agent.ID,
-			RuntimeID:             recRuntimeID,
-			ModelOverride:         recModel,
-			ThinkingLevelOverride: recThinking,
-			ServiceTierOverride:   recService,
-			TierID:                recTierID,
+			RuntimeID:             recRes.runtimeID,
+			ModelOverride:         recRes.modelOverride,
+			ThinkingLevelOverride: recRes.thinkingLevel,
+			ServiceTierOverride:   recRes.serviceTier,
+			TierID:                recRes.tierID,
 			TierParked:            recParked,
 			TierExplicit:          recExplicit,
+			TierQualityFallback:   pgtype.Bool{Bool: recRes.qualityFallback, Valid: recRes.qualityFallback},
+			TierQualityUnverified: pgtype.Bool{Bool: recRes.qualityUnverified, Valid: recRes.qualityUnverified},
 			IssueID:               target.issue.ID,
 			Priority:              priorityToInt(target.issue.Priority),
 			TriggerCommentID:      target.comment.ID,

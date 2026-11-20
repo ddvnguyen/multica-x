@@ -420,6 +420,12 @@ export interface AgentTask {
   tier_explicit?: boolean;
   tier_parked?: boolean;
   /**
+   * M-423 quality signal: fallback = stamped tier missed the required floor;
+   * unverified = stamped tier has no measured quality. Shown as a badge.
+   */
+  tier_quality_fallback?: boolean;
+  tier_quality_unverified?: boolean;
+  /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
    * the canonical absolute path the agent runs in; UI surfaces should prefer
@@ -715,6 +721,10 @@ export interface Agent {
    */
   tier_ids?: string[];
   /**
+   * Position selecting the tier table (M-423). Empty/undefined = legacy.
+   */
+  role?: string;
+  /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
    * `none|minimal|low|medium|high|xhigh|max|ultra`). Empty string means "no
@@ -942,6 +952,8 @@ export interface UpdateAgentRequest {
   use_tiers?: boolean;
   /** M-351: omitted = keep, empty = clear all. */
   tier_ids?: string[];
+  /** M-423: omitted = keep, empty = clear, non-empty = set. */
+  role?: string;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change

@@ -1503,6 +1503,11 @@ type commentAgentTrigger struct {
 	// is empty). Resolved once at trigger time so enqueue, merge, pending
 	// and planned paths all key the same tier slot.
 	TierID pgtype.UUID
+	// Requester is the triggering member's user id for the M-423 manual-only
+	// owner gate (invalid = unknown; manual-only fails closed). Member
+	// authors are their own requester; agent authors inherit the
+	// top-of-chain human originator when one exists.
+	Requester pgtype.UUID
 }
 
 type commentTriggerComputeOptions struct {
@@ -2692,16 +2697,36 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 	slog.Warn(msg, append(attrs, "error", err)...)
 }
 
+// triggerRequesterFor resolves the M-423 manual-only requester: member
+// authors are their own requester; agent authors inherit the top-of-chain
+// human originator when one exists, else invalid (manual-only fails closed —
+// an agent hop never borrows owner authority it cannot prove).
+func triggerRequesterFor(authorType, authorID, originatorUserID string) pgtype.UUID {
+	if authorType == "member" {
+		if id, err := util.ParseUUID(authorID); err == nil {
+			return id
+		}
+		return pgtype.UUID{}
+	}
+	if originatorUserID != "" {
+		if id, err := util.ParseUUID(originatorUserID); err == nil {
+			return id
+		}
+	}
+	return pgtype.UUID{}
+}
+
 // resolveExplicitTierID validates an `@agent#tier` name once (M-359) and
 // returns the tier UUID: the tier must exist in the issue's workspace, be
 // enabled, and — for a use_tiers agent — be among the agent's selections.
+// Manual-only tiers additionally require requester to be a workspace owner.
 // Anything else is ErrExplicitTierUnavailable (tier_unavailable, no fallback).
 // Empty name = plain `@agent`, invalid UUID, normal resolver.
-func (h *Handler) resolveExplicitTierID(ctx context.Context, issue db.Issue, agent db.Agent, tierName string) (pgtype.UUID, error) {
+func (h *Handler) resolveExplicitTierID(ctx context.Context, issue db.Issue, agent db.Agent, tierName string, requester pgtype.UUID) (pgtype.UUID, error) {
 	if tierName == "" {
 		return pgtype.UUID{}, nil
 	}
-	tier, err := h.TaskService.LookupExplicitTier(ctx, agent, issue.WorkspaceID, tierName)
+	tier, err := h.TaskService.LookupExplicitTierAs(ctx, agent, issue.WorkspaceID, tierName, requester)
 	if err != nil {
 		// LookupExplicitTier's unknown-tier sentinel IS ErrExplicitTierUnavailable
 		// (same value), so errors.Is maps it; anything else is infrastructure.
@@ -2719,8 +2744,9 @@ func (h *Handler) resolveExplicitTierID(ctx context.Context, issue db.Issue, age
 func (h *Handler) resolveTierTriggerOverride(ctx context.Context, issue db.Issue, trigger commentAgentTrigger) (service.TierTriggerOverride, error) {
 	// TierID was validated when the trigger resolved; reuse it directly.
 	// A full/offline tier parks at enqueue (tier_waiting_capacity), never
-	// falling back.
-	return service.TierTriggerOverride{TierID: trigger.TierID}, nil
+	// falling back. The trigger-time requester rides along so the enqueue
+	// owner gate re-checks the same human.
+	return service.TierTriggerOverride{TierID: trigger.TierID, Requester: trigger.Requester}, nil
 }
 
 // Split out of enqueueCommentAgentTriggers so the merge-not-drop path
@@ -3522,7 +3548,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		// the plain resolver.
 		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier {
 			tierName = tier
-			tid, verr := h.resolveExplicitTierID(ctx, issue, agent, tierName)
+			tid, verr := h.resolveExplicitTierID(ctx, issue, agent, tierName, triggerRequesterFor(authorType, authorID, opts.OriginatorUserID))
 			if verr != nil {
 				blockTarget("agent", m.ID, ReasonTierUnavailable)
 				continue
@@ -3556,8 +3582,8 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 		}
-		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending, TierName: tierName, TierID: tierID})
-	addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID), ExecTierID: uuidToString(tierID)})
+		add(commentAgentTrigger{Agent: agent, Source: commentTriggerSourceMentionAgent, Squad: squad, AlreadyPending: hasPending, TierName: tierName, TierID: tierID, Requester: triggerRequesterFor(authorType, authorID, opts.OriginatorUserID)})
+		addTarget(commentMentionTarget{TargetType: "agent", TargetID: m.ID, ExecAgentID: uuidToString(agentUUID), ExecTierID: uuidToString(tierID)})
 	}
 	return triggers, targets
 }

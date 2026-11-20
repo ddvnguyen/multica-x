@@ -67,6 +67,13 @@ export interface ModelTier {
   quality?: number;
   provider_slots: number;
   enabled: boolean;
+  /** Roles served (M-423). Empty = legacy/unconfigured. */
+  roles: string[];
+  /** Never auto-resolves; explicit picks need a workspace owner. */
+  manual_only: boolean;
+  /** Scheduling hint; the resolver ignores it. */
+  quota_kind: string;
+  is_free: boolean;
   /**
    * Provider-refusal cooldown deadline (M-352). Present only while a 429/quota
    * failure has the tier out of the resolver's idx order; the Settings row
@@ -91,6 +98,10 @@ export interface ModelTierInput {
   quality?: number;
   provider_slots?: number;
   enabled?: boolean;
+  roles?: string[];
+  manual_only?: boolean;
+  quota_kind?: string;
+  is_free?: boolean;
 }
 
 export interface Member {

@@ -57,6 +57,7 @@ type Agent struct {
 	AccountMode           string      `json:"account_mode"`
 	AccountID             pgtype.UUID `json:"account_id"`
 	UseTiers              bool        `json:"use_tiers"`
+	Role                  pgtype.Text `json:"role"`
 }
 
 type AgentApp struct {
@@ -285,6 +286,8 @@ type AgentTaskQueue struct {
 	TierID                    pgtype.UUID `json:"tier_id"`
 	TierParked                bool        `json:"tier_parked"`
 	TierExplicit              bool        `json:"tier_explicit"`
+	TierQualityFallback       bool        `json:"tier_quality_fallback"`
+	TierQualityUnverified     bool        `json:"tier_quality_unverified"`
 }
 
 type AgentTier struct {
@@ -1643,6 +1646,10 @@ type ModelTier struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
+	Roles         []string           `json:"roles"`
+	ManualOnly    bool               `json:"manual_only"`
+	QuotaKind     string             `json:"quota_kind"`
+	IsFree        bool               `json:"is_free"`
 }
 
 type NativeQuestionAnswer struct {

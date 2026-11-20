@@ -4791,6 +4791,12 @@ export const ModelTierSchema = z.object({
   quality: z.number().int().optional(),
   provider_slots: z.number().int().default(1),
   enabled: z.boolean().default(true),
+  // M-423: defaulted so older backends keep parsing; UI treats missing
+  // roles as unconfigured (legacy).
+  roles: z.array(z.string()).default([]),
+  manual_only: z.boolean().default(false),
+  quota_kind: z.string().default("none"),
+  is_free: z.boolean().default(true),
   // M-352: set only while a provider-refusal cooldown keeps the tier out of
   // the resolver's idx order.
   cooldown_until: z.string().optional(),
@@ -4809,6 +4815,10 @@ export const EMPTY_MODEL_TIER: ModelTier = {
   model: "",
   provider_slots: 1,
   enabled: true,
+  roles: [],
+  manual_only: false,
+  quota_kind: "none",
+  is_free: true,
   created_at: "",
   updated_at: "",
 };

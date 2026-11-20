@@ -25,10 +25,16 @@ export function TierBadge({
   tierId,
   explicit,
   parked,
+  fallback,
+  unverified,
 }: {
   tierId?: string;
   explicit?: boolean;
   parked?: boolean;
+  /** M-423: stamped tier missed the required quality floor. */
+  fallback?: boolean;
+  /** M-423: stamped tier has no measured quality. */
+  unverified?: boolean;
 }) {
   const { t } = useT("issues");
   const workspace = useCurrentWorkspace();
@@ -40,6 +46,11 @@ export function TierBadge({
   );
   if (!tierId) return null;
   const name = tiers.find((tier) => tier.id === tierId)?.name ?? tierId.slice(0, 8);
+  const qualityNote = fallback
+    ? ` · ${t(($) => $.execution_log.tier_fallback_badge)}`
+    : unverified
+      ? ` · ${t(($) => $.execution_log.tier_unverified_badge)}`
+      : "";
   const detail = parked
     ? t(($) => $.execution_log.tier_parked_detail, { name })
     : explicit
@@ -60,7 +71,7 @@ export function TierBadge({
           </Badge>
         }
       />
-      <TooltipContent>{detail}</TooltipContent>
+      <TooltipContent>{detail}{qualityNote}</TooltipContent>
     </Tooltip>
   );
 }

@@ -154,6 +154,7 @@ UPDATE agent SET
     mcp_config = COALESCE(sqlc.narg('mcp_config'), mcp_config),
     model = COALESCE(sqlc.narg('model'), model),
     use_tiers = COALESCE(sqlc.narg('use_tiers')::boolean, use_tiers),
+    role = COALESCE(sqlc.narg('role'), role),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
     service_tier = COALESCE(sqlc.narg('service_tier'), service_tier),
     conversation_starters = COALESCE(sqlc.narg('conversation_starters'), conversation_starters),
@@ -191,6 +192,14 @@ RETURNING *;
 -- set the column back to NULL, so the API layer routes "user picked Default"
 -- through this dedicated query.
 UPDATE agent SET thinking_level = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentRole :one
+-- M-423: explicit NULL-clear for agent.role (COALESCE-based UpdateAgent
+-- cannot restore NULL). The API layer routes "role cleared → legacy
+-- unfiltered" through this dedicated query.
+UPDATE agent SET role = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -398,6 +407,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
     model_override, thinking_level_override, service_tier_override, tier_id,
     tier_parked, tier_explicit,
+    tier_quality_fallback, tier_quality_unverified,
     workflow_step, fire_at, id
 )
 SELECT
@@ -439,6 +449,8 @@ SELECT
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_unverified')::boolean, FALSE),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     COALESCE(sqlc.narg(workflow_step)::text, (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id))),
     sqlc.narg(fire_at),
@@ -587,6 +599,7 @@ INSERT INTO agent_task_queue (
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at,
     model_override, thinking_level_override, service_tier_override, tier_id,
     tier_parked, tier_explicit,
+    tier_quality_fallback, tier_quality_unverified,
     workflow_step, id
 )
 SELECT
@@ -618,6 +631,8 @@ SELECT
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_unverified')::boolean, FALSE),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
     (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id)),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
@@ -669,6 +684,7 @@ INSERT INTO agent_task_queue (
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
     model_override, thinking_level_override, service_tier_override, tier_id,
     tier_parked, tier_explicit,
+    tier_quality_fallback, tier_quality_unverified,
     id
 )
 SELECT
@@ -686,6 +702,8 @@ SELECT
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_unverified')::boolean, FALSE),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 FROM enqueue_agent
 RETURNING *;
@@ -742,7 +760,8 @@ INSERT INTO agent_task_queue (
     chat_input_task_id, fire_at,
     channel_context_revision, handoff_note, workflow_step,
     model_override, thinking_level_override, service_tier_override, tier_id,
-    tier_parked, tier_explicit, id
+    tier_parked, tier_explicit,
+    tier_quality_fallback, tier_quality_unverified, id
 )
 SELECT
     p.agent_id, COALESCE(a.runtime_id, p.runtime_id), p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -774,6 +793,7 @@ SELECT
     -- the inherited runtime is stamped, so no capacity wait applies).
     p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id,
     FALSE, COALESCE(p.tier_explicit, FALSE),
+    COALESCE(p.tier_quality_fallback, FALSE), COALESCE(p.tier_quality_unverified, FALSE),
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p
@@ -3238,6 +3258,8 @@ SET runtime_id = @runtime_id,
     thinking_level_override = @thinking_level_override,
     service_tier_override = @service_tier_override,
     tier_id = @tier_id,
+    tier_quality_fallback = @tier_quality_fallback,
+    tier_quality_unverified = @tier_quality_unverified,
     tier_parked = FALSE
 WHERE id = @id
   AND status = 'queued'

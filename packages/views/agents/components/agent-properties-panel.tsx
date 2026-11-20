@@ -131,10 +131,19 @@ export function AgentPropertiesPanel({
           </Value>
         </ObjectProperty>
 
+        <ObjectProperty label={t(($) => $.inspector.prop_role)}>
+          <Value>
+            <span className="truncate">
+              {agent.role || t(($) => $.inspector.role_none)}
+            </span>
+          </Value>
+        </ObjectProperty>
+
         {agent.use_tiers ? (
           <ObjectProperty label={t(($) => $.inspector.prop_tiers)}>
             <TierPicker
               value={agent.tier_ids ?? []}
+              agentRole={agent.role ?? ""}
               canEdit={canEdit}
               onChange={(tier_ids) => update({ tier_ids })}
             />

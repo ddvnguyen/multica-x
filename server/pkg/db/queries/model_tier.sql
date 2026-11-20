@@ -1,14 +1,17 @@
 -- Workspace model tiers (M-350). No FKs per repo rule: related rows are
 -- validated and cleaned up in application code.
 
+-- M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
+-- rows land with roles '{}', manual_only false, quota_kind 'none'.
 -- name: CreateModelTier :one
 INSERT INTO model_tier (
     workspace_id, name, idx, runtime_id, provider, model,
-    thinking_level, service_tier, cost, quality, provider_slots, enabled
+    thinking_level, service_tier, cost, quality, provider_slots, enabled,
+    roles, manual_only, quota_kind, is_free
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    $13, $14, $15, $16
 ) RETURNING *;
-
 -- name: GetModelTierInWorkspace :one
 SELECT * FROM model_tier
 WHERE id = $1 AND workspace_id = $2;
@@ -37,6 +40,10 @@ SET name = $2,
     quality = $10,
     provider_slots = $11,
     enabled = $12,
+    roles = $13,
+    manual_only = $14,
+    quota_kind = $15,
+    is_free = $16,
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -66,6 +73,19 @@ WHERE t.workspace_id = @workspace_id AND t.id = o.id;
 SELECT t.* FROM model_tier t
 JOIN agent_tier at ON at.tier_id = t.id
 WHERE at.agent_id = $1
+ORDER BY t.idx ASC, t.created_at ASC;
+
+-- M-423: role-filtered selection for the resolver. One agent role, one pass:
+-- an agent with a role set matches only tiers carrying that role; a legacy
+-- agent with no role (NULL/empty) keeps its existing selections unfiltered.
+-- A role-set agent NEVER matches a tier with empty roles (unconfigured rows
+-- stay invisible until an admin assigns them a role).
+-- name: ListAgentTiersForRole :many
+SELECT t.* FROM model_tier t
+JOIN agent_tier at ON at.tier_id = t.id
+WHERE at.agent_id = sqlc.arg('agent_id')::uuid
+  AND (sqlc.arg('role')::text IS NULL OR sqlc.arg('role')::text = ''
+    OR sqlc.arg('role')::text = ANY (t.roles))
 ORDER BY t.idx ASC, t.created_at ASC;
 
 -- name: ListAgentTierIDs :many

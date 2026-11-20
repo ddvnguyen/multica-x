@@ -111,6 +111,14 @@ function TierRow({
           {!tier.enabled && (
             <Badge variant="secondary">{t(($) => $.tiers.disabled_badge)}</Badge>
           )}
+          {tier.manual_only && (
+            <Badge variant="outline">{t(($) => $.tiers.manual_badge)}</Badge>
+          )}
+          {(tier.roles ?? []).length === 0 && (
+            <Badge variant="secondary">
+              {t(($) => $.tiers.unconfigured_badge)}
+            </Badge>
+          )}
           {coolingUntil && (
             <Badge
               variant="outline"
@@ -126,8 +134,10 @@ function TierRow({
           {tier.runtime_id
             ? ""
             : ` · ${t(($) => $.tiers.no_runtime_suffix)}`}
-          {tier.cost ? ` · ${tier.cost}` : ""}
           {typeof tier.quality === "number" ? ` · Q${tier.quality}` : ""}
+          {(tier.roles ?? []).length > 0
+            ? ` · ${(tier.roles ?? []).join(", ")}`
+            : ""}
           {` · ×${tier.provider_slots}`}
         </span>
       </div>
@@ -268,6 +278,7 @@ export function TiersTab() {
         <TierEditorDialog
           wsId={wsId}
           tier={editingTier}
+          isOwner={role === "owner"}
           onClose={() => {
             setEditorOpen(false);
             setEditingTier(null);
@@ -342,6 +353,7 @@ export interface TierUpdateMutation {
 function TierEditorDialog({
   wsId,
   tier,
+  isOwner,
   onClose,
   onSaved,
   createTier,
@@ -349,6 +361,7 @@ function TierEditorDialog({
 }: {
   wsId: string;
   tier: ModelTier | null;
+  isOwner: boolean;
   onClose: () => void;
   onSaved: () => void;
   createTier: TierCreateMutation;
@@ -372,6 +385,10 @@ function TierEditorDialog({
     String(tier?.provider_slots ?? 1),
   );
   const [enabled, setEnabled] = useState(tier?.enabled ?? true);
+  const [roles, setRoles] = useState<string[]>(tier?.roles ?? []);
+  const [manualOnly, setManualOnly] = useState(tier?.manual_only ?? false);
+  const [quotaKind, setQuotaKind] = useState(tier?.quota_kind ?? "none");
+  const [isFree, setIsFree] = useState(tier?.is_free ?? true);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -444,6 +461,10 @@ function TierEditorDialog({
         : {}),
       provider_slots: Number(providerSlots),
       enabled,
+      roles,
+      ...(isOwner ? { manual_only: manualOnly } : {}),
+      quota_kind: quotaKind,
+      is_free: isFree,
     };
     try {
       if (tier) {
@@ -793,6 +814,84 @@ function TierEditorDialog({
                   {fieldErrors.provider_slots}
                 </p>
               )}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>{t(($) => $.tiers.roles_label)}</Label>
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.tiers.roles_hint)}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  "architect",
+                  "leader",
+                  "reviewer",
+                  "orchestrator",
+                  "engineer",
+                  "planning",
+                ] as const
+              ).map((r) => (
+                <label key={r} className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={roles.includes(r)}
+                    onChange={(e) => {
+                      setRoles(
+                        e.target.checked
+                          ? [...roles, r]
+                          : roles.filter((x) => x !== r),
+                      );
+                    }}
+                  />
+                  {r}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-quota">
+                {t(($) => $.tiers.quota_label)}
+              </Label>
+              <select
+                id="tier-quota"
+                value={quotaKind}
+                onChange={(e) => setQuotaKind(e.target.value)}
+                className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+              >
+                {["daily", "monthly", "five_hour_weekly", "none"].map((q) => (
+                  <option key={q} value={q}>
+                    {q}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-free">
+                {t(($) => $.tiers.free_label)}
+              </Label>
+              <Switch
+                id="tier-free"
+                checked={isFree}
+                onCheckedChange={setIsFree}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-manual">
+                {t(($) => $.tiers.manual_label)}
+              </Label>
+              <Switch
+                id="tier-manual"
+                checked={manualOnly}
+                disabled={!isOwner}
+                title={
+                  isOwner ? undefined : t(($) => $.tiers.manual_hint)
+                }
+                onCheckedChange={setManualOnly}
+              />
             </div>
           </div>
 

@@ -959,7 +959,11 @@
     "steer_promote": "Steer now",
     "steer_promoted": "Steered into the running turn",
     "steer_promote_failed": "Could not steer this message",
-    "sparkline_now": "Now"
+    "sparkline_now": "Now",
+    "tier_fallback_badge": "below floor",
+    "tier_fallback_detail": "Tier {{name}} missed the required quality floor — the best available tier below it ran instead.",
+    "tier_unverified_badge": "unverified",
+    "tier_unverified_detail": "Tier {{name}} has no measured quality yet — it ran on index order, not on a met floor."
   },
   "runs_timeline": {
     "title": "Runs",

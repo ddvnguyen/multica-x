@@ -370,6 +370,16 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 				if err != nil {
 					return fmt.Errorf("load issue for promotion: %w", err)
 				}
+				// M-423: planning sets difficulty. On approve, ensure the two
+				// number definitions exist (active, workspace-scoped) and
+				// default missing/invalid issue values to 1, in the same
+				// transaction as the verdict — so every approved plan leaves
+				// the issue routable by the quality floor. Human-set 2..5
+				// values are never overwritten.
+				if derr := ensureDifficultyPropertiesTx(ctx, qtx, workspaceID, approved.IssueID); derr != nil {
+					slog.Warn("plan approve: difficulty defaults failed",
+						"plan_id", util.UUIDToString(planID), "error", derr)
+				}
 				updated, err := qtx.UpdateIssue(ctx, db.UpdateIssueParams{
 					ID:               approved.IssueID,
 					Description:      pgtype.Text{String: body, Valid: true},

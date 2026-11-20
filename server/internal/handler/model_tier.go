@@ -63,6 +63,15 @@ type ModelTierResponse struct {
 	Quality       *int    `json:"quality,omitempty"`
 	ProviderSlots int     `json:"provider_slots"`
 	Enabled       bool    `json:"enabled"`
+	// Roles served by this tier (M-423). Empty = legacy/unconfigured: matches
+	// only agents with no role set.
+	Roles []string `json:"roles"`
+	// ManualOnly tiers never auto-resolve; explicit picks need a workspace
+	// owner (M-423).
+	ManualOnly bool `json:"manual_only"`
+	// QuotaKind is a display/scheduling hint (M-423); the resolver ignores it.
+	QuotaKind string `json:"quota_kind"`
+	IsFree    bool   `json:"is_free"`
 	// CooldownUntil is when a provider-refusal cooldown expires (M-352). Omitted
 	// when the tier is not cooling; the resolver skips a tier while it is set
 	// and in the future, and the Settings row renders it as "until HH:MM".
@@ -81,6 +90,10 @@ func modelTierToResponse(t db.ModelTier) ModelTierResponse {
 		Model:         t.Model,
 		ProviderSlots: int(t.ProviderSlots),
 		Enabled:       t.Enabled,
+		Roles:         append([]string{}, t.Roles...),
+		ManualOnly:    t.ManualOnly,
+		QuotaKind:     t.QuotaKind,
+		IsFree:        t.IsFree,
 		CreatedAt:     timestampToString(t.CreatedAt),
 		UpdatedAt:     timestampToString(t.UpdatedAt),
 	}
@@ -125,21 +138,33 @@ type modelTierInput struct {
 	Quality       *int    `json:"quality"`
 	ProviderSlots *int    `json:"provider_slots"`
 	Enabled       *bool   `json:"enabled"`
+	// Roles is a plain slice with a separate presence flag: an explicit []
+	// clears the set (unconfigured), omitted keeps the value. "null" also
+	// keeps (indistinguishable from omitted by choice, same as cost's "").
+	Roles      []string `json:"roles"`
+	RolesSet   bool     `json:"-"`
+	ManualOnly *bool    `json:"manual_only"`
+	QuotaKind  *string  `json:"quota_kind"`
+	IsFree     *bool    `json:"is_free"`
 }
 
 func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		Name          *string `json:"name"`
-		Idx           *int    `json:"idx"`
-		RuntimeID     *string `json:"runtime_id"`
-		Provider      *string `json:"provider"`
-		Model         *string `json:"model"`
-		ThinkingLevel *string `json:"thinking_level"`
-		ServiceTier   *string `json:"service_tier"`
-		Cost          any     `json:"cost"`
-		Quality       *int    `json:"quality"`
-		ProviderSlots *int    `json:"provider_slots"`
-		Enabled       *bool   `json:"enabled"`
+		Name          *string  `json:"name"`
+		Idx           *int     `json:"idx"`
+		RuntimeID     *string  `json:"runtime_id"`
+		Provider      *string  `json:"provider"`
+		Model         *string  `json:"model"`
+		ThinkingLevel *string  `json:"thinking_level"`
+		ServiceTier   *string  `json:"service_tier"`
+		Cost          any      `json:"cost"`
+		Quality       *int     `json:"quality"`
+		ProviderSlots *int     `json:"provider_slots"`
+		Enabled       *bool    `json:"enabled"`
+		Roles         []string `json:"roles"`
+		ManualOnly    *bool    `json:"manual_only"`
+		QuotaKind     *string  `json:"quota_kind"`
+		IsFree        *bool    `json:"is_free"`
 	}
 	var a alias
 	if err := json.Unmarshal(data, &a); err != nil {
@@ -149,6 +174,16 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	in.Provider, in.Model = a.Provider, a.Model
 	in.ThinkingLevel, in.ServiceTier = a.ThinkingLevel, a.ServiceTier
 	in.Quality, in.ProviderSlots, in.Enabled = a.Quality, a.ProviderSlots, a.Enabled
+	in.ManualOnly, in.QuotaKind, in.IsFree = a.ManualOnly, a.QuotaKind, a.IsFree
+	// Presence probe: roles present (even []) vs omitted/null.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if raw, ok := probe["roles"]; ok && string(raw) != "null" {
+		in.RolesSet = true
+		in.Roles = a.Roles
+	}
 	if a.Cost == nil {
 		return nil
 	}
@@ -218,6 +253,10 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 		params.Quality = cur.Quality
 		params.ProviderSlots = cur.ProviderSlots
 		params.Enabled = cur.Enabled
+		params.Roles = cur.Roles
+		params.ManualOnly = cur.ManualOnly
+		params.QuotaKind = cur.QuotaKind
+		params.IsFree = cur.IsFree
 	}
 
 	name := params.Name
@@ -311,7 +350,63 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	if in.Enabled != nil {
 		params.Enabled = *in.Enabled
 	}
+	if in.RolesSet {
+		for _, r := range in.Roles {
+			if !validTierRoleName(r) {
+				return params, nil, errors.New("roles must be a subset of architect, leader, reviewer, orchestrator, engineer, planning")
+			}
+		}
+		params.Roles = append([]string{}, in.Roles...)
+	} else if forCreate {
+		params.Roles = []string{}
+	}
+	if in.ManualOnly != nil {
+		params.ManualOnly = *in.ManualOnly
+	}
+	if in.QuotaKind != nil {
+		q := strings.TrimSpace(*in.QuotaKind)
+		switch q {
+		case "daily", "monthly", "five_hour_weekly", "none":
+			params.QuotaKind = q
+		default:
+			return params, nil, errors.New("quota_kind must be daily, monthly, five_hour_weekly or none")
+		}
+	} else if forCreate {
+		params.QuotaKind = "none"
+	}
+	if in.IsFree != nil {
+		params.IsFree = *in.IsFree
+	}
 	return params, runtimeID, nil
+}
+
+// validTierRoleName mirrors the 735 CHECK constraint vocabulary. Centralized
+// so handler validation and the resolver agree; the DB constraint is the
+// final backstop.
+func validTierRoleName(r string) bool {
+	switch r {
+	case "architect", "leader", "reviewer", "orchestrator", "engineer", "planning":
+		return true
+	}
+	return false
+}
+
+// tierManualProtectionWeakened reports whether an update drops manual-only
+// protection that a non-owner must not touch: clearing manual_only, or
+// narrowing roles while manual-only stays set (roles gate who the tier can
+// serve, so shrinking them on a manual tier reshapes the owner-only lane).
+// Disabling the tier is NOT weakening (it removes it from every path).
+func tierManualProtectionWeakened(cur db.ModelTier, nextManualOnly bool, rolesSet bool, nextRoles []string) bool {
+	if !cur.ManualOnly {
+		return false
+	}
+	if !nextManualOnly {
+		return true
+	}
+	if rolesSet && len(nextRoles) < len(cur.Roles) {
+		return true
+	}
+	return false
 }
 
 // modelTierRuntimeInWorkspace reports whether runtimeID names a runtime in
@@ -391,9 +486,14 @@ func (h *Handler) CreateModelTier(w http.ResponseWriter, r *http.Request) {
 
 // UpdateModelTier edits a tier (owner/admin). Omitted fields keep their value;
 // an explicit empty runtime_id unbinds the runtime.
+// M-423 anti-clear: a non-owner (admin) edit that would drop manual-only
+// protection — clearing manual_only or narrowing roles away while manual-only
+// stays set — is rejected with 403. Hiding the control in the UI is not
+// sufficient; the server enforces it.
 func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
-	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+	caller, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	if !ok {
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
@@ -425,6 +525,10 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if caller.Role != "owner" && tierManualProtectionWeakened(existing, params.ManualOnly, in.RolesSet, in.Roles) {
+		writeError(w, http.StatusForbidden, "only the workspace owner can lift manual-only protection")
+		return
+	}
 	if runtimeID != nil && !h.modelTierRuntimeInWorkspace(r, wsUUID, *runtimeID) {
 		writeError(w, http.StatusBadRequest, "runtime is not in this workspace")
 		return
@@ -442,6 +546,10 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 		Quality:       params.Quality,
 		ProviderSlots: params.ProviderSlots,
 		Enabled:       params.Enabled,
+		Roles:         params.Roles,
+		ManualOnly:    params.ManualOnly,
+		QuotaKind:     params.QuotaKind,
+		IsFree:        params.IsFree,
 	})
 	if err != nil {
 		if isTierNameConflict(err) {
@@ -457,7 +565,8 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 // DeleteModelTier removes a tier (owner/admin).
 func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
-	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+	caller, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	if !ok {
 		return
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
@@ -468,14 +577,21 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{
+	existing, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{
 		ID: tierUUID, WorkspaceID: wsUUID,
-	}); err != nil {
+	})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "tier not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	// M-423: deleting a manual-only tier drops owner-only protection — owner
+	// only (admin gets 403).
+	if existing.ManualOnly && caller.Role != "owner" {
+		writeError(w, http.StatusForbidden, "only the workspace owner can delete a manual-only tier")
 		return
 	}
 	// M-351: a deleted tier stays selected on its agents as "unavailable"

@@ -121,6 +121,10 @@ type AgentResponse struct {
 	// tier still selected shows as "unavailable" in the UI — it is never
 	// silently dropped server-side.
 	TierIDs []string `json:"tier_ids,omitempty"`
+	// Role is the agent's position selecting its tier table (M-423):
+	// architect | leader | reviewer | orchestrator | engineer | planning.
+	// Empty = legacy: no role filtering until set in Agent settings.
+	Role string `json:"role,omitempty"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -242,6 +246,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
 		Model:                    a.Model.String,
 		UseTiers:                 a.UseTiers,
+		Role:                     a.Role.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
 		AccountMode:              a.AccountMode,
@@ -1968,6 +1973,10 @@ type UpdateAgentRequest struct {
 	// (omitted = keep, empty = clear all). Every id must name an existing
 	// tier in the agent's workspace.
 	TierIDs *[]string `json:"tier_ids"`
+	// Role is the agent's position selecting its tier table (M-423). Same
+	// tri-state as ThinkingLevel: omitted preserves, empty clears (legacy
+	// unfiltered), non-empty sets (validated against the role vocabulary).
+	Role *string `json:"role"`
 	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
 	// omitted preserves; present sets account_mode (+ account_id when specific).
 	AccountMode *string `json:"account_mode"`
@@ -2412,6 +2421,22 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.UseTiers != nil {
 		params.UseTiers = pgtype.Bool{Bool: *req.UseTiers, Valid: true}
 	}
+	// M-423: role tri-state — omitted preserves (COALESCE keeps sticky),
+	// empty clears to legacy unfiltered (ClearAgentRole post-update),
+	// non-empty sets after vocabulary validation.
+	shouldClearRole := false
+	if req.Role != nil {
+		role := strings.TrimSpace(*req.Role)
+		if role == "" {
+			shouldClearRole = true
+		} else {
+			if !validTierRoleName(role) {
+				writeError(w, http.StatusBadRequest, "role must be architect, leader, reviewer, orchestrator, engineer or planning")
+				return
+			}
+			params.Role = pgtype.Text{String: role, Valid: true}
+		}
+	}
 	if req.TierIDs != nil {
 		validatedTierIDs = make([]pgtype.UUID, 0, len(*req.TierIDs))
 		seenTiers := map[string]struct{}{}
@@ -2844,6 +2869,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent service_tier failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear service_tier")
+			return
+		}
+	}
+	if shouldClearRole {
+		updated, err = h.Queries.ClearAgentRole(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent role failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear role")
 			return
 		}
 	}

@@ -1161,6 +1161,7 @@ INSERT INTO agent_task_queue (
     fire_at, channel_context_revision,
     model_override, thinking_level_override, service_tier_override, tier_id,
     tier_parked, tier_explicit,
+    tier_quality_fallback, tier_quality_unverified,
     id, context
 )
 SELECT
@@ -1183,6 +1184,8 @@ SELECT
     sqlc.narg('tier_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
+    COALESCE(sqlc.narg('tier_quality_unverified')::boolean, FALSE),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
     sqlc.narg('context')::jsonb
 FROM enqueue_agent
