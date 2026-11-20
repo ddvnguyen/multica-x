@@ -95,7 +95,12 @@ export interface ModelTierInput {
   service_tier?: string;
   /** Number or decimal string; omitted = keep. */
   cost?: number | string;
-  quality?: number;
+  /**
+   * 0–100; explicit `null` clears to unknown on update. Omitted keeps the
+   * value on update (NULL by default on create). 0 is a legitimate measured
+   * floor, never unknown.
+   */
+  quality?: number | null;
   provider_slots?: number;
   enabled?: boolean;
   roles?: string[];

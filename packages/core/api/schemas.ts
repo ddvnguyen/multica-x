@@ -4788,7 +4788,9 @@ export const ModelTierSchema = z.object({
   thinking_level: z.string().optional(),
   service_tier: z.string().optional(),
   cost: z.string().optional(),
-  quality: z.number().int().optional(),
+  // M-446: explicit null reads back as unknown (undefined here); a number
+  // (including 0) is a measured value. Omitted stays unknown.
+  quality: z.number().int().nullish(),
   provider_slots: z.number().int().default(1),
   enabled: z.boolean().default(true),
   // M-423: defaulted so older backends keep parsing; UI treats missing

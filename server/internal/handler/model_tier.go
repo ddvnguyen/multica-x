@@ -137,7 +137,10 @@ type modelTierInput struct {
 	Cost          *string `json:"cost"`
 	Quality       *int    `json:"quality"`
 	ProviderSlots *int    `json:"provider_slots"`
-	Enabled       *bool   `json:"enabled"`
+	// QualitySet tracks presence: omitted keeps the value, an explicit
+	// null clears it to unknown (NULL), a number sets it (0 is legitimate).
+	QualitySet bool  `json:"-"`
+	Enabled    *bool `json:"enabled"`
 	// Roles is a plain slice with a separate presence flag: an explicit []
 	// clears the set (unconfigured), omitted keeps the value. "null" also
 	// keeps (indistinguishable from omitted by choice, same as cost's "").
@@ -175,10 +178,21 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	in.ThinkingLevel, in.ServiceTier = a.ThinkingLevel, a.ServiceTier
 	in.Quality, in.ProviderSlots, in.Enabled = a.Quality, a.ProviderSlots, a.Enabled
 	in.ManualOnly, in.QuotaKind, in.IsFree = a.ManualOnly, a.QuotaKind, a.IsFree
-	// Presence probe: roles present (even []) vs omitted/null.
+	// Presence probe: roles present (even []) vs omitted/null; quality present
+	// (number or explicit null) vs omitted. Explicit null clears quality to
+	// unknown; omitted keeps. A number sets, including 0 which is a
+	// legitimate measured floor, not unknown.
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
+	}
+	if raw, ok := probe["quality"]; ok {
+		in.QualitySet = true
+		if string(raw) == "null" {
+			in.Quality = nil
+		} else {
+			in.Quality = a.Quality
+		}
 	}
 	if raw, ok := probe["roles"]; ok && string(raw) != "null" {
 		in.RolesSet = true
@@ -333,11 +347,22 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 		}
 		params.Cost = cost
 	}
-	if in.Quality != nil {
-		if *in.Quality < 0 || *in.Quality > 100 {
-			return params, nil, errors.New("quality must be between 0 and 100")
+	// QualitySet is authoritative on the JSON path (explicit null clears to
+	// unknown, omitted keeps). Direct-constructed inputs (tests, non-JSON
+	// callers) carry no flag, so a non-nil pointer also counts as set; only
+	// an explicit JSON null reaches the clear branch.
+	if in.QualitySet || in.Quality != nil {
+		if in.Quality == nil {
+			// Explicit null: clear to unknown (NULL). Omitted never reaches
+			// here (QualitySet false), so keep-semantics are preserved, and
+			// 0 still sets a legitimate measured floor via the branch below.
+			params.Quality = pgtype.Int4{}
+		} else {
+			if *in.Quality < 0 || *in.Quality > 100 {
+				return params, nil, errors.New("quality must be between 0 and 100")
+			}
+			params.Quality = pgtype.Int4{Int32: int32(*in.Quality), Valid: true}
 		}
-		params.Quality = pgtype.Int4{Int32: int32(*in.Quality), Valid: true}
 	}
 	if in.ProviderSlots != nil {
 		if *in.ProviderSlots < 1 || *in.ProviderSlots > 1000 {

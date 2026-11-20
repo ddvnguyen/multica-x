@@ -151,6 +151,33 @@ describe("TiersTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     expect(await screen.findByTestId("tier-editor")).toBeInTheDocument();
   });
+  it("sends an explicit null only when clearing quality", async () => {
+    mockUpdate.mockResolvedValue({ id: "tier-1" });
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0, quality: 68 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    let editor = await screen.findByTestId("tier-editor");
+    const qualityInput = editor.querySelector(
+      "#tier-quality",
+    ) as HTMLInputElement;
+    expect(qualityInput.value).toBe("68");
+    // Blank-without-checkbox omits (keeps the stored value).
+    fireEvent.change(qualityInput, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalled();
+    });
+    expect(mockUpdate.mock.calls[0]![0]).not.toHaveProperty("quality");
+    // The save closed the dialog: reopen, then checked clear sends null.
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    editor = await screen.findByTestId("tier-editor");
+    fireEvent.click(screen.getByLabelText(/clear to unknown/i));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledTimes(2);
+    });
+    expect(mockUpdate.mock.calls[1]![0]).toHaveProperty("quality", null);
+  });
 
   it("rejects a non-slug name before submitting", async () => {
     render(<TiersTab />, { wrapper: Wrapper });
