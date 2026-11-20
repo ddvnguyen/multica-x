@@ -2173,6 +2173,7 @@
     "cost_invalid": "Cost must be a number.",
     "quality_label": "Quality (0–100)",
     "quality_invalid": "Quality must be a whole number from 0 to 100.",
+    "quality_clear": "Clear to unknown",
     "slots_label": "Provider slots",
     "provider_slots_invalid": "Provider slots must be a whole number of 1 or more.",
     "enabled_label": "Enabled",

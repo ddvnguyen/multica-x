@@ -381,6 +381,11 @@ function TierEditorDialog({
   const [quality, setQuality] = useState(
     tier?.quality !== undefined ? String(tier.quality) : "",
   );
+  // M-446: explicit clear-to-unknown. Blank-on-edit is NOT a clear (it keeps
+  // the value, same as the API's omitted semantics) — the admin must check
+  // this to send quality: null. Only meaningful when editing an existing
+  // measured value; hidden on create.
+  const [clearQuality, setClearQuality] = useState(false);
   const [providerSlots, setProviderSlots] = useState(
     String(tier?.provider_slots ?? 1),
   );
@@ -437,7 +442,8 @@ function TierEditorDialog({
       nextErrors.provider_slots = t(
         ($) => $.tiers.provider_slots_invalid,
       );
-    if (quality.trim() !== "") {
+    // M-446: clearing skips the numeric check (the input is disabled then).
+    if (!clearQuality && quality.trim() !== "") {
       const q = Number(quality);
       if (!Number.isInteger(q) || q < 0 || q > 100)
         nextErrors.quality = t(($) => $.tiers.quality_invalid);
@@ -456,9 +462,13 @@ function TierEditorDialog({
         : {}),
       ...(serviceTier.trim() ? { service_tier: serviceTier.trim() } : {}),
       ...(cost.trim() !== "" ? { cost: cost.trim() } : {}),
-      ...(quality.trim() !== ""
-        ? { quality: Number(quality) }
-        : {}),
+      // M-446: checked clear sends an explicit null (unknown). Unchecked
+      // blank omits (keeps the stored value); only the checkbox clears.
+      ...(clearQuality && tier
+        ? { quality: null }
+        : quality.trim() !== ""
+          ? { quality: Number(quality) }
+          : {}),
       provider_slots: Number(providerSlots),
       enabled,
       roles,
@@ -791,10 +801,25 @@ function TierEditorDialog({
               <Input
                 id="tier-quality"
                 inputMode="numeric"
-                value={quality}
+                value={clearQuality ? "" : quality}
                 onChange={(e) => setQuality(e.target.value)}
                 placeholder="0–100"
+                disabled={clearQuality}
               />
+              {tier && typeof tier.quality === "number" && (
+                <label
+                  htmlFor="tier-quality-clear"
+                  className="flex items-center gap-2 text-caption text-muted-foreground"
+                >
+                  <input
+                    id="tier-quality-clear"
+                    type="checkbox"
+                    checked={clearQuality}
+                    onChange={(e) => setClearQuality(e.target.checked)}
+                  />
+                  {t(($) => $.tiers.quality_clear)}
+                </label>
+              )}
               {fieldErrors.quality && (
                 <p className="text-caption text-destructive">
                   {fieldErrors.quality}

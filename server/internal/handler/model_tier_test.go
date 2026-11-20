@@ -297,6 +297,47 @@ func TestModelTierCRUDAndAuthz(t *testing.T) {
 	}
 }
 
+// TestModelTierQualityClearToUnknown pins the M-446 gap: an explicit JSON
+// null must clear quality back to NULL (unknown) without touching omission
+// semantics, and a legitimate 0 must survive as a measured value.
+func TestModelTierQualityClearToUnknown(t *testing.T) {
+	newTierTestEnv(t)
+	put := func(tierID string, body map[string]any) ModelTierResponse {
+		t.Helper()
+		var out ModelTierResponse
+		testutil.Call(t, testHandler.UpdateModelTier, withURLParams(
+			newRequest(http.MethodPut, "/x", body),
+			"id", testWorkspaceID, "tierId", tierID)).
+			Want(http.StatusOK).JSON(&out)
+		return out
+	}
+	tier := mustCreateTier(t, map[string]any{"name": "qclear", "provider": "p", "model": "m", "quality": 68})
+	if tier.Quality == nil || *tier.Quality != 68 {
+		t.Fatalf("created quality = %+v, want 68", tier.Quality)
+	}
+	// Explicit null clears to unknown (field omitted on the wire).
+	cleared := put(tier.ID, map[string]any{"quality": nil})
+	if cleared.Quality != nil {
+		t.Fatalf("cleared quality = %+v, want nil", cleared.Quality)
+	}
+	if got := listTiersAs(t, testUserID); len(got) != 1 || got[0].Quality != nil {
+		t.Fatalf("listed after clear = %+v, want unknown", got)
+	}
+	// Omission keeps the (now unknown) value: set 0, then omit.
+	zeroed := put(tier.ID, map[string]any{"quality": 0})
+	if zeroed.Quality == nil || *zeroed.Quality != 0 {
+		t.Fatalf("zeroed quality = %+v, want 0", zeroed.Quality)
+	}
+	kept := put(tier.ID, map[string]any{"enabled": true})
+	if kept.Quality == nil || *kept.Quality != 0 {
+		t.Fatalf("omitted quality = %+v, want keep 0", kept.Quality)
+	}
+	// Create with explicit null lands unknown, not 0.
+	fresh := mustCreateTier(t, map[string]any{"name": "qfresh", "provider": "p", "model": "m", "quality": nil})
+	if fresh.Quality != nil {
+		t.Fatalf("created-with-null quality = %+v, want nil", fresh.Quality)
+	}
+}
 func TestModelTierRuntimeScoping(t *testing.T) {
 	foreignWorkspaceID, _ := newTierTestEnv(t)
 	ctx := context.Background()
