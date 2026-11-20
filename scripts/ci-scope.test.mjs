@@ -108,11 +108,14 @@ test("push publishes both product artifacts from the frontend-build job", () => 
     const block = build.slice(build.indexOf(`- name: Upload ${name} artifact`));
     assert.match(block, /^        if: github\.event_name != 'pull_request'$/m);
   }
-  // Order: web-dist uploads BEFORE the MMX rebuild replaces the .next tree,
-  // and the default tree is verified brand-clean before upload.
+  // Order: web-dist uploads BEFORE the MMX staging replaces the .next tree,
+  // and the default tree is verified brand-clean before upload. The staging
+  // runs the shared script (also covered by its own regression test), so the
+  // push-only path is tested, not duplicated.
   const webDistAt = build.indexOf("- name: Upload web-dist artifact");
-  const mmxBuildAt = build.indexOf("- name: Build MMX PWA");
-  assert.ok(webDistAt !== -1 && mmxBuildAt !== -1 && webDistAt < mmxBuildAt);
+  const mmxStageAt = build.indexOf("bash scripts/build-mmx-pwa-artifact.sh");
+  assert.ok(webDistAt !== -1 && mmxStageAt !== -1 && webDistAt < mmxStageAt);
+  assert.match(build, /MMX_PWA_SHA="\$\{\{ github\.sha \}\}"/);
   assert.match(build, /Verify default brand before upload/);
 });
 

@@ -558,29 +558,13 @@ jobs:
       # the default-brand web-dist artifact above can never serve it. Build
       # it from the same tree and publish it beside web-dist; the lane
       # autodeploy installs it to mmx-pwa/releases/$SHA with no rebuild.
-      - name: Build MMX PWA
+      - name: Build and stage MMX PWA artifact
         if: github.event_name != 'pull_request'
         # MMX_PWA is in turbo.json globalEnv, so this cannot replay a cached
         # default-brand build. NEXT_PUBLIC_APP_VERSION stamps the SW cache
-        # with the commit the artifact is named for.
-        run: MMX_PWA=1 NEXT_PUBLIC_APP_VERSION="${{ github.sha }}" pnpm --filter @multica/web exec next build
-
-      - name: Stage MMX PWA artifact
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          STAND=apps/web/.next/standalone/apps/web
-          mkdir -p "$STAND/.next"
-          cp -a apps/web/public "$STAND/public"
-          cp -a apps/web/.next/static "$STAND/.next/static"
-          if grep -q __MMX_PWA_VERSION__ "$STAND/public/sw.js"; then
-            sed -i "s/__MMX_PWA_VERSION__/${{ github.sha }}/g" "$STAND/public/sw.js"
-          else
-            echo "sw.js has no version placeholder; refusing to ship an unversioned service worker" >&2
-            exit 1
-          fi
-          grep -rq 'mmx-install' "$STAND/.next/" \
-            || { echo "MMX brand marker missing; the artifact is not the MMX build" >&2; exit 1; }
+        # with the commit the artifact is named for. The script is shared
+        # with the regression test, so the push-only path is tested.
+        run: MMX_PWA_SHA="${{ github.sha }}" bash scripts/build-mmx-pwa-artifact.sh
 
       - name: Upload mmx-pwa artifact
         if: github.event_name != 'pull_request'

@@ -28,7 +28,9 @@ export MMX_PWA_Z_UNIT=mmx-pwa-z.service
 export MULTICA_DAEMON_Z_UNIT=multica-daemon-z.service
 export MMX_AUTH_BYPASS=1
 export MULTICA_Z_DEV_CODE=123456
-export DRY_RUN=0 DRILL_FAIL_HEALTH=0 FORCE_SHA=""
+# Failure-injection flags default off: an ambient FAIL_SW/FAIL_RESTART in the
+# calling shell must not change what the mocks serve.
+export FAIL_SW=0 FAIL_RESTART=0
 
 SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 export SHA
@@ -69,7 +71,9 @@ case "$url" in
   http://127.0.0.1:3190/manifest.webmanifest)
     printf '{"id":"/?mmx-install","name":"MMX","short_name":"MMX"}\n' ;;
   http://127.0.0.1:3190/sw.js)
-    cat "$LANE_ROOT/mmx-pwa/current/apps/web/public/sw.js" ;;
+    # FAIL_SW=1 simulates a unit that restarted but serves the wrong
+    # content — the post-switch health gate must catch it and restore.
+    if [ "${FAIL_SW:-0}" = 1 ]; then printf 'const VERSION = "dev";\n'; else cat "$LANE_ROOT/mmx-pwa/current/apps/web/public/sw.js"; fi ;;
   *) printf 'unexpected curl url: %s\n' "$url" >&2; exit 2 ;;
 esac
 EOF
@@ -81,8 +85,16 @@ fail() { echo "FAILED: $1" >&2; return 1; }
 step() { :; }
 # shellcheck source=./lane-lib.sh
 . "$REPO_ROOT/scripts/lane-z/lane-lib.sh"
-# Pull the shipped gate under test so the test tracks the real logic.
+# Pull the shipped converge/restore/promote/env functions so the failure and
+# directory tests track the real production logic.
 eval "$(sed -n '/^assert_mmx_health() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+eval "$(sed -n '/^converge_mmx_pwa() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+eval "$(sed -n '/^converge_restore_pwa() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+eval "$(sed -n '/^promote_staged() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+eval "$(sed -n '/^write_mmx_pwa_env() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+export LANE_RUNTIME_ENV="$SANDBOX/runtime.env"
+export LANE_HOME="$SANDBOX/home"
+printf 'MULTICA_Z_DEV_CODE=123456\n' > "$LANE_RUNTIME_ENV"
 
 # --- verify-artifact gates (mirrors the shipped checks) ---
 verify_mmx_artifact() {
@@ -143,9 +155,98 @@ run_switch_mmx_pwa
 test "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$LANE_ROOT/mmx-pwa/releases/$SHA"
 grep -qx "NEXT_PUBLIC_APP_VERSION=$SHA" "$LANE_ROOT/mmx-pwa/env"
 grep -qx "REMOTE_API_URL=http://127.0.0.1:4390" "$LANE_ROOT/mmx-pwa/env"
-
 # --- health failure is loud: wrong stamp fails the gate ---
 printf 'const VERSION = "dev";\n' > "$LANE_ROOT/mmx-pwa/releases/$SHA/apps/web/public/sw.js"
 if assert_mmx_health "$SHA"; then echo "stale sw.js must fail the PWA health gate" >&2; exit 1; fi
 
+# --- promote_staged: never merges into an existing directory ---
+# Same-SHA stale tree: promotion replaces it, never nests inside it.
+STALE_SHA="cccccccccccccccccccccccccccccccccccccccc"
+mkdir -p "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/nested-junk"
+printf 'stale\n' > "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/stale-file"
+mkdir -p "$SANDBOX/stage-new/apps/web/.next"
+printf 'server\n' > "$SANDBOX/stage-new/apps/web/server.js"
+printf 'mmx-install\n' > "$SANDBOX/stage-new/apps/web/.next/brand"
+promote_staged "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA" "$SANDBOX/stage-new"
+test -f "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/apps/web/server.js"
+test ! -e "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/stale-file"
+test ! -e "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/nested-junk"
+test ! -e "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA/apps/web/apps"
+rm -rf "$LANE_ROOT/mmx-pwa/releases/$STALE_SHA"
+# Fresh target: plain install works.
+mkdir -p "$SANDBOX/stage-fresh/apps/web/.next"
+printf 'server\n' > "$SANDBOX/stage-fresh/apps/web/server.js"
+printf 'mmx-install\n' > "$SANDBOX/stage-fresh/apps/web/.next/brand"
+promote_staged "$LANE_ROOT/mmx-pwa/releases/freshrel" "$SANDBOX/stage-fresh"
+test -f "$LANE_ROOT/mmx-pwa/releases/freshrel/apps/web/server.js"
+rm -rf "$LANE_ROOT/mmx-pwa/releases/freshrel"
+
+# --- converge_mmx_pwa: post-switch failures restore the exact prior state ---
+# Setup: the PWA currently serves OLD_SHA; the artifact tree carries NEW_SHA.
+OLD_SHA="dddddddddddddddddddddddddddddddddddddddd"
+NEW_SHA="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+rm -rf "$LANE_ROOT/mmx-pwa/releases" "$LANE_ROOT/mmx-pwa/current" "$LANE_ROOT/mmx-pwa/previous-release" "$LANE_ROOT/mmx-pwa/env"
+mkdir -p "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/apps/web/public" "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/apps/web/.next"
+printf 'server\n' > "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/apps/web/server.js"
+printf 'const VERSION = "%s";\n' "$OLD_SHA" > "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/apps/web/public/sw.js"
+printf 'mmx-install\n' > "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/apps/web/.next/brand-marker"
+: > "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA/.complete"
+ln -s "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA" "$LANE_ROOT/mmx-pwa/current"
+printf 'PRIOR_MARKER_CONTENT\n' > "$LANE_ROOT/mmx-pwa/previous-release"
+printf 'PRIOR_ENV_CONTENT\n' > "$LANE_ROOT/mmx-pwa/env"
+mkdir -p "$SANDBOX/newart/mmx-pwa/standalone/apps/web/public" "$SANDBOX/newart/mmx-pwa/standalone/apps/web/.next"
+printf '{"sha":"%s"}\n' "$NEW_SHA" > "$SANDBOX/newart/mmx-pwa/release.json"
+printf 'server\n' > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/server.js"
+printf 'const VERSION = "%s";\n' "$NEW_SHA" > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/public/sw.js"
+printf 'mmx-install\n' > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/.next/brand-marker"
+# Failure injection: gh serves the new artifact; systemctl fails on restart;
+# curl answers health from CURRENT (so post-restart health for NEW fails
+# while the restored OLD tree passes).
+cat > "$BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dest="${*: -1}"
+case "$*" in
+  *"mmx-pwa-"*) rm -rf "$dest"; mkdir -p "$dest"; cp -a "$FIXTURE_NEWART/mmx-pwa/." "$dest/" ;;
+  *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 2 ;;
+esac
+GHEOF
+chmod +x "$BIN_DIR/gh"
+export FIXTURE_NEWART="$SANDBOX/newart"
+cat > "$BIN_DIR/systemctl" <<'SHEOF'
+#!/usr/bin/env bash
+if [ "${FAIL_RESTART:-0}" = 1 ]; then echo "injected restart failure" >&2; exit 1; fi
+exit 0
+SHEOF
+chmod +x "$BIN_DIR/systemctl"
+cat > "$BIN_DIR/curl" <<'CUEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+url="${*: -1}"
+case "$url" in
+  *"/manifest.webmanifest") printf '{"id":"/?mmx-install","name":"MMX"}\n' ;;
+  *"/sw.js")
+    if [ "${FAIL_SW:-0}" = 1 ]; then printf 'const VERSION = "dev";\n'; else cat "$LANE_ROOT/mmx-pwa/current/apps/web/public/sw.js"; fi ;;
+  *) printf 'unexpected curl url: %s\n' "$url" >&2; exit 2 ;;
+esac
+CUEOF
+chmod +x "$BIN_DIR/curl"
+export RUN_ID=123 AUTODEPLOY_REPO=x/y
+fail() { echo "FAILED: $1" >&2; return 1; }
+# Case A: health for the NEW tree fails -> full restore of symlink, marker, env.
+export FAIL_SW=1
+if converge_mmx_pwa "$NEW_SHA" "$RUN_ID"; then echo "converge must fail when new-tree health fails" >&2; exit 1; fi
+test "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA"
+test "$(cat "$LANE_ROOT/mmx-pwa/previous-release")" = "PRIOR_MARKER_CONTENT"
+test "$(cat "$LANE_ROOT/mmx-pwa/env")" = "PRIOR_ENV_CONTENT"
+# The failed NEW release dir exists (installed) but is NOT current.
+test -d "$LANE_ROOT/mmx-pwa/releases/$NEW_SHA"
+unset FAIL_SW
+# Case B: restart itself fails -> same full restore.
+export FAIL_RESTART=1
+if converge_mmx_pwa "$NEW_SHA" "$RUN_ID"; then echo "converge must fail when restart fails" >&2; exit 1; fi
+test "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA"
+test "$(cat "$LANE_ROOT/mmx-pwa/previous-release")" = "PRIOR_MARKER_CONTENT"
+test "$(cat "$LANE_ROOT/mmx-pwa/env")" = "PRIOR_ENV_CONTENT"
+unset FAIL_RESTART
 printf 'autodeploy mmx-pwa tests passed\n'

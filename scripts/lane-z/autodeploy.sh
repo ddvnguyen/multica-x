@@ -184,10 +184,15 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
   # Stages the CI mmx-pwa artifact to a temp dir (never the live release dir),
   # verifies brand + stamp there, then swaps mmx-pwa/current and restarts only
   # the PWA unit. Backend release, backend current, migrations, backend unit,
-  # daemon, plugin, and backups are untouched. On any failure the live
-  # mmx-pwa/current symlink and its previous-release marker are unchanged;
-  # a half-downloaded stage dir is removed.
-  local sha="$1" run_id="$2" stage stage_rel live_rel
+  # daemon, plugin, and backups are untouched.
+  #
+  # Post-switch failures restore the EXACT prior PWA state: symlink, marker,
+  # env file, unit restart, and a health recheck against the prior SHA —
+  # SWITCHED stays 0 (the backend never moved), so on_error cannot roll this
+  # back; converge owns its own undo. A half-downloaded stage dir is removed;
+  # $stage_rel itself is only installed via promote_staged (never merged
+  # into an existing directory).
+  local sha="$1" run_id="$2" stage stage_rel live_rel live_marker live_env
   [ -n "${MMX_PWA_Z_PORT:-}" ] || { log "converge: MMX_PWA_Z_PORT is not set"; return 1; }
   [ -n "${MMX_PWA_Z_UNIT:-}" ] || { log "converge: MMX_PWA_Z_UNIT is not set"; return 1; }
   stage="$(mktemp -d "$LANE_ROOT/mmx-pwa/.converge-XXXXXX")" || return 1
@@ -210,6 +215,8 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
   fi
   stage_rel="$LANE_ROOT/mmx-pwa/releases/$sha"
   live_rel="$(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || true)"
+  live_marker="$(cat "$LANE_ROOT/mmx-pwa/previous-release" 2>/dev/null || true)"
+  live_env="$(cat "$LANE_ROOT/mmx-pwa/env" 2>/dev/null || true)"
   rm -rf "$stage_rel.tmp.$$"; mkdir -p "$stage_rel.tmp.$$"
   cp -a "$stage/standalone/." "$stage_rel.tmp.$$/"
   rm -rf "$stage"
@@ -219,22 +226,78 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
     rm -rf "$stage_rel.tmp.$$"
     return 1
   fi
-  mv "$stage_rel.tmp.$$" "$stage_rel"
+  promote_staged "$stage_rel" "$stage_rel.tmp.$$" || return 1
   : > "$stage_rel/.complete"
+  # --- point of no return for the PWA symlink; every step below can fail ---
   ln -sfn "$stage_rel" "$LANE_ROOT/mmx-pwa/current"
-  [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$stage_rel" ] \
-    || { log "converge: mmx-pwa current does not resolve to $stage_rel"; return 1; }
+  if [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" != "$stage_rel" ]; then
+    log "converge: mmx-pwa current does not resolve to $stage_rel"
+    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
+    return 1
+  fi
   printf '%s\n' "$live_rel" > "$LANE_ROOT/mmx-pwa/previous-release"
-  write_mmx_pwa_env "$sha" || return 1
-  systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"
-  assert_mmx_health "$sha" || return 1
+  if ! write_mmx_pwa_env "$sha"; then
+    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
+    return 1
+  fi
+  if ! systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"; then
+    log "converge: mmx-pwa unit restart failed for ${sha:0:9}"
+    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
+    return 1
+  fi
+  if ! assert_mmx_health "$sha"; then
+    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
+    return 1
+  fi
   printf 'converged (mmx-pwa-z restarted to %s; backend untouched)\n' "${sha:0:9}" > "$LANE_ROOT/data/autodeploy-mmx-pwa.note"
   log "mmx-pwa z converged to releases/${sha:0:9}; backend untouched"
 }
 
+converge_restore_pwa() { # $1 = prior current target, $2 = prior marker, $3 = prior env, $4 = failed sha
+  # Best-effort exact-state restore after a failed converge switch. Every
+  # step is guarded: a restore that cannot complete is LOUD, because the
+  # lane is then serving an unknown PWA state with SWITCHED=0.
+  local prior_rel="$1" prior_marker="$2" prior_env="$3" failed_sha="$4" prior_sha
+  log "converge: restoring prior mmx-pwa state after failure on ${failed_sha:0:9}"
+  if [ -n "$prior_rel" ] && [ -d "$prior_rel" ]; then
+    ln -sfn "$prior_rel" "$LANE_ROOT/mmx-pwa/current"
+    [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$prior_rel" ] \
+      || log "converge RESTORE FAILED: mmx-pwa current does not resolve to $prior_rel"
+  else
+    log "converge RESTORE FAILED: prior PWA release '$prior_rel' is gone; current left on the failed tree for inspection"
+  fi
+  if [ -n "$prior_marker" ]; then
+    printf '%s\n' "$prior_marker" > "$LANE_ROOT/mmx-pwa/previous-release"
+  else
+    rm -f "$LANE_ROOT/mmx-pwa/previous-release"
+  fi
+  if [ -n "$prior_env" ]; then
+    printf '%s' "$prior_env" > "$LANE_ROOT/mmx-pwa/env.tmp.$$"
+    mv -f "$LANE_ROOT/mmx-pwa/env.tmp.$$" "$LANE_ROOT/mmx-pwa/env" \
+      || log "converge RESTORE FAILED: could not restore mmx-pwa env"
+  fi
+  systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}" \
+    || log "converge RESTORE FAILED: mmx-pwa unit did not restart"
+  if [ -n "$prior_rel" ] && [ -f "$prior_rel/apps/web/public/sw.js" ]; then
+    prior_sha="$(grep -oE '[0-9a-f]{40}' "$prior_rel/apps/web/public/sw.js" | head -1 || true)"
+  fi
+  if [ -n "${prior_sha:-}" ]; then
+    assert_mmx_health "$prior_sha" \
+      && log "converge: prior mmx-pwa state restored and healthy (${prior_sha:0:9})" \
+      || log "converge RESTORE FAILED: prior mmx-pwa state did not come back healthy"
+  else
+    wait_http "http://127.0.0.1:${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}/manifest.webmanifest" 60 'MMX' \
+      && log "converge: prior mmx-pwa unit is serving again (stamp unknown, pre-M-451 tree)" \
+      || log "converge RESTORE FAILED: prior mmx-pwa unit is not serving"
+  fi
+}
+
 write_mmx_pwa_env() { # $1 = sha for NEXT_PUBLIC_APP_VERSION
+  # Writes to a temp file and atomically moves it over the live env, so a
+  # failed write never leaves a half-written env behind.
   if [ -f "$LANE_RUNTIME_ENV" ]; then . "$LANE_RUNTIME_ENV"; fi
   [ -n "${MULTICA_Z_DEV_CODE:-}" ] || { log "no MULTICA_Z_DEV_CODE in $LANE_RUNTIME_ENV"; return 1; }
+  local tmp="$LANE_ROOT/mmx-pwa/env.tmp.$$"
   umask 077
   {
     echo "PORT=${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
@@ -244,8 +307,37 @@ write_mmx_pwa_env() { # $1 = sha for NEXT_PUBLIC_APP_VERSION
     echo "NEXT_PUBLIC_APP_VERSION=$1"
     echo "MMX_AUTH_BYPASS=${MMX_AUTH_BYPASS:-1}"
     echo "MULTICA_DEV_VERIFICATION_CODE=${MULTICA_Z_DEV_CODE:?MULTICA_Z_DEV_CODE is not set}"
-  } > "$LANE_ROOT/mmx-pwa/env"
+  } > "$tmp"
   umask 022
+  mv -f "$tmp" "$LANE_ROOT/mmx-pwa/env" || { log "could not install mmx-pwa env"; rm -f "$tmp"; return 1; }
+}
+promote_staged() { # $1 = live release dir, $2 = staged dir ($1.tmp.$$)
+  # Replace $1 with $2 without ever merging into an existing directory.
+  # Plain `mv $2 $1` moves $2 INSIDE $1 when $1 exists — a same-SHA retry,
+  # a stale/broken release, or a rollback-then-redeploy would then serve
+  # old contents under a fresh marker. Instead the existing $1 (if any) is
+  # moved aside first; a failed promotion restores it, so the live tree is
+  # either the complete staged tree or byte-identical to before.
+  # Callers must guarantee $1 is not the CURRENT release dir of a running
+  # unit (the switch step only promotes the non-running target SHA; converge
+  # only promotes the non-current PWA SHA).
+  local dst="$1" src="$2" aside
+  [ -n "$dst" ] && [ -n "$src" ] && [ -d "$src" ] || { log "promote_staged: bad args '$dst' '$src'"; return 1; }
+  aside="$dst.aside.$$"
+  rm -rf "$aside"
+  if [ -d "$dst" ]; then
+    mv "$dst" "$aside" || { log "promote_staged: cannot move aside $dst"; return 1; }
+  fi
+  if mv "$src" "$dst"; then
+    rm -rf "$aside"
+    return 0
+  fi
+  log "promote_staged: promotion of $src to $dst failed; restoring"
+  rm -rf "$dst"
+  if [ -d "$aside" ]; then
+    mv "$aside" "$dst" || { log "promote_staged: RESTORE FAILED for $dst (aside at $aside)"; return 1; }
+  fi
+  return 1
 }
 assert_health() { # $1 = sha the lane must report
   local sha="$1" commit
@@ -640,8 +732,11 @@ step "switch"
 # Promote staged dirs to live release dirs first, then flip. Before this
 # point nothing live has moved: PREV_* markers are recorded here, and a
 # failure anywhere above leaves current/previous releases untouched.
-mv "$REL.tmp.$$" "$REL"
-mv "$MMX_REL.tmp.$$" "$MMX_REL"
+# promote_staged never merges into an existing directory (see its contract):
+# a same-SHA retry or rollback-then-redeploy replaces the stale tree instead
+# of nesting inside it, and a failed promotion restores the prior tree.
+promote_staged "$REL" "$REL.tmp.$$" || fail "could not promote backend release $REL"
+promote_staged "$MMX_REL" "$MMX_REL.tmp.$$" || fail "could not promote mmx-pwa release $MMX_REL"
 # The flip is what makes this a switch, so the rollback marker goes on first.
 SWITCHED=1
 printf '%s\n' "$PREV_REL" > "$LANE_ROOT/multica-be/previous-release"
