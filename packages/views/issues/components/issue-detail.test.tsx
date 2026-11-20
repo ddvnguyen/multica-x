@@ -4788,10 +4788,14 @@ describe("IssueDetail (shared)", () => {
     }
   });
 
-  // M-290 rail follow-up: replies read newest-first under their root in
-  // newest-first mode, so the page and the rail agree top-to-bottom.
-  it("renders thread replies newest-first under the root when the preference is newest-first", async () => {
-    useTimelineDisplayStore.setState({ order: "newest-first" });
+  // M-290 threads: replies stay oldest-first under their root even when the
+  // top-level timeline reads newest-first, so the rail and the page agree
+  // top-to-bottom.
+  it.each([
+    { order: "oldest-first" as const },
+    { order: "newest-first" as const },
+  ])("renders thread replies oldest-first under the root in $order mode", async ({ order }) => {
+    useTimelineDisplayStore.setState({ order });
     const root = { ...mockTimeline[0]!, id: "thread-root", parent_id: null, content: "Root" };
     const replyOld = { ...mockTimeline[1]!, id: "reply-old", parent_id: root.id, content: "Older reply",
       created_at: "2026-01-17T00:01:00Z", updated_at: "2026-01-17T00:01:00Z" };
@@ -4803,12 +4807,12 @@ describe("IssueDetail (shared)", () => {
 
     const rendered = Array.from(container.querySelectorAll("[id^='comment-']")).map((el) => el.id)
       .filter((id) => ["comment-thread-root", "comment-reply-old", "comment-reply-new"].includes(id));
-    expect(rendered).toEqual(["comment-thread-root", "comment-reply-new", "comment-reply-old"]);
+    expect(rendered).toEqual(["comment-thread-root", "comment-reply-old", "comment-reply-new"]);
   });
 
-  // M-290 rail follow-up: the folded-replies bar parks at the thread's
-  // trailing end in newest-first mode, mirroring the activity blocks.
-  it("places the folded-replies bar after the resolution in newest-first mode", async () => {
+  // M-290 threads: the folded-replies bar stays ahead of the resolution it
+  // folds, in both orders.
+  it("places the folded-replies bar before the resolution in newest-first mode", async () => {
     useTimelineDisplayStore.setState({ order: "newest-first" });
     const root = { ...mockTimeline[0]!, id: "fold-root", parent_id: null, content: "Root" };
     const older = { ...mockTimeline[1]!, id: "fold-older", parent_id: root.id, content: "Older reply",
@@ -4821,16 +4825,15 @@ describe("IssueDetail (shared)", () => {
 
     const html = container.innerHTML;
     expect(html.indexOf("comment-fold-resolution")).toBeGreaterThan(-1);
-    expect(html.indexOf("comment-fold-resolution")).toBeLessThan(html.indexOf("comment from"));
+    expect(html.indexOf("comment from")).toBeLessThan(html.indexOf("comment-fold-resolution"));
   });
 
-  // M-290 reply box: in newest-first mode the reply box sits directly under
-  // the root so it is adjacent to where the new reply lands; oldest-first
-  // keeps it at the thread's trailing end.
+  // M-290 reply box: it always sits at the thread's trailing end, never
+  // between the root and its first reply — in either page order.
   it.each([
-    { order: "oldest-first", boxFirst: false, label: "after" },
-    { order: "newest-first", boxFirst: true, label: "before" },
-  ] as const)("places the thread reply box $label the replies in $order mode", async ({ order, boxFirst }) => {
+    { order: "oldest-first" as const },
+    { order: "newest-first" as const },
+  ])("places the thread reply box after the replies in $order mode", async ({ order }) => {
     useTimelineDisplayStore.setState({ order });
     const root = { ...mockTimeline[0]!, id: "box-thread-root", parent_id: null, content: "Root" };
     const replyOld = { ...mockTimeline[1]!, id: "box-reply-old", parent_id: root.id, content: "Older reply",
@@ -4844,18 +4847,16 @@ describe("IssueDetail (shared)", () => {
     const html = container.innerHTML;
     const boxPos = html.indexOf("Leave a reply...");
     expect(boxPos).toBeGreaterThan(-1);
-    const firstReplyAnchor = boxFirst ? "comment-box-reply-new" : "comment-box-reply-old";
-    if (boxFirst) {
-      expect(boxPos).toBeLessThan(html.indexOf(firstReplyAnchor));
-    } else {
-      expect(boxPos).toBeGreaterThan(html.indexOf(firstReplyAnchor));
-    }
+    // Oldest reply renders first in both orders, and the box trails the
+    // whole thread — never wedged between root and first reply.
+    expect(boxPos).toBeGreaterThan(html.indexOf("comment-box-reply-old"));
+    expect(boxPos).toBeGreaterThan(html.indexOf("comment-box-reply-new"));
   });
 
-  // M-290 reply box: submitting from the top box posts into the thread and
-  // the landing scroll aligns the card's top (where the new reply is), not
-  // the bottom as in oldest-first.
-  it("submits a thread reply from the top box and lands on the new top reply", async () => {
+  // M-290 reply box: submitting from the trailing box posts into the thread
+  // and the landing scroll aligns the card's bottom (where the new reply
+  // lands), in both orders.
+  it("submits a thread reply from the bottom box and lands on the new reply", async () => {
     useTimelineDisplayStore.setState({ order: "newest-first" });
     const root = { ...mockTimeline[0]!, id: "submit-thread-root", parent_id: null, content: "Root" };
     mockApiObj.listTimeline.mockResolvedValue([root]);
@@ -4893,7 +4894,7 @@ describe("IssueDetail (shared)", () => {
       );
     });
     await waitFor(() => {
-      expect(scrollToIndexSpy).toHaveBeenCalledWith({ index: 0, align: "start", offset: -16 });
+      expect(scrollToIndexSpy).toHaveBeenCalledWith({ index: 0, align: "end", offset: 0 });
     });
   });
 

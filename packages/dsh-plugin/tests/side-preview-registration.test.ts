@@ -94,9 +94,8 @@ describe("side preview registration", () => {
     const definition = tabTypes[0]!;
     expect(definition.id).toBe("@multica/dsh-plugin");
     expect(definition.kind).toBe("multica-issue");
-    // dsh captures the chip once per tab and never rewrites it, and a page
-    // type's only address is `sidebar://<kind>`: the chip names the kind.
-    expect(definition.title("sidebar://multica-issue")).toBe("Issue");
+    // Chip stays generic; identifier lives in the body header.
+    expect(definition.title("sidebar://multica-issue")).toBe("Preview");
 
     // Stage two: the body is keyed by the same id, so the shell dispatches
     // every tab of the kind to it.

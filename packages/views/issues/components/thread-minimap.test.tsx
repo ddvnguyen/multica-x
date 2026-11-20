@@ -311,7 +311,7 @@ describe("ThreadMinimap", () => {
     }
   });
 
-  it("follows the caller's reply order in the outline so a reversed page reads reversed", () => {
+  it("follows the caller's reply order in the outline so page and rail agree", () => {
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
     });
@@ -319,8 +319,8 @@ describe("ThreadMinimap", () => {
       renderWithI18n(
         <ThreadMinimap description={description}
           threads={[thread(comment("c1", "Root opener"), [
-            reply("r-new", "Newer reply", "B"),
             reply("r-old", "Older reply", "A"),
+            reply("r-new", "Newer reply", "B"),
           ])]}
           scrollContainerEl={null} onJump={vi.fn()} />,
       );
@@ -329,7 +329,7 @@ describe("ThreadMinimap", () => {
       act(() => vi.advanceTimersByTime(180));
       const list = screen.getByRole("list");
       expect(within(list).getAllByRole("button").map((button) => button.getAttribute("aria-label")))
-        .toEqual(["Issue description", "Root opener", "B: Newer reply", "A: Older reply"]);
+        .toEqual(["Issue description", "Root opener", "A: Older reply", "B: Newer reply"]);
     } finally {
       vi.useRealTimers();
     }

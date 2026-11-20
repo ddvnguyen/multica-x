@@ -230,20 +230,15 @@ export function apply(ctx: DshClientContext): void {
 
   const createElement = hostCreateElement ?? (bundledCreateElement as HostCreateElement);
 
-  // The side preview's tab type (M-336): one page type in dsh's own right
-  // column, with `Side preview` opening an issue into it. Both stages of dsh's
-  // registration live inside `ctx.effect` — the disposer is the plugin's — and
-  // an older shell that publishes no registry keeps the rail rows and offers
-  // `New tab` alone, because neither branch runs.
+  // The side preview's tab type (M-336, G6 generalized): one page type in
+  // dsh's own right column. The chip is generic because one tab serves
+  // different targets; the identifier belongs in the body's header.
   if (tabTypes !== null && canOpenSidePreview(sidebarRight, true)) {
     ctx.effect?.(
       () =>
         tabTypes.register({
           id: SIDE_PREVIEW_TAB_ID,
           kind: SIDE_PREVIEW_KIND,
-          // The chip names the kind, not one issue: dsh captures it when the
-          // tab opens and never rewrites it, and a reveal hands the same tab
-          // another issue. The identifier belongs in the body's header.
           title: () => SIDE_PREVIEW_TITLES.title,
         }),
       "multica: sidebarRightTabs.register for the side preview",
