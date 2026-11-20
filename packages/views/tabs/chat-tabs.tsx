@@ -18,7 +18,7 @@
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, MessageSquare, X } from "@multica/ui/icons";
+import { Loader2, MessageSquare, MessageSquarePlus, X } from "@multica/ui/icons";
 import { useChatStore } from "@multica/core/chat";
 import {
   chatSessionsOptions,
@@ -31,6 +31,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
+import { ChatBarHistory } from "../chat/components/chat-bar-history";
 import {
   chatActivity,
   selectChatBarSessions,
@@ -82,8 +83,12 @@ export function HeaderChatTabs() {
   return <HeaderChatTabsInner />;
 }
 
-function HeaderChatTabsInner() {
-  const { t } = useT("chat");
+/**
+ * The chats the header strip shows, and the one action they share: open a
+ * conversation as the page. Both the tab row and the strip's new-chat/
+ * history controls read this, so they agree on which chat is open.
+ */
+function useHeaderChatSessions() {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
@@ -96,7 +101,6 @@ function HeaderChatTabsInner() {
   const setSelectedAgentId = useChatStore((s) => s.setSelectedAgentId);
   const setOpen = useChatStore((s) => s.setOpen);
   const keepChatInBar = useChatStore((s) => s.keepChatInBar);
-  const dismissChatFromBar = useChatStore((s) => s.dismissChatFromBar);
 
   const { data: sessions = EMPTY_SESSIONS } = useQuery(chatSessionsOptions(wsId));
   const { data: pending } = useQuery(pendingChatTasksOptions(wsId));
@@ -120,8 +124,6 @@ function HeaderChatTabsInner() {
     [sessions, runningSessionIds, isOpen, activeSessionId, kept, dismissed],
   );
 
-  if (visible.length === 0) return null;
-
   const chatHref = paths.chat();
 
   const openSession = (session: ChatSession) => {
@@ -133,6 +135,24 @@ function HeaderChatTabsInner() {
     if (isOpen) setOpen(false);
     navigation.push(`${chatHref}?session=${encodeURIComponent(session.id)}`);
   };
+
+  return {
+    sessions,
+    runningSessionIds,
+    visible,
+    chatHref,
+    isOpen,
+    openSession,
+  };
+}
+
+function HeaderChatTabsInner() {
+  const { t } = useT("chat");
+  const { visible, chatHref, openSession } = useHeaderChatSessions();
+  const navigation = useNavigation();
+  const dismissChatFromBar = useChatStore((s) => s.dismissChatFromBar);
+
+  if (visible.length === 0) return null;
 
   const closeTab = (item: ChatBarSession) => {
     dismissChatFromBar(item.session.id, chatActivity(item.session));
@@ -218,5 +238,55 @@ function HeaderChatTabsInner() {
         );
       })}
     </>
+  );
+}
+
+/**
+ * The strip's end of the chat: start a new one, or find an old one. These
+ * lived in the bottom bar's Ask Multica + history until the footer went away
+ * with the merge (M-413 round 2) — the strip is now the shell's only bar, so
+ * starting a conversation has to be reachable from it.
+ */
+export function HeaderChatControls() {
+  const inHeader = useChatTabsInHeader();
+  if (!inHeader) return null;
+  return <HeaderChatControlsInner />;
+}
+
+function HeaderChatControlsInner() {
+  const { t } = useT("chat");
+  const { sessions, runningSessionIds, visible, openSession } =
+    useHeaderChatSessions();
+  const isOpen = useChatStore((s) => s.isOpen);
+  const startNewChat = useChatStore((s) => s.startNewChat);
+  // A brand-new chat has no session yet, so no chat tab reads as current and
+  // the floating window is the only place it lives. Skimming the strip's
+  // visible chats draws the same line the bottom bar drew for Ask Multica.
+  const fresh = isOpen && !visible.some((item) => item.open);
+  const newChatLabel = t(($) => $.window.new_chat_tooltip);
+
+  return (
+    <div
+      data-slot="header-chat-controls"
+      className="flex shrink-0 items-center gap-0.5 pr-1"
+    >
+      <TooltipHint label={newChatLabel} side="bottom">
+        <button
+          type="button"
+          data-chat-anchor="new"
+          aria-pressed={fresh}
+          aria-label={newChatLabel}
+          onClick={() => startNewChat()}
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-faint-foreground transition-colors hover:bg-muted/50 hover:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring aria-pressed:bg-muted aria-pressed:text-foreground [&_svg]:size-3.5"
+        >
+          <MessageSquarePlus aria-hidden />
+        </button>
+      </TooltipHint>
+      <ChatBarHistory
+        sessions={sessions}
+        runningSessionIds={runningSessionIds}
+        onSelect={openSession}
+      />
+    </div>
   );
 }

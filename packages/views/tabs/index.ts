@@ -28,9 +28,11 @@ export {
 export { TabBar, type TabBarHostCapabilities } from "./tab-bar";
 export {
   ChatTabsInHeaderProvider,
+  HeaderChatControls,
   HeaderChatTabs,
   useChatTabsInHeader,
 } from "./chat-tabs";
+export { TabHistoryButtons } from "./tab-history-buttons";
 export {
   selectTabByShortcut,
   useTabSelectionShortcut,

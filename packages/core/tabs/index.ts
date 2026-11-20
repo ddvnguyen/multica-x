@@ -9,6 +9,7 @@ export {
   useActiveBrowsingHistoryTitles,
   splitTabUrl,
   resourceKeyForUrl,
+  findTabForUrl,
   browsingHistoryKeyForUrl,
   sanitizeTabPath,
   scrollMementoKey,

@@ -11,6 +11,22 @@ import { AppLink } from "../navigation";
 import { BOTTOM_BAR_ITEM_CLASS } from "../layout/bottom-bar-styles";
 
 /**
+ * Whether `TrialStatus` renders anything for this workspace. Callers that
+ * decide whether the status bar has content at all — the bar disappears when
+ * the tab strip hosts the chat (M-413) — need the answer without rendering
+ * the link. Same query, so the two stay in step.
+ */
+export function useTrialStatusVisible(wsId: string | undefined): boolean {
+  const enabled = useFeatureEnabled(BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG, false);
+  const trial = useWorkspaceTrial(wsId ?? "", enabled);
+  if (!wsId) return false;
+  return (
+    trial.kind === "active" ||
+    (trial.kind === "ended" && (!trial.confirmed || trial.recent))
+  );
+}
+
+/**
  * The trial's place in the status bar (MUL-9485): a countdown while the
  * Business trial runs, a warning for its last three days, and an upgrade
  * entry for a week after it ends. Every member sees it; it opens Billing.

@@ -15,6 +15,10 @@ const h = vi.hoisted(() => ({
   isMobile: false,
   workspace: { id: "ws-test" } as { id: string } | null,
   team: { working: [], stuck: [], byAgent: new Map() } as TeamStatus,
+  // The shell's chat placement: the web SPA puts the sessions in the header
+  // strip and drops the footer's chat (M-413).
+  chatTabsInHeader: false,
+  trialVisible: false,
 }));
 
 vi.mock("@multica/core/chat", () => ({
@@ -31,7 +35,11 @@ vi.mock("@multica/ui/hooks/use-mobile", () => ({ useIsMobile: () => h.isMobile }
 vi.mock("./panels/team-status", () => ({ useTeamAgentStatus: () => h.team }));
 vi.mock("./app-shell-context", () => ({ useAppShell: () => null }));
 vi.mock("../chat/components/chat-bar", () => ({ ChatBar: () => <div data-testid="chat-bar" /> }));
-vi.mock("../billing/trial-status", () => ({ TrialStatus: () => null }));
+vi.mock("../tabs/chat-tabs", () => ({ useChatTabsInHeader: () => h.chatTabsInHeader }));
+vi.mock("../billing/trial-status", () => ({
+  TrialStatus: () => (h.trialVisible ? <a href="/acme/settings">Trial</a> : null),
+  useTrialStatusVisible: () => h.trialVisible,
+}));
 
 function renderBar(pathname = "/acme/issues") {
   const adapter: NavigationAdapter = {
@@ -55,6 +63,8 @@ beforeEach(() => {
   h.isMobile = false;
   h.workspace = { id: "ws-test" };
   h.team = { working: [], stuck: [], byAgent: new Map() };
+  h.chatTabsInHeader = false;
+  h.trialVisible = false;
 });
 
 describe("AppBottomBar", () => {
@@ -91,14 +101,37 @@ describe("AppBottomBar", () => {
   it("drops quick chat on the Chat tab, which already shows it full-page", () => {
     renderBar("/acme/chat");
     expect(screen.queryByTestId("chat-bar")).not.toBeInTheDocument();
-    expect(screen.getByRole("contentinfo")).toBeInTheDocument();
   });
 
-  it("drops quick chat when the floating chat preference is off", () => {
-    h.chat.floatingChatEnabled = false;
+  it("renders no footer at all when the header hosts the chat and nothing is stuck", () => {
+    h.chatTabsInHeader = true;
+    expect(renderBar().container).toBeEmptyDOMElement();
+  });
+
+  it("keeps the status row when the header hosts the chat, without a second chat bar", () => {
+    h.chatTabsInHeader = true;
+    h.team.stuck = [{ id: "a1" }];
+    h.team.byAgent = new Map([["a1", { queuedCount: 1 }]]);
     renderBar();
 
     expect(screen.queryByTestId("chat-bar")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "1 task waiting on an offline runtime" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a trial notice as the bar's only content", () => {
+    h.chatTabsInHeader = true;
+    h.trialVisible = true;
+    renderBar();
+
+    expect(screen.getByRole("link", { name: "Trial" })).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-bar")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing when the chat preference is off and no status shows", () => {
+    h.chat.floatingChatEnabled = false;
+    expect(renderBar().container).toBeEmptyDOMElement();
   });
 
   it("renders nothing on a narrow window or without a workspace", () => {

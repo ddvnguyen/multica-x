@@ -43,7 +43,11 @@ import { cn } from "@multica/ui/lib/utils";
 import { useTabStore, useActiveGroup, type Tab } from "@multica/core/tabs";
 import { paths, parseTabSubject } from "@multica/core/paths";
 import { useT } from "../i18n";
-import { HeaderChatTabs, useChatTabsInHeader } from "./chat-tabs";
+import {
+  HeaderChatControls,
+  HeaderChatTabs,
+  useChatTabsInHeader,
+} from "./chat-tabs";
 import {
   useTabPresentation,
   ResourceLeadingVisual,
@@ -753,6 +757,9 @@ export function TabBar({
           shouldReduceMotion={shouldReduceMotion}
         />
       </div>
+      {/* The strip is the shell's only bar now, so the chat's two entry
+          points — start one, find an old one — live at its end (M-413). */}
+      <HeaderChatControls />
       {group && <NewTabButton />}
     </div>
   );
