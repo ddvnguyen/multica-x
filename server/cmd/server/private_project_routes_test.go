@@ -75,6 +75,11 @@ var routeParamsOutsideProjects = map[string]outsideProjectParam{
 	"plans/{planId}":                 {why: "a workspace plan; its issue is checked when a route loads it"},
 	"question-cards/{cardId}":        {why: "a workspace question card; its issue is checked when a route loads it"},
 	"sections/{sectionId}":           {why: "a workspace plan section; its issue is checked when a route loads it"},
+	"questions/{id}":                 {why: "a task-token question answered by the running agent"},
+	"accounts/{accountId}":            {why: "a workspace model account"},
+	"decisions/{kind}":                {why: "a workspace decision category", value: func(*privateRouteFixture) string { return "issue" }},
+	"revisions/{revision}":            {why: "a workspace plan revision number"},
+	"tiers/{tierId}":                  {why: "a workspace model tier"},
 	"members/{memberId}":             {why: "a workspace membership"},
 	"invitations/{id}":               {why: "the caller's own workspace invitation"},
 	"invitations/{invitationId}":     {why: "a workspace invitation"},
@@ -152,6 +157,7 @@ var privateProjectRoutesNotProbed = map[string]string{
 	"POST /api/projects/{id}/join":              "the workspace owner's way into a private project they cannot see; TestWorkspaceOwnerJoinsPrivateProject covers who may call it",
 	"POST /api/workspaces/{id}/tasks/{taskId}/ask": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a question card",
 	"POST /api/workspaces/{id}/tasks/{taskId}/plans": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a plan",
+	"POST /api/workspaces/{id}/plans/{planId}/comments/{commentId}/resolve": "workspace-scoped plan comment resolution; plan access is checked by its handler",
 }
 
 // privateRouteRequest shapes the probe for a route an empty request cannot

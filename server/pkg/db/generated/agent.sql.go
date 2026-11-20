@@ -2673,10 +2673,10 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 
 const createAgentTask = `-- name: CreateAgentTask :one
 WITH enqueue_agent AS MATERIALIZED (
-    SELECT a.id, COALESCE(a.runtime_id, $33::uuid) AS runtime_id
+    SELECT a.id, COALESCE($33::uuid, a.runtime_id) AS runtime_id
     FROM agent a
     WHERE a.id = $1
-      AND lock_task_owner_rows(a.id, $2, COALESCE(a.runtime_id, $33::uuid))
+      AND lock_task_owner_rows(a.id, $2, COALESCE($33::uuid, a.runtime_id))
     FOR KEY SHARE OF a
 )
 INSERT INTO agent_task_queue (

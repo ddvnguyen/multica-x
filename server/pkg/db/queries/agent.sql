@@ -369,10 +369,10 @@ LIMIT @page_limit;
 -- Lock the selected agent tuple so a rebind that commits during the owner-fence
 -- wait refreshes the runtime used by INSERT. Materialize that locked route once.
 WITH enqueue_agent AS MATERIALIZED (
-    SELECT a.id, COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid) AS runtime_id
+    SELECT a.id, COALESCE(sqlc.narg(runtime_id)::uuid, a.runtime_id) AS runtime_id
     FROM agent a
     WHERE a.id = sqlc.arg(agent_id)
-      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid))
+      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(sqlc.narg(runtime_id)::uuid, a.runtime_id))
     FOR KEY SHARE OF a
 )
 INSERT INTO agent_task_queue (
