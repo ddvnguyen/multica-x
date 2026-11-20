@@ -167,7 +167,7 @@ describe("TiersTab", () => {
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalled();
     });
-    expect(mockUpdate.mock.calls[0][0]).not.toHaveProperty("quality");
+    expect(mockUpdate.mock.calls[0]![0]).not.toHaveProperty("quality");
     // The save closed the dialog: reopen, then checked clear sends null.
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     editor = await screen.findByTestId("tier-editor");
@@ -176,7 +176,7 @@ describe("TiersTab", () => {
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalledTimes(2);
     });
-    expect(mockUpdate.mock.calls[1][0]).toHaveProperty("quality", null);
+    expect(mockUpdate.mock.calls[1]![0]).toHaveProperty("quality", null);
   });
 
   it("rejects a non-slug name before submitting", async () => {
