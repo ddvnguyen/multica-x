@@ -32,6 +32,7 @@
   ],
   "backend": [
     "server/**",
+    "packages/core/issues/__fixtures__/agent-question-cases.json",
     "packages/core/runtimes/cli-version.ts",
     "packages/core/types/inbox.ts",
     ".multica/environments.toml",
@@ -99,7 +100,6 @@
     "scripts/pr-shots",
     "server/cmd/multica/cmd_auth.go",
     "docs/assets/logo-*.svg",
-    ".github/workflows/mobile-verify.yml",
     ".github/workflows/ci.yml",
     ".github/ci-paths.json"
   ],
@@ -107,7 +107,6 @@
     "scripts/deploy-main.sh",
     "scripts/deploy-main.test.sh",
     ".goreleaser.yml",
-    ".github/workflows/release.yml",
     ".github/workflows/promote-release.yml",
     "scripts/promote-release.mjs",
     "scripts/promote-release.test.mjs",

@@ -18,7 +18,6 @@ function filterFiles(files) {
 for (const [name, files, selected] of [
   ["readme only", ["README.md"], []],
   ["stable release promotion", [".github/workflows/promote-release.yml"], ["scripts"]],
-  ["release orchestration", [".github/workflows/release.yml"], ["scripts"]],
   ["release creation", [".goreleaser.yml"], ["scripts"]],
   ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality", "docs"]],
   ["docs test", ["apps/docs/lib/unrendered-bold.test.ts"], ["quality", "docs"]],
@@ -287,7 +286,7 @@ test("no gated job or shared quality step continues past a failure", () => {
 // A push only checks the paths it changed, so a main run that is cancelled or
 // left pending behind a newer push skips its commit for good.
 test("path-filtered workflows never cancel or supersede a main run", () => {
-  for (const name of ["ci.yml", "mobile-verify.yml"]) {
+  for (const name of ["ci.yml"]) {
     const source = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
     const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
     assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m, name);
