@@ -580,9 +580,11 @@ jobs:
           if-no-files-found: error
           # v4 drops hidden files by default; .next/ IS a dot-directory.
           include-hidden-files: true
-          path: |
-            apps/web/.next/standalone
-            release.json
+          # One directory, so its contents are the artifact root (M-457).
+          # A multi-path upload is rooted at the paths' common ancestor,
+          # which nested the tree at apps/web/.next/standalone/ and made
+          # autodeploy.sh reject every artifact at verify-artifact.
+          path: mmx-pwa-stage
   frontend-test:
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
