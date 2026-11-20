@@ -1,4 +1,4 @@
-export { AgentsPage, AgentDetailPage } from "./components";
+export { AgentsPage, AgentDetailPage, AgentSideStack } from "./components";
 export type { ExtraAgentSection } from "./components";
 export {
   ChooseRuntimePage,

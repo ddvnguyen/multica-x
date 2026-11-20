@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { IssueSideStack, useCanonicalIssue, useWorkspaceId } from "../fork";
+import { AgentSideStack, IssueSideStack, useCanonicalIssue, useWorkspaceId } from "../fork";
 import {
   getSidePreviewTargets,
   subscribeSidePreview,
@@ -50,8 +50,10 @@ function SidePreviewContent({ target }: { target: SidePreviewTargetRef }) {
   if (target.view === "issue") {
     return <SidePreviewIssue issueId={target.id} />;
   }
-  // G6: non-issue stacks are wired progressively. Keep the tab functional
-  // (no crash) until a view's real side stack lands.
+  if (target.view === "agent") {
+    return <AgentSideStack agentId={target.id} />;
+  }
+  // G6: remaining views wired progressively.
   return <SidePreviewPending target={target} />;
 }
 

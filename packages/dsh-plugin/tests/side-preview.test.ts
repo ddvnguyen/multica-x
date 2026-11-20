@@ -3,6 +3,7 @@ import {
   SIDE_PREVIEW_KIND,
   canOpenSidePreview,
   createSidePreviewOpener,
+  createSidePreviewTargetOpener,
   issueIdFromParams,
   sidePreviewTargetFromParams,
 } from "../src/client/side-preview";
@@ -140,6 +141,25 @@ describe("createSidePreviewOpener", () => {
       {
         kind: SIDE_PREVIEW_KIND,
         options: { params: { view: "issue", id: "iss-7" }, revealIfOpened: true },
+      },
+    ]);
+  });
+
+  it("opens a non-issue target with its view and id", async () => {
+    const { sidebarRight, opened } = fakeSidebar();
+    const open = createSidePreviewTargetOpener({
+      sidebarRight,
+      workspaces: fakeWorkspaces([]),
+      sessions: fakeSessions([]),
+      folder: "/work/acme",
+    });
+
+    await open({ view: "agent", id: "agent-1" });
+
+    expect(opened).toEqual([
+      {
+        kind: SIDE_PREVIEW_KIND,
+        options: { params: { view: "agent", id: "agent-1" }, revealIfOpened: true },
       },
     ]);
   });

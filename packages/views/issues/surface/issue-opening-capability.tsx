@@ -5,6 +5,13 @@ import { useIssueOpeningStore, type IssueOpenMode } from "@multica/core/issues/s
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
 
+export type SidePreviewOpenTarget =
+  | string
+  | {
+      view: "issue" | "agent" | "runtime" | "skill" | "project";
+      id: string;
+    };
+
 interface IssueOpeningCapability {
   supportsTabs: boolean;
   supportsPeek: boolean;
@@ -18,10 +25,11 @@ interface IssueOpeningCapability {
    * host that draws the preview in its own side column supplies an opener and
    * `IssuePeekHost` stands down, so the two previews never both exist.
    *
-   * Returns whether the press was handled; a host that cannot open the column
-   * right now answers `false` and the click keeps its opening mode’s default.
+   * Accepts an issue id for compatibility, or a `{ view, id }` target for
+   * other side-previewable views (G6). Returns whether the press was handled;
+   * a host that cannot open the column right now answers `false`.
    */
-  openSidePreview: ((issueId: string) => boolean) | null;
+  openSidePreview: ((target: SidePreviewOpenTarget) => boolean) | null;
 }
 
 const DEFAULT_CAPABILITY: IssueOpeningCapability = {
@@ -45,7 +53,7 @@ export function IssueOpeningCapabilityProvider({
   supportsTabs?: boolean;
   supportsPeek?: boolean;
   /** A host-owned side column; see `IssueOpeningCapability.openSidePreview`. */
-  openSidePreview?: ((issueId: string) => boolean) | null;
+  openSidePreview?: ((target: SidePreviewOpenTarget) => boolean) | null;
 }) {
   const mode = useIssueOpeningStore((state) => state.openMode);
   const hasUserChoice = useIssueOpeningStore((state) => state.hasUserChoice);
