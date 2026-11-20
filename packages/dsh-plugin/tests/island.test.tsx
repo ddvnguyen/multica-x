@@ -512,6 +512,53 @@ describe("mountIsland", () => {
     expect(localStorage.getItem("list_column_width")).toBeNull();
   });
 
+  // M-431: the presence of the edge above is not the interaction. Upstream
+  // names the live inbox's split `archiveSplit`, which reads like the archive's
+  // own page — the island's live Inbox takes it because it renders without the
+  // dashboard shell (`!hasAppShell && hasSidebarProvider`), so a drag has to
+  // resize the column and commit into the island's namespaced width store.
+  it("resizes the live inbox list column and keeps the width in the island's store", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "inbox" } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Inbox");
+    });
+    const shadow = host.shadowRoot!;
+    // The live list is the island's own column; nothing else sizes this page.
+    expect(shadow.querySelector("[data-slot='list-column']")).not.toBeNull();
+
+    const handle = shadow.querySelector<HTMLElement>("[data-slot='space-panel-resize']");
+    expect(handle).not.toBeNull();
+    // jsdom reports a zero-width box, so the drag clamps up to the minimum
+    // and commits from there; only the store the commit lands in is under test.
+    act(() => {
+      handle!.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          button: 0,
+          isPrimary: true,
+          clientX: 300,
+          pointerId: 1,
+        }),
+      );
+      document.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, clientX: 380, pointerId: 1 }),
+      );
+      document.dispatchEvent(
+        new PointerEvent("pointerup", { bubbles: true, clientX: 380, pointerId: 1 }),
+      );
+    });
+
+    const stored = localStorage.getItem("multica.dsh.list_column_width");
+    expect(stored).not.toBeNull();
+    expect(Number(stored)).toBeGreaterThanOrEqual(280);
+    expect(Number(stored)).toBeLessThanOrEqual(480);
+    // Still never the bare key the shell's own page would read back.
+    expect(localStorage.getItem("list_column_width")).toBeNull();
+  });
+
   // M-330 gave MMX one open mode while the side preview had nowhere to go;
   // M-336 corrected that. Both modes are on offer again, and `Side preview`
   // always has an implementation — the host's column, or the fork's peek below.
