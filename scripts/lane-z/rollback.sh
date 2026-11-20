@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # scripts/lane-z/rollback.sh — put lane z back on previous releases.
 #
 # Binaries only. It NEVER restores the database: `pg_restore` over a live DB

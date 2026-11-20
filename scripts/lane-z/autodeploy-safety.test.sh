@@ -6,6 +6,9 @@ SANDBOX="$REPO_ROOT/.autodeploy-safety-test.$$"
 trap 'rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/mock-bin"
 cp "$REPO_ROOT/scripts/lane-z/autodeploy.sh" "$REPO_ROOT/scripts/lane-z/rollback.sh" "$REPO_ROOT/scripts/lane-z/lane-lib.sh" "$SANDBOX/bin/"
+# Operators run rollback.sh directly; without a bash shebang it would run
+# under the caller's shell (M-451 Architect gate).
+test "$(head -1 "$REPO_ROOT/scripts/lane-z/rollback.sh")" = '#!/usr/bin/env bash'
 cat > "$SANDBOX/bin/dsh-z.env" <<'EOF'
 LANE_ROOT="$TEST_LANE_ROOT"
 AUTODEPLOY_LOG_DIR="$TEST_LANE_ROOT/logs"
