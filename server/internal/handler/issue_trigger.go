@@ -182,6 +182,24 @@ func (h *Handler) callerCanInvokeIssueAssignee(r *http.Request, issue db.Issue, 
 // starts. The squad path still flows through enqueueSquadLeaderTask so the
 // leader access gate and pending dedup stay in one place.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string, override service.TierTriggerOverride) (DispatchStatus, DispatchReasonCode) {
+	switch trigger.AssigneeType {
+	case "agent":
+		// The member who performed this assign/promote is the accountable human
+		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
+		// member actor is threaded; otherwise attribution falls back to the chain.
+		if !override.IsZero() {
+			return h.dispatchIssueRunWithTier(ctx, issue, trigger, actorType, actorID, handoffNote, override)
+		}
+		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		if err == nil {
+			return DispatchQueued, ReasonQueued
+		}
+		return issueEnqueueFailure(issue, issue.AssigneeID, err)
+	case "squad":
+		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
+	}
+	return DispatchBlocked, ReasonTargetUnavailable
+}
 
 // resolveIssueRunTierOverride parses M-359 explicit-pick fields from an
 // assign write (tier_id, or runtime_id+model one-off). Empty = zero
@@ -217,25 +235,6 @@ func (h *Handler) dispatchIssueRunWithTier(ctx context.Context, issue db.Issue, 
 	switch trigger.AssigneeType {
 	case "agent":
 		_, err := h.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID), override)
-		if err == nil {
-			return DispatchQueued, ReasonQueued
-		}
-		return issueEnqueueFailure(issue, issue.AssigneeID, err)
-	case "squad":
-		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
-	}
-	return DispatchBlocked, ReasonTargetUnavailable
-}
-	switch trigger.AssigneeType {
-	case "agent":
-		// The member who performed this assign/promote is the accountable human
-		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
-		// member actor is threaded; otherwise attribution falls back to the chain.
-		// M-359: an explicit tier/runtime+model pick bypasses the resolver.
-		if !override.IsZero() {
-			return h.dispatchIssueRunWithTier(ctx, issue, trigger, actorType, actorID, handoffNote, override)
-		}
-		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
 		if err == nil {
 			return DispatchQueued, ReasonQueued
 		}

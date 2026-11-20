@@ -72,13 +72,6 @@ func (h *Handler) loadArchivableProject(w http.ResponseWriter, r *http.Request) 
 	return project, workspaceID, true
 }
 
-func (h *Handler) projectResponseWithCounts(ctx context.Context, project db.Project) ProjectResponse {
-	resp := projectToResponse(project)
-	h.fillProjectIssueStats(ctx, &resp, project)
-	resp.ResourceCount = h.loadProjectResourceCount(ctx, project.ID)
-	return resp
-}
-
 func (h *Handler) ArchiveProject(w http.ResponseWriter, r *http.Request) {
 	project, workspaceID, ok := h.loadArchivableProject(w, r)
 	if !ok {
@@ -131,7 +124,7 @@ func (h *Handler) ArchiveProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ArchiveProjectResponse{
-		ProjectResponse:    h.projectResponseWithCounts(r.Context(), archived),
+		ProjectResponse:    h.projectResponseWithCounts(r, archived),
 		PausedAutopilotIDs: make([]string, 0, len(paused)),
 	}
 	h.publish(protocol.EventProjectUpdated, workspaceID, actorType, actorID, map[string]any{"project": resp.ProjectResponse})
@@ -169,7 +162,7 @@ func (h *Handler) RestoreProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to restore project")
 		return
 	}
-	resp := h.projectResponseWithCounts(r.Context(), restored)
+	resp := h.projectResponseWithCounts(r, restored)
 	h.publish(protocol.EventProjectUpdated, workspaceID, actorType, actorID, map[string]any{"project": resp})
 	writeJSON(w, http.StatusOK, resp)
 }
