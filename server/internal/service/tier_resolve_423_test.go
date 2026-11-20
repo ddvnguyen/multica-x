@@ -247,9 +247,9 @@ func TestDifficultyFromProperties423(t *testing.T) {
 	s := tier423Fixture(t)
 	ctx := context.Background()
 	wsUUID := util.MustParseUUID(s.wsID)
-	mkDef := func(name string) db.ListIssuePropertiesRow {
+	mkDef := func(name, typ string) db.ListIssuePropertiesRow {
 		made, err := s.qq.CreateIssueProperty(ctx, db.CreateIssuePropertyParams{
-			WorkspaceID: wsUUID, Name: name, Type: "number",
+			WorkspaceID: wsUUID, Name: name, Type: typ,
 			Config: []byte(`{}`),
 		})
 		if err != nil {
@@ -257,31 +257,24 @@ func TestDifficultyFromProperties423(t *testing.T) {
 		}
 		return db.ListIssuePropertiesRow{ID: made.ID, WorkspaceID: made.WorkspaceID, Name: made.Name, Type: made.Type}
 	}
-	imp := mkDef("Important_Level")
-	cpx := mkDef("COMPLEXITY")
-	dup := mkDef("important_level")
-	// Values: important=4, complexity garbage → 1. The duplicate def's id
-	// holds 5 but must be ignored (lowest UUID wins deterministically).
-	// Note: which of imp/dup wins depends on UUID order — the test only
-	// pins that the RESULT comes from exactly one of them, and that the
-	// complexity garbage coerces to 1.
-	_ = dup
+	imp := mkDef("Important_Level", "number")
+	cpx := mkDef("COMPLEXITY", "number")
+	_ = mkDef("notes", "text")
 	bagBytes, err := json.Marshal(map[string]any{
 		util.UUIDToString(imp.ID): 4,
 		util.UUIDToString(cpx.ID): "hard",
-		util.UUIDToString(dup.ID): 5,
 	})
 	if err != nil {
 		t.Fatalf("marshal bag: %v", err)
 	}
 	gotI, gotC := s.svc.difficultyFromProperties(ctx, wsUUID, bagBytes)
+	if gotI != 4 {
+		t.Errorf("important = %d, want 4 (case-insensitive def match)", gotI)
+	}
 	if gotC != 1 {
 		t.Errorf("complexity = %d, want 1 (garbage coerces)", gotC)
 	}
-	if gotI != 1 && gotI != 4 && gotI != 5 {
-		t.Errorf("important = %d, want one deterministic def value", gotI)
-	}
-	// Missing bag → 1/1; fractional → 1.
+	// Missing bag → 1/1; fractional/OOR → 1.
 	gotI, gotC = s.svc.difficultyFromProperties(ctx, wsUUID, nil)
 	if gotI != 1 || gotC != 1 {
 		t.Errorf("empty bag = %d/%d, want 1/1", gotI, gotC)
