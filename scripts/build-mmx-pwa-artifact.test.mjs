@@ -25,10 +25,21 @@ function fixtureTree({ brand, stamp }) {
   const web = mkdtempSync(join(tmpdir(), "mmx-pwa-artifact-"));
   const next = join(web, ".next");
   mkdirSync(join(next, "static"), { recursive: true });
+  mkdirSync(join(next, "server", "app"), { recursive: true });
+  mkdirSync(join(next, "server", "chunks"), { recursive: true });
+  mkdirSync(join(next, "standalone", "apps", "web", ".next", "server", "app"), { recursive: true });
   mkdirSync(join(web, "public"), { recursive: true });
-  // The brand marker lives where a real MMX_PWA=1 build bakes it: inside
-  // the staged tree (public/.next/static are what the script stages).
-  writeFileSync(join(next, "static", "brand.txt"), brand === "mmx" ? "mmx-install" : "multica-web");
+  // The manifest route body is the brand ground truth. The source-tree
+  // server chunk embeds BOTH brands' literals (as real builds do), proving
+  // the gate reads the manifest output and not a raw string.
+  writeFileSync(join(next, "server", "chunks", "both.js"), "mmx-install multica-web both literals\n");
+  // The standalone tree is what `next build` emits; the script stages
+  // public + static into it and gates on its manifest route output.
+  writeFileSync(
+    join(next, "standalone", "apps", "web", ".next", "server", "app", "manifest.webmanifest.body"),
+    brand === "mmx" ? '{"id":"/?mmx-install","name":"MMX"}\n' : '{"id":"/","name":"Multica"}\n',
+  );
+  writeFileSync(join(next, "standalone", "apps", "web", "server.js"), "server\n");
   writeFileSync(join(web, "public", "sw.js"), `const VERSION = "${stamp ? "__MMX_PWA_VERSION__" : "dev"}";\n`);
   writeFileSync(join(next, "static", "asset.js"), "asset\n");
   return { web, cleanup: () => rmSync(web, { recursive: true, force: true }) };
@@ -62,7 +73,7 @@ test("default-brand tree is rejected: cannot ship as the mmx-pwa artifact", () =
   try {
     const r = stage(web);
     assert.notEqual(r.status, 0, "contaminated tree must fail the brand gate");
-    assert.match(r.stderr, /MMX brand marker missing/);
+    assert.match(r.stderr, /MMX brand manifest missing/);
   } finally {
     cleanup();
   }
