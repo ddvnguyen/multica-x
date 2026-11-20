@@ -47,7 +47,10 @@ INSERT INTO model_tier (
     roles, manual_only, quota_kind, is_free
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-    $13, $14, $15, $16
+    COALESCE($13::text[], '{}'::text[]),
+    COALESCE($14::boolean, FALSE),
+    COALESCE($15::text, 'none'),
+    COALESCE($16::boolean, TRUE)
 ) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
 `
 
@@ -65,15 +68,18 @@ type CreateModelTierParams struct {
 	ProviderSlots int32          `json:"provider_slots"`
 	Enabled       bool           `json:"enabled"`
 	Roles         []string       `json:"roles"`
-	ManualOnly    bool           `json:"manual_only"`
-	QuotaKind     string         `json:"quota_kind"`
-	IsFree        bool           `json:"is_free"`
+	ManualOnly    pgtype.Bool    `json:"manual_only"`
+	QuotaKind     pgtype.Text    `json:"quota_kind"`
+	IsFree        pgtype.Bool    `json:"is_free"`
 }
 
 // Workspace model tiers (M-350). No FKs per repo rule: related rows are
 // validated and cleaned up in application code.
 // M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
 // rows land with roles '{}', manual_only false, quota_kind 'none'.
+// M-423: COALESCE guards so pre-423 callers passing zero values land on the
+// column DEFAULTs instead of NULLs (roles/manual_only/quota_kind/is_free
+// are NOT NULL with defaults since 735).
 func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams) (ModelTier, error) {
 	row := q.db.QueryRow(ctx, createModelTier,
 		arg.WorkspaceID,
@@ -493,10 +499,10 @@ SET name = $2,
     quality = $10,
     provider_slots = $11,
     enabled = $12,
-    roles = $13,
-    manual_only = $14,
-    quota_kind = $15,
-    is_free = $16,
+    roles = COALESCE($13::text[], roles),
+    manual_only = COALESCE($14::boolean, manual_only),
+    quota_kind = COALESCE($15::text, quota_kind),
+    is_free = COALESCE($16::boolean, is_free),
     updated_at = now()
 WHERE id = $1
 RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
@@ -516,9 +522,9 @@ type UpdateModelTierParams struct {
 	ProviderSlots int32          `json:"provider_slots"`
 	Enabled       bool           `json:"enabled"`
 	Roles         []string       `json:"roles"`
-	ManualOnly    bool           `json:"manual_only"`
-	QuotaKind     string         `json:"quota_kind"`
-	IsFree        bool           `json:"is_free"`
+	ManualOnly    pgtype.Bool    `json:"manual_only"`
+	QuotaKind     pgtype.Text    `json:"quota_kind"`
+	IsFree        pgtype.Bool    `json:"is_free"`
 }
 
 func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams) (ModelTier, error) {

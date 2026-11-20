@@ -4,13 +4,19 @@
 -- M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
 -- rows land with roles '{}', manual_only false, quota_kind 'none'.
 -- name: CreateModelTier :one
+-- M-423: COALESCE guards so pre-423 callers passing zero values land on the
+-- column DEFAULTs instead of NULLs (roles/manual_only/quota_kind/is_free
+-- are NOT NULL with defaults since 735).
 INSERT INTO model_tier (
     workspace_id, name, idx, runtime_id, provider, model,
     thinking_level, service_tier, cost, quality, provider_slots, enabled,
     roles, manual_only, quota_kind, is_free
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-    $13, $14, $15, $16
+    COALESCE(sqlc.narg('roles')::text[], '{}'::text[]),
+    COALESCE(sqlc.narg('manual_only')::boolean, FALSE),
+    COALESCE(sqlc.narg('quota_kind')::text, 'none'),
+    COALESCE(sqlc.narg('is_free')::boolean, TRUE)
 ) RETURNING *;
 -- name: GetModelTierInWorkspace :one
 SELECT * FROM model_tier
@@ -40,10 +46,10 @@ SET name = $2,
     quality = $10,
     provider_slots = $11,
     enabled = $12,
-    roles = $13,
-    manual_only = $14,
-    quota_kind = $15,
-    is_free = $16,
+    roles = COALESCE(sqlc.narg('roles')::text[], roles),
+    manual_only = COALESCE(sqlc.narg('manual_only')::boolean, manual_only),
+    quota_kind = COALESCE(sqlc.narg('quota_kind')::text, quota_kind),
+    is_free = COALESCE(sqlc.narg('is_free')::boolean, is_free),
     updated_at = now()
 WHERE id = $1
 RETURNING *;

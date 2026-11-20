@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -23,8 +25,8 @@ func TestNormalizeTierInput423(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create err = %v", err)
 	}
-	if len(params.Roles) != 0 || params.QuotaKind != "none" || !params.IsFree || params.ManualOnly {
-		t.Fatalf("create defaults = %+v", params)
+	if len(params.Roles) != 0 || params.QuotaKind.Valid || params.IsFree.Valid || params.ManualOnly.Valid {
+		t.Fatalf("create omitted = %+v, want invalid (SQL defaults own them)", params)
 	}
 
 	// Create validation.
@@ -46,24 +48,24 @@ func TestNormalizeTierInput423(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update err = %v", err)
 	}
-	if len(got.Roles) != 0 || !got.ManualOnly || got.QuotaKind != "daily" {
-		t.Fatalf("update = roles %v manual %v quota %s", got.Roles, got.ManualOnly, got.QuotaKind)
+	if len(got.Roles) != 0 || !got.ManualOnly.Valid || !got.ManualOnly.Bool || !got.QuotaKind.Valid || got.QuotaKind.String != "daily" {
+		t.Fatalf("update = roles %v manual %+v quota %+v", got.Roles, got.ManualOnly, got.QuotaKind)
 	}
 
 	// tierManualProtectionWeakened unit pins.
-	if tierManualProtectionWeakened(db.ModelTier{}, false, false, nil) {
+	if tierManualProtectionWeakened(db.ModelTier{}, pgtype.Bool{}, false, nil) {
 		t.Errorf("non-manual row must never weaken")
 	}
-	if !tierManualProtectionWeakened(db.ModelTier{ManualOnly: true}, false, false, nil) {
+	if !tierManualProtectionWeakened(db.ModelTier{ManualOnly: true}, pgtype.Bool{Bool: false, Valid: true}, false, nil) {
 		t.Errorf("clearing manual_only weakens")
 	}
-	if !tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a", "b"}}, true, true, []string{"a"}) {
+	if !tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a", "b"}}, pgtype.Bool{Bool: true, Valid: true}, true, []string{"a"}) {
 		t.Errorf("narrowing roles on a manual tier weakens")
 	}
-	if tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a"}}, true, false, nil) {
+	if tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a"}}, pgtype.Bool{Bool: true, Valid: true}, false, nil) {
 		t.Errorf("omitted roles must not weaken")
 	}
-	if tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a"}}, true, true, []string{"a", "b"}) {
+	if tierManualProtectionWeakened(db.ModelTier{ManualOnly: true, Roles: []string{"a"}}, pgtype.Bool{Bool: true, Valid: true}, true, []string{"a", "b"}) {
 		t.Errorf("widening roles must not weaken")
 	}
 }

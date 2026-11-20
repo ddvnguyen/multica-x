@@ -65,6 +65,7 @@ func ensureDifficultyPropertiesTx(ctx context.Context, qtx *db.Queries, workspac
 				Name:        name,
 				Type:        "number",
 				Description: "M-423 difficulty (1-5); set during planning, raises the tier quality floor.",
+				Config:      []byte(`{}`),
 			})
 			if err != nil {
 				return err

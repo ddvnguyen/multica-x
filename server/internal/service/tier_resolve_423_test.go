@@ -75,7 +75,11 @@ func (s *tier423Setup) tier(t *testing.T, name string, idx int32, rt pgtype.UUID
 	row, err := s.qq.CreateModelTier(ctx, db.CreateModelTierParams{
 		WorkspaceID: util.MustParseUUID(s.wsID), Name: name, Idx: idx, RuntimeID: rt,
 		Provider: "t423", Model: "m-" + name, ProviderSlots: 99, Enabled: true,
-		Roles: roles, ManualOnly: manual, QuotaKind: "none", IsFree: true, Quality: q,
+		Roles:      roles,
+		ManualOnly: pgtype.Bool{Bool: manual, Valid: true},
+		QuotaKind:  pgtype.Text{String: "none", Valid: true},
+		IsFree:     pgtype.Bool{Bool: true, Valid: true},
+		Quality:    q,
 	})
 	if err != nil {
 		t.Fatalf("create tier %s: %v", name, err)

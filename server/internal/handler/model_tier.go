@@ -254,9 +254,9 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 		params.ProviderSlots = cur.ProviderSlots
 		params.Enabled = cur.Enabled
 		params.Roles = cur.Roles
-		params.ManualOnly = cur.ManualOnly
-		params.QuotaKind = cur.QuotaKind
-		params.IsFree = cur.IsFree
+		params.ManualOnly = pgtype.Bool{Bool: cur.ManualOnly, Valid: true}
+		params.QuotaKind = pgtype.Text{String: cur.QuotaKind, Valid: true}
+		params.IsFree = pgtype.Bool{Bool: cur.IsFree, Valid: true}
 	}
 
 	name := params.Name
@@ -360,22 +360,23 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	} else if forCreate {
 		params.Roles = []string{}
 	}
+	// ManualOnly/QuotaKind/IsFree ride sqlc.narg NULLABLE params: present →
+	// explicit (even false), omitted → invalid → COALESCE keeps the column
+	// default (create) or the row value (update).
 	if in.ManualOnly != nil {
-		params.ManualOnly = *in.ManualOnly
+		params.ManualOnly = pgtype.Bool{Bool: *in.ManualOnly, Valid: true}
 	}
 	if in.QuotaKind != nil {
 		q := strings.TrimSpace(*in.QuotaKind)
 		switch q {
 		case "daily", "monthly", "five_hour_weekly", "none":
-			params.QuotaKind = q
+			params.QuotaKind = pgtype.Text{String: q, Valid: true}
 		default:
 			return params, nil, errors.New("quota_kind must be daily, monthly, five_hour_weekly or none")
 		}
-	} else if forCreate {
-		params.QuotaKind = "none"
 	}
 	if in.IsFree != nil {
-		params.IsFree = *in.IsFree
+		params.IsFree = pgtype.Bool{Bool: *in.IsFree, Valid: true}
 	}
 	return params, runtimeID, nil
 }
@@ -396,11 +397,13 @@ func validTierRoleName(r string) bool {
 // narrowing roles while manual-only stays set (roles gate who the tier can
 // serve, so shrinking them on a manual tier reshapes the owner-only lane).
 // Disabling the tier is NOT weakening (it removes it from every path).
-func tierManualProtectionWeakened(cur db.ModelTier, nextManualOnly bool, rolesSet bool, nextRoles []string) bool {
+func tierManualProtectionWeakened(cur db.ModelTier, nextManualOnly pgtype.Bool, rolesSet bool, nextRoles []string) bool {
 	if !cur.ManualOnly {
 		return false
 	}
-	if !nextManualOnly {
+	// An explicit false clears protection; omitted (invalid → COALESCE keeps
+	// true) does not.
+	if nextManualOnly.Valid && !nextManualOnly.Bool {
 		return true
 	}
 	if rolesSet && len(nextRoles) < len(cur.Roles) {
