@@ -1,3 +1,4 @@
+import type docs from "../locales/en/docs.json";
 import "i18next";
 // Pulls in the `ui` namespace augmentation owned by packages/ui — see
 // packages/ui/types/i18next.ts. Side-effect import is required for views'
@@ -27,6 +28,7 @@ import type layout from "../locales/en/layout.json";
 import type usage from "../locales/en/usage.json";
 import type squads from "../locales/en/squads.json";
 import type billing from "../locales/en/billing.json";
+import type decisions from "../locales/en/decisions.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
 // `t($ => $.signin.title)` resolves to the value in en/auth.json.
@@ -44,6 +46,7 @@ import type billing from "../locales/en/billing.json";
 // selector form standalone without depending on @multica/views.
 declare global {
   interface I18nResources {
+    docs: typeof docs;
     common: typeof common;
     auth: typeof auth;
     settings: typeof settings;
@@ -68,6 +71,7 @@ declare global {
     usage: typeof usage;
     squads: typeof squads;
     billing: typeof billing;
+    decisions: typeof decisions;
   }
 }
 

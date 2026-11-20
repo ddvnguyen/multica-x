@@ -38,7 +38,11 @@ func newAskPlanFixture(t *testing.T) askPlanFixture {
 		"status":     "running",
 	})
 	dbfx.Cleanup(t, `DELETE FROM agent_question_card WHERE task_id = $1`, taskID)
-	dbfx.Cleanup(t, `DELETE FROM agent_plan WHERE task_id = $1`, taskID)
+	// Plan review threads and section history reference the plan, so they go
+	// first (cleanups run last-registered-first).
+	dbfx.Cleanup(t, `DELETE FROM agent_plan_comment WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM agent_plan_section_version WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM agent_plan WHERE issue_id = $1`, issueID)
 	dbfx.Cleanup(t, `DELETE FROM agent_plan_review WHERE plan_id IN (SELECT id FROM agent_plan WHERE issue_id = $1)`, issueID)
 	dbfx.Cleanup(t, `DELETE FROM inbox_item WHERE issue_id = $1 AND type IN ('agent_question','plan_review')`, issueID)
 	return askPlanFixture{runtimeID: runtimeID, agentID: agentID, issueID: issueID, taskID: taskID}
@@ -73,7 +77,7 @@ func agentPlanRequest(t *testing.T, f askPlanFixture, method, path, planID strin
 	req.Header.Set("X-Task-ID", f.taskID)
 	req.Header.Set("X-Agent-ID", f.agentID)
 	req.Header.Set("X-Actor-Source", "task_token")
-	return withURLParams(req, "id", testWorkspaceID, "taskId", f.taskID, "planId", planID)
+	return withURLParams(req, "id", testWorkspaceID, "planId", planID)
 }
 
 func TestSubmitAskParksTaskAndCreatesCard(t *testing.T) {
@@ -155,6 +159,120 @@ func TestAnswerQuestionCardEnqueuesResumeTask(t *testing.T) {
 	).Want(http.StatusConflict)
 }
 
+// answerWithAsk parks f's running task behind an ask card (option 0) and
+// returns the resume task the answer enqueued.
+func answerWithAsk(t *testing.T, f askPlanFixture) string {
+	t.Helper()
+	var ask askResponse
+	testutil.Call(t, testHandler.SubmitAsk,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/ask", validAskBody()),
+	).Want(http.StatusAccepted).JSON(&ask)
+	var answerResp map[string]any
+	testutil.Call(t, testHandler.AnswerQuestionCard,
+		withURLParams(newRequest(http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/question-cards/"+ask.CardID+"/answer",
+			map[string]any{"answers": []map[string]any{{"selected": []int{0}}}}),
+			"id", testWorkspaceID, "cardId", ask.CardID),
+	).Want(http.StatusOK).JSON(&answerResp)
+	resumeID, _ := answerResp["resume_task"].(string)
+	if resumeID == "" {
+		t.Fatalf("no resume task in answer response: %#v", answerResp)
+	}
+	return resumeID
+}
+
+// M-327 (the M-285 quirk): the resumed run must answer in the thread that
+// asked the question. The claim handler derives trigger_thread_id — and the
+// reply target — from the task's trigger_comment_id (daemon.go), so a resume
+// task written without one leaves the daemon with no thread to answer in and
+// the reply lands as a new top-level comment. The parked task's trigger must
+// be carried onto the resume.
+func TestAskResumeTaskInheritsTriggerComment(t *testing.T) {
+	t.Run("comment-triggered park carries the trigger", func(t *testing.T) {
+		f := newAskPlanFixture(t)
+		triggerID := dbfx.Comment(t, f.issueID, "please decide the release day")
+		dbfx.Exec(t, `UPDATE agent_task_queue SET trigger_comment_id=$2 WHERE id=$1`, f.taskID, triggerID)
+
+		resumeID := answerWithAsk(t, f)
+		var inherited string
+		dbfx.QueryRow(t, `SELECT coalesce(trigger_comment_id::text, '') FROM agent_task_queue WHERE id=$1`, resumeID).Scan(&inherited)
+		if inherited != triggerID {
+			t.Fatalf("resume task trigger_comment_id = %q, want the parked task's %q", inherited, triggerID)
+		}
+	})
+
+	t.Run("assignment-triggered park stays null", func(t *testing.T) {
+		f := newAskPlanFixture(t)
+		resumeID := answerWithAsk(t, f)
+		var inherited string
+		dbfx.QueryRow(t, `SELECT coalesce(trigger_comment_id::text, '') FROM agent_task_queue WHERE id=$1`, resumeID).Scan(&inherited)
+		if inherited != "" {
+			t.Fatalf("resume task trigger_comment_id = %q, want empty: the parked run had no trigger comment", inherited)
+		}
+	})
+}
+
+// taskTokenRequestWithoutPathTask builds the request the router actually
+// produces for the plan routes that carry no taskId segment
+// (PUT /plans/{planId}/sections, POST /plans/{planId}/submit): the token's own
+// task is the only identity in play.
+func taskTokenRequestWithoutPathTask(t *testing.T, f askPlanFixture, method, path string, body any) *http.Request {
+	t.Helper()
+	req := newRequest(method, path, body)
+	req.Header.Set("X-Task-ID", f.taskID)
+	req.Header.Set("X-Agent-ID", f.agentID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	// "id" is the workspace in the router; "planId" is the plan. No "taskId":
+	// those routes do not declare that param.
+	return withURLParams(req, "id", testWorkspaceID)
+}
+
+// Production registers the plan write and submit routes without a taskId URL
+// param. Before this guard the handler demanded one anyway and answered every
+// agent write and submit with 400 "invalid task_id", so no agent could ever
+// submit a plan; the older tests injected taskId by hand and hid it.
+func TestPlanWriteAndSubmitWorkWithoutTaskIDPathParam(t *testing.T) {
+	f := newAskPlanFixture(t)
+	var created planResponse
+	testutil.Call(t, testHandler.CreatePlan,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/plans", map[string]any{
+			"title": "Release plan", "outline": []string{"Goal"},
+		}),
+	).Want(http.StatusCreated).JSON(&created)
+
+	writeReq := taskTokenRequestWithoutPathTask(t, f, http.MethodPut,
+		"/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/sections",
+		map[string]any{
+			"base_revision": created.Revision,
+			"section":       map[string]any{"section_id": "s1", "heading": "Goal", "markdown": "Ship it"},
+		})
+	writeReq = withURLParams(writeReq, "planId", created.ID)
+	var written planResponse
+	testutil.Call(t, testHandler.WritePlanSection, writeReq).Want(http.StatusOK).JSON(&written)
+	if written.Revision != created.Revision+1 {
+		t.Fatalf("revision = %d, want %d", written.Revision, created.Revision+1)
+	}
+
+	submitReq := taskTokenRequestWithoutPathTask(t, f, http.MethodPost,
+		"/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/submit",
+		map[string]any{"revision": written.Revision})
+	submitReq = withURLParams(submitReq, "planId", created.ID)
+	testutil.Call(t, testHandler.SubmitPlan, submitReq).Want(http.StatusAccepted)
+
+	// Submitting parks the run, which is what makes the verdict resume it.
+	if status := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE id=$1 AND status='blocked'`, f.taskID); status != 1 {
+		t.Fatalf("task not parked as blocked after submit")
+	}
+}
+
+// A path task that disagrees with the token is still a refusal, param or not.
+func TestAskRouteRefusesMismatchedPathTask(t *testing.T) {
+	f := newAskPlanFixture(t)
+	req := taskTokenRequestWithoutPathTask(t, f, http.MethodPost,
+		"/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/ask", validAskBody())
+	req = withURLParams(req, "taskId", "99999999-9999-4999-8999-999999999999")
+	testutil.Call(t, testHandler.SubmitAsk, req).Want(http.StatusForbidden)
+}
+
 func TestPlanCreateGateRefusesNonPlanningIssue(t *testing.T) {
 	f := newAskPlanFixture(t)
 	dbfx.Exec(t, `UPDATE issue SET status='in_progress' WHERE id=$1`, f.issueID)
@@ -174,6 +292,67 @@ func TestPlanCreateGateRefusesSecondOpenPlan(t *testing.T) {
 		"title": "Second plan", "outline": []string{"Goal"},
 	})
 	testutil.Call(t, testHandler.CreatePlan, second).Want(http.StatusConflict)
+}
+
+func createPlanForTask(t *testing.T, f askPlanFixture, title string, outline []string) planResponse {
+	t.Helper()
+	var plan planResponse
+	testutil.Call(t, testHandler.CreatePlan,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/plans", map[string]any{
+			"title": title, "outline": outline,
+		}),
+	).Want(http.StatusCreated).JSON(&plan)
+	return plan
+}
+
+func reassignAskPlanTask(t *testing.T, f askPlanFixture) askPlanFixture {
+	t.Helper()
+	next := f
+	next.agentID = dbfx.Agent(t, "Replacement Plan Agent", f.runtimeID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type='agent', assignee_id=$2 WHERE id=$1`, f.issueID, next.agentID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE id=$1`, f.taskID)
+	next.taskID = dbfx.Task(t, next.agentID, testutil.Cols{
+		"issue_id": f.issueID, "runtime_id": f.runtimeID, "status": "running",
+	})
+	return next
+}
+
+func TestReassignedIssueAssigneeCanSubmitOpenPlanFromEarlierTask(t *testing.T) {
+	f := newAskPlanFixture(t)
+	created := createPlanForTask(t, f, "First task plan", []string{"Goal"})
+
+	next := reassignAskPlanTask(t, f)
+	write := agentPlanRequest(t, next, http.MethodPut, "/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/sections", created.ID, map[string]any{
+		"base_revision": created.Revision,
+		"section":       map[string]any{"section_id": "s1", "heading": "Goal", "markdown": "Updated by current assignee"},
+	})
+	var updated planResponse
+	testutil.Call(t, testHandler.WritePlanSection, write).Want(http.StatusOK).JSON(&updated)
+	var submitted planResponse
+	testutil.Call(t, testHandler.SubmitPlan,
+		agentPlanRequest(t, next, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/plans/"+created.ID+"/submit", created.ID, map[string]any{
+			"revision": updated.Revision,
+		}),
+	).Want(http.StatusAccepted).JSON(&submitted)
+	if submitted.Status != "in_review" || submitted.TaskID != next.taskID {
+		t.Fatalf("submitted plan = %#v, want in_review on task %s", submitted, next.taskID)
+	}
+}
+
+func TestCurrentAssigneeCanReplaceOpenPlanFromEarlierTask(t *testing.T) {
+	f := newAskPlanFixture(t)
+	previous := createPlanForTask(t, f, "First task plan", []string{"Goal"})
+
+	next := reassignAskPlanTask(t, f)
+	replacement := createPlanForTask(t, next, "Replacement plan", []string{"Goal", "Steps"})
+	if replacement.ID == previous.ID {
+		t.Fatalf("replacement reused previous plan id %s", previous.ID)
+	}
+	var previousStatus string
+	dbfx.QueryRow(t, `SELECT status FROM agent_plan WHERE id=$1`, previous.ID).Scan(&previousStatus)
+	if previousStatus != "cancelled" {
+		t.Fatalf("previous plan status = %q, want cancelled", previousStatus)
+	}
 }
 
 func TestPlanWriteSectionRevisionFence(t *testing.T) {
@@ -202,6 +381,27 @@ func TestPlanWriteSectionRevisionFence(t *testing.T) {
 	if written.Revision != created.Revision+1 {
 		t.Fatalf("revision = %d, want %d", written.Revision, created.Revision+1)
 	}
+}
+
+func TestPlanRoutesRejectAnotherTask(t *testing.T) {
+	owner := newAskPlanFixture(t)
+	other := owner
+	other.agentID = dbfx.Agent(t, "Other Plan Agent", owner.runtimeID)
+	other.issueID = dbfx.Issue(t, "other plan issue", testutil.Cols{"status": "planing_2", "assignee_type": "agent", "assignee_id": other.agentID})
+	other.taskID = dbfx.Task(t, other.agentID, testutil.Cols{"issue_id": other.issueID, "runtime_id": owner.runtimeID, "status": "running"})
+	var plan planResponse
+	testutil.Call(t, testHandler.CreatePlan,
+		agentAskRequest(t, owner, http.MethodPost, "/plans", map[string]any{
+			"title": "Owner plan", "outline": []string{"Goal"},
+		}),
+	).Want(http.StatusCreated).JSON(&plan)
+	write := agentPlanRequest(t, other, http.MethodPut, "/sections", plan.ID, map[string]any{
+		"base_revision": plan.Revision,
+		"section":       map[string]any{"section_id": "s1", "heading": "Goal", "markdown": "Other agent"},
+	})
+	testutil.Call(t, testHandler.WritePlanSection, write).Want(http.StatusForbidden)
+	submit := agentPlanRequest(t, other, http.MethodPost, "/submit", plan.ID, map[string]any{"revision": plan.Revision})
+	testutil.Call(t, testHandler.SubmitPlan, submit).Want(http.StatusForbidden)
 }
 
 func TestPlanVerdictApproveWritesDescriptionAndResumes(t *testing.T) {
@@ -392,6 +592,43 @@ func TestParkReportRecordsSession(t *testing.T) {
 	// A park report against a non-blocked task is an advisory no-op.
 	other := newDaemonTokenRequest(http.MethodPost, "/blocked", map[string]any{"session_id": "x"}, testWorkspaceID, "park-daemon")
 	testutil.Call(t, testHandler.BlockTask, withURLParam(other, "taskId", f.taskID)).Want(http.StatusOK)
+}
+
+func TestEmptyParkReportPreservesPinnedSession(t *testing.T) {
+	f := newAskPlanFixture(t)
+	// A runtime may report its session while running, then return no session
+	// when the daemon interrupts it after an ask parks the task.
+	pin := newDaemonTokenRequest(http.MethodPost, "/session", map[string]any{
+		"session_id": "sess-pinned", "work_dir": "/workspace/fixture",
+	}, testWorkspaceID, "park-daemon")
+	testutil.Call(t, testHandler.PinTaskSession, withURLParam(pin, "taskId", f.taskID)).Want(http.StatusNoContent)
+	var ask askResponse
+	testutil.Call(t, testHandler.SubmitAsk,
+		agentAskRequest(t, f, http.MethodPost, "/api/workspaces/"+testWorkspaceID+"/tasks/"+f.taskID+"/ask", validAskBody()),
+	).Want(http.StatusAccepted).JSON(&ask)
+	park := newDaemonTokenRequest(http.MethodPost, "/blocked", map[string]any{}, testWorkspaceID, "park-daemon")
+	testutil.Call(t, testHandler.BlockTask, withURLParam(park, "taskId", f.taskID)).Want(http.StatusOK)
+	var sessionID string
+	dbfx.QueryRow(t, `SELECT COALESCE(session_id,'') FROM agent_task_queue WHERE id=$1`, f.taskID).Scan(&sessionID)
+	if sessionID != "sess-pinned" {
+		t.Fatalf("parked session = %q, want the pinned session", sessionID)
+	}
+	answer := newRequest(http.MethodPost, "/answer", map[string]any{
+		"answers": []map[string]any{{"selected": []int{0}}},
+	})
+	var response map[string]any
+	testutil.Call(t, testHandler.AnswerQuestionCard,
+		withURLParams(answer, "id", testWorkspaceID, "cardId", ask.CardID),
+	).Want(http.StatusOK).JSON(&response)
+	resumeID, _ := response["resume_task"].(string)
+	if resumeID == "" {
+		t.Fatalf("no resume task in answer response: %#v", response)
+	}
+	var sourceSession string
+	dbfx.QueryRow(t, `SELECT COALESCE(parked.session_id,'') FROM agent_task_queue resumed JOIN agent_task_queue parked ON parked.id=resumed.rerun_of_task_id WHERE resumed.id=$1`, resumeID).Scan(&sourceSession)
+	if sourceSession != "sess-pinned" {
+		t.Fatalf("resume source session = %q, want sess-pinned", sourceSession)
+	}
 }
 
 // keep the generated and encoding imports used even if a future edit drops a

@@ -158,8 +158,11 @@ func TestStartTaskCapabilityNegotiationMixedVersions(t *testing.T) {
 				if (err != nil) != tc.wantError {
 					t.Errorf("StartTask: %v", err)
 				}
-				if got != tc.negotiated {
-					t.Errorf("negotiated = %v, want %v", got, tc.negotiated)
+				if got.TaskSupplement != tc.negotiated {
+					t.Errorf("negotiated supplement = %v, want %v", got.TaskSupplement, tc.negotiated)
+				}
+				if got.Questions {
+					t.Errorf("questions capability must not be negotiated when it was never offered")
 				}
 				wantCalls := 1
 				if tc.retry && task.StartClaimSupported {
@@ -558,7 +561,7 @@ func TestTerminalReportsCarryRetiredSessionID(t *testing.T) {
 			name:     "complete",
 			endpoint: "/api/daemon/tasks/task-1/complete",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "POISONED-S", "", nil)
+				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "POISONED-S", "", nil, "")
 			},
 		},
 		{
@@ -601,7 +604,7 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "sess-1", "/tmp/wd", false, "", "", nil); err != nil {
+	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "sess-1", "/tmp/wd", false, "", "", nil, ""); err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
 	if _, present := body["retired_session_id"]; present {
@@ -618,7 +621,7 @@ func TestTerminalReportsCarryDurableWorkDir(t *testing.T) {
 		{
 			name: "complete",
 			call: func(c *Client) error {
-				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "", durableWorkDir, nil)
+				return c.CompleteTask(context.Background(), "task-1", "done", "", "", "/tmp/wd", false, "", durableWorkDir, nil, "")
 			},
 		},
 		{

@@ -18,9 +18,13 @@
 //	         description), changes_requested (≥1 comment or note), cancel
 //	         (frees the issue for a new plan) — each then resumes the run.
 //
-// The parked task is NOT terminal. It leaves blocked only via human cancel
-// (which withdraws the card / cancels the plan — amendment 3) or issue/agent
-// teardown. No sweeper reaps it; no wall clock expires it.
+// The parked task is NOT terminal. It leaves blocked via human cancel (which
+// withdraws the card / cancels the plan — amendment 3), issue/agent teardown,
+// or — since M-131 — the ask/plan timeout sweeper, which reaps it only while
+// its evidence is still open and only after the effective timeout: withdraw /
+// cancel through the same settle, cancel the parked task, escalate to the
+// project lead. An answered park is never a candidate (first answer wins), no
+// run is ever cancelled outright, and no resume is ever written with a notice.
 package service
 
 import (
@@ -34,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -58,6 +63,14 @@ var planningStatuses = map[string]bool{
 
 // WaitReasonAskPlan is the short hint parked tasks carry next to their status.
 const WaitReasonAskPlan = "awaiting human answer"
+
+// Who decided a question card (agent_question_card.answered_by_type).
+// AnsweredByAgent is the project lead answering on the Owner's behalf after
+// the M-332 escalation; everything else is a member's own answer.
+const (
+	AnsweredByMember = "member"
+	AnsweredByAgent  = "agent"
+)
 
 // ErrQuestionCardClosed / ErrPlanClosed / ErrPlanStaleRevision are business
 // outcomes, never 500s: the card was already answered, the plan already final,
@@ -171,13 +184,14 @@ func SettleParkedAskPlanForTasks(ctx context.Context, q *db.Queries, tasks []db.
 // answering it then fails the CAS, which is honest).
 func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQueue, workspaceID pgtype.UUID, contextText string, questions json.RawMessage) (db.AgentQuestionCard, error) {
 	card, err := s.Queries.CreateAgentQuestionCard(ctx, db.CreateAgentQuestionCardParams{
-		ID:          dbid.NewV7(),
-		WorkspaceID: workspaceID,
-		IssueID:     task.IssueID,
-		TaskID:      task.ID,
-		AgentID:     task.AgentID,
-		Context:     pgtype.Text{String: contextText, Valid: contextText != ""},
-		Questions:   questions,
+		ID:               dbid.NewV7(),
+		WorkspaceID:      workspaceID,
+		IssueID:          task.IssueID,
+		TaskID:           task.ID,
+		AgentID:          task.AgentID,
+		Context:          pgtype.Text{String: contextText, Valid: contextText != ""},
+		Questions:        questions,
+		TriggerCommentID: task.TriggerCommentID,
 	})
 	if err != nil {
 		return db.AgentQuestionCard{}, fmt.Errorf("create question card: %w", err)
@@ -190,16 +204,25 @@ func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQ
 // the card as answered with no continuation, and a half-committed resume
 // (enqueued, answer lost) would resurrect a session the human never steered.
 // The CAS on 'open' makes a second answer ErrQuestionCardClosed → 409.
-func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceID, answeredBy pgtype.UUID, answers json.RawMessage) (db.AgentQuestionCard, *db.AgentTaskQueue, error) {
+//
+// answeredByType is "member" for the Owner (or any workspace member) and
+// "agent" for the project lead answering on the Owner's behalf after the
+// M-332 escalation. It travels to the row so the resumed run and the Decisions
+// surfaces never present a lead's pick as the Owner's own.
+func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceID, answeredBy pgtype.UUID, answeredByType string, answers json.RawMessage) (db.AgentQuestionCard, *db.AgentTaskQueue, error) {
+	if answeredByType != AnsweredByAgent {
+		answeredByType = AnsweredByMember
+	}
 	var (
 		card       db.AgentQuestionCard
 		resumeTask *db.AgentTaskQueue
 	)
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		answered, err := qtx.AnswerAgentQuestionCard(ctx, db.AnswerAgentQuestionCardParams{
-			ID:         cardID,
-			Answers:    answers,
-			AnsweredBy: answeredBy,
+			ID:             cardID,
+			Answers:        answers,
+			AnsweredBy:     answeredBy,
+			AnsweredByType: answeredByType,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrQuestionCardClosed
@@ -217,7 +240,18 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 		if err != nil {
 			return fmt.Errorf("load issue: %w", err)
 		}
-		note := renderQuestionAnswerHandoff(card, answers)
+		narrator := ""
+		if card.AnsweredByType == AnsweredByAgent {
+			// A lead's answer is the lead's, not the Owner's: naming it in the
+			// handoff is what keeps the resumed run from treating an inference
+			// as a recorded Owner decision.
+			if agent, err := qtx.GetAgent(ctx, card.AnsweredBy); err == nil {
+				narrator = agent.Name
+			} else {
+				narrator = "the project lead"
+			}
+		}
+		note := renderQuestionAnswerHandoff(card, answers, narrator)
 		txService := &TaskService{Queries: qtx}
 		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
 		if err != nil {
@@ -235,6 +269,17 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 	// Post-commit side effects mirror every other enqueue path.
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *resumeTask)
 	s.NotifyTaskEnqueued(ctx, *resumeTask)
+	// M-333: the answer closed the card, so its ask inbox rows are stale for
+	// every member. Archive them now (post-commit — a failure leaves them for
+	// the lazy sweep on list) with the parked task id, which also resolves the
+	// timeout-escalation row once M-332 lets the lead answer an escalated card.
+	if err := inbox.ArchiveResolvedAskPlan(ctx, s.Queries, s.Bus,
+		util.UUIDToString(card.WorkspaceID), util.UUIDToString(card.IssueID),
+		[]string{util.UUIDToString(card.TaskID)}); err != nil {
+		slog.Warn("ask answer: archive question inbox rows failed",
+			"card_id", util.UUIDToString(card.ID),
+			"issue_id", util.UUIDToString(card.IssueID), "error", err)
+	}
 	return card, resumeTask, nil
 }
 
@@ -265,8 +310,33 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 		if !current.SubmittedRevision.Valid || current.SubmittedRevision.Int32 != planRevision {
 			return ErrPlanStaleRevision
 		}
+
+		// M-275: every verdict sends the plan page's pending comments. They are
+		// settled here, in the verdict's own transaction, and their bodies ride
+		// the flat list agent_plan_review.comments still stores — the Answered
+		// view and the S1-A1 Go tests keep their contract.
+		pending, err := qtx.ListUndeliveredAgentPlanComments(ctx, planID)
+		if err != nil {
+			return fmt.Errorf("load pending plan comments: %w", err)
+		}
+		comments, err = mergeDeliveredPlanComments(comments, pending)
+		if err != nil {
+			return err
+		}
 		if verdict == "changes_requested" && !hasReviewComment(comments, note) {
 			return ErrPlanNeedsComment
+		}
+		if len(pending) > 0 {
+			ids := make([]pgtype.UUID, 0, len(pending))
+			for _, comment := range pending {
+				ids = append(ids, comment.ID)
+			}
+			if err := qtx.DeliverAgentPlanComments(ctx, db.DeliverAgentPlanCommentsParams{
+				Ids:     ids,
+				Verdict: pgtype.Text{String: verdict, Valid: true},
+			}); err != nil {
+				return fmt.Errorf("deliver plan comments: %w", err)
+			}
 		}
 
 		if _, err := qtx.RecordAgentPlanReview(ctx, db.RecordAgentPlanReviewParams{
@@ -353,7 +423,7 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 		if err != nil {
 			return fmt.Errorf("load issue: %w", err)
 		}
-		handoff := renderPlanVerdictHandoff(plan, verdict, comments, note)
+		handoff := renderPlanVerdictHandoffWithComments(plan, verdict, comments, note, pending)
 		txService := &TaskService{Queries: qtx}
 		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy)
 		if err != nil {
@@ -367,6 +437,17 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 	}
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *resumeTask)
 	s.NotifyTaskEnqueued(ctx, *resumeTask)
+	// M-333: the verdict moved the plan out of in_review, so its plan_review
+	// inbox rows are stale for every member. Archive them post-commit with the
+	// parked task id, which also resolves the plan's timeout-escalation row.
+	// A failure leaves the rows for the lazy sweep on list.
+	if err := inbox.ArchiveResolvedAskPlan(ctx, s.Queries, s.Bus,
+		util.UUIDToString(plan.WorkspaceID), util.UUIDToString(plan.IssueID),
+		[]string{util.UUIDToString(plan.TaskID)}); err != nil {
+		slog.Warn("plan verdict: archive plan inbox rows failed",
+			"plan_id", util.UUIDToString(plan.ID),
+			"issue_id", util.UUIDToString(plan.IssueID), "error", err)
+	}
 	return plan, resumeTask, promoted, nil
 }
 
@@ -375,6 +456,15 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 // prior_session_id from that named source — the only path that can see a
 // blocked row's session) and the evidence kind naming the card/plan. Runs in
 // the caller's transaction via the tx-scoped service.
+//
+// M-327: the resume inherits the parked task's trigger_comment_id. Without it,
+// every resume task was written with trigger_comment_id NULL, so the claim had
+// no trigger thread to resolve (daemon.go fills TriggerThreadID from that
+// comment, walking to its thread root) and the resumed run posted its reply as
+// a NEW top-level comment instead of into the thread that asked the question
+// (M-285 quirk, reproduced on opencode2 in M-318). A parked task with no
+// trigger comment — an assignment-triggered run — stays NULL, which is right:
+// there was no thread to answer in.
 func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Issue, parked db.AgentTaskQueue, evidenceKind string, evidenceRefID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, parked.AgentID)
 	if err != nil {
@@ -394,18 +484,26 @@ func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Iss
 	overlay := s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
 	attrSource, attrDelegatedFrom, _, _ := attributionCreateParams(attr)
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-		ID:          dbid.NewV7(),
-		AgentID:     parked.AgentID,
-		RuntimeID:   agent.RuntimeID,
-		IssueID:     parked.IssueID,
-		Priority:    priorityToInt(issue.Priority),
-		HandoffNote: pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
+		ID:        dbid.NewV7(),
+		AgentID:   parked.AgentID,
+		RuntimeID: agent.RuntimeID,
+		// M-351: a parked resume replays the parked run's own session, so it
+		// inherits the parked row's tier stamp instead of re-resolving.
+		// Tier change mid-conversation starts a fresh provider session.
+		ModelOverride:         parked.ModelOverride,
+		ThinkingLevelOverride: parked.ThinkingLevelOverride,
+		ServiceTierOverride:   parked.ServiceTierOverride,
+		TierID:                parked.TierID,
+		IssueID:               parked.IssueID,
+		Priority:              priorityToInt(issue.Priority),
+		HandoffNote:           pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
 		// forceFreshSession stays false: the whole point is resuming the parked
 		// session through the named rerun source.
 		OriginatorUserID:     attr.UserID,
 		AccountableUserID:    attr.AccountableUserID,
 		RuleVersionID:        attr.RuleVersionID,
 		RerunOfTaskID:        parked.ID,
+		TriggerCommentID:     parked.TriggerCommentID,
 		RuntimeMcpOverlay:    overlay.Overlay,
 		RuntimeConnectedApps: overlay.ConnectedApps,
 		OriginatorSource:     attrSource,
@@ -480,14 +578,20 @@ type planSection struct {
 
 // renderQuestionAnswerHandoff is what the resumed run reads: the member's
 // answers, one line per question, in question order (the port of team-room's
-// decisionAnswersText — labels plus quoted free text).
-func renderQuestionAnswerHandoff(card db.AgentQuestionCard, answers json.RawMessage) string {
+// decisionAnswersText — labels plus quoted free text). byAgent is non-empty
+// when the project lead answered on the Owner's behalf (M-332): the run is told
+// who decided, so it can weigh a lead's call differently from the Owner's own.
+func renderQuestionAnswerHandoff(card db.AgentQuestionCard, answers json.RawMessage, byAgent string) string {
 	var qs []askPlanQuestion
 	var as []askPlanAnswer
 	_ = json.Unmarshal(card.Questions, &qs)
 	_ = json.Unmarshal(answers, &as)
 	var b strings.Builder
-	b.WriteString("Your question was answered by a human. This run resumes the session that asked it; treat the answers below as the human's reply and continue the task accordingly.\n\n")
+	if strings.TrimSpace(byAgent) != "" {
+		fmt.Fprintf(&b, "Your question was answered by %s, the project lead, on the Owner's behalf: the Owner did not answer it directly. This run resumes the session that asked it; treat the answers below as the decision to continue with, and say in your result that the lead decided it on the Owner's behalf.\n\n", strings.TrimSpace(byAgent))
+	} else {
+		b.WriteString("Your question was answered by a human. This run resumes the session that asked it; treat the answers below as the human's reply and continue the task accordingly.\n\n")
+	}
 	if card.Context.Valid && strings.TrimSpace(card.Context.String) != "" {
 		b.WriteString("Context you provided: ")
 		b.WriteString(strings.TrimSpace(card.Context.String))
@@ -511,8 +615,50 @@ func renderQuestionAnswerHandoff(card db.AgentQuestionCard, answers json.RawMess
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// mergeDeliveredPlanComments folds the plan page's pending comment bodies into
+// the verdict's flat comment list, so agent_plan_review.comments keeps meaning
+// "what the human sent" for callers on either shape. The request's own list
+// stays first: it is the legacy note box, and a body already present is not
+// written twice.
+func mergeDeliveredPlanComments(comments json.RawMessage, pending []db.AgentPlanComment) (json.RawMessage, error) {
+	var list []string
+	if len(comments) > 0 {
+		_ = json.Unmarshal(comments, &list)
+	}
+	seen := make(map[string]bool, len(list))
+	for _, c := range list {
+		seen[strings.TrimSpace(c)] = true
+	}
+	for _, comment := range pending {
+		body := strings.TrimSpace(comment.Body)
+		if body == "" || seen[body] {
+			continue
+		}
+		seen[body] = true
+		list = append(list, body)
+	}
+	if list == nil {
+		list = []string{}
+	}
+	merged, err := json.Marshal(list)
+	if err != nil {
+		return nil, fmt.Errorf("encode plan comments: %w", err)
+	}
+	return merged, nil
+}
+
 // renderPlanVerdictHandoff is the resumed run's instruction for a plan verdict.
+//
+// M-275: the plan page's comments carry an anchor, so they are rendered the way
+// the human wrote them — the section heading, the quoted passage, the body, and
+// its replies indented under the root — instead of a flat bullet list.
+// renderPlanVerdictHandoff is the flat-list form every pre-M-275 caller and
+// test still uses: no anchored comments to render.
 func renderPlanVerdictHandoff(plan db.AgentPlan, verdict string, comments json.RawMessage, note string) string {
+	return renderPlanVerdictHandoffWithComments(plan, verdict, comments, note, nil)
+}
+
+func renderPlanVerdictHandoffWithComments(plan db.AgentPlan, verdict string, comments json.RawMessage, note string, planComments []db.AgentPlanComment) string {
 	var b strings.Builder
 	revision := int32(0)
 	if plan.SubmittedRevision.Valid {
@@ -523,18 +669,90 @@ func renderPlanVerdictHandoff(plan db.AgentPlan, verdict string, comments json.R
 		fmt.Fprintf(&b, "Your plan %q (revision %d) was APPROVED by a human. The plan has been written into the issue description — go ahead with it.\n", plan.Title, revision)
 	case "changes_requested":
 		fmt.Fprintf(&b, "Your plan %q (revision %d) was sent back with CHANGES REQUESTED. Read the comments below, revise the plan sections, and submit it again.\n", plan.Title, revision)
-		var list []string
-		_ = json.Unmarshal(comments, &list)
-		for _, c := range list {
-			if t := strings.TrimSpace(c); t != "" {
-				fmt.Fprintf(&b, "  - %s\n", t)
-			}
-		}
 	case "cancel":
 		fmt.Fprintf(&b, "Your plan %q was CANCELLED by a human. Do not act on it; stop planning and await further instruction.\n", plan.Title)
 	}
+	if block := renderPlanComments(plan, planComments); block != "" {
+		b.WriteString("\n")
+		b.WriteString(block)
+		b.WriteString("\n")
+	}
+	var list []string
+	_ = json.Unmarshal(comments, &list)
+	// The verdict's own note box list, minus the bodies already rendered above
+	// with their anchors.
+	anchored := make(map[string]bool, len(planComments))
+	for _, comment := range planComments {
+		anchored[strings.TrimSpace(comment.Body)] = true
+	}
+	var flat []string
+	for _, c := range list {
+		if t := strings.TrimSpace(c); t != "" && !anchored[t] {
+			flat = append(flat, t)
+		}
+	}
+	if len(flat) > 0 {
+		b.WriteString("\nAlso noted:\n")
+		for _, c := range flat {
+			fmt.Fprintf(&b, "  - %s\n", c)
+		}
+	}
 	if t := strings.TrimSpace(note); t != "" {
-		fmt.Fprintf(&b, "Note: %s\n", t)
+		fmt.Fprintf(&b, "\nNote: %s\n", t)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderPlanComments writes the plan page's threads: each root under its
+// section heading and quoted passage, its replies indented beneath it. A
+// comment whose section no longer exists keeps its quote and says so, which is
+// the same fallback the plan page renders (M-275 risk a).
+func renderPlanComments(plan db.AgentPlan, comments []db.AgentPlanComment) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	headings := make(map[string]string)
+	var sections []planSection
+	if err := json.Unmarshal(plan.Sections, &sections); err == nil {
+		for _, section := range sections {
+			headings[section.SectionID] = section.Heading
+		}
+	}
+	roots := make(map[pgtype.UUID]bool, len(comments))
+	for _, comment := range comments {
+		if !comment.ParentCommentID.Valid {
+			roots[comment.ID] = true
+		}
+	}
+	var b strings.Builder
+	for _, comment := range comments {
+		body := strings.TrimSpace(comment.Body)
+		if body == "" {
+			continue
+		}
+		reply := comment.ParentCommentID.Valid
+		if !reply {
+			switch {
+			case comment.SectionID == "":
+				b.WriteString("### General\n")
+			case headings[comment.SectionID] != "":
+				fmt.Fprintf(&b, "### %s\n", headings[comment.SectionID])
+			default:
+				fmt.Fprintf(&b, "### (section %s, since rewritten)\n", comment.SectionID)
+			}
+			if quote := strings.TrimSpace(comment.Quote); quote != "" {
+				fmt.Fprintf(&b, "> %s\n", quote)
+			}
+			fmt.Fprintf(&b, "%s\n", body)
+			continue
+		}
+		if !roots[comment.ParentCommentID] {
+			// A reply whose root is outside this batch (already delivered): keep
+			// its text rather than dropping it.
+			fmt.Fprintf(&b, "  - reply: %s\n", body)
+			continue
+		}
+		fmt.Fprintf(&b, "  - reply: %s\n", body)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

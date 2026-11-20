@@ -4,7 +4,7 @@ import { IssueSidebarSectionHeader } from "./issue-sidebar-section";
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Clock3, ChevronRight, GitPullRequest, Link2, ListChecks, CircleDot, Play } from "lucide-react";
+import { Bell, Clock3, ChevronRight, GitPullRequest, Link2, ListChecks, CircleDot, Play } from "@multica/ui/icons";
 import { toast } from "sonner";
 import {
   issueSystemWakeupsOptions,
@@ -16,7 +16,7 @@ import {
   useTriggerIssueWakeup,
   issueTasksOptions,
 } from "@multica/core/issues";
-import type { AgentTask, IssueWakeup, WakeupCondition } from "@multica/core/types";
+import type { AgentTask, IssueWakeup, SystemWakeup, WakeupCondition } from "@multica/core/types";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import {
   Popover,
@@ -184,7 +184,7 @@ function WakeupRow({
           render={
             <button
               type="button"
-              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-caption hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-label hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
             />
           }
         >
@@ -197,7 +197,7 @@ function WakeupRow({
               {text.trigger(wakeup)}
             </span>
           </span>
-          <span className="col-span-2 min-w-0 break-words pl-7.5 pr-2 text-micro">
+          <span className="col-span-2 min-w-0 break-words pl-7.5 pr-2 text-caption">
             <span className="block text-muted-foreground">
               {text.summary(wakeup, closed)}
             </span>
@@ -392,6 +392,19 @@ export function WakeupsSection({
   if (closed && !hasContent) return null;
   const current = data.filter((w) => isCurrentWakeup(w, wakeupRun(w, tasks)));
   const history = data.filter((w) => !isCurrentWakeup(w, wakeupRun(w, tasks)));
+  const visibleSystemRules = closed ? [] : systemRules;
+  const currentSystemRules = visibleSystemRules.filter((rule) => rule.enabled);
+  const offSystemRules = visibleSystemRules.filter((rule) => !rule.enabled);
+  const historyCount = history.length + offSystemRules.length;
+  const systemRow = (rule: SystemWakeup) => (
+    <SystemWakeupRow
+      key={rule.rule}
+      rule={rule}
+      workspaceId={workspaceId}
+      issueId={issueId}
+      onTurnedOff={() => setHistoryOpen(true)}
+    />
+  );
   const row = (wakeup: IssueWakeup) => (
     <WakeupRow
       key={wakeup.id}
@@ -426,7 +439,7 @@ export function WakeupsSection({
       <IssueSidebarSectionHeader
         id={`issue-wakeups-${issueId}`}
         title={t(($) => $.wakeups.title)} open={open} onOpenChange={setOpen}
-        count={current.length + (!closed ? systemRules.length : 0)}
+        count={current.length + currentSystemRules.length}
         collapsible={hasContent}
         actions={!closed ? <WakeupCreate workspaceId={workspaceId} issueId={issueId} defaultAgentId={defaultAgentId} /> : undefined}
       />
@@ -435,37 +448,39 @@ export function WakeupsSection({
           {isError && (
             <button
               type="button"
-              className="flex min-h-8 w-full items-center rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              className="flex min-h-8 w-full items-center rounded-md px-2 py-1.5 text-left text-label text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
               onClick={() => { void refetch(); void refetchSystemRules(); }}
             >
               {t(($) => $.wakeups.retry)}
             </button>
           )}
           {closed && (
-            <p className="px-2 text-caption text-muted-foreground">
+            <p className="px-2 text-label text-muted-foreground">
               {t(($) => $.wakeups.closed_hint)}
             </p>
           )}
-          {!closed &&
-            systemRules.map((rule) => (
-              <SystemWakeupRow key={rule.rule} rule={rule} workspaceId={workspaceId} issueId={issueId} />
-            ))}
+          {currentSystemRules.map(systemRow)}
           {current.map(row)}
-          {history.length > 0 && (
+          {historyCount > 0 && (
             <>
               <button
                 type="button"
                 aria-expanded={historyOpen}
                 onClick={() => setHistoryOpen(!historyOpen)}
-                className="flex min-h-9 w-full items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+                className="flex min-h-9 w-full items-center gap-1 rounded-md px-2 py-1 text-label text-muted-foreground hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
               >
                 <ChevronRight
                   className={`size-3 ${historyOpen ? "rotate-90" : ""}`}
                   aria-hidden="true"
                 />
-                {t(($) => $.wakeups.ended, { count: history.length })}
+                {t(($) => $.wakeups.ended, { count: historyCount })}
               </button>
-              {historyOpen && history.map(row)}
+              {historyOpen && (
+                <>
+                  {offSystemRules.map(systemRow)}
+                  {history.map(row)}
+                </>
+              )}
             </>
           )}
         </div>

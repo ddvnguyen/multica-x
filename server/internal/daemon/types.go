@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
@@ -109,21 +110,48 @@ type Task struct {
 	// order. Rendered into the brief's status-command line; empty (including on
 	// old servers that never send the field) keeps the brief byte-identical to
 	// the built-in-only form. IssueStatusesOmitted is the cap overflow count.
-	IssueStatuses                 []IssueStatusData      `json:"issue_statuses,omitempty"`
-	IssueStatusesOmitted          int                    `json:"issue_statuses_omitted,omitempty"`
-	ProjectWorkflow               *ProjectWorkflowData   `json:"project_workflow,omitempty"`
-	ThreadName                    string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
-	Agent                         *AgentData             `json:"agent,omitempty"`
-	ModelOverride                 string                 `json:"model_override,omitempty"` // claim-time snapshot of the agent's persistent OpenClaw model override
-	ConnectedApps                 []ConnectedAppData     `json:"connected_apps,omitempty"` // per-run app capabilities mounted through runtime MCP overlays
-	Repos                         []RepoData             `json:"repos,omitempty"`
-	ProjectID                     string                 `json:"project_id,omitempty"`                       // active project for this task, when present
-	ProjectTitle                  string                 `json:"project_title,omitempty"`                    // human-readable project title for context injection
-	ProjectDescription            string                 `json:"project_description,omitempty"`              // durable project-level context injected into the brief
-	ProjectResources              []ProjectResourceData  `json:"project_resources,omitempty"`                // project-scoped resources to expose to the agent
-	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
-	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
-	PriorSessionID                string                 `json:"prior_session_id,omitempty"`                 // Claude session ID from a previous task on this issue
+	IssueStatuses        []IssueStatusData     `json:"issue_statuses,omitempty"`
+	IssueStatusesOmitted int                   `json:"issue_statuses_omitted,omitempty"`
+	ProjectWorkflow      *ProjectWorkflowData  `json:"project_workflow,omitempty"`
+	ThreadName           string                `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
+	Agent                *AgentData            `json:"agent,omitempty"`
+	ModelOverride        string                `json:"model_override,omitempty"` // claim-time snapshot of the agent's persistent OpenClaw model override
+	ConnectedApps        []ConnectedAppData    `json:"connected_apps,omitempty"` // per-run app capabilities mounted through runtime MCP overlays
+	Repos                []RepoData            `json:"repos,omitempty"`
+	ProjectID            string                `json:"project_id,omitempty"`           // active project for this task, when present
+	ProjectTitle         string                `json:"project_title,omitempty"`        // human-readable project title for context injection
+	ProjectDescription   string                `json:"project_description,omitempty"`  // durable project-level context injected into the brief
+	ProjectArchived      bool                  `json:"project_archived,omitempty"`     // project is archived; the brief says so
+	ProjectResources     []ProjectResourceData `json:"project_resources,omitempty"`    // project-scoped resources to expose to the agent
+	IsLeaderTask         bool                  `json:"is_leader_task,omitempty"`       // true when executing in the squad-leader coordinator role
+	LeaderRoleResolved   bool                  `json:"leader_role_resolved,omitempty"` // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
+	DocsEnabled          bool                  `json:"docs_enabled,omitempty"`         // the server's docs_v1 flag. Absent on servers predating it, which reads as false: the brief leaves out the `multica doc` and mention://doc lines
+	PriorSessionID       string                `json:"prior_session_id,omitempty"`     // Claude session ID from a previous task on this issue
+	// PriorSessionEndedAt is when the run that PriorSessionID belongs to
+	// reached a terminal state (RFC3339, S3-B2/M-138). The seeded-session
+	// decision measures cache warmth from it: a session idle longer than the
+	// provider's TTL is cold, whatever the wall clock says about the process.
+	// Empty on servers predating it and on a cold start, which reads as "age
+	// unknown" — the decision then cannot call the cache warm.
+	PriorSessionEndedAt string `json:"prior_session_ended_at,omitempty"`
+	// PriorSessionPinned marks PriorSessionID as the session a human explicitly
+	// continued: the source run parked awaiting an answer (ask/plan) and the
+	// answer's run belongs in that same session, however long the question
+	// waited. A parked row is not terminal, so it has no end time; the dsh
+	// session-start decision resumes a pinned session instead of judging the
+	// cache warmth it cannot measure (S1-A1/M-177). Absent on older servers.
+	PriorSessionPinned bool `json:"prior_session_pinned,omitempty"`
+	// LinkedPriorSession* name the newest terminal dsh session on an issue
+	// explicitly linked to this one — its parent or a child (S3-B2/M-138).
+	// Deterministic relevance v1: an explicit parent/child link is the whole
+	// rule. The server applies the same resume guards it applies to the same-
+	// issue prior, so a poisoned or retired session never arrives here.
+	// Empty when there is no linked issue, no dsh session on it, or the server
+	// predates the fields.
+	LinkedPriorSessionID          string                 `json:"linked_prior_session_id,omitempty"`
+	LinkedPriorSessionIssueID     string                 `json:"linked_prior_session_issue_id,omitempty"`
+	LinkedPriorSessionEndedAt     string                 `json:"linked_prior_session_ended_at,omitempty"`
+	LinkedPriorSessionWorkDir     string                 `json:"linked_prior_session_work_dir,omitempty"`
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
@@ -149,6 +177,8 @@ type Task struct {
 	ChatType                      string                 `json:"chat_type,omitempty"`                        // "group" when the channel conversation is a shared room, "p2p" for a 1:1 with the bot. Empty for a web chat or an old server; the per-turn prompt then reports unknown rather than guessing 1:1
 	ChatInThread                  bool                   `json:"chat_in_thread,omitempty"`                   // true when the latest @mention was a thread reply; selects which read command the prompt tells the agent to start with
 	ChatMessage                   string                 `json:"chat_message,omitempty"`                     // user message content for chat tasks
+	ChatSkillMessage              *string                `json:"chat_skill_message,omitempty"`               // verified member-authored input only; excludes system kickoff and agent messages
+	ChatResumeMessage             *string                `json:"chat_resume_message,omitempty"`              // input excluding guidance already in PriorSessionID
 	ChatMessageAttachments        []ChatAttachmentMeta   `json:"chat_message_attachments,omitempty"`         // attachments linked to the chat message; agent uses these to `multica attachment download <id>`
 	ChatIntro                     bool                   `json:"chat_intro,omitempty"`                       // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
 	RegenerateQuickActionsFor     string                 `json:"regenerate_quick_actions_for,omitempty"`     // set only by servers predating server-side quick-actions generation (MUL-5573). Read as a REFUSAL marker, never executed: see the guard in runTask
@@ -169,10 +199,20 @@ type Task struct {
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`          // legacy assignment handoff instruction; rendered only in the per-turn prompt
 	TriggerEvidenceKind           string                 `json:"trigger_evidence_kind,omitempty"` // S1-A1: question_answer / plan_verdict names a parked ask/plan resume; the prompt renders the handoff as the answer/verdict block
 
+	ChatSource *protocol.ChatSource `json:"chat_source,omitempty"`
+	// ChatFeishuSource is the Feishu ids of the message a Feishu chat task
+	// answers. Older servers omit it and the prompt then lists no ids.
+	ChatFeishuSource *protocol.FeishuSource `json:"chat_feishu_source,omitempty"`
+
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
 	ParentIssueID         string `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier string `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
+	// ParentIssue is the parent of the issue this run works on, for runs on a
+	// sub-issue; unrelated to the quick-create ParentIssueID above. Absent on
+	// old servers and for issues without a parent, and then no parent block is
+	// rendered.
+	ParentIssue *ParentIssueData `json:"parent_issue,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription describe the human
 	// the agent is working on behalf of. v1 sources them from the runtime
 	// owner (the user who registered the daemon). Empty when the runtime has
@@ -224,6 +264,15 @@ type CoalescedCommentData struct {
 	Revision   int64  `json:"revision,omitempty"`  // MUL-8218: current revision, sent alongside EditedAt
 }
 
+// ParentIssueData mirrors handler.ClaimParentIssue. Identifier is empty when
+// the server could not resolve the workspace prefix.
+type ParentIssueData struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier,omitempty"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+}
+
 // AgentData holds agent details returned by the claim endpoint.
 type AgentData struct {
 	ID                    string                     `json:"id"`
@@ -241,6 +290,7 @@ type AgentData struct {
 	AccountID             string                     `json:"account_id,omitempty"`
 	AccountEndpoint       string                     `json:"account_endpoint,omitempty"`
 	AccountCredentialRef  string                     `json:"account_credential_ref,omitempty"`
+	AccountDaemonID       string                     `json:"account_daemon_id,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkillData `json:"disabled_runtime_skills,omitempty"`
 	// RuntimeConfig is the per-provider runtime_config JSON as stored on
 	// the agent record, forwarded verbatim by the claim endpoint. The
@@ -339,8 +389,13 @@ type TaskResult struct {
 	// Forwarded on every terminal path and stored in the run row's result
 	// JSONB. Raw JSON because the shape is owned by internal/daemon/initctx
 	// and the server mirrors it rather than importing it.
-	InitContext json.RawMessage  `json:"-"`
-	Usage       []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
+	InitContext json.RawMessage `json:"-"`
+	// SessionStart is how a dsh run opened its session (S3-B2/M-138): exactly
+	// one of "resumed warm", "seeded from summary of <session>" or "fresh".
+	// Empty for every other provider and for daemons that predate it, which
+	// reads as "not measured" rather than as one of the three.
+	SessionStart string           `json:"-"`
+	Usage        []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.

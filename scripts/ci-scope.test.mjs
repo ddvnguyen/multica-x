@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, matchesGlob } from "node:path";
+import { dirname, join, matchesGlob, posix, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { checkGate, decideRunner, decideScopes, filters } from "./ci-scope.mjs";
+import { checkGate, checkTopLevelGate, decideScopes, filters } from "./ci-scope.mjs";
 
 // The filters use only literal paths, * and **; Node's matcher exercises those
 // against realistic changes, including files removed or renamed by a PR.
@@ -17,70 +17,76 @@ function filterFiles(files) {
 
 for (const [name, files, selected] of [
   ["readme only", ["README.md"], []],
-  ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality"]],
+  ["stable release promotion", [".github/workflows/promote-release.yml"], ["scripts"]],
+  ["release creation", [".goreleaser.yml"], ["scripts"]],
+  ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality", "docs"]],
+  ["docs test", ["apps/docs/lib/unrendered-bold.test.ts"], ["quality", "docs"]],
   ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality"]],
-  ["UI Lab", ["apps/ui-lab/src/app.tsx"], ["frontend", "quality"]],
   ["mobile UI", ["apps/mobile/app/index.tsx"], ["quality"]],
   ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc"]],
-  ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend"]],
-  ["daemon dependency", ["server/internal/skill/service.go"], ["backend"]],
-  ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc"]],
-  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend"]],
+  ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
+  ["daemon dependency", ["server/internal/skill/service.go"], ["backend", "runtime"]],
+  ["process-group control", ["server/internal/daemon/processtree/controller_unix.go"], ["backend", "runtime", "processtree"]],
+  ["process-group caller", ["server/internal/daemon/gc.go"], ["backend", "runtime"]],
+  ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc", "runtime"]],
+  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime"]],
   ["Helm only", ["deploy/helm/multica/templates/deployment.yaml"], ["scripts"]],
   ["container entrypoint", ["docker/entrypoint.sh"], ["scripts"]],
-  ["selfhost config", [".env.example"], ["scripts"]],
-  ["shell installer", ["scripts/install.sh"], ["scripts"]],
-  ["PowerShell installer", ["scripts/install.ps1.test.ps1"], []],
+  ["selfhost config", [".env.example"], ["backend", "scripts", "installer"]],
+  ["selfhost compose", ["docker-compose.selfhost.yml"], ["backend", "scripts", "installer"]],
+  ["local environment config", [".multica/environments.toml"], ["backend", "scripts"]],
+  ["plugin example", ["examples/plugins/hello-panel/multica.plugin.json"], ["backend"]],
+  ["shell installer", ["scripts/install.sh"], ["scripts", "installer"]],
+  ["PowerShell installer", ["scripts/install.ps1.test.ps1"], ["installer"]],
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
   ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
-  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "scripts"]],
+  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts"]],
   ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts"]],
-  ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "scripts"]],
+  ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
   ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
-  ["integration key gates", ["server/cmd/server/router.go"], ["backend", "scripts"]],
-  ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "quality"]],
-  ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
-  ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
+  ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
+  ["brand source", ["packages/ui/lib/multica-brand.ts"], ["frontend", "quality"]],
+  ["CLI brand copy", ["server/cmd/multica/cmd_auth.go"], ["backend", "runtime", "quality"]],
+  ["mobile brand copy", ["apps/mobile/components/brand/multica-logo.tsx"], ["quality"]],
+  ["README logo", ["docs/assets/logo-dark.svg"], ["quality"]],
+  ["brand generator", ["scripts/brand/sync.mjs"], ["quality"]],
+  ["PR evidence uploader", ["scripts/pr-shots"], ["quality"]],
+  ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
+  ["inbox type contract", ["packages/core/types/inbox.ts"], ["frontend", "backend", "quality"]],
+  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
+  ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality", "docs"]],
+  ["workspace catalog", ["pnpm-workspace.yaml"], ["frontend", "quality", "docs"]],
+  ["workspace package patch", ["patches/example.patch"], ["frontend", "quality", "docs"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
   ["radius policy", ["scripts/check-ui-radius-tokens.mjs"], ["quality"]],
   ["shared quality action", [".github/actions/frontend-quality/action.yml"], ["frontend", "quality"]],
-  ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality"]],
-  ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "backend", "sqlc"]],
+  ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images"]],
+  ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "docs", "backend", "sqlc"]],
   ["CI configuration", [".github/ci-paths.json"], Object.keys(filters)],
 ]) {
-  test(`pull requests select only affected scopes: ${name}`, () => {
-    const outputs = decideScopes("pull_request", filterFiles(files));
-    assert.equal(outputs.full, "false");
-    assert.deepEqual(Object.keys(filters).filter((scope) => outputs[scope] === "true").sort(),
-      [...selected].sort());
-    assert.equal(outputs.quality_only, String(selected.includes("quality") && !selected.includes("frontend")));
+  test(`PR and main select only affected scopes: ${name}`, () => {
+    for (const event of ["pull_request", "push"]) {
+      const outputs = decideScopes(event, filterFiles(files));
+      assert.equal(outputs.full, "false");
+      // Fork policy (M-151/M-161): a push is a merged SHA the deploy pulls
+      // artifacts from, so both product scopes are forced on push.
+      const expected = event === "push"
+        ? [...new Set([...selected, "frontend", "backend"])]
+        : selected;
+      assert.deepEqual(Object.keys(filters).filter((scope) => outputs[scope] === "true").sort(),
+        [...expected].sort());
+      assert.equal(outputs.quality_only, String(expected.includes("quality") && !expected.includes("frontend")));
+    }
   });
 }
 
-// M-161: every merge (push) must produce BOTH product artifacts for M-151 to
-// download, so push forces the frontend and backend lanes regardless of paths.
-test("pushes force the frontend and backend lanes so merged SHAs carry artifacts", () => {
-  for (const files of [[], ["README.md"], ["apps/web/x.ts"], ["server/migrations/x.up.sql"]]) {
-    const outputs = decideScopes("push", filterFiles(files));
-    assert.equal(outputs.full, "false");
-    assert.equal(outputs.frontend, "true", JSON.stringify(files));
-    assert.equal(outputs.backend, "true", JSON.stringify(files));
-    // frontend is forced, so the quality-only runner never doubles up
-    assert.equal(outputs.quality_only, "false", JSON.stringify(files));
-    // non-product scopes still follow the paths
-    const expectSqlc = files.some((f) => f.startsWith("server/migrations/"));
-    assert.equal(outputs.sqlc, String(expectSqlc), JSON.stringify(files));
+test("scheduled and manual runs select every scope without a path-filter result", () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    const { quality_only, ...scopes } = decideScopes(event, {});
+    assert.ok(Object.values(scopes).every((value) => value === "true"));
+    assert.equal(quality_only, "false", "the full frontend build owns quality checks");
   }
-});
-
-test("manual runs select every scope without a path-filter result", () => {
-  const { quality_only, ...scopes } = decideScopes("workflow_dispatch", {});
-  assert.ok(Object.values(scopes).every((value) => value === "true"));
-  assert.equal(quality_only, "false", "the full frontend build owns quality checks");
-  // The schedule trigger left ci.yml in M-161: nightly.yml has no path filter
-  // and never calls decide, so an accidental schedule event must fail closed.
-  assert.throws(() => decideScopes("schedule", filterFiles(["README.md"])), /Unsupported/);
 });
 
 test("missing, malformed and unsupported filter results fail closed", () => {
@@ -133,14 +139,16 @@ for (const gate of ["frontend", "backend"]) {
       const outputs = decideScopes("pull_request", filtered);
       checkGate(productionNeeds(gate, outputs), mapping);
     }
-    checkGate(productionNeeds(gate, decideScopes("workflow_dispatch", {})), mapping);
+    for (const event of ["schedule", "workflow_dispatch"]) {
+      checkGate(productionNeeds(gate, decideScopes(event, {})), mapping);
+    }
   });
 
   test(`production ${gate} gate rejects unsuccessful or missing selected jobs`, () => {
     const mapping = productionMapping(gate);
     for (const job of Object.keys(mapping)) {
-      // A docs-only run selects the standalone quality runner; a full
-      // dispatch selects every other dependency in this workflow.
+      // A docs-only run selects the standalone quality runner; a full run
+      // selects every other dependency, including the installer matrix.
       const outputs = job === "frontend-quality"
         ? decideScopes("pull_request", filterFiles(["apps/docs/content/guide.mdx"]))
         : decideScopes("workflow_dispatch", {});
@@ -180,40 +188,117 @@ for (const gate of ["frontend", "backend"]) {
   });
 }
 
-// M-161: the platform jobs, the vulnerability scan and -race moved to
-// nightly.yml, and ci.yml lost its schedule trigger. Pin that split: the
-// nightly run must carry them, and the PR path must not.
-test("nightly.yml carries the jobs ci.yml dropped, and ci.yml no longer schedules", () => {
-  const nightly = readFileSync(new URL("../.github/workflows/nightly.yml", import.meta.url), "utf8");
-  assert.match(nightly, /^  schedule:$/m);
-  assert.match(nightly, /- cron: "23 3 \* \* \*"/);
-  const nightlyJobs = Object.fromEntries(
-    [...nightly.matchAll(/^  ([\w-]+):$/gm)].map((m) => [m[1], true]),
+// The top-level `ci` check gates the always-run product aggregates plus the
+// self-hosted firewall; the aggregate gate machinery cannot express it, which
+// is why it owns its own contract (M-324).
+test("the ci job wires gate-ci to the always-run aggregates and the firewall", () => {
+  assert.match(jobs.ci, /^    needs: \[changes, frontend, backend, mmx-firewall\]$/m);
+  assert.match(jobs.ci, /^    if: \$\{\{ !cancelled\(\) \}\}$/m);
+  assert.match(jobs.ci, /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
+  assert.match(jobs.ci, /^        run: node scripts\/ci-scope\.mjs gate-ci$/m);
+  // The aggregates are not path-gated: they run on every change and report
+  // success even when every sub-job skipped, which is how docs-only PRs pass.
+  for (const job of ["frontend", "backend"]) {
+    assert.doesNotMatch(jobs[job], /^    if: \$\{\{ needs\.changes\.outputs\./m);
+  }
+  assert.match(jobs["mmx-firewall"], /^    if: \$\{\{ needs\.changes\.outputs\.self_hosted == 'true' \}\}$/m);
+  assert.match(jobs.changes, /^      self_hosted: \$\{\{ steps\.runner\.outputs\.self_hosted \}\}$/m);
+  assert.deepEqual(
+    JSON.parse(field(jobs.ci, /^          CONDITIONAL_JOBS: '(.+)'$/m)),
+    { "mmx-firewall": "self_hosted" },
   );
-  for (const job of ["backend-race", "go-vulnerability-scan", "windows-execenv", "macos-runtime", "installer"]) {
-    assert.ok(nightlyJobs[job], `nightly.yml missing ${job}`);
-  }
-  // Moved jobs must be gone from the PR path, and so must its schedule.
-  assert.doesNotMatch(workflow, /^  schedule:$/m);
-  for (const job of ["backend-race", "go-vulnerability-scan", "windows-execenv", "macos-runtime", "installer", "image-budget"]) {
-    assert.ok(!jobs[job], `ci.yml still defines ${job}`);
-    assert.doesNotMatch(workflow, new RegExp(`^    needs: \[[^\]]*${job}[^\]]*\]$`, "m"), `a gate still waits on ${job}`);
-  }
-  // The three-platform matrix keeps running, just nightly.
-  assert.match(nightly, /        os: \[ubuntu-latest, macos-latest, windows-latest\]$/m);
-  assert.doesNotMatch(nightly, /continue-on-error:/);
-  // Nightly jobs stay hosted: schedule/dispatch never selects the mmx pool.
-  assert.doesNotMatch(nightly, /fromJSON\(.*runner.*\)/);
 });
 
-test("quality checks have exactly one runner and reuse the product build install", () => {
+test("the ci gate passes skipped paths and rejects failed or cancelled aggregates", () => {
+  const docsOnly = () => Object.fromEntries([
+    // self_hosted is a runner-step output, not a decide output.
+    ["changes", { result: "success", outputs: { ...decideScopes("pull_request", filterFiles([])), self_hosted: "false" } }],
+    ["frontend", { result: "success" }],
+    ["backend", { result: "success" }],
+    ["mmx-firewall", { result: "skipped" }],
+  ]);
+  checkTopLevelGate(docsOnly(), { "mmx-firewall": "self_hosted" });
+  for (const job of ["frontend", "backend"]) {
+    for (const result of ["failure", "cancelled", "skipped", undefined]) {
+      const input = docsOnly();
+      input[job].result = result;
+      assert.throws(() => checkTopLevelGate(input, { "mmx-firewall": "self_hosted" }), new RegExp(job));
+    }
+  }
+  const conditional = { "mmx-firewall": "self_hosted" };
+  for (const [selected, result] of [["true", "success"], ["false", "skipped"]]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = selected;
+    input["mmx-firewall"].result = result;
+    checkTopLevelGate(input, conditional);
+  }
+  for (const [selected, result] of [["true", "failure"], ["false", "success"], ["false", "failure"], ["false", "cancelled"]]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = selected;
+    input["mmx-firewall"].result = result;
+    assert.throws(() => checkTopLevelGate(input, conditional), /mmx-firewall/);
+  }
+  for (const value of [undefined, "", "unknown"]) {
+    const input = docsOnly();
+    input.changes.outputs.self_hosted = value;
+    assert.throws(() => checkTopLevelGate(input, conditional), /scope/);
+  }
+  for (const result of ["failure", "cancelled", "skipped", undefined]) {
+    const input = docsOnly();
+    input.changes.result = result;
+    assert.throws(() => checkTopLevelGate(input, conditional), /Path filtering/);
+  }
+});
+
+test("the CLI exits nonzero on a failed top-level gate", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-scope-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
+  const failed = Object.fromEntries([
+    ["changes", { result: "success", outputs: { ...decideScopes("pull_request", filterFiles([])), self_hosted: "false" } }],
+    ["frontend", { result: "cancelled" }],
+    ["backend", { result: "success" }],
+    ["mmx-firewall", { result: "skipped" }],
+  ]);
+  const run = spawnSync(process.execPath, [script, "gate-ci"], {
+    env: { ...process.env, NEEDS_JSON: JSON.stringify(failed), CONDITIONAL_JOBS: '{"mmx-firewall":"self_hosted"}' },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /frontend/);
+});
+
+test("the backend gate owns the Linux-only installer job", () => {
+  assert.equal(productionMapping("backend").installer, "installer");
+  assert.match(jobs.installer, /^    runs-on: ubuntu-latest$/m);
+  assert.doesNotMatch(jobs.installer, /macos-latest|windows-latest/);
+  assert.doesNotMatch(jobs.installer, /continue-on-error:/);
+});
+
+// The gates trust job results, and continue-on-error reports a failed step as
+// a success, so a gate cannot see a failure behind it.
+test("no gated job or shared quality step continues past a failure", () => {
+  const action = readFileSync(new URL("../.github/actions/frontend-quality/action.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(workflow, /continue-on-error:/);
+  assert.doesNotMatch(action, /continue-on-error:/);
+});
+
+// A push only checks the paths it changed, so a main run that is cancelled or
+// left pending behind a newer push skips its commit for good.
+test("path-filtered workflows never cancel or supersede a main run", () => {
+  for (const name of ["ci.yml"]) {
+    const source = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
+    const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
+    assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m, name);
+    assert.match(block, /^  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m, name);
+  }
+});
+
+test("quality checks have exactly one runner", () => {
   const invocation = "uses: ./.github/actions/frontend-quality";
   const owners = Object.entries(jobs).filter(([, source]) => source.includes(invocation)).map(([job]) => job);
-  // M-161: the composite moved from frontend-build to frontend-lint, which
-  // already installs the workspace the action reuses.
-  assert.deepEqual(owners.sort(), ["frontend-lint", "frontend-quality"]);
+  assert.deepEqual(owners.sort(), ["frontend-build", "frontend-quality"]);
   assert.equal(productionMapping("frontend")["frontend-quality"], "quality_only");
-  assert.match(jobs["frontend-lint"], /      - name: Check frontend quality\n        uses: \.\/\.github\/actions\/frontend-quality\n/);
   for (const frontend of ["true", "false"]) {
     for (const quality of ["true", "false"]) {
       const outputs = decideScopes("pull_request", { ...filterFiles([]), frontend, quality });
@@ -222,10 +307,17 @@ test("quality checks have exactly one runner and reuse the product build install
       assert.equal(runners.length, frontend === "true" || quality === "true" ? 1 : 0);
     }
   }
-  const action = readFileSync(new URL("../.github/actions/frontend-quality/action.yml", import.meta.url), "utf8");
-  assert.match(action, /run: pnpm knip/);
-  assert.match(action, /continue-on-error: true/);
-  assert.doesNotMatch(action, /pnpm install/);
+});
+
+test("docs run their test suite on one runner and are never built", () => {
+  const owners = Object.entries(jobs).filter(([, source]) => source.includes("--filter @multica/docs test")).map(([job]) => job);
+  assert.deepEqual(owners, ["docs-test"]);
+  assert.equal(productionMapping("frontend")["docs-test"], "docs");
+  for (const [job, source] of Object.entries(jobs)) {
+    for (const [run] of source.matchAll(/turbo build[^\n]*/g)) {
+      assert.match(run, /--filter='!@multica\/docs'/, `${job} builds docs`);
+    }
+  }
 });
 
 test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (t) => {
@@ -239,145 +331,201 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   });
   assert.equal(run.status, 0, run.stderr);
   assert.match(readFileSync(output, "utf8"), /^backend=false$/m);
-  assert.match(readFileSync(output, "utf8"), /^frontend=false$/m);
   const failed = productionNeeds("backend", decideScopes("workflow_dispatch", {}));
-  failed["backend-build"].result = "failure";
+  failed["backend-test-db"].result = "failure";
   const gate = spawnSync(process.execPath, [script, "gate"], {
     env: { ...process.env, NEEDS_JSON: JSON.stringify(failed), JOB_SCOPES: JSON.stringify(productionMapping("backend")) },
     encoding: "utf8",
   });
   assert.equal(gate.status, 1);
-  assert.match(gate.stderr, /backend-build/);
+  assert.match(gate.stderr, /backend-test-db/);
 });
 
-// --- Self-hosted runner gate (M-150) ---
-
-const runnerBase = {
-  event: "pull_request",
-  headRepo: "ddvnguyen/multica-x",
-  repository: "ddvnguyen/multica-x",
-  actor: "ddvnguyen",
-  allowlist: '["ddvnguyen","claude"]',
-  ciRunner: '["self-hosted","linux","mmx"]',
-  depsChanged: "false",
-  reviewDecision: "",
-};
-
-test("runner gate: fork PRs are hosted even with a valid CI_RUNNER and allow-listed actor", () => {
-  const result = decideRunner({ ...runnerBase, headRepo: "someone-else/multica-x" });
-  assert.equal(result.runner, '["ubuntu-latest"]');
-  assert.equal(result.self_hosted, "false");
-  // Fork guard runs before vars are consulted: no scratch caches either.
-  assert.equal(result.unreviewed_deps, "false");
-});
-
-test("runner gate: same-repo PR by allow-listed actor runs on mmx labels", () => {
-  const result = decideRunner(runnerBase);
-  assert.equal(result.runner, '["self-hosted","linux","mmx"]');
-  assert.equal(result.self_hosted, "true");
-});
-
-test("runner gate: non-allow-listed actor, empty allowlist or empty CI_RUNNER stay hosted", () => {
-  for (const over of [
-    { actor: "random-octocat" },
-    { allowlist: "" },
-    { allowlist: "[]" },
-    { ciRunner: "" },
-    { ciRunner: "not json [" },
-    { ciRunner: "[]" },
-  ]) {
-    const result = decideRunner({ ...runnerBase, ...over });
-    assert.equal(result.runner, '["ubuntu-latest"]', JSON.stringify(over));
-    assert.equal(result.self_hosted, "false", JSON.stringify(over));
+// A Go test that reads a repository file outside server/ only runs on a PR
+// touching that file if the backend filter names it; otherwise the PR skips
+// backend-tests and the broken test lands on main. The scan is heuristic: it
+// follows the shapes the suite uses (filepath.Join from "..", "../" literals,
+// package string constants, a repo-root constant joined with a path literal)
+// and keeps only paths that exist, which drops traversal fixtures like
+// "../../etc/passwd".
+function goTokens(source) {
+  const tokens = [];
+  for (const [text] of source.matchAll(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\.)*"|`[^`]*`|'(?:[^'\\\n]|\\.)*'|\w+|\S/g)) {
+    if (text[0] === '"') {
+      try { tokens.push({ value: JSON.parse(text) }); } catch { tokens.push({ value: text.slice(1, -1) }); }
+    } else if (text[0] === "`") {
+      tokens.push({ value: text.slice(1, -1) });
+    } else if (!/^(\/\/|\/\*|')/.test(text)) {
+      tokens.push(text);
+    }
   }
-});
+  return tokens;
+}
 
-test("runner gate: schedule and dispatch events never leave hosted", () => {
-  for (const event of ["schedule", "workflow_dispatch"]) {
-    const result = decideRunner({ ...runnerBase, event });
-    assert.equal(result.runner, '["ubuntu-latest"]');
-    assert.equal(result.self_hosted, "false");
+const opening = new Set(["(", "[", "{"]);
+const closingBrackets = new Set([")", "]", "}"]);
+function closing(tokens, open) {
+  for (let depth = 0, i = open; i < tokens.length; i++) {
+    if (opening.has(tokens[i])) depth++;
+    else if (closingBrackets.has(tokens[i]) && --depth === 0) return i;
   }
-});
-
-test("runner gate: push events are gated on allow-listed actors only", () => {
-  const push = { ...runnerBase, event: "push", headRepo: "" };
-  assert.equal(decideRunner(push).self_hosted, "true");
-  assert.equal(decideRunner({ ...push, actor: "random-octocat" }).self_hosted, "false");
-});
-
-test("runner gate: unreviewed dependency changes isolate caches until approval", () => {
-  const deps = { ...runnerBase, depsChanged: "true" };
-  assert.equal(decideRunner(deps).unreviewed_deps, "true");
-  assert.equal(decideRunner({ ...deps, reviewDecision: "APPROVED" }).unreviewed_deps, "false");
-  assert.equal(decideRunner({ ...deps, reviewDecision: "CHANGES_REQUESTED" }).unreviewed_deps, "true");
-  assert.equal(decideRunner({ ...runnerBase, depsChanged: "false" }).unreviewed_deps, "false");
-  // After merge (push event) the shared caches re-warm; isolation never applies.
-  assert.equal(decideRunner({ ...deps, event: "push", headRepo: "" }).unreviewed_deps, "false");
-  // Hosted runs have no shared caches to poison.
-  assert.equal(decideRunner({ ...deps, actor: "random-octocat" }).unreviewed_deps, "false");
-});
-
-test("the CLI writes runner outputs for runs-on: fromJSON(...)", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "ci-runner-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const output = join(dir, "output");
-  const script = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
-  const run = spawnSync(process.execPath, [script, "runner"], {
-    env: {
-      ...process.env,
-      EVENT_NAME: "pull_request",
-      HEAD_REPO: "ddvnguyen/multica-x",
-      REPOSITORY: "ddvnguyen/multica-x",
-      ACTOR: "ddvnguyen",
-      ALLOWLIST: '["ddvnguyen"]',
-      CI_RUNNER: '["self-hosted","linux","mmx"]',
-      DEPS_CHANGED: "true",
-      REVIEW_DECISION: "",
-      GITHUB_OUTPUT: output,
-    },
-    encoding: "utf8",
-  });
-  assert.equal(run.status, 0, run.stderr);
-  const written = readFileSync(output, "utf8");
-  assert.match(written, /^runner=\["self-hosted","linux","mmx"\]$/m);
-  assert.match(written, /^self_hosted=true$/m);
-  assert.match(written, /^unreviewed_deps=true$/m);
-});
-
-test("production runner wiring: changes decides, heavy frontend jobs consume, every job has a timeout", () => {
-  // The changes job is the single source of truth for the runner decision.
-  assert.match(jobs.changes, /^        id: runner$/m);
-  assert.match(jobs.changes, /^      runner: \$\{\{ steps\.runner\.outputs\.runner \}\}$/m);
-  assert.match(jobs.changes, /^      self_hosted: \$\{\{ steps\.runner\.outputs\.self_hosted \}\}$/m);
-  assert.match(jobs.changes, /^      unreviewed_deps: \$\{\{ steps\.runner\.outputs\.unreviewed_deps \}\}$/m);
-  assert.match(jobs.changes, /^    runs-on: ubuntu-latest$/m);
-  // The gate itself never runs on self-hosted: forks reach it.
-  assert.match(jobs.changes, /Reject pull_request_target.*workflow_run|pull_request_target.*workflow_run.*must not/m);
-
-  // Every frontend turbo job moves to self-hosted (M-161 split: typecheck,
-  // lint and build each got their own runner). The frontend and backend
-  // aggregates must stay hosted so the required check name always reports
-  // even if the self-hosted pool drains.
-  const switched = ["frontend-typecheck", "frontend-lint", "frontend-build",
-    "frontend-test", "frontend-views-test", "frontend-quality"];
-  for (const job of switched) {
-    assert.match(jobs[job], /^    runs-on: \$\{\{ fromJSON\(needs\.changes\.outputs\.runner\) \}\}$/m, job);
-    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+  return tokens.length;
+}
+function splitTopLevel(tokens, separator) {
+  const parts = [[]];
+  let depth = 0;
+  for (const token of tokens) {
+    if (opening.has(token)) depth++;
+    if (closingBrackets.has(token)) depth--;
+    if (token === separator && depth === 0) parts.push([]);
+    else parts.at(-1).push(token);
   }
-  // Gate aggregates and the light jobs stay hosted and must not consume the runner output.
-  for (const job of ["frontend", "backend", "script-checks", "sqlc-check"]) {
-    assert.doesNotMatch(jobs[job], /fromJSON\(needs\.changes\.outputs\.runner\)/, job);
-    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m, job);
-    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+  return parts;
+}
+
+function goStringConstants(tokens, constants) {
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== "const" && tokens[i] !== "var") continue;
+    const end = tokens[i + 1] === "(" ? closing(tokens, i + 1) : i + 4;
+    for (let j = i + 2; j < end; j++) {
+      const value = tokens[j + 1]?.value;
+      if (tokens[j] !== "=" || value === undefined || tokens[j + 2] === "+") continue;
+      constants.set(tokens[j - 1] === "string" ? tokens[j - 2] : tokens[j - 1], value);
+    }
   }
-  // Backend shards stay hosted (Postgres services + the M-150 firewall rule).
-  for (const job of ["backend-build", "backend-test-db", "backend-test-pkg", "backend-agent-tests"]) {
-    assert.doesNotMatch(jobs[job], /fromJSON\(needs\.changes\.outputs\.runner\)/, job);
-    assert.match(jobs[job], /^    runs-on: ubuntu-latest$/m, job);
-    assert.match(jobs[job], /^    timeout-minutes: \d+$/m, job);
+}
+
+const pathFunctions = new Set(["Join", "Clean", "FromSlash", "ToSlash"]);
+function pathCall(tokens, i) {
+  if ((tokens[i] !== "filepath" && tokens[i] !== "path") || tokens[i + 1] !== "."
+    || !pathFunctions.has(tokens[i + 2]) || tokens[i + 3] !== "(") return undefined;
+  const end = closing(tokens, i + 3);
+  return { name: tokens[i + 2], args: splitTopLevel(tokens.slice(i + 4, end), ","), end };
+}
+// The leading arguments that resolve statically; a Join stops being known at
+// its first dynamic argument, which still leaves the directory it reads under.
+function knownPrefix(args, constants) {
+  const known = [];
+  for (const arg of args) {
+    const value = evaluate(arg, constants);
+    if (value === undefined) break;
+    known.push(value);
   }
-  // The firewall proof runs on the self-hosted path only.
-  assert.match(jobs["mmx-firewall"], /^    if: \$\{\{ needs\.changes\.outputs\.self_hosted == 'true' \}\}$/m);
-  assert.match(jobs["mmx-firewall"], /curl --max-time 3 http:\/\/127\.0\.0\.1:3180\//);
+  return known;
+}
+function evaluate(tokens, constants) {
+  let result = "";
+  for (const part of splitTopLevel(tokens, "+")) {
+    const call = pathCall(part, 0);
+    let value = part.length === 1 ? part[0].value ?? constants.get(part[0]) : undefined;
+    if (call?.end === part.length - 1) {
+      const known = knownPrefix(call.args, constants);
+      if (known.length === call.args.length && known.length > 0) {
+        value = call.name === "Join" ? posix.join(...known) : posix.normalize(known[0]);
+      }
+    }
+    if (value === undefined) return undefined;
+    result += value;
+  }
+  return result;
+}
+
+function goTestRepoReads(root) {
+  const reads = new Map();
+  const goFiles = readdirSync(join(root, "server"), { recursive: true })
+    .map((file) => posix.join("server", file.split(sep).join("/")))
+    .filter((file) => file.endsWith(".go"));
+  for (const [dir, files] of Map.groupBy(goFiles, posix.dirname)) {
+    const sources = new Map(files.map((file) => [file, goTokens(readFileSync(join(root, file), "utf8"))]));
+    const constants = new Map();
+    for (const tokens of sources.values()) goStringConstants(tokens, constants);
+    for (const [file, tokens] of sources) {
+      if (!file.endsWith("_test.go")) continue;
+      const bases = new Set();
+      const resolve = (path, { directories = true } = {}) => {
+        if (path === ".." || path.startsWith("../") || path === "server" || path.startsWith("server/")) return;
+        const stat = statSync(join(root, path), { throwIfNoEntry: false });
+        if (!stat || (stat.isDirectory() && !directories)) return;
+        if (stat.isDirectory()) bases.add(path);
+        if (path === ".") return;
+        if (!reads.has(path)) reads.set(path, { directory: stat.isDirectory(), readers: new Set() });
+        reads.get(path).readers.add(file);
+      };
+      for (let i = 0; i < tokens.length; i++) {
+        const call = pathCall(tokens, i);
+        const relative = call?.name === "Join"
+          ? posix.join(...knownPrefix(call.args, constants), ".")
+          : tokens[i].value ?? constants.get(tokens[i]);
+        if (relative === ".." || relative?.startsWith("../")) resolve(posix.join(dir, relative));
+      }
+      // readRepoFile(t, ".env.example") style: a helper joins the literal onto
+      // a repository directory resolved above.
+      for (const base of [...bases]) {
+        for (const { value } of tokens) {
+          if (/^(?!\.\.)[\w.@+-]+(\/[\w.@+-]+)*$/.test(value ?? "")) resolve(posix.join(base, value), { directories: false });
+        }
+      }
+    }
+  }
+  return reads;
+}
+
+function uncoveredReads(root, reads, patterns) {
+  const covered = (file) => patterns.some((pattern) => matchesGlob(file, pattern));
+  return [...reads].filter(([path, { directory }]) => !(directory
+    ? readdirSync(join(root, path), { recursive: true }).some((file) => covered(posix.join(path, file.split(sep).join("/"))))
+    : covered(path)));
+}
+
+function missingFilterMessage(missing) {
+  return "Go tests read these files outside server/, but a PR changing them skips backend-tests.\n"
+    + 'Add each path to the "backend" group in .github/ci-paths.json:\n'
+    + missing.map(([path, { directory, readers }]) =>
+      `  "${directory ? `${path}/**` : path}"  (read by ${[...readers].sort().join(", ")})`).join("\n");
+}
+
+test("every repository file a Go test reads outside server/ selects backend-tests", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const reads = goTestRepoReads(root);
+  assert.ok(reads.size > 0, "The scan found no reads outside server/; it no longer recognizes how Go tests load repository files.");
+  const missing = uncoveredReads(root, reads, filters.backend);
+  assert.deepEqual(missing.map(([path]) => path), [], missingFilterMessage(missing));
+});
+
+test("the Go test scan follows relative paths, constants and repo-root helpers", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ci-scope-go-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = {
+    "server/pkg/a/config.go": 'package a\n\nconst ConfigPath = ".multica/environments.toml"\n',
+    "server/pkg/a/a_test.go": [
+      "package a",
+      'const repoRoot = "../../.."',
+      "func readRepoFile(name string) { os.ReadFile(filepath.Join(repoRoot, name)) }",
+      "func TestA(t *testing.T) {",
+      '\treadRepoFile(".env.example")',
+      '\tos.ReadFile(filepath.Join("..", "..", "..", filepath.FromSlash(ConfigPath)))',
+      '\tos.ReadFile("../../../scripts/check.sh")',
+      '\tos.ReadDir(filepath.Join("..", "..", "..", "examples", "plugins", entry.Name()))',
+      '\tos.ReadFile("../../migrations/1.up.sql")',
+      '\tstore.Get("../../../etc/passwd")',
+      '\t// os.ReadFile("../../../docs/commented.md")',
+      "}",
+    ].join("\n"),
+    ".multica/environments.toml": "",
+    ".env.example": "",
+    "scripts/check.sh": "",
+    "examples/plugins/demo/multica.plugin.json": "",
+    "server/migrations/1.up.sql": "",
+    "docs/commented.md": "",
+  };
+  for (const [file, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), body);
+  }
+  const reads = goTestRepoReads(root);
+  assert.deepEqual([...reads.keys()].sort(),
+    [".env.example", ".multica/environments.toml", "examples/plugins", "scripts/check.sh"]);
+  const missing = uncoveredReads(root, reads, [".env.example", "examples/plugins/**", "scripts/*.sh"]);
+  assert.equal(missingFilterMessage(missing).split("\n").at(-1),
+    '  ".multica/environments.toml"  (read by server/pkg/a/a_test.go)');
 });

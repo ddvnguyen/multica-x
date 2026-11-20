@@ -1,12 +1,13 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@multica/core/api";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import type { AgentAnswerDraft, AgentQuestion } from "@multica/core/issues/agent-question";
 import { renderWithI18n } from "../../test/i18n";
 import { AgentQuestionCard } from "./agent-question-card";
 
-vi.mock("@multica/core/api", () => ({ api: { createTaskSupplement: vi.fn() } }));
+vi.mock("@multica/core/api", () => ({ api: { createTaskSupplement: vi.fn(), answerNativeQuestion: vi.fn() } }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace" }));
 vi.mock("../../editor", () => ({
   ReadonlyContent: ({ content }: { content: string }) => <div data-testid="plan-detail">{content}</div>,
@@ -44,19 +45,33 @@ const plan: AgentQuestion = {
 function render(
   questions: AgentQuestion[],
   submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>,
+  questionSeq?: number,
+  draftKey?: `ask:${string}`,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   renderWithI18n(
     <QueryClientProvider client={client}>
-      <AgentQuestionCard issueId="issue" taskId={TASK} questions={questions} submit={submit} />
+      <AgentQuestionCard
+        issueId="issue"
+        taskId={TASK}
+        questions={questions}
+        submit={submit}
+        questionSeq={questionSeq}
+        draftKey={draftKey}
+      />
     </QueryClientProvider>,
   );
   return client;
 }
 
+beforeEach(() => {
+  useAskDraftStore.setState({ drafts: {} });
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useAskDraftStore.setState({ drafts: {} });
 });
 
 describe("AgentQuestionCard", () => {
@@ -73,8 +88,9 @@ describe("AgentQuestionCard", () => {
     render([question()]);
     fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
     fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    // No explicit mode: an answer wants the server's default (steer).
     await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
-      "issue", TASK, "Web", expect.any(String),
+      "issue", TASK, "Web", expect.any(String), undefined,
     ));
   });
 
@@ -84,7 +100,7 @@ describe("AgentQuestionCard", () => {
     fireEvent.change(screen.getByPlaceholderText("Or write your own answer"), { target: { value: "Neither — use the CLI" } });
     fireEvent.click(screen.getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
-      "issue", TASK, "Neither — use the CLI", expect.any(String),
+      "issue", TASK, "Neither — use the CLI", expect.any(String), undefined,
     ));
   });
 
@@ -105,7 +121,7 @@ describe("AgentQuestionCard", () => {
     expect(screen.getByTestId("plan-detail")).toHaveTextContent("1. Read the fork");
     fireEvent.click(screen.getByRole("button", { name: "Approve plan" }));
     await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
-      "issue", TASK, "Approve", expect.any(String),
+      "issue", TASK, "Approve", expect.any(String), undefined,
     ));
   });
 
@@ -115,8 +131,45 @@ describe("AgentQuestionCard", () => {
     fireEvent.change(screen.getByPlaceholderText("Your answer"), { target: { value: "Split step 2" } });
     fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
     await waitFor(() => expect(api.createTaskSupplement).toHaveBeenCalledWith(
-      "issue", TASK, "Split step 2", expect.any(String),
+      "issue", TASK, "Split step 2", expect.any(String), undefined,
     ));
+  });
+
+  it("fences the answer to the ask's own sequence when the card knows it", async () => {
+    vi.mocked(api.answerNativeQuestion).mockResolvedValue(comment("Web") as never);
+    render([question()], undefined, 7);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(api.answerNativeQuestion).toHaveBeenCalledWith(
+      "issue", TASK, 7, "Web", expect.any(String),
+    ));
+    expect(api.createTaskSupplement).not.toHaveBeenCalled();
+  });
+
+  it("fences a plan approval to the ask's sequence with exactly the approve label", async () => {
+    vi.mocked(api.answerNativeQuestion).mockResolvedValue(comment("Approve") as never);
+    render([plan], undefined, 3);
+    fireEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await waitFor(() => expect(api.answerNativeQuestion).toHaveBeenCalledWith(
+      "issue", TASK, 3, "Approve", expect.any(String),
+    ));
+    expect(api.createTaskSupplement).not.toHaveBeenCalled();
+  });
+
+  it("reuses the draft's request id after a transport failure", async () => {
+    vi.mocked(api.answerNativeQuestion)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValue(comment("Web") as never);
+    render([question()], undefined, 7);
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+
+    await waitFor(() => expect(api.answerNativeQuestion).toHaveBeenCalledTimes(2));
+    const [first, second] = vi.mocked(api.answerNativeQuestion).mock.calls;
+    expect(second?.[4]).toBe(first?.[4]);
+    expect(await screen.findByText("Answer sent")).toBeInTheDocument();
   });
 
   it("reports a send that failed instead of claiming it went through", async () => {
@@ -166,5 +219,56 @@ describe("AgentQuestionCard", () => {
     const [other] = screen.getAllByRole("textbox");
     fireEvent.keyDown(other!, { key: "Enter" });
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("grows the free-text field and keeps line breaks in the posted answer", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    const [other] = screen.getAllByRole("textbox");
+    expect(other!.tagName).toBe("TEXTAREA");
+    fireEvent.change(other!, { target: { value: "line one\nline two" } });
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith([
+      { selected: [], text: "line one\nline two" },
+    ]));
+  });
+
+  it("submits on Cmd+Enter and keeps a plain Enter as a newline", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render([question()], submit);
+    const [other] = screen.getAllByRole("textbox");
+    fireEvent.change(other!, { target: { value: "two lines" } });
+    // A plain Enter inserts a newline: the form does not submit.
+    fireEvent.keyDown(other!, { key: "Enter" });
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.keyDown(other!, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  });
+
+  it("restores the draft after remount and clears it on send", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    const view = render([question()], submit, undefined, "ask:card-9");
+    const [other] = screen.getAllByRole("textbox");
+    fireEvent.change(other!, { target: { value: "half an answer" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Web/ }));
+    expect(useAskDraftStore.getState().getAnswers("ask:card-9")).toEqual([
+      { selected: [0], text: "half an answer" },
+    ]);
+
+    // Navigate away (unmount) and back: the draft is still there.
+    view.unmount();
+    cleanup();
+    render([question()], submit, undefined, "ask:card-9");
+    expect(screen.getAllByRole("textbox")[0]).toHaveValue("half an answer");
+    expect(screen.getByRole("radio", { name: /Web/ })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(useAskDraftStore.getState().getDraft("ask:card-9")).toBeUndefined();
+  });
+
+  it("shows the remaining count against the 2000-character cap", () => {
+    render([question()], undefined, undefined, "ask:card-9");
+    expect(screen.getByText("0 / 2000")).toBeInTheDocument();
   });
 });

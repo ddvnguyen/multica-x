@@ -61,9 +61,13 @@ vi.mock("@multica/core/api", () => ({
   },
 }));
 
-vi.mock("@multica/core/paths", () => ({
-  useHasOnboarded: () => true,
-}));
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return {
+    ...actual,
+    useHasOnboarded: () => true,
+  };
+});
 
 vi.mock("@multica/core/analytics", () => ({ captureEvent: vi.fn() }));
 vi.mock("@multica/ui/components/common/theme-provider", () => ({
@@ -105,7 +109,7 @@ vi.mock("./components/issue-window", () => ({
   IssueWindow: () => <div data-testid="issue-window" />,
 }));
 
-vi.mock("./stores/tab-store", () => ({
+vi.mock("@multica/core/tabs", () => ({
   useTabStore: Object.assign(
     (selector: (value: typeof tabStore) => unknown) => selector(tabStore),
     { getState: () => tabStore },
@@ -175,7 +179,9 @@ beforeEach(() => {
       getLastFreeze: vi.fn(),
       onAuthToken: () => () => {},
       onCloseActiveTab: () => () => {},
+      onContextMenu: () => () => {},
       onInviteOpen: () => () => {},
+      onIssueOpen: () => () => {},
       onSystemLocaleChanged: () => () => {},
       reportAuthSession: vi.fn(),
       runtimeConfig: {

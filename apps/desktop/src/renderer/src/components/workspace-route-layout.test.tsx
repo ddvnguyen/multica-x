@@ -75,9 +75,6 @@ vi.mock("@multica/core/paths", async () => {
   );
   return {
     ...actual,
-    WorkspaceSlugProvider: ({ children }: { children: React.ReactNode }) => (
-      <>{children}</>
-    ),
     paths: {
       ...actual.paths,
       login: () => "/login",
@@ -93,6 +90,10 @@ vi.mock("@multica/views/layout", () => ({
   WorkspacePresencePrefetch: () => null,
 }));
 
+vi.mock("@multica/views/voice", () => ({
+  VoiceWorkspaceWords: () => null,
+}));
+
 // The point of this whole test: assert the desktop layout mounts the
 // SourceBackfillModal. We stub the real component with a marker that
 // renders only when the layout actually rendered it (and not e.g.
@@ -104,7 +105,7 @@ vi.mock("@multica/views/onboarding", () => ({
   },
 }));
 
-vi.mock("@/stores/tab-store", () => ({
+vi.mock("@multica/core/tabs", () => ({
   useTabStore: Object.assign(() => null, {
     getState: () => ({ validateWorkspaceSlugs: vi.fn() }),
   }),
@@ -117,7 +118,18 @@ vi.mock("@/stores/window-overlay-store", () => {
 });
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { NavigationProvider } from "@multica/views/navigation";
 import { WorkspaceRouteLayout } from "./workspace-route-layout";
+
+const navigationAdapter = {
+  push: vi.fn(),
+  replace: vi.fn(),
+  back: vi.fn(),
+  pathname: "/acme/issues",
+  searchParams: new URLSearchParams(),
+  hash: "",
+  getShareableUrl: (path: string) => path,
+};
 
 function renderLayout() {
   const qc = new QueryClient({
@@ -129,13 +141,15 @@ function renderLayout() {
   qc.setQueryData(["workspace-list"], state.wsList);
   const result = render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/acme/issues"]}>
-        <Routes>
-          <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
-            <Route path="*" element={<div data-testid="outlet" />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>
+      <NavigationProvider value={navigationAdapter}>
+        <MemoryRouter initialEntries={["/acme/issues"]}>
+          <Routes>
+            <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
+              <Route path="*" element={<div data-testid="outlet" />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </NavigationProvider>
     </QueryClientProvider>,
   );
   return { ...result, queryClient: qc };
@@ -287,13 +301,15 @@ describe("WorkspaceRouteLayout across a tab swap", () => {
     qc.setQueryData(["workspace-list"], state.wsList);
     return (
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={[`/${slug}/issues`]}>
-          <Routes>
-            <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
-              <Route path="*" element={<ChildQuery />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <NavigationProvider value={navigationAdapter}>
+          <MemoryRouter initialEntries={[`/${slug}/issues`]}>
+            <Routes>
+              <Route path=":workspaceSlug/*" element={<WorkspaceRouteLayout />}>
+                <Route path="*" element={<ChildQuery />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </NavigationProvider>
       </QueryClientProvider>
     );
   }

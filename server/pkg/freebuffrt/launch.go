@@ -42,6 +42,15 @@ func NewLaunchID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// StateFilePath is the orchestrator's state file inside profileDir. The
+// orchestrator appends suffixes to it (`<path>.orchestrator-lock.sqlite`,
+// `<path>.device-key.json`) and rewrites it on every sign-in, so it must be a
+// file path: a directory here reads as unreadable state, which the orchestrator
+// reports as "not signed in" and refuses to write a login to.
+func StateFilePath(profileDir string) string {
+	return filepath.Join(profileDir, "state.json")
+}
+
 // LaunchEnv returns the environment variables that make the orchestrator run
 // headless with its state under profileDir. The caller merges them over the
 // process environment.
@@ -52,7 +61,7 @@ func LaunchEnv(b Bundle, profileDir, launchID string) map[string]string {
 	return map[string]string{
 		"PORT":                           "0",
 		"FREEBUFF_LAUNCH_ID":             launchID,
-		"FREEBUFF_DESKTOP_STATE_PATH":    filepath.Join(profileDir, "state"),
+		"FREEBUFF_DESKTOP_STATE_PATH":    StateFilePath(profileDir),
 		"FREEBUFF_UI_DIR":                b.UIDir(),
 		"CODEBUFF_WASM_DIR":              b.WasmDir(),
 		"CODEBUFF_TREE_SITTER_WASM_PATH": filepath.Join(b.WasmDir(), "tree-sitter.wasm"),

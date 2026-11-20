@@ -171,7 +171,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For DevEco Code: writes {workDir}/AGENTS.md  (skills discovered natively from .deveco/skills/)
 // For OpenClaw: writes {workDir}/AGENTS.md  (skills discovered natively from {workDir}/skills/ via per-task openclaw-config.json that pins agents.defaults.workspace)
 // For Hermes:   writes {workDir}/AGENTS.md  (skills discovered natively from a per-task HERMES_HOME/skills seeded by the daemon; see hermes_home.go)
-// For Pi:       writes {workDir}/AGENTS.md  (skills discovered natively from .pi/skills/)
+// For Pi:       writes {workDir}/AGENTS.md  (skills explicitly loaded from .pi/skills/ via --skill)
 // For Oh-My-Pi (omp): writes {workDir}/AGENTS.md  (omp is a pi fork; skills discovered from .omp/skills/)
 // For Cursor:   writes {workDir}/AGENTS.md  (skills discovered natively from .cursor/skills/)
 // For Kimi:        writes {workDir}/AGENTS.md  (Kimi Code CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
@@ -215,7 +215,7 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (Runti
 			},
 		},
 	}
-	path := runtimeConfigPath(workDir, provider)
+	path := runtimeConfigPathForTask(workDir, provider, ctx)
 	if path == "" {
 		// Unknown provider — skip config injection, prompt-only mode. The hash
 		// then fingerprints the text the backend receives inline, which is the
@@ -224,6 +224,13 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (Runti
 		return brief, nil
 	}
 	return brief, writeRuntimeConfigFile(path, content)
+}
+
+func runtimeConfigPathForTask(workDir, provider string, ctx TaskContextForEnv) string {
+	if ctx.IsFreebuffDesktop && provider == "codebuddy" {
+		return filepath.Join(workDir, "AGENTS.md")
+	}
+	return runtimeConfigPath(workDir, provider)
 }
 
 // RuntimeBrief is the rendered runtime config plus the accounting the daemon
@@ -272,7 +279,7 @@ func runtimeConfigPath(workDir, provider string) string {
 		return filepath.Join(workDir, "CODEBUDDY.md")
 	case "qwen":
 		return filepath.Join(workDir, "QWEN.md")
-	case "codex", "copilot", "opencode", "codearts", "deveco", "freebuff", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw", "devin":
+	case "amp", "droid", "codex", "copilot", "opencode", "codearts", "deveco", "freebuff", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "muse", "dim", "zeroclaw", "devin", "museapp", "zcode":
 		return filepath.Join(workDir, "AGENTS.md")
 	default:
 		return ""
@@ -526,7 +533,13 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 // Missing files, unknown providers, and files without a marker block are
 // no-ops — Cleanup is safe to call defensively.
 func CleanupRuntimeConfig(workDir, provider string) error {
-	path := runtimeConfigPath(workDir, provider)
+	return CleanupRuntimeConfigForTask(workDir, provider, TaskContextForEnv{})
+}
+
+// CleanupRuntimeConfigForTask removes only this task's managed block and
+// preserves any pre-existing project guidance in the file.
+func CleanupRuntimeConfigForTask(workDir, provider string, ctx TaskContextForEnv) error {
+	path := runtimeConfigPathForTask(workDir, provider, ctx)
 	if path == "" {
 		return nil
 	}

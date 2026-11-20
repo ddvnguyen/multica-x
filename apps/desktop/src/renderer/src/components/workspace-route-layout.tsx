@@ -11,8 +11,10 @@ import { isWorkspaceDeletePending } from "@multica/core/workspace/pending-delete
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 import { WorkspacePresencePrefetch } from "@multica/views/layout";
+import { IssueOpeningCapabilityProvider } from "@multica/views/issues/issue-opening-capability";
+import { VoiceWorkspaceWords } from "@multica/views/voice";
 import { SourceBackfillModal } from "@multica/views/onboarding";
-import { useTabStore } from "@/stores/tab-store";
+import { useTabStore } from "@multica/core/tabs";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 
 /**
@@ -176,7 +178,12 @@ export function WorkspaceRouteLayout() {
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <WorkspacePresencePrefetch />
-      <Outlet />
+      {/* Web and desktop keep the upstream open modes (Full page + Side
+          preview): the provider wires the persisted preference through. */}
+      <VoiceWorkspaceWords />
+      <IssueOpeningCapabilityProvider>
+        <Outlet />
+      </IssueOpeningCapabilityProvider>
       {/* Source-attribution backfill: same Dialog the web shell mounts
        *  inside DashboardLayout. Desktop's WorkspaceRouteLayout doesn't
        *  wrap DashboardLayout, so the modal has to be wired in directly

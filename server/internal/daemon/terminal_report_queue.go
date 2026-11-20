@@ -61,6 +61,9 @@ type persistedTerminalTaskReport struct {
 	// stored as the object it was so a replayed callback reports the same
 	// context facts as the original attempt.
 	InitContext json.RawMessage `json:"init_context,omitempty"`
+	// SessionStart is how a dsh run opened its session (S3-B2/M-138), kept so
+	// a replayed callback reports the same verdict as the original attempt.
+	SessionStart string `json:"session_start,omitempty"`
 
 	PermanentRejectionCount   int        `json:"permanent_rejection_count,omitempty"`
 	FirstPermanentRejectionAt *time.Time `json:"first_permanent_rejection_at,omitempty"`
@@ -85,6 +88,7 @@ func sameTerminalReport(a, b terminalTaskReport) bool {
 		a.failureReason == b.failureReason &&
 		a.sessionRolloutMissing == b.sessionRolloutMissing &&
 		a.retiredSessionID == b.retiredSessionID &&
+		a.sessionStart == b.sessionStart &&
 		bytes.Equal(a.initContext, b.initContext)
 }
 
@@ -171,6 +175,7 @@ func persistedTerminalReport(report terminalTaskReport, createdAt time.Time) (pe
 		SessionRolloutMissing: report.sessionRolloutMissing,
 		RetiredSessionID:      report.retiredSessionID,
 		InitContext:           report.initContext,
+		SessionStart:          report.sessionStart,
 	}, nil
 }
 
@@ -203,6 +208,7 @@ func (record persistedTerminalTaskReport) terminalReport() (terminalTaskReport, 
 		sessionRolloutMissing: record.SessionRolloutMissing,
 		retiredSessionID:      record.RetiredSessionID,
 		initContext:           record.InitContext,
+		sessionStart:          record.SessionStart,
 	}, nil
 }
 

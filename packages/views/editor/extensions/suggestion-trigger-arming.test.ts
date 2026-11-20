@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { Editor, Extension } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
-import { EditorView } from "@tiptap/pm/view";
 import { createMarkdownPasteExtension } from "./markdown-paste";
 import {
   SuggestionTriggerArmingExtension,
@@ -24,8 +23,9 @@ import {
 
 const key = new PluginKey("test-mention-suggestion");
 const slashKey = new PluginKey("test-slash-suggestion");
+const hashKey = new PluginKey("test-hash-suggestion");
 
-function suggestionProbe(name: string, char: "@" | "/", pluginKey: PluginKey) {
+function suggestionProbe(name: string, char: "@" | "/" | "#", pluginKey: PluginKey) {
   return Extension.create({
     name,
     addProseMirrorPlugins() {
@@ -58,6 +58,7 @@ function makeEditor(content?: object) {
       SuggestionTriggerArmingExtension,
       suggestionProbe("mentionProbe", "@", key),
       suggestionProbe("slashProbe", "/", slashKey),
+      suggestionProbe("hashProbe", "#", hashKey),
     ],
     content: content ?? { type: "doc", content: [{ type: "paragraph" }] },
   });
@@ -96,15 +97,6 @@ function picker(editor: Editor, pluginKey: PluginKey = key) {
   const state = pluginKey.getState(editor.state);
   return { active: state?.active, query: state?.query };
 }
-
-beforeAll(() => {
-  // jsdom has no layout, so ProseMirror's post-dispatch scroll walks
-  // coordsAtPos into getClientRects() on nodes jsdom does not implement.
-  // Scrolling is irrelevant here; these tests read plugin state.
-  (EditorView.prototype as unknown as { scrollToSelection: () => void }).scrollToSelection =
-    () => {};
-  Element.prototype.scrollIntoView = () => {};
-});
 
 describe("suggestion trigger arming", () => {
   describe("text the user did not type never opens a picker", () => {
@@ -187,6 +179,24 @@ describe("suggestion trigger arming", () => {
       type(editor, "/shi");
 
       expect(picker(editor, slashKey)).toEqual({ active: true, query: "shi" });
+    });
+
+    it("typing # arms the hash picker (M-359 tier pick)", () => {
+      const editor = makeEditor();
+      editor.commands.focus("end");
+
+      type(editor, "#fa");
+
+      expect(picker(editor, hashKey)).toEqual({ active: true, query: "fa" });
+    });
+
+    it("pasted text containing # never opens the hash picker", () => {
+      const editor = makeEditor();
+      editor.commands.focus("end");
+
+      paste(editor, "see #fast for details");
+
+      expect(picker(editor, hashKey)).toEqual({ active: false, query: null });
     });
 
     it("keeps multi-word queries alive, so allowSpaces issue search survives", () => {

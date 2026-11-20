@@ -17,6 +17,7 @@ export interface Workspace {
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
+  pinned_at?: string | null;
 }
 
 /**
@@ -43,6 +44,53 @@ export interface WorkspaceMcpServer {
   agent_count?: number;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One workspace model tier (M-350). `idx` is the fallback order (0 first,
+ * 99 last); `provider_slots` is the max simultaneous sessions on that
+ * runtime/provider (e.g. Freebuff = 1), not an agent concurrency cap.
+ * `cost` arrives as a plain decimal string; `quality` is 0–100.
+ * Resolution at enqueue is M-351 — this card is the curated list only.
+ */
+export interface ModelTier {
+  id: string;
+  workspace_id: string;
+  name: string;
+  idx: number;
+  runtime_id?: string;
+  provider: string;
+  model: string;
+  thinking_level?: string;
+  service_tier?: string;
+  cost?: string;
+  quality?: number;
+  provider_slots: number;
+  enabled: boolean;
+  /**
+   * Provider-refusal cooldown deadline (M-352). Present only while a 429/quota
+   * failure has the tier out of the resolver's idx order; the Settings row
+   * renders it as "cooling down until HH:MM".
+   */
+  cooldown_until?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelTierInput {
+  name?: string;
+  idx?: number;
+  /** Omitted = keep; empty string = unbind the runtime. */
+  runtime_id?: string;
+  provider?: string;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  /** Number or decimal string; omitted = keep. */
+  cost?: number | string;
+  quality?: number;
+  provider_slots?: number;
+  enabled?: boolean;
 }
 
 export interface Member {
@@ -77,6 +125,19 @@ export interface User {
   profile_description: string;
   /** Pinned IANA tz; null means "use browser-detected tz at render time". */
   timezone: string | null;
+  /**
+   * Newest release whose What's new highlights the user has dismissed.
+   * null = never dismissed; undefined = the server predates read tracking,
+   * so the client must not auto-open the card (it would reappear forever).
+   */
+  whats_new_seen_version?: string | null;
+  /**
+   * "Star us on GitHub" prompt bookkeeping. An undefined count means the
+   * server predates it, so the client must never show the prompt.
+   */
+  star_prompt_shown_count?: number;
+  star_prompt_last_shown_at?: string | null;
+  star_prompt_starred_at?: string | null;
   created_at: string;
   updated_at: string;
 }

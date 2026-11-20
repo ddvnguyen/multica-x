@@ -16,6 +16,8 @@
 @import "shadcn/tailwind.css";
 @import "@multica/ui/styles/tokens.css";
 @import "@multica/ui/styles/base.css";
+@import "@multica/ui/styles/theme-variables.css";
+@import "@multica/ui/styles/appearance.css";
 
 @source "../../../ui";
 @source "../../../views";

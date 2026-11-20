@@ -42,7 +42,7 @@ A run typically moves through these states:
 | `deferred` | Scheduled to fire later; enters the queue at the appointed time |
 | `queued` | Waiting for a runtime to claim it |
 | `dispatched` | A runtime has claimed it and is starting the AI coding tool |
-| `waiting_local_directory` | The target local directory is held by another run; waiting for the directory lock to release |
+| `waiting_local_directory` | Waiting for the target local directory or a daemon execution slot before startup |
 | `running` | The AI coding tool is executing |
 | `completed` | The run finished normally |
 | `failed` | The run errored or was interrupted |
@@ -143,13 +143,16 @@ Clicking the retry button on a row in the execution log invokes **the agent that
 
 A retry keeps the files the previous run already wrote to the local directory whenever possible. If the original session is still safe and the same runtime claims the retry, it continues that session. Errors that poison the session, such as context overflow or invalid requests, start a new session on top of the original working directory instead. When the original directory no longer exists, a fresh working directory is used.
 
-You can also rerun the current issue from the CLI:
+Find the source run and retry it from the CLI:
 
 ```bash
-multica issue rerun <issue-id>
+multica issue runs <issue-id> --full-id
+multica issue rerun-task <run-id>
 ```
 
-This form does not point at a specific past run, so it uses the issue's current agent assignee and starts with a fresh session and working directory.
+A full run UUID works without `--issue`; short prefixes require `--issue` to select the issue. This repeats the original agent and trigger context with the same continuity rules as the retry button. Add `--fresh` to start a new session and working directory.
+
+The old `multica issue rerun <issue-id>` command is deprecated and hidden from help. It remains available for existing scripts and still starts the current assignee with a fresh session and working directory.
 
 ## Run completion and issue completion
 
@@ -164,7 +167,7 @@ The numbers below are the server's defaults.
 | `deferred` | Scheduled to fire later | Enters `queued` at the scheduled time, then the rules below apply |
 | `queued` | Waiting for a runtime to claim it | Waits as long as its runtime keeps heartbeating, and in every case for at least one reconnect grace after being queued; fails only when both windows have passed, and is not retried automatically |
 | `dispatched` | Claimed; the tool is starting | Treated as failed after more than **5 minutes** in this state |
-| `waiting_local_directory` | Waiting for the local directory lock to release | No timeout of its own; returns to the startup flow once the directory is released |
+| `waiting_local_directory` | Waiting for the local directory and execution capacity | No timeout of its own; resumes startup once the directory and a daemon execution slot are available |
 | `running` | The AI coding tool is executing | No fixed duration cap; liveness follows the runtime heartbeat — one every 15 seconds; a runtime that loses its heartbeat is marked offline within about 3 minutes at the latest. Its runs fail only once the heartbeat has been missing longer than the reconnect grace (`MULTICA_RUNTIME_RECONNECT_GRACE`, 3 hours by default); a daemon restart reclaims them directly |
 
 Automatic retry covers only the transient faults below, and only applies to runs attached to an issue or a chat (excluding the Autopilot **run only** mode):

@@ -8,7 +8,13 @@
     "of_total": "{{total}} 件中 {{visible}} 件",
     "list_load_failed": "エージェントを読み込めませんでした",
     "list_load_failed_default": "エージェント一覧の取得中に問題が発生しました。",
-    "try_again": "再試行"
+    "try_again": "再試行",
+    "search": "エージェントを検索",
+    "scope_title": {
+      "mine": "自分のエージェント",
+      "all": "すべてのエージェント",
+      "archived": "アーカイブ済みのエージェント"
+    }
   },
   "scope": {
     "mine": "自分のもの",
@@ -43,7 +49,15 @@
   },
   "empty": {
     "title": "まだエージェントがいません",
-    "description": "エージェントを作成してタスクを割り当てましょう。"
+    "description": "エージェントを作成してタスクを割り当てましょう。",
+    "setup": {
+      "label": "セットアップ手順",
+      "runtime": "ランタイムを接続する",
+      "agent": "エージェントを作成する",
+      "issue": "タスクを割り当てる",
+      "done": "（完了）",
+      "connect_runtime": "接続"
+    }
   },
   "no_matches": {
     "title": "一致する結果なし",
@@ -148,7 +162,12 @@
     "runtime_required_toast": "このエージェントを実行する前にランタイムを設定してください。",
     "assign_work": "作業を割り当てる",
     "more_actions_aria": "エージェントの操作",
-    "updated": "{{when}}に更新"
+    "updated": "{{when}}に更新",
+    "settings": "設定",
+    "copy_link": "リンクをコピー",
+    "copy_id": "エージェント ID をコピー",
+    "link_copied_toast": "リンクをコピーしました",
+    "id_copied_toast": "エージェント ID をコピーしました"
   },
   "inspector": {
     "section_profile": "プロフィール",
@@ -258,7 +277,7 @@
     "environment": "環境",
     "custom_args": "カスタム引数",
     "mcp_config": "MCP",
-    "composio_mcp": "MCP アプリ",
+    "composio_mcp": "アプリ",
     "integrations": "連携",
     "runtime_config": "ルーティング",
     "qoder_agent": "Qoder Cloud Agents",
@@ -403,7 +422,8 @@
       "reveal_action": "表示して編集",
       "revealing": "表示中...",
       "reveal_failed_toast": "環境変数の値を読み込めませんでした",
-      "empty_editable": "環境変数は設定されていません。"
+      "empty_editable": "環境変数は設定されていません。",
+      "bulk_invalid_key_toast": "一括編集では API_KEY のような変数名のみ使えます。\"{{key}}\" は個別編集で変更してください"
     },
     "custom_args": {
       "intro": "エージェントの起動時に渡す CLI 引数を追加します。",
@@ -536,7 +556,8 @@
       "redacted_title": "設定済み — あなたには非表示",
       "redacted_hint": "この agent が使用できるアプリを閲覧・変更できるのは作成者のみです。",
       "shared_warning": "このエージェントは共有されています。このエージェントを実行できる人は、ここで有効化した Composio アプリを利用できます。これらのアプリが機微なデータを扱う場合は、Private にするかアクセス範囲を絞ってください。",
-      "workspace_warning": "ワークスペースに公開：ワークスペースの全メンバーがこのエージェントを通じてこれらの Composio アプリを利用できます。"
+      "workspace_warning": "ワークスペースに公開：ワークスペースの全メンバーがこのエージェントを通じてこれらの Composio アプリを利用できます。",
+      "open_settings": "設定を開く"
     },
     "runtime_config": {
       "mode_label": "ルーティングモード",
@@ -658,6 +679,27 @@
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
       "queued_prefix": "{{when}} に待機開始"
+    },
+    "connected_apps": {
+      "loading": "アプリを読み込み中…",
+      "load_failed": "このエージェントのアプリを読み込めませんでした。",
+      "empty": "接続済みのアプリはありません。",
+      "level": "レベル",
+      "team_connected": "チームアカウント接続済み",
+      "team_missing": "チームアカウント未接続",
+      "personal_connected": "あなたのアカウントは接続済み",
+      "personal_missing": "このアプリはまだ接続していません",
+      "team_admin_only": "エージェントにチームアカウントを付与できるのはワークスペース管理者のみです。",
+      "team_shared_warning": "このエージェントを実行できる人は、このチームアカウントを通じて操作できます。",
+      "manage_link": "設定 → 接続済みアプリ でアカウントを管理",
+      "save_failed_toast": "保存できませんでした。もう一度お試しください",
+      "team_help": "管理者が接続する、ワークスペース共有のアカウントです。",
+      "personal_help": "実行を開始した人のアカウントを使います。各自で接続する必要があります。",
+      "available_accounts": "利用可能：{{accounts}}",
+      "enable": "{{app}} を有効にする",
+      "account_for": "{{app}} のアカウント",
+      "connect_hint": "必要なアプリがない場合は、設定からアカウントを接続してください。",
+      "available_personal": "自分のアカウント"
     }
   },
   "char_counter": {
@@ -809,7 +851,45 @@
     "tool_kind_write": "編集",
     "tool_kind_read": "読み取り",
     "tool_kind_misc": "その他",
-    "trigger_wakeup": "起動"
+    "trigger_wakeup": "起動",
+    "context_receipt_title": "受け取ったコンテキスト",
+    "context_receipt_summary_other": "{{count}} 件のソース",
+    "context_receipt_model": "モデル",
+    "context_receipt_session": "セッション",
+    "context_receipt_session_resumed": "以前のセッションを再開（その履歴もコンテキストに含まれます）",
+    "context_receipt_session_new": "新しいセッション",
+    "context_receipt_session_fresh_retry": "再開が拒否されたため新しいセッション",
+    "context_receipt_mcp": "MCP サーバー",
+    "context_receipt_mcp_none": "なし",
+    "context_receipt_warning": "{{source}}: {{status}}",
+    "context_receipt_col_source": "ソース",
+    "context_receipt_col_size": "サイズ",
+    "context_receipt_col_delivery": "渡し方",
+    "context_receipt_col_load": "読み込み",
+    "context_receipt_same_as_brief": "ランタイム説明と同じ",
+    "context_receipt_footnote": "エージェント起動前に daemon が記録します。サイズと短いハッシュのみを保存し、内容は保存しません。「検証済み」は、このランタイムバージョンでファイルの読み込みをテスト済みであることを示します。skill のサイズとハッシュは書き込まれたパッケージ全体が対象です。ファイルのバイト数はモデルが実際に読んだ内容を示しません。",
+    "context_source_runtime_brief": "ランタイム説明",
+    "context_source_agent_instructions": "エージェントの指示",
+    "context_source_project_description": "プロジェクトの説明",
+    "context_source_existing_instructions": "リポジトリの指示",
+    "context_source_task_prompt": "このターンのプロンプト",
+    "context_source_skill": "スキル: {{name}}",
+    "context_delivery_file": "ファイル",
+    "context_delivery_inline": "システムプロンプト",
+    "context_delivery_prompt": "ターン入力",
+    "context_delivery_embedded": "ランタイム説明の中",
+    "context_delivery_none": "経路なし",
+    "context_load_delivered": "送信済み",
+    "context_load_verified": "検証済み",
+    "context_load_verified_other_version": "{{version}} でのみ検証済み",
+    "context_load_unverified": "未検証",
+    "context_load_not_delivered": "未送信",
+    "context_receipt_direct_bytes": "直接入力：{{size}}",
+    "context_receipt_file_bytes": "ディスク上のファイル：{{size}}",
+    "context_receipt_package": "パッケージ",
+    "context_receipt_instruction_file_bytes": "指示ファイル：{{size}}",
+    "context_receipt_skill_package_bytes": "スキルパッケージ：{{size}}",
+    "context_receipt_other_file_bytes": "その他のファイル：{{size}}"
   },
   "task_failure": {
     "cancelled_by_system": "システムによってキャンセルされました",
@@ -945,7 +1025,8 @@
       "prompt_assistant": "チームのプロジェクト計画と文章作成を支援",
       "thinking": "下書きを更新中…",
       "placeholder": "必要なエージェントを説明…",
-      "send": "メッセージを送信"
+      "send": "メッセージを送信",
+      "conversation_tab": "会話"
     },
     "live_draft": "エージェント設定",
     "live_draft_hint": "下書きは直接編集できます。",
@@ -971,7 +1052,8 @@
       "runtime": "ランタイムを選択",
       "configure": "設定",
       "done": "完了",
-      "aria": "エージェント作成の手順"
+      "aria": "エージェント作成の手順",
+      "progress": "ステップ {{current}}/{{total}}"
     },
     "configure_title": "エージェントを設定",
     "ask_ai": "AI に書いてもらう",
@@ -1046,5 +1128,45 @@
     "label": "アカウント",
     "runtime_default": "ランタイムの既定",
     "hint": "このエージェントを実行する Freebuff-CLI アカウント。"
+  },
+  "sections": {
+    "runs_count_other": "{{count}} 件の実行",
+    "recent_this_week_other": "今週 {{count}} 件",
+    "view_all": "すべて表示",
+    "open": "開く",
+    "edit": "編集",
+    "add": "追加",
+    "manage": "管理",
+    "instructions_empty": "まだ指示はありません。"
+  },
+  "panel": {
+    "status": "ステータス",
+    "runs_7d": "実行 (7日)",
+    "edit_access_aria": "アクセス: {{value}}。アクセスを変更",
+    "all_settings": "すべての設定"
+  },
+  "intro": {
+    "title": "最初の AI チームメイトを迎える",
+    "description": "エージェントはチームメンバーと同じようにタスクを引き受けます。ランタイム上で Claude Code や Codex などを使って作業し、終わったらコメントで成果を渡します。",
+    "slides": {
+      "describe": {
+        "title": "やることを一文で伝える",
+        "description": "役割を書き、ランタイムとモデルを選べば作成できます。指示の変更や skill の追加はいつでもできます。"
+      },
+      "assign": {
+        "title": "同僚と同じように任せる",
+        "description": "どのタスクでも担当者に選ぶだけ。自分で作業を始めるので、見張る必要はありません。"
+      },
+      "deliver": {
+        "title": "作業を見守り、コメントで受け取る",
+        "description": "実行の様子はリアルタイムで見えます。完了すると、結果と PR をタスクのコメントで渡します。"
+      }
+    },
+    "art": {
+      "prompt": "フロントエンドの PR をレビューし、アクセシビリティとパフォーマンスを重点的に見て、結論を PR コメントに書く。",
+      "issue_title": "料金ページのモバイル表示が崩れる",
+      "comment": "修正しました。375px 以下では料金カードを 1 列にしています。PR を作成し、テストも通っています。",
+      "step_read": "{{file}} を読む"
+    }
   }
 }

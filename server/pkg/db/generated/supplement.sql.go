@@ -105,16 +105,29 @@ WITH locked_task AS MATERIALIZED (
       AND t.agent_id = $3
       AND r.workspace_id = $4
       AND t.status = 'running'
+      AND (
+          $5::uuid IS NULL
+          OR (t.is_leader_task AND t.squad_id = $5::uuid)
+      )
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh', 'pi')
+      AND ($6::text <> 'agent' OR (
+          (SELECT count(*) FROM task_supplement s
+           JOIN comment c ON c.id = s.comment_id
+           WHERE s.task_id = t.id AND c.author_type = 'agent') < $7::int
+          AND (SELECT count(*) FROM task_supplement s
+               JOIN comment c ON c.id = s.comment_id
+               WHERE s.task_id = t.id AND c.author_type = 'agent'
+                 AND s.author_id = $8) < $9::int
+      ))
     FOR UPDATE OF t
 ), inserted AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
         client_request_id, status
     )
-    SELECT t.id, $4, t.issue_id, $5, $6,
-           $7, 'pending'
+    SELECT t.id, $4, t.issue_id, $10, $8,
+           $11, 'pending'
     FROM locked_task t
     RETURNING task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, mode
 )
@@ -124,13 +137,17 @@ JOIN locked_task ON locked_task.id = inserted.task_id
 `
 
 type BindCommentTaskSupplementParams struct {
-	TaskID          pgtype.UUID `json:"task_id"`
-	IssueID         pgtype.UUID `json:"issue_id"`
-	AgentID         pgtype.UUID `json:"agent_id"`
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	CommentID       pgtype.UUID `json:"comment_id"`
-	AuthorID        pgtype.UUID `json:"author_id"`
-	ClientRequestID pgtype.UUID `json:"client_request_id"`
+	TaskID                pgtype.UUID `json:"task_id"`
+	IssueID               pgtype.UUID `json:"issue_id"`
+	AgentID               pgtype.UUID `json:"agent_id"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	RequiredLeaderSquadID pgtype.UUID `json:"required_leader_squad_id"`
+	AuthorType            string      `json:"author_type"`
+	MaxAgentBindings      int32       `json:"max_agent_bindings"`
+	AuthorID              pgtype.UUID `json:"author_id"`
+	MaxBindingsPerAgent   int32       `json:"max_bindings_per_agent"`
+	CommentID             pgtype.UUID `json:"comment_id"`
+	ClientRequestID       pgtype.UUID `json:"client_request_id"`
 }
 
 type BindCommentTaskSupplementRow struct {
@@ -150,19 +167,25 @@ type BindCommentTaskSupplementRow struct {
 	RuntimeID       pgtype.UUID        `json:"runtime_id"`
 }
 
-// Binds an ordinary member comment, already created through the normal comment
-// path, to the exact running turn its author chose. Locking the task
-// serializes against terminal transitions: when that turn ended first nothing
-// is bound — never a later turn of the same agent — and the caller keeps the
-// comment's normal trigger instead.
+// Binds an ordinary comment, already created through the normal comment path,
+// to the exact running turn its author chose. Locking the task serializes
+// against terminal transitions: when that turn ended first nothing is bound —
+// never a later turn of the same agent — and the caller keeps the comment's
+// normal trigger instead. Agent-authored bindings are capped per turn and per
+// authoring agent so two agents cannot keep steering each other; a member's
+// binding is not capped.
 func (q *Queries) BindCommentTaskSupplement(ctx context.Context, arg BindCommentTaskSupplementParams) (BindCommentTaskSupplementRow, error) {
 	row := q.db.QueryRow(ctx, bindCommentTaskSupplement,
 		arg.TaskID,
 		arg.IssueID,
 		arg.AgentID,
 		arg.WorkspaceID,
-		arg.CommentID,
+		arg.RequiredLeaderSquadID,
+		arg.AuthorType,
+		arg.MaxAgentBindings,
 		arg.AuthorID,
+		arg.MaxBindingsPerAgent,
+		arg.CommentID,
 		arg.ClientRequestID,
 	)
 	var i BindCommentTaskSupplementRow
@@ -195,6 +218,12 @@ WITH next AS MATERIALIZED (
       AND s.status = 'pending'
       AND t.status = 'running'
       AND cap.capability = 'task-supplement-v1'
+      -- A daemon that cannot present an agent's message as an agent's never
+      -- receives one: it stays pending until the turn ends, and completion
+      -- replays it as an ordinary mention.
+      AND ($2::bool OR NOT EXISTS (
+          SELECT 1 FROM comment ac WHERE ac.id = s.comment_id AND ac.author_type = 'agent'
+      ))
     ORDER BY s.created_at, s.comment_id
     FOR UPDATE OF s SKIP LOCKED
     LIMIT 1
@@ -209,29 +238,38 @@ WITH next AS MATERIALIZED (
       AND s.task_id = next.task_id
     RETURNING s.task_id, s.workspace_id, s.issue_id, s.comment_id, s.author_id, s.client_request_id, s.status, s.failure_reason, s.attempt_count, s.created_at, s.updated_at, s.delivered_at, s.mode
 )
-SELECT claimed.comment_id, claimed.attempt_count, claimed.mode, c.content,
-       COALESCE(NULLIF(btrim(u.name), ''), 'a user')::text AS author_name
+SELECT claimed.comment_id, claimed.attempt_count, claimed.mode, c.content, c.author_type,
+       COALESCE(NULLIF(btrim(COALESCE(u.name, a.name)), ''),
+                CASE WHEN c.author_type = 'agent' THEN 'an agent' ELSE 'a user' END)::text AS author_name
 FROM claimed
 JOIN comment c ON c.id = claimed.comment_id
-LEFT JOIN "user" u ON u.id = claimed.author_id
+LEFT JOIN "user" u ON u.id = claimed.author_id AND c.author_type = 'member'
+LEFT JOIN agent a ON a.id = claimed.author_id AND c.author_type = 'agent'
 `
+
+type ClaimNextTaskSupplementParams struct {
+	TaskID               pgtype.UUID `json:"task_id"`
+	IncludeAgentAuthored bool        `json:"include_agent_authored"`
+}
 
 type ClaimNextTaskSupplementRow struct {
 	CommentID    pgtype.UUID `json:"comment_id"`
 	AttemptCount int32       `json:"attempt_count"`
 	Mode         string      `json:"mode"`
 	Content      string      `json:"content"`
+	AuthorType   string      `json:"author_type"`
 	AuthorName   string      `json:"author_name"`
 }
 
-func (q *Queries) ClaimNextTaskSupplement(ctx context.Context, taskID pgtype.UUID) (ClaimNextTaskSupplementRow, error) {
-	row := q.db.QueryRow(ctx, claimNextTaskSupplement, taskID)
+func (q *Queries) ClaimNextTaskSupplement(ctx context.Context, arg ClaimNextTaskSupplementParams) (ClaimNextTaskSupplementRow, error) {
+	row := q.db.QueryRow(ctx, claimNextTaskSupplement, arg.TaskID, arg.IncludeAgentAuthored)
 	var i ClaimNextTaskSupplementRow
 	err := row.Scan(
 		&i.CommentID,
 		&i.AttemptCount,
 		&i.Mode,
 		&i.Content,
+		&i.AuthorType,
 		&i.AuthorName,
 	)
 	return i, err
@@ -256,6 +294,166 @@ func (q *Queries) CommentHasTaskSupplement(ctx context.Context, arg CommentHasTa
 	return bound, err
 }
 
+const createNativeQuestionAnswer = `-- name: CreateNativeQuestionAnswer :one
+WITH locked_task AS MATERIALIZED (
+    SELECT t.id, t.issue_id, t.agent_id, t.trigger_comment_id
+    FROM agent_task_queue t
+    JOIN agent_runtime r ON r.id = t.runtime_id
+    JOIN task_supplement_capability cap ON cap.task_id = t.id
+    WHERE t.id = $1
+      AND t.issue_id = $2
+      AND r.workspace_id = $3
+      AND t.status = 'running'
+      AND cap.capability = 'task-supplement-v1'
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh', 'pi')
+    FOR UPDATE OF t
+), pending_ask AS MATERIALIZED (
+    SELECT m.seq
+    FROM task_message m
+    WHERE m.task_id = $1
+      AND m.seq = $4
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.input->'questions') = 'array' THEN m.input->'questions' ELSE '[]'::jsonb END
+          ) q WHERE jsonb_typeof(q->'question') = 'string'
+            AND length(btrim(q->>'question', U&' \0009\000A\000B\000C\000D\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')) > 0)
+      AND NOT EXISTS (SELECT 1 FROM task_message later WHERE later.task_id = m.task_id AND later.seq > m.seq)
+      AND NOT EXISTS (SELECT 1 FROM task_supplement s WHERE s.task_id = m.task_id
+          AND s.workspace_id = $3 AND s.status = 'delivered'
+          AND date_trunc('milliseconds', s.delivered_at) >= date_trunc('milliseconds', m.created_at))
+), touched_issue AS (
+    UPDATE issue i SET
+        updated_at = now(),
+        revision = revision + 1,
+        last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+    FROM locked_task t, pending_ask a
+    WHERE i.id = t.issue_id AND i.workspace_id = $3
+    RETURNING i.id, i.workspace_id, i.revision
+), inserted_comment AS (
+    INSERT INTO comment (
+        issue_id, workspace_id, author_type, author_id, content, type, parent_id
+    )
+    SELECT i.id, i.workspace_id, 'member', $5, $6, 'comment', t.trigger_comment_id
+    FROM touched_issue i
+    JOIN locked_task t ON t.issue_id = i.id
+    RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids
+), inserted_supplement AS (
+    INSERT INTO task_supplement (
+        task_id, workspace_id, issue_id, comment_id, author_id,
+        client_request_id, status, mode
+    )
+    SELECT t.id, i.workspace_id, i.id, c.id, $5,
+           $7, 'pending', 'steer'
+    FROM locked_task t
+    JOIN touched_issue i ON i.id = t.issue_id
+    JOIN inserted_comment c ON c.issue_id = i.id
+    RETURNING task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, mode
+), inserted_binding AS (
+    INSERT INTO native_question_answer (
+        task_id, workspace_id, issue_id, question_seq, comment_id, author_id, client_request_id
+    )
+    SELECT t.id, i.workspace_id, i.id, a.seq, c.id, $5, $7
+    FROM locked_task t
+    JOIN pending_ask a ON true
+    JOIN touched_issue i ON i.id = t.issue_id
+    JOIN inserted_comment c ON c.issue_id = i.id
+    RETURNING task_id, workspace_id, issue_id, question_seq, comment_id, author_id, client_request_id, created_at
+)
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type, c.created_at, c.updated_at, c.parent_id, c.workspace_id, c.resolved_at, c.resolved_by_type, c.resolved_by_id, c.source_task_id, c.quick_action_id, c.via_plugin_id, c.revision, c.recovery_settled_at, c.deleted_at, c.suppressed_agent_ids, i.revision AS issue_revision, b.question_seq,
+       s.status AS supplement_status, s.failure_reason AS supplement_failure_reason,
+       s.delivered_at AS supplement_delivered_at
+FROM inserted_binding b
+JOIN inserted_comment c ON c.id = b.comment_id
+JOIN touched_issue i ON i.id = b.issue_id
+JOIN inserted_supplement s ON s.comment_id = b.comment_id
+`
+
+type CreateNativeQuestionAnswerParams struct {
+	TaskID          pgtype.UUID `json:"task_id"`
+	IssueID         pgtype.UUID `json:"issue_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	QuestionSeq     int32       `json:"question_seq"`
+	AuthorID        pgtype.UUID `json:"author_id"`
+	Content         string      `json:"content"`
+	ClientRequestID pgtype.UUID `json:"client_request_id"`
+}
+
+type CreateNativeQuestionAnswerRow struct {
+	ID                      pgtype.UUID        `json:"id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	AuthorType              string             `json:"author_type"`
+	AuthorID                pgtype.UUID        `json:"author_id"`
+	Content                 string             `json:"content"`
+	Type                    string             `json:"type"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	ParentID                pgtype.UUID        `json:"parent_id"`
+	WorkspaceID             pgtype.UUID        `json:"workspace_id"`
+	ResolvedAt              pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedByType          pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID            pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID            pgtype.UUID        `json:"source_task_id"`
+	QuickActionID           pgtype.UUID        `json:"quick_action_id"`
+	ViaPluginID             pgtype.UUID        `json:"via_plugin_id"`
+	Revision                int64              `json:"revision"`
+	RecoverySettledAt       pgtype.Timestamptz `json:"recovery_settled_at"`
+	DeletedAt               pgtype.Timestamptz `json:"deleted_at"`
+	SuppressedAgentIds      []pgtype.UUID      `json:"suppressed_agent_ids"`
+	IssueRevision           int64              `json:"issue_revision"`
+	QuestionSeq             int32              `json:"question_seq"`
+	SupplementStatus        string             `json:"supplement_status"`
+	SupplementFailureReason pgtype.Text        `json:"supplement_failure_reason"`
+	SupplementDeliveredAt   pgtype.Timestamptz `json:"supplement_delivered_at"`
+}
+
+// One statement answers a native question: the comment, its steer binding, the
+// answer binding and the issue revision land together or not at all. The
+// guards restate the shipped UI predicate (isAgentQuestionPending): the answer
+// names the newest transcript row, that row still carries a question, and no
+// delivered steer has reached the turn since the ask. The pending-ask gate sits
+// on touched_issue so an ask the run already left writes nothing at all. The
+// unique (task_id, question_seq) index is the last word: a second window's
+// answer aborts this whole statement.
+func (q *Queries) CreateNativeQuestionAnswer(ctx context.Context, arg CreateNativeQuestionAnswerParams) (CreateNativeQuestionAnswerRow, error) {
+	row := q.db.QueryRow(ctx, createNativeQuestionAnswer,
+		arg.TaskID,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.QuestionSeq,
+		arg.AuthorID,
+		arg.Content,
+		arg.ClientRequestID,
+	)
+	var i CreateNativeQuestionAnswerRow
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.IssueRevision,
+		&i.QuestionSeq,
+		&i.SupplementStatus,
+		&i.SupplementFailureReason,
+		&i.SupplementDeliveredAt,
+	)
+	return i, err
+}
+
 const createTaskSupplement = `-- name: CreateTaskSupplement :one
 WITH locked_task AS MATERIALIZED (
     SELECT t.id, t.issue_id, t.agent_id, t.trigger_comment_id
@@ -267,7 +465,7 @@ WITH locked_task AS MATERIALIZED (
       AND r.workspace_id = $3
       AND t.status = 'running'
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh', 'pi')
     FOR UPDATE OF t
 ), touched_issue AS (
     UPDATE issue i SET
@@ -403,6 +601,110 @@ type DeleteTaskSupplementByCommentParams struct {
 func (q *Queries) DeleteTaskSupplementByComment(ctx context.Context, arg DeleteTaskSupplementByCommentParams) error {
 	_, err := q.db.Exec(ctx, deleteTaskSupplementByComment, arg.CommentID, arg.WorkspaceID)
 	return err
+}
+
+const deleteUndeliveredTaskSupplementForRun = `-- name: DeleteUndeliveredTaskSupplementForRun :execrows
+DELETE FROM task_supplement
+WHERE comment_id = $1 AND task_id = $2 AND status <> 'delivered'
+`
+
+type DeleteUndeliveredTaskSupplementForRunParams struct {
+	CommentID pgtype.UUID `json:"comment_id"`
+	TaskID    pgtype.UUID `json:"task_id"`
+}
+
+// Drops the receipt of an agent comment that completion replayed: the comment
+// is now handled by the follow-up run like any other mention, so no client
+// should offer to resend it.
+func (q *Queries) DeleteUndeliveredTaskSupplementForRun(ctx context.Context, arg DeleteUndeliveredTaskSupplementForRunParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUndeliveredTaskSupplementForRun, arg.CommentID, arg.TaskID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getNativeQuestionAnswerByRequest = `-- name: GetNativeQuestionAnswerByRequest :one
+SELECT task_id, workspace_id, issue_id, question_seq, comment_id, author_id, client_request_id, created_at FROM native_question_answer
+WHERE task_id = $1
+  AND workspace_id = $2
+  AND author_id = $3
+  AND client_request_id = $4
+`
+
+type GetNativeQuestionAnswerByRequestParams struct {
+	TaskID          pgtype.UUID `json:"task_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AuthorID        pgtype.UUID `json:"author_id"`
+	ClientRequestID pgtype.UUID `json:"client_request_id"`
+}
+
+func (q *Queries) GetNativeQuestionAnswerByRequest(ctx context.Context, arg GetNativeQuestionAnswerByRequestParams) (NativeQuestionAnswer, error) {
+	row := q.db.QueryRow(ctx, getNativeQuestionAnswerByRequest,
+		arg.TaskID,
+		arg.WorkspaceID,
+		arg.AuthorID,
+		arg.ClientRequestID,
+	)
+	var i NativeQuestionAnswer
+	err := row.Scan(
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.QuestionSeq,
+		&i.CommentID,
+		&i.AuthorID,
+		&i.ClientRequestID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getNativeQuestionAnswerBySeq = `-- name: GetNativeQuestionAnswerBySeq :one
+SELECT task_id, workspace_id, issue_id, question_seq, comment_id, author_id, client_request_id, created_at FROM native_question_answer
+WHERE task_id = $1 AND question_seq = $2
+`
+
+type GetNativeQuestionAnswerBySeqParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	QuestionSeq int32       `json:"question_seq"`
+}
+
+func (q *Queries) GetNativeQuestionAnswerBySeq(ctx context.Context, arg GetNativeQuestionAnswerBySeqParams) (NativeQuestionAnswer, error) {
+	row := q.db.QueryRow(ctx, getNativeQuestionAnswerBySeq, arg.TaskID, arg.QuestionSeq)
+	var i NativeQuestionAnswer
+	err := row.Scan(
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.QuestionSeq,
+		&i.CommentID,
+		&i.AuthorID,
+		&i.ClientRequestID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getRunningTaskForAgentOnIssue = `-- name: GetRunningTaskForAgentOnIssue :one
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status = 'running'
+ORDER BY started_at DESC NULLS LAST, id DESC
+LIMIT 1
+`
+
+type GetRunningTaskForAgentOnIssueParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// The turn a comment sent with steer=true is added to for one recipient. The
+// bind re-checks that it is still running and can take additional input.
+func (q *Queries) GetRunningTaskForAgentOnIssue(ctx context.Context, arg GetRunningTaskForAgentOnIssueParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getRunningTaskForAgentOnIssue, arg.IssueID, arg.AgentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getTaskSupplementByRequest = `-- name: GetTaskSupplementByRequest :one
@@ -606,6 +908,50 @@ func (q *Queries) ListTaskSupplementsByCommentIDs(ctx context.Context, arg ListT
 	return items, nil
 }
 
+const listUndeliveredTaskSupplementCommentIDs = `-- name: ListUndeliveredTaskSupplementCommentIDs :many
+SELECT comment_id FROM task_supplement
+WHERE task_id = $1 AND status <> 'delivered'
+`
+
+// Comments bound to this run that it never read. Completion replays the
+// agent-authored ones as the mention they replaced.
+func (q *Queries) ListUndeliveredTaskSupplementCommentIDs(ctx context.Context, taskID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listUndeliveredTaskSupplementCommentIDs, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var comment_id pgtype.UUID
+		if err := rows.Scan(&comment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, comment_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockTaskForSupplementBind = `-- name: LockTaskForSupplementBind :one
+SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE
+`
+
+// Taken in its own statement before BindCommentTaskSupplement, in the same
+// transaction. BindCommentTaskSupplement counts an agent author's earlier
+// bindings; a count inside the locking statement would keep that statement's
+// snapshot across the lock wait, so two binders racing for the last slot
+// would both see the old count. Counting in the next statement sees what the
+// previous lock holder committed.
+func (q *Queries) LockTaskForSupplementBind(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockTaskForSupplementBind, taskID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockTaskSupplementsByComment = `-- name: LockTaskSupplementsByComment :many
 SELECT task_id, workspace_id, issue_id, comment_id, author_id, client_request_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, mode FROM task_supplement
 WHERE comment_id = $1 AND workspace_id = $2
@@ -746,7 +1092,7 @@ func (q *Queries) SettleTerminalTaskSupplements(ctx context.Context, taskIds []p
 
 const startAgentTaskWithSupplement = `-- name: StartAgentTaskWithSupplement :one
 WITH candidate AS MATERIALIZED (
-    SELECT t.id, t.issue_id, r.workspace_id, r.provider
+    SELECT t.id, t.issue_id, t.chat_session_id, r.workspace_id, r.provider
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = $2
@@ -757,8 +1103,8 @@ WITH candidate AS MATERIALIZED (
     SELECT id, workspace_id, issue_id, 'task-supplement-v1'
     FROM candidate
     WHERE $3::boolean
-      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh')
-      AND issue_id IS NOT NULL
+      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'dsh', 'pi')
+      AND (issue_id IS NOT NULL OR chat_session_id IS NOT NULL)
     ON CONFLICT DO NOTHING
     RETURNING task_id
 )
@@ -767,7 +1113,9 @@ SET status = 'running',
     started_at = now(),
     wait_reason = NULL,
     prepare_lease_expires_at = NULL,
-    result = CASE WHEN $1::boolean AND candidate.provider IN ('pi', 'omp')
+    result = CASE WHEN $1::boolean AND candidate.provider = 'museapp'
+                  THEN COALESCE(t.result, '{}'::jsonb) || '{"process_cleanup_capability":"museapp-process-cleanup-v1"}'::jsonb
+                  WHEN $1::boolean AND candidate.provider IN ('pi', 'omp')
                   THEN COALESCE(t.result, '{}'::jsonb) || '{"process_cleanup_capability":"pi-process-cleanup-v1"}'::jsonb
                   ELSE t.result END
 FROM candidate
@@ -775,7 +1123,7 @@ WHERE t.id = candidate.id
   -- Reference the data-modifying CTE explicitly: capability persistence and
   -- the returned running row are one indivisible statement.
   AND (SELECT count(*) FROM capability) >= 0
-RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.workflow_step, t.account_id
+RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.workflow_step, t.account_id, t.model_override, t.thinking_level_override, t.service_tier_override, t.tier_id, t.tier_parked, t.tier_explicit
 `
 
 type StartAgentTaskWithSupplementParams struct {
@@ -852,6 +1200,12 @@ func (q *Queries) StartAgentTaskWithSupplement(ctx context.Context, arg StartAge
 		&i.IssueSnapshot,
 		&i.WorkflowStep,
 		&i.AccountID,
+		&i.ModelOverride,
+		&i.ThinkingLevelOverride,
+		&i.ServiceTierOverride,
+		&i.TierID,
+		&i.TierParked,
+		&i.TierExplicit,
 	)
 	return i, err
 }

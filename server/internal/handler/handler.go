@@ -22,10 +22,13 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/connectedapps"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inbox"
+	"github.com/multica-ai/multica/server/internal/inboxread"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -34,6 +37,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	"github.com/multica-ai/multica/server/internal/integrations/weixin"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -41,6 +45,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
+	"github.com/multica-ai/multica/server/internal/themestore"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -124,6 +129,9 @@ type Config struct {
 	CloudTimeout             time.Duration
 	AttachmentDownloadMode   string
 	AttachmentDownloadURLTTL time.Duration
+	// MaxPreviewSizeBytes bounds text-backed attachment previews independently
+	// of upload/download limits. Zero selects the default 2 MiB limit.
+	MaxPreviewSizeBytes int64
 	// AttachmentFrameAncestors are trusted browser origins allowed to embed
 	// attachment preview responses. In production this should mirror the
 	// frontend/CORS origin allowlist so split app/api self-hosted deployments
@@ -214,6 +222,8 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	InboxReads             *inboxread.Guard
+	InboxTrimmer           *inbox.Trimmer // nil leaves inboxes untrimmed
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
@@ -239,6 +249,9 @@ type Handler struct {
 	// dshWebURL is the base URL of the dsh web app (MULTICA_DSH_WEB_URL) that
 	// "Open session" links point at. Empty means no link is offered.
 	dshWebURL string
+	// Features restricts paid features (paid_feature.go). Nil leaves every
+	// feature usable, which is the self-hosted behavior.
+	Features entitlement.FeatureProvider
 	// SeatCapacity executes Cloud's pre-purchased human-seat protocol. Nil or
 	// disabled preserves self-hosted behavior.
 	SeatCapacity          seatcapacity.Executor
@@ -250,6 +263,10 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// ThemeStore serves the community theme registry. Nil only when
+	// MULTICA_THEME_REGISTRY_URL is invalid: its routes return 404 and
+	// /api/config omits it.
+	ThemeStore *themestore.Store
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -315,6 +332,9 @@ type Handler struct {
 	// the composio HTTP handlers return 403 in that case. Wired in
 	// cmd/server/router.go after handler.New.
 	Composio *composio.Service
+	// ConnectedApps serves agents' app calls through the MCP gateway (MUL-8516).
+	// Wired together with Composio; nil when Composio is.
+	ConnectedApps *connectedapps.Service
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic
@@ -367,6 +387,14 @@ type Handler struct {
 	// WecomCredentials unseals a wecom installation's smart-bot secret for the
 	// WebSocket subscribe frame. Nil disables the wecom integration.
 	WecomCredentials wecom.CredentialsResolver
+	// WecomInstall drives the scan-code install sessions (QR generate + poll).
+	// Nil unless MULTICA_WECOM_SECRET_KEY is set; Configured() is additionally
+	// false without a QR provider, in which case the endpoints return 503 but
+	// in-flight sessions still terminate cleanly.
+	WecomInstall *wecom.InstallService
+	// WecomInstallWorker drives those sessions. Built in cmd/server/router.go;
+	// main.go starts it as an independent worker.
+	WecomInstallWorker *wecom.InstallWorker
 	// WecomBindingTokens mints/redeems the user-binding tokens behind the
 	// "link your Multica account" prompt sent to first-time WeCom users
 	// (their aibot userid is a "T"-prefixed anonymized id with no relation
@@ -391,6 +419,9 @@ type Handler struct {
 	// The process owner starts and joins it; the synchronous event bus only
 	// enqueues EventChatDone work.
 	TelegramOutbound *telegram.Outbound
+
+	WeixinInstall  *weixin.InstallService
+	WeixinOutbound *weixin.Outbound
 
 	// channelFileDelivery names the channel types that can, IN THIS
 	// DEPLOYMENT, carry a file the agent produced the last hop into the
@@ -509,6 +540,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
 		TxStarter:                    txStarter,
+		InboxReads:                   inboxread.New(inboxread.ConfigFromEnv()),
 		Hub:                          hub,
 		DaemonHub:                    daemonHub,
 		DaemonProfileRefresh:         daemonProfileRefresh,
@@ -815,36 +847,31 @@ func (h *Handler) NotifyRuntimeGone(runtimeID string) {
 // NotifyRuntimeRecovered republishes the workspace-scoped daemon:register
 // lifecycle event after a heartbeat restored a runtime from offline. Runtime
 // details are intentionally omitted from the payload.
-func (h *Handler) NotifyRuntimeRecovered(_ context.Context, workspaceID string) {
+// M-351: an offline->online flip may free provider slots, so it also runs
+// the runtime-less tier restamp sweep for this workspace.
+func (h *Handler) NotifyRuntimeRecovered(ctx context.Context, workspaceID string) {
 	if h == nil || workspaceID == "" {
 		return
 	}
 	h.PublishRuntimeRefresh(workspaceID, "system", "", "heartbeat_recovery")
+	if h.TaskService != nil {
+		h.TaskService.RestampRuntimelessTierTasksForWorkspace(ctx, workspaceID)
+	}
 }
 
-// publishTask is publish() plus a TaskID hint so the realtime layer can route
-// the event to the per-task scope rather than the whole workspace.
-func (h *Handler) publishTask(eventType, workspaceID, actorType, actorID, taskID string, payload any) {
-	h.Bus.Publish(events.Event{
-		Type:        eventType,
-		WorkspaceID: workspaceID,
-		ActorType:   actorType,
-		ActorID:     actorID,
-		TaskID:      taskID,
-		Payload:     payload,
-	})
-}
-
-// publishChat is publish() plus a ChatSessionID hint so the realtime layer
-// can route the event to the per-chat-session scope.
+// publishChat is publish() plus the chat session routing hints. actorID must
+// be the session's creator: every chat endpoint gates on creator ownership
+// before publishing, and the realtime layer delivers the event to that user
+// only.
 func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
 	h.Bus.Publish(events.Event{
-		Type:          eventType,
-		WorkspaceID:   workspaceID,
-		ActorType:     actorType,
-		ActorID:       actorID,
-		ChatSessionID: chatSessionID,
-		Payload:       payload,
+		Type:               eventType,
+		WorkspaceID:        workspaceID,
+		ActorType:          actorType,
+		ActorID:            actorID,
+		ChatSessionID:      chatSessionID,
+		ChatSessionOwnerID: actorID,
+		Payload:            payload,
 	})
 }
 
@@ -1029,6 +1056,9 @@ func (h *Handler) requireWorkspaceMember(w http.ResponseWriter, r *http.Request,
 
 	member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
 	if err != nil {
+		if writeQueryCancellation(w, r, err) {
+			return db.Member{}, false
+		}
 		writeError(w, http.StatusNotFound, notFoundMsg)
 		return db.Member{}, false
 	}
@@ -1088,7 +1118,14 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 	// Try identifier format first (e.g., "JIA-42"). resolveIssueByIdentifier
 	// silently returns false for non-identifier strings, falling through to
 	// the UUID path below.
-	if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID); ok {
+	issue, found, err := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID)
+	if writeQueryCancellation(w, r, err) {
+		return db.Issue{}, false
+	}
+	if found {
+		if !h.requireProjectVisible(w, r, workspaceID, issue.ProjectID, http.StatusNotFound, "issue not found") {
+			return db.Issue{}, false
+		}
 		return issue, true
 	}
 
@@ -1104,12 +1141,20 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 		writeError(w, http.StatusBadRequest, "invalid workspace_id")
 		return db.Issue{}, false
 	}
-	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+	issue, err = h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
 		ID:          issueUUID,
 		WorkspaceID: wsUUID,
 	})
 	if err != nil {
+		if writeQueryCancellation(w, r, err) {
+			return db.Issue{}, false
+		}
 		writeError(w, http.StatusNotFound, "issue not found")
+		return db.Issue{}, false
+	}
+	// MUL-8472: an issue in a private project the caller cannot see does not
+	// exist for them, on every route that loads it through here.
+	if !h.requireProjectVisible(w, r, workspaceID, issue.ProjectID, http.StatusNotFound, "issue not found") {
 		return db.Issue{}, false
 	}
 	return issue, true
@@ -1122,31 +1167,35 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 // resolved to the same issue number, so `FOO-134` and `TRS-134` were
 // interchangeable — which makes the identifier URL `/{ws}/issues/{key}`
 // unusable as a canonical link.
-func (h *Handler) resolveIssueByIdentifier(ctx context.Context, id, workspaceID string) (db.Issue, bool) {
+func (h *Handler) resolveIssueByIdentifier(ctx context.Context, id, workspaceID string) (db.Issue, bool, error) {
 	parts := splitIdentifier(id)
 	if parts == nil {
-		return db.Issue{}, false
+		return db.Issue{}, false, nil
 	}
 	if workspaceID == "" {
-		return db.Issue{}, false
+		return db.Issue{}, false, nil
 	}
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
-		return db.Issue{}, false
+		return db.Issue{}, false, nil
 	}
 	// Case-insensitive: a hand-typed `trs-134` should open `TRS-134`.
-	prefix := h.getIssuePrefix(ctx, wsUUID)
+	workspace, err := h.Queries.GetWorkspace(ctx, wsUUID)
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	prefix := issuePrefixForWorkspace(workspace)
 	if prefix == "" || !strings.EqualFold(parts.prefix, prefix) {
-		return db.Issue{}, false
+		return db.Issue{}, false, nil
 	}
 	issue, err := h.Queries.GetIssueByNumber(ctx, db.GetIssueByNumberParams{
 		WorkspaceID: wsUUID,
 		Number:      parts.number,
 	})
 	if err != nil {
-		return db.Issue{}, false
+		return db.Issue{}, false, err
 	}
-	return issue, true
+	return issue, true, nil
 }
 
 type identifierParts struct {
@@ -1239,6 +1288,9 @@ func (h *Handler) loadAgentForUser(w http.ResponseWriter, r *http.Request, agent
 		WorkspaceID: wsUUID,
 	})
 	if err != nil {
+		if writeQueryCancellation(w, r, err) {
+			return db.Agent{}, false
+		}
 		writeError(w, http.StatusNotFound, "agent not found")
 		return db.Agent{}, false
 	}
@@ -1269,6 +1321,9 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 	if !ok {
 		return db.InboxItem{}, false
 	}
+	if !h.requireInboxOwnerAccess(w, r, userID, wsUUID) {
+		return db.InboxItem{}, false
+	}
 
 	item, err := h.Queries.GetInboxItemInWorkspace(r.Context(), db.GetInboxItemInWorkspaceParams{
 		ID:          itemUUID,
@@ -1281,6 +1336,11 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 
 	if item.RecipientType != "member" || uuidToString(item.RecipientID) != userID {
 		writeError(w, http.StatusNotFound, "inbox item not found")
+		return db.InboxItem{}, false
+	}
+	// An item on an issue in a private project the caller cannot see (never
+	// granted, or revoked since it was delivered) answers like a missing one.
+	if !h.requireIssueIDVisible(w, r, workspaceID, item.IssueID, http.StatusNotFound, "inbox item not found") {
 		return db.InboxItem{}, false
 	}
 	return item, true

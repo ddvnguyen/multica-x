@@ -1,10 +1,11 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@multica/core/api";
 import type { IssueAskPlan } from "@multica/core/issues/ask-plan";
+import { useAskDraftStore } from "@multica/core/issues/stores/ask-draft-store";
 import { renderWithI18n } from "../../test/i18n";
-import { AskPlanPanel } from "./ask-plan-panel";
+import { AskPlanPanel, ThreadAskCards } from "./ask-plan-panel";
 
 vi.mock("@multica/core/api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -12,6 +13,7 @@ vi.mock("@multica/core/api", async (importOriginal) => {
     ...actual,
     api: {
       getIssueAskPlan: vi.fn(),
+      listTimeline: vi.fn().mockResolvedValue([]),
       answerQuestionCard: vi.fn(),
       reviewPlan: vi.fn(),
       createTaskSupplement: vi.fn(),
@@ -22,7 +24,6 @@ vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("../../editor", () => ({
   ReadonlyContent: ({ content }: { content: string }) => <div data-testid="section">{content}</div>,
 }));
-
 const EMPTY: IssueAskPlan = { question_cards: [], plan: null };
 
 const CARD_STATE: IssueAskPlan = {
@@ -77,8 +78,13 @@ function renderPanel() {
   );
 }
 
+beforeEach(() => {
+  useAskDraftStore.setState({ drafts: {} });
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  useAskDraftStore.setState({ drafts: {} });
 });
 
 describe("AskPlanPanel", () => {
@@ -179,6 +185,39 @@ describe("AskPlanPanel", () => {
     );
   });
 
+  it("keeps a staged plan comment across reload and clears it on verdict", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(PLAN_STATE);
+    vi.mocked(api.reviewPlan).mockResolvedValue({
+      plan: PLAN_STATE.plan,
+      resume_task: "task-8",
+    } as never);
+
+    const view = renderPanel();
+    await screen.findByText("Split the cutover");
+
+    // The plan comment box is the multi-line field now, with its own count.
+    const box = screen.getByRole("textbox", { name: "What should change?" });
+    expect(box.tagName).toBe("TEXTAREA");
+    fireEvent.change(box, { target: { value: "Ship z first.\nThen web." } });
+    fireEvent.click(screen.getByRole("button", { name: "Add comment" }));
+    // whitespace-pre-wrap keeps the newline: match the full two-line text
+    // (both the span and its li match, so take all).
+    expect(screen.getAllByText((_content, element) => element?.textContent === "Ship z first.\nThen web.").length).toBeGreaterThan(0);
+    expect(useAskDraftStore.getState().getDraft("plan:plan-4")).toMatchObject({
+      planComments: ["Ship z first.\nThen web."],
+    });
+
+    // Reload the panel: the staged comment is still there.
+    view.unmount();
+    renderPanel();
+    await screen.findByText("Split the cutover");
+    expect((await screen.findAllByText((_content, element) => element?.textContent === "Ship z first.\nThen web.")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(api.reviewPlan).toHaveBeenCalled());
+    expect(useAskDraftStore.getState().getDraft("plan:plan-4")).toBeUndefined();
+  });
+
   it("takes two presses to cancel a plan", async () => {
     vi.mocked(api.getIssueAskPlan).mockResolvedValue(PLAN_STATE);
     vi.mocked(api.reviewPlan).mockResolvedValue({
@@ -251,5 +290,52 @@ describe("AskPlanPanel", () => {
       screen.getByText("The agent is preparing this plan — there is nothing to review yet."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve plan" })).toBeNull();
+  });
+});
+
+describe("thread placement (M-285)", () => {
+  const ANCHORED: IssueAskPlan = {
+    question_cards: [{ ...CARD_STATE.question_cards[0]!, trigger_comment_id: "comment-1" }],
+    plan: null,
+  };
+
+  function renderThread(commentId: string) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return renderWithI18n(
+      <QueryClientProvider client={client}>
+        <AskPlanPanel issueId="issue-3" />
+        <ThreadAskCards issueId="issue-3" commentId={commentId} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("renders a card with a trigger comment in that comment's thread, not in the panel", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(ANCHORED);
+    vi.mocked(api.listTimeline).mockResolvedValue([{ id: "comment-1" }] as never);
+
+    const view = renderThread("comment-1");
+    await screen.findByTestId("thread-ask-cards");
+    await waitFor(() => expect(view.queryByTestId("ask-plan-panel")).toBeNull());
+    expect(screen.getAllByText("Which lane ships first?")).toHaveLength(1);
+  });
+
+  it("keeps the card in the panel when its trigger comment is not on the timeline", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(ANCHORED);
+    vi.mocked(api.listTimeline).mockResolvedValue([]);
+
+    const view = renderThread("comment-9");
+    await screen.findByTestId("ask-plan-panel");
+    expect(view.queryByTestId("thread-ask-cards")).toBeNull();
+  });
+
+  it("keeps a card with no trigger comment top-level", async () => {
+    vi.mocked(api.getIssueAskPlan).mockResolvedValue(CARD_STATE);
+    vi.mocked(api.listTimeline).mockResolvedValue([{ id: "comment-1" }] as never);
+
+    const view = renderThread("comment-1");
+    await screen.findByTestId("ask-plan-panel");
+    expect(view.queryByTestId("thread-ask-cards")).toBeNull();
   });
 });

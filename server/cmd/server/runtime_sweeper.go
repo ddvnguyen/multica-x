@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -87,6 +88,17 @@ const (
 	// liveness + DB stale + FailTasksForOfflineRuntimes), which typically
 	// reclaims orphaned tasks within ~180s.
 	runningTimeoutSeconds = 9000.0
+	// detachedTaskGrace is the extra window a detached-capable runtime's running
+	// task gets on top of runningTimeoutSeconds (S3-C, M-139). A detached run
+	// executes in its own systemd scope and may outlive the daemon that
+	// launched it. Once the runtime heartbeat is stale the wall clock is the
+	// bound; without it the row could stay 'running' forever after a restart
+	// the daemon cannot observe.
+	detachedTaskGrace = 30 * time.Minute
+	// defaultDetachedTaskTimeout is that bound: the task's own budget plus the
+	// grace. It only applies once the runtime heartbeat is stale. Overridable
+	// with MULTICA_DETACHED_TASK_TIMEOUT; 0 disables it.
+	defaultDetachedTaskTimeout = time.Duration(runningTimeoutSeconds)*time.Second + detachedTaskGrace
 	// queuedExpireBatchSize caps how many queued rows a single sweeper tick
 	// transitions to failed. Keeps the sweep transaction short even when
 	// the historical backlog is large (~89k at MUL-1899 baseline). At 30s
@@ -149,6 +161,33 @@ func runPeriodicSweep(ctx context.Context, interval time.Duration, sweep func())
 	}
 }
 
+// detachedTaskTimeoutFromEnv parses MULTICA_DETACHED_TASK_TIMEOUT. Unlike
+// envDuration it honours an explicit 0 as "disabled", which the SQL treats as
+// no detached bound.
+func detachedTaskTimeoutFromEnv(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultDetachedTaskTimeout
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil || v < 0 {
+		slog.Warn("invalid env var, using default", "name", "MULTICA_DETACHED_TASK_TIMEOUT", "value", raw, "default", defaultDetachedTaskTimeout.String(), "error", err)
+		return defaultDetachedTaskTimeout
+	}
+	if v == 0 {
+		slog.Info("detached task timeout disabled by MULTICA_DETACHED_TASK_TIMEOUT=0")
+		return 0
+	}
+	if v < minimumRuntimeReconnectGrace {
+		slog.Warn("detached task timeout is shorter than heartbeat freshness; clamping",
+			"configured", v,
+			"minimum", minimumRuntimeReconnectGrace,
+		)
+		return minimumRuntimeReconnectGrace
+	}
+	return v
+}
+
 // runRuntimeSweeper periodically marks runtimes as offline if their
 // last_seen_at exceeds the stale threshold, and fails orphaned tasks.
 // This handles cases where the daemon crashes, is killed without calling
@@ -160,14 +199,14 @@ func runPeriodicSweep(ctx context.Context, interval time.Duration, sweep func())
 // hot heartbeat path; the DB is allowed to lag up to runtimeHeartbeatDBFlushInterval).
 // When liveness is unavailable or errors, we fall back to trusting the DB
 // stale window — that is the original behavior.
-func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handler.LivenessStore, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace time.Duration) {
+func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handler.LivenessStore, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace, detachedTaskTimeout time.Duration) {
 	runPeriodicSweep(ctx, sweepInterval, func() {
 		// These stages retain their existing cadence and ordering. Runtime GC and
 		// delegated-failure recovery run in independent lower-frequency loops.
 		sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
 		sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
 		sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
-		sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
+		sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace, detachedTaskTimeout)
 		sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 		sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	})
@@ -590,7 +629,7 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 // in the same tick; this function is a defensive backstop for the residual
 // edge where a runtime row lingers online-with-stale-heartbeat past the
 // wall clock (MUL-4107).
-func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace time.Duration) (stats runtimeSweepStageStats) {
+func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService, bus *events.Bus, reconnectGrace, detachedTaskTimeout time.Duration) (stats runtimeSweepStageStats) {
 	startedAt := time.Now()
 	defer func() {
 		observeRuntimeSweepStage(taskServiceMetrics(taskSvc), obsmetrics.RuntimeSweepStageStaleTasks, startedAt, stats)
@@ -603,6 +642,9 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 		// exactly matches what sweepStaleRuntimes considers "not alive".
 		RuntimeStaleSecs:          staleThresholdSeconds,
 		RuntimeReconnectGraceSecs: reconnectGrace.Seconds(),
+		// The detached backstop applies only after heartbeat freshness expires.
+		// Zero disables this bound.
+		DetachedTimeoutSecs: detachedTaskTimeout.Seconds(),
 	})
 	if err != nil {
 		slog.Warn("task sweeper: failed to clean up stale tasks", "error", err)

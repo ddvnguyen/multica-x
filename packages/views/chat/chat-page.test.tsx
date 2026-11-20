@@ -44,6 +44,10 @@ vi.mock("./components/chat-thread-list", () => ({
 vi.mock("./components/chat-session-header", () => ({
   ChatSessionHeader: () => <div>chat-session-header</div>,
 }));
+vi.mock("./components/chat-wakeups", () => ({
+  ChatWakeupStrip: () => null,
+  useChatWakeups: () => [],
+}));
 vi.mock("./components/chat-empty-state", () => ({
   EmptyState: () => <div>chat-empty-state</div>,
 }));
@@ -56,20 +60,14 @@ vi.mock("./components/offline-banner", () => ({
 vi.mock("./components/no-agent-banner", () => ({
   NoAgentBanner: () => null,
 }));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
+}));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
+}));
 vi.mock("./components/archived-agent-banner", () => ({
   ArchivedAgentBanner: () => null,
-}));
-vi.mock("react-resizable-panels", () => ({
-  useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),
-}));
-vi.mock("@multica/ui/components/ui/resizable", () => ({
-  ResizablePanelGroup: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  ResizablePanel: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  ResizableHandle: () => null,
 }));
 // Same width-driven layout mock the inbox page tests use: the deep-link tests
 // all want the desktop two-pane layout, the breakpoint tests at the bottom set

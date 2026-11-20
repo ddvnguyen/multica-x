@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { motion } from "motion/react";
+import { useReducedMotion } from "@multica/core/appearance";
 import type { Layout, PanelSize } from "react-resizable-panels";
 import {
   isEditableShortcutTarget,
@@ -124,12 +125,15 @@ export function AnimatedRightSidebar({
   motionEnabled,
   children,
   className,
+  contentClassName = "p-4",
 }: {
   open: boolean;
   motionEnabled?: boolean;
   children: ReactNode;
   className?: string;
+  contentClassName?: string;
 }) {
+  const reduceMotion = useReducedMotion();
   return (
     <motion.div
       animate={{ opacity: open ? 1 : 0, x: open ? 0 : 12 }}
@@ -145,9 +149,9 @@ export function AnimatedRightSidebar({
         className,
       )}
       initial={false}
-      transition={motionEnabled ? rightSidebarTransition : { duration: 0 }}
+      transition={motionEnabled && !reduceMotion ? rightSidebarTransition : { duration: 0 }}
     >
-      <div className="p-4">{children}</div>
+      <div className={contentClassName}>{children}</div>
     </motion.div>
   );
 }

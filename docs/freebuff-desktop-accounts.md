@@ -83,6 +83,16 @@ wins on collision).
   the model itself, so the list is the single entry `freebuff-desktop`.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
+- **Task context (M-199):** the bridge prepends `CODEBUDDY.md` only when it
+  creates a thread, including after an expired or invalid resume. The bridge's
+  per-run shim keeps the task-scoped Multica identity available to the agent.
+- **Session rotation (M-199):** a known or resumed thread is reused only when
+  the desktop API reports its creation time as less than four hours ago. A
+  stale thread or one with an unknown creation time is abandoned. The bridge
+  does not scan project threads for idle conversations. It stores the thread
+  ID in account-local `state.json`; state writes are atomic (`renameSync`).
+- **System instruction (M-199):** references `CODEBUDDY.md` only, never
+  `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
   in it are the upstream sync that main was behind on, not bridge changes).
 
@@ -106,12 +116,75 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
 1. Merge the PR into `multica-moct` (Claude Architect approval + CI green).
 2. Open the stack PR `multica-moct → master`; the Owner approves it and the
    deploy.
-3. Update the deployed Freebuff Desktop to the latest upstream (recorded:
-   `9cd09bacf`, previously `3fc5979f3`), with the bridge from the fork PR.
-4. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
-5. Smoke test: add two accounts on the runtime page, bind one agent to each
+3. Update the deployed Freebuff Desktop to the slimmer Linux build
+   (commit `7807c228ed488496a7bc468aace868368fd605fa` (v0.0.196), ~121 MB RSS vs ~400 MB
+   for the previous build). It drops the cloud-account-management endpoints
+   Multica never used and keeps everything the bridge needs. Run headless under
+   Bun: `FREEBUFF_WEB_SERVER=1 FREEBUFF_WEB_HOST=127.0.0.1 FREEBUFF_WEB_NO_AUTH=1
+   bun orchestrator.js`. The Electron binary is ARM64; the orchestrator is
+   plain Bun JS and runs on x86_64.
+4. Install the reviewed bridge source from
+   https://github.com/ddvnguyen/freebuff/pull/5 on the configured
+   `freebuff-desktop` path; record the source commit and verify
+   `--list-models --json` before deployment.
+5. Deploy via `ddvnguyen/moct` `dsh-lane-deploy.yml` from `stable`.
+6. Smoke test: add two accounts on the runtime page, bind one agent to each
    and one to `any`; check the model picker per account and one run per agent;
    with one account busy, a second task for it stays queued.
+
+## Team runtime: one slot, one-hour sessions (M-256)
+
+The freebuff runtime that runs this team's agents allows **one concurrent
+run**. `Freebuff Engineer` and `Freebuff Agent` are two agents on that single
+slot: their cards serialize. A card assigned to the second agent waits until
+the running card ends; assigning both at once does not make them parallel, it
+only makes the second one late.
+
+Every open of a freebuff-desktop engine is a **1-hour session**. Idle time
+inside the hour is lost credit, not banked, so the slot is fed with work that
+fits in it: small scoped cards (30-60 minutes, with explicit acceptance
+checks), chained one after another. A card too large for one session is cut
+smaller before it is queued rather than started and abandoned.
+
+Two mechanisms keep the slot fed, both from M-256: the hourly Leader checkup
+autopilot pulls the next small card for an idle Freebuff agent from the epic
+decision record, and the turn-end contract makes every run end by assigning or
+waking the next card on the slot. A run must not end leaving the slot idle with
+queued work behind it.
+
+Failure fallback: a Freebuff run that fails with `404` on `POST /api/threads`,
+an auth failure, or a quota failure is not retried on this runtime. The card is
+reassigned to another live agent, and the slot takes a different card.
+
+Related: the five-minute idle auto-close of a managed Desktop orchestrator is
+the M-254 behavior recorded under Known limits below; the `POST /api/threads`
+404 failure mode and its runner alignment work are M-295 and M-296.
+
+## Runtime default account (M-203, Phase 2 of M-199)
+
+`account_mode = "default"` used to mean "no account: the runtime's own
+configuration applies". On a freebuff-desktop runtime it now means "the
+runtime's pinned default account":
+
+- The pin is `metadata.freebuff.default_account_id` on the runtime row — the
+  same field the runtime page's freebuff block already had, no new column.
+- Set it from the runtime page: `POST /api/runtimes/:id/freebuff-desktop/default`
+  with `{"account_id": "<workspace_account id>"}`; an empty id clears it. The
+  cards list shows a `Default` badge on the pinned account and a "make default"
+  action per usable account.
+- The write accepts only an account this runtime can run: enabled,
+  `freebuff-desktop` provider, and for a daemon-managed account owned by this
+  runtime and `connected`.
+- The claim path re-checks the same rules and fails the claim closed
+  (`account_unavailable`) when a pin names an account that is gone, disabled,
+  disconnected or owned by another runtime, instead of silently running on the
+  runtime's own configuration. An unset pin keeps the old behaviour.
+- `specific` and `any` are untouched, and custom env still wins for the env
+  knobs.
+- The claim is still a check, not a held lock (see Known limits): two `default`
+  agents on one pinned account can both pass the lease check in the same
+  instant; the bridge's single-run handling is the backstop. Serialising
+  `default` agents on the pinned account is not part of this phase.
 
 ## Known limits
 
@@ -121,3 +194,14 @@ bridge (or `MULTICA_FREEBUFF_DESKTOP_PATH`). No Go registry change is needed.
   idle account in the same instant can both pass it. The bridge's own
   single-run handling is the backstop.
 - DB-backed handler tests (CRUD authz, validation, lease) run in CI only.
+- Memory: each account needs its own orchestrator process. Budget ~0.5 GB per
+  account on the daemon host with the previous build, ~0.15 GB with the slimmer
+  build. Remove idle accounts to free their process; `any`-mode agents do not
+  need every account live.
+- Idle auto-close (M-254): a managed Desktop orchestrator with no task
+  reservation for 5 minutes (`freebuffDesktopIdleTimeout`) is stopped and
+  removed from `registry.json`; the account state on disk and the server-side
+  `connected` record are kept. The next task restarts it transparently. Only
+  task start→end reservations refresh the idle clock — status polls and model
+  discovery do not. Reserved, logging-in (`requested`/`awaiting_login`), busy,
+  or `Active` accounts are never closed.

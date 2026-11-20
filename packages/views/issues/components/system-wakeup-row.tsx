@@ -1,9 +1,10 @@
 "use client";
 
 import { useId, useState } from "react";
-import { ListChecks, Pencil } from "lucide-react";
+import { ListChecks, Pencil } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { useUpdateIssueSystemWakeup } from "@multica/core/issues";
+import { useWorkspacePaths } from "@multica/core/paths";
 import type { SystemWakeup } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
@@ -15,7 +16,10 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@multica/ui/components/ui/popover";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { useT } from "../../i18n";
+import { AppLink } from "../../navigation";
+import { wakeupsHref } from "../../autopilots/components/wakeups-tab";
 import { useWakeupText } from "./wakeup-presentation";
 
 const MAX_INSTRUCTION_BYTES = 4000;
@@ -25,13 +29,16 @@ export function SystemWakeupRow({
   rule,
   workspaceId,
   issueId,
+  onTurnedOff,
 }: {
   rule: SystemWakeup;
   workspaceId: string;
   issueId: string;
+  onTurnedOff?: () => void;
 }) {
   const { t } = useT("issues");
   const text = useWakeupText();
+  const paths = useWorkspacePaths();
   const update = useUpdateIssueSystemWakeup(workspaceId, issueId);
   const title =
     rule.staged && rule.stage !== null
@@ -61,10 +68,12 @@ export function SystemWakeupRow({
         : [target, t(($) => $.wakeups.system.remaining, { count: rule.remaining })].join(" · "));
   const save = (input: { enabled: boolean; instruction: string }) =>
     update.mutateAsync({ rule: rule.rule, ...input });
-  const toggle = (enabled: boolean) =>
+  const toggle = (enabled: boolean) => {
+    if (!enabled) onTurnedOff?.();
     void save({ enabled, instruction: rule.instruction }).catch(() =>
       toast.error(t(($) => $.wakeups.system.save_error)),
     );
+  };
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto]" aria-busy={update.isPending}>
       <Popover>
@@ -72,7 +81,7 @@ export function SystemWakeupRow({
           render={
             <button
               type="button"
-              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-caption hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-label hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
             />
           }
         >
@@ -81,7 +90,7 @@ export function SystemWakeupRow({
             <span className="line-clamp-2 min-w-0 break-words">{title}</span>
             <SystemBadge />
           </span>
-          <span className={`col-span-2 min-w-0 break-words pl-7.5 pr-2 text-micro ${paused ? "text-warning" : "text-muted-foreground"}`}>
+          <span className={`col-span-2 min-w-0 break-words pl-7.5 pr-2 text-caption ${paused ? "text-warning" : "text-muted-foreground"}`}>
             {summary}
           </span>
         </PopoverTrigger>
@@ -119,7 +128,13 @@ export function SystemWakeupRow({
             />
           </div>
           <p className="text-caption text-muted-foreground">
-            {rule.workspace_default ? t(($) => $.wakeups.system.default_on) : t(($) => $.wakeups.system.default_off)}
+            {rule.workspace_default ? t(($) => $.wakeups.system.default_on) : t(($) => $.wakeups.system.default_off)}{" "}
+            <AppLink
+              href={wakeupsHref(paths.autopilots())}
+              className="rounded-xs font-medium text-brand hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              {t(($) => $.wakeups.system.default_change)}
+            </AppLink>
           </p>
         </PopoverContent>
       </Popover>
@@ -184,9 +199,11 @@ function InstructionEditor({
         ) : (
           <div className="text-caption text-muted-foreground">
             <p>{t(($) => $.wakeups.system.instruction_default)}</p>
-            <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words" title={rule.default_instruction}>
-              {rule.default_instruction}
-            </p>
+            <TruncatedTooltip content={rule.default_instruction} focusable>
+              <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words">
+                {rule.default_instruction}
+              </p>
+            </TruncatedTooltip>
           </div>
         )}
       </div>

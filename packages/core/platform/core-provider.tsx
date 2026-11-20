@@ -14,7 +14,7 @@ import {
 import { WSProvider } from "../realtime";
 import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
-import { defaultStorage } from "./storage";
+import { defaultStorage, setDefaultStorage } from "./storage";
 import { AuthInitializer } from "./auth-initializer";
 import {
   createSessionRenewal,
@@ -61,6 +61,13 @@ function initCore({
   identity,
 }: InitCoreOptions) {
   if (initialized) return;
+
+  // Module-level stores (issue view states, the surface registry) bind
+  // `defaultStorage` at import time, so a host's own adapter can only reach
+  // them through the default adapter itself. A host that passes one — the dsh
+  // island's namespaced store (M-360) — therefore repoints the default here;
+  // the web and the desktop pass nothing and keep the browser store.
+  setDefaultStorage(storage);
 
   configureShortcutPlatform(
     identity?.os === "macos" ||

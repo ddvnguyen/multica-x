@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { bucketDiagnosticPath, setDiagnosticRoute } from "@multica/core/diagnostics";
 import { useAuthStore } from "@multica/core/auth";
-import { useActiveTabIdentity, useActiveTabUrl } from "@/stores/tab-store";
+import { useActiveTabIdentity, useActiveTabUrl } from "@multica/core/tabs";
 import {
   useWindowOverlayStore,
   type WindowOverlay,
@@ -99,9 +99,7 @@ function overlayPath(overlay: WindowOverlay): string {
       return "/workspaces/new";
     case "onboarding":
       return "/onboarding";
-    case "invite":
-      return `/invite/${overlay.invitationId}`;
     case "invitations":
-      return "/invitations";
+      return overlay.invitationId ? `/invite/${overlay.invitationId}` : "/invitations";
   }
 }

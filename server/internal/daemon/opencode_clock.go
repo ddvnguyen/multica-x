@@ -12,7 +12,10 @@ import (
 // gateOpenCodeResumeToSaneClock returns the retired pointer before changing
 // either prompt carrier. Callers must persist it even if fresh launch fails.
 func gateOpenCodeResumeToSaneClock(ctx context.Context, task *Task, taskCtx *execenv.TaskContextForEnv, provider string, cfg agent.Config, cwd string, mcpConfig []byte, taskLog *slog.Logger) string {
-	if provider != "opencode" || task.PriorSessionID == "" {
+	// A built-in runtime identity inherits the family's resume contract: the
+	// clock-skew hazard belongs to how OpenCode stores session timestamps, not
+	// to the name the runtime was registered under.
+	if agent.Family(provider) != "opencode" || task.PriorSessionID == "" {
 		return ""
 	}
 	var customArgs []string

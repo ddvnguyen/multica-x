@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import { useTabStore } from "@/stores/tab-store";
-import { useNavigationInputBindings } from "./use-tab-history";
+import { useTabStore } from "@multica/core/tabs";
+import { useNavigationInputBindings } from "@multica/views/tabs";
 
 function Probe() {
   useNavigationInputBindings();

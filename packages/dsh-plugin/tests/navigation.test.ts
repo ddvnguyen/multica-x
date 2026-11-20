@@ -11,6 +11,8 @@ import {
   islandRouteKey,
   parseIslandRoute,
 } from "../src/client/navigation";
+import { createIslandStorage } from "../src/client/storage";
+import { createTabsStore } from "../src/client/tabs";
 
 describe("parseIslandRoute", () => {
   it("reads the board", () => {
@@ -32,10 +34,14 @@ describe("parseIslandRoute", () => {
     });
   });
 
-  it("reads the other five entries of the menu", () => {
+  it("reads the other six entries of the menu", () => {
     expect(parseIslandRoute("/demo/agents")).toEqual({ view: "agents" });
     expect(parseIslandRoute("/demo/skills")).toEqual({ view: "skills" });
     expect(parseIslandRoute("/demo/inbox")).toEqual({ view: "inbox" });
+    expect(parseIslandRoute("/demo/decisions?state=answered&decision=question%3A1")).toEqual({
+      view: "decisions",
+      query: "state=answered&decision=question%3A1",
+    });
     expect(parseIslandRoute("/demo/chat")).toEqual({ view: "chat" });
     expect(parseIslandRoute("/demo/settings")).toEqual({ view: "settings" });
     // Settings addresses its page through the query, never a segment.
@@ -55,6 +61,31 @@ describe("parseIslandRoute", () => {
       view: "skill",
       skillId: "skill-3",
     });
+  });
+
+  it("reads the runtime detail depth the Runtimes rows push (M-349)", () => {
+    // The shared Runtimes page pushes workspace paths, not the settings
+    // query the device tab itself lives at; without these the island refuses
+    // the click and the row does nothing.
+    expect(parseIslandRoute("/demo/runtimes")).toEqual({
+      view: "settings",
+      query: "tab=runtimes",
+    });
+    expect(parseIslandRoute("/demo/runtimes/ddv-server")).toEqual({
+      view: "runtime",
+      machineId: "ddv-server",
+    });
+    expect(parseIslandRoute("/demo/runtimes/qoder")).toEqual({
+      view: "runtime",
+      machineId: "qoder",
+    });
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime/rt-2")).toEqual({
+      view: "runtime-settings",
+      machineId: "machine-1",
+      runtimeId: "rt-2",
+    });
+    expect(parseIslandRoute("/demo/runtimes/machine-1/extra")).toBeNull();
+    expect(parseIslandRoute("/demo/runtimes/machine-1/runtime")).toBeNull();
   });
 
   it("keeps the query the pages address their state with", () => {
@@ -87,8 +118,15 @@ describe("islandPath", () => {
       { view: "skills" as const },
       { view: "skill" as const, skillId: "skill-3" },
       { view: "inbox" as const },
+      { view: "decisions" as const },
       { view: "chat" as const, query: "session=abc" },
       { view: "inbox" as const, query: "view=archived" },
+      { view: "runtime" as const, machineId: "ddv-server" },
+      {
+        view: "runtime-settings" as const,
+        machineId: "machine-1",
+        runtimeId: "rt-2",
+      },
       { view: "settings" as const },
       { view: "settings" as const, query: "tab=moct-connection" },
     ];
@@ -105,8 +143,21 @@ describe("islandPath", () => {
     expect(islandPathname("demo", FAMILY_ROOTS.agents)).toBe("/demo/agents");
     expect(islandPathname("demo", FAMILY_ROOTS.skills)).toBe("/demo/skills");
     expect(islandPathname("demo", FAMILY_ROOTS.inbox)).toBe("/demo/inbox");
+    expect(islandPathname("demo", FAMILY_ROOTS.decisions)).toBe("/demo/decisions");
     expect(islandPathname("demo", FAMILY_ROOTS.chat)).toBe("/demo/chat");
     expect(islandPathname("demo", FAMILY_ROOTS.settings)).toBe("/demo/settings");
+  });
+
+  it("renders runtime detail at the web app's own paths", () => {
+    expect(
+      islandPathname("demo", { view: "runtime", machineId: "ddv-server" }),
+    ).toBe("/demo/runtimes/ddv-server");
+    expect(
+      islandPathname(
+        "demo",
+        { view: "runtime-settings", machineId: "m", runtimeId: "r" },
+      ),
+    ).toBe("/demo/runtimes/m/runtime/r");
   });
 });
 
@@ -115,6 +166,14 @@ describe("islandParent", () => {
     expect(islandParent({ view: "issue", issueId: "MUL-1" })).toEqual(BOARD_ROUTE);
     expect(islandParent({ view: "agent", agentId: "a" })).toEqual(FAMILY_ROOTS.agents);
     expect(islandParent({ view: "skill", skillId: "s" })).toEqual(FAMILY_ROOTS.skills);
+    // Runtime detail returns to the Runtimes settings tab, not a rail root.
+    expect(islandParent({ view: "runtime", machineId: "m" })).toEqual({
+      view: "settings",
+      query: "tab=runtimes",
+    });
+    expect(
+      islandParent({ view: "runtime-settings", machineId: "m", runtimeId: "r" }),
+    ).toEqual({ view: "settings", query: "tab=runtimes" });
     for (const root of Object.values(FAMILY_ROOTS)) {
       expect(islandParent(root)).toBeNull();
     }
@@ -134,8 +193,14 @@ describe("islandRouteKey", () => {
         islandRouteKey(FAMILY_ROOTS.inbox),
         islandRouteKey(FAMILY_ROOTS.chat),
         islandRouteKey(FAMILY_ROOTS.settings),
+        islandRouteKey({ view: "runtime", machineId: "m" }),
+        islandRouteKey({
+          view: "runtime-settings",
+          machineId: "m",
+          runtimeId: "r",
+        }),
       ]).size,
-    ).toBe(9);
+    ).toBe(11);
   });
 });
 
@@ -201,5 +266,96 @@ describe("createIslandNavigation", () => {
     expect(chat.searchParams.get("session")).toBe("abc");
     chat.back();
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("createIslandNavigation over the window's history (M-197)", () => {
+  function tabs() {
+    const values = new Map<string, string>();
+    const backing = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() {
+        return values.size;
+      },
+    };
+    return createTabsStore(createIslandStorage(backing as any), "demo");
+  }
+
+  it("restores Decisions selection through the window's Back and Forward history", () => {
+    const store = createTabsStore(createIslandStorage(), "demo");
+    store.getState().railEntry(FAMILY_ROOTS.decisions);
+    const navigation = createIslandNavigation({ slug: "demo", tabs: store });
+
+    navigation.push("/demo/decisions?state=answered&decision=question%3Acard-9");
+    expect(store.getState().activeTab()?.url).toBe(
+      "/demo/decisions?state=answered&decision=question%3Acard-9",
+    );
+    navigation.back();
+    expect(store.getState().activeTab()?.url).toBe("/demo/decisions");
+    navigation.forward?.();
+    expect(store.getState().activeTab()?.url).toBe(
+      "/demo/decisions?state=answered&decision=question%3Acard-9",
+    );
+  });
+
+  it("reads the active tab's pathname and query after tab changes", () => {
+    const store = tabs();
+    const navigation = createIslandNavigation({ slug: "demo", tabs: store });
+
+    store.getState().openTab("/demo/agents/agent-7");
+    expect(navigation.pathname).toBe("/demo/agents/agent-7");
+    expect(navigation.searchParams.get("view")).toBeNull();
+
+    navigation.replace(`${navigation.pathname}?view=general`);
+    expect(store.getState().activeUrl()).toBe("/demo/agents/agent-7?view=general");
+    expect(navigation.pathname).toBe("/demo/agents/agent-7");
+    expect(navigation.searchParams.get("view")).toBe("general");
+  });
+
+  it("focuses an existing resource tab when a page pushes that resource", () => {
+    const store = tabs();
+    const agentsTab = store.getState().openTab("/demo/agents");
+    const agentTab = store.getState().openTab("/demo/agents/agent-7", {
+      activate: false,
+    });
+    const navigation = createIslandNavigation({ slug: "demo", tabs: store });
+
+    navigation.push("/demo/agents/agent-7?view=general");
+
+    expect(store.getState().activeId).toBe(agentTab);
+    expect(store.getState().activeUrl()).toBe(
+      "/demo/agents/agent-7?view=general",
+    );
+    expect(store.getState().tabs).toHaveLength(2);
+    expect(agentsTab).not.toBe(agentTab);
+  });
+
+  it("back crosses tabs and forward returns to the tab it left", () => {
+    const store = tabs();
+    const onChange = vi.fn();
+    const navigation = createIslandNavigation({ slug: "demo", tabs: store, onChange });
+    store.getState().openTab("/demo/issues");
+    store.getState().push("/demo/issues/MUL-1");
+    const agents = store.getState().openTab("/demo/agents");
+
+    navigation.back();
+    expect(store.getState().activeTab()?.url).toBe("/demo/issues/MUL-1");
+    expect(onChange).toHaveBeenLastCalledWith({ view: "issue", issueId: "MUL-1" });
+
+    navigation.forward?.();
+    expect(store.getState().activeId).toBe(agents);
+    expect(onChange).toHaveBeenLastCalledWith({ view: "agents" });
+  });
+
+  it("reports Back as available while the window has somewhere behind it", () => {
+    const store = tabs();
+    const navigation = createIslandNavigation({ slug: "demo", tabs: store, onChange: vi.fn() });
+    store.getState().openTab("/demo/issues");
+    expect(navigation.canGoBack?.()).toBe(false);
+    store.getState().push("/demo/issues/MUL-2");
+    expect(navigation.canGoBack?.()).toBe(true);
   });
 });

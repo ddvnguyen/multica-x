@@ -12,7 +12,10 @@ import {
 import { resetIsland } from "../src/client/island";
 import { FAMILY_ROOTS } from "../src/client/navigation";
 import { createRailIcon, createSeatComponent } from "../src/client/seat";
+import { bindShell, selectShellPanel } from "../src/client/shell";
+import type { DshLayout } from "../src/dsh";
 import { setUnread, startUnreadPoll } from "../src/client/unread-store";
+import { getDecisionPendingCount, setDecisionPendingCount } from "../src/client/decisions-badge-store";
 
 // `apply` starts the page-lifetime unread poller; stop the one it started so
 // no interval outlives this file. A repeat call returns the live stop.
@@ -36,7 +39,7 @@ interface Registration {
   component: unknown;
 }
 
-function fakeSlots() {
+function fakeSlots(layout?: DshLayout) {
   const registrations: Registration[] = [];
   const injected: string[] = [];
   const ctx: DshClientContext = {
@@ -53,8 +56,39 @@ function fakeSlots() {
         return () => {};
       },
     },
+    ...(layout === undefined ? {} : { layout }),
   };
   return { registrations, injected, ctx };
+}
+
+/** The layout service as dsh offers it: a selection snapshot and a toggle. */
+function fakeLayout() {
+  let activePanelId: string | null = null;
+  const listeners = new Set<() => void>();
+  const selected: (string | null)[] = [];
+  let toggles = 0;
+  const layout: DshLayout = {
+    panelInfo: {
+      getSnapshot: () => ({ activePanelId }),
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    selectPanel(panelId) {
+      selected.push(panelId);
+      activePanelId = panelId;
+      for (const listener of listeners) listener();
+    },
+    toggleSidebar() {
+      toggles += 1;
+    },
+  };
+  const select = (panelId: string | null) => {
+    activePanelId = panelId;
+    for (const listener of listeners) listener();
+  };
+  return { layout, selected, select, toggles: () => toggles };
 }
 
 function byName(registrations: Registration[], name: string): Registration[] {
@@ -66,20 +100,50 @@ describe("client apply", () => {
     const { ctx, registrations, injected } = fakeSlots();
     apply(ctx);
 
-    expect(inject).toEqual(["slots"]);
-    // Two contributions per entry, and each waits for its own slot.
-    expect(injected).toEqual(
-      MULTICA_ENTRIES.flatMap(() => ["sidebar.panellist", "main"]),
-    );
+    // `layout` is dsh's own ui-layout service: the rail follows the active tab
+    // and the sidebar collapses through it (M-197). `sidebarRight`, `workspaces`
+    // and `sessions` feed the side-panel bridge (M-159); each is read tolerantly
+    // in `apply`. Nothing injects the shell's session navigation (M-316): a
+    // press opens the panel beside MMX or not at all, so there is no navigation
+    // for the island to call.
+    expect(inject).toEqual([
+      "slots",
+      "layout",
+      "sidebarRight",
+      "workspaces",
+      "sessions",
+    ]);
+    // Two contributions per entry, and each waits for its own slot. The
+    // composer takeover (M-136) is the one contribution that is not a rail
+    // row, so it registers first and once.
+    expect(injected).toEqual([
+      "conversation.composer",
+      ...MULTICA_ENTRIES.flatMap(() => ["sidebar.panellist", "main"]),
+    ]);
 
     const rows = byName(registrations, "sidebar.panellist");
     const seats = byName(registrations, "main");
-    expect(rows).toHaveLength(6);
-    expect(seats).toHaveLength(6);
-    expect(MULTICA_ENTRIES).toHaveLength(6);
+    expect(rows).toHaveLength(7);
+    expect(seats).toHaveLength(7);
+    expect(MULTICA_ENTRIES).toHaveLength(7);
   });
 
-  it("labels the six entries and keeps the rail order", () => {
+  it("registers the composer takeover as a chain entry that can decline", () => {
+    const { ctx, registrations } = fakeSlots();
+    apply(ctx);
+
+    const composer = byName(registrations, "conversation.composer");
+    expect(composer).toHaveLength(1);
+    // Priority 0 sits above ui-subagent's read-only entry (-10) and below the
+    // pending-interaction entries (1), and it is a selector entry: declining is
+    // how the shell's own composer keeps the session.
+    expect(composer[0]?.options.priority).toBe(0);
+    expect(typeof composer[0]?.options.select).toBe("function");
+    const select = composer[0]?.options.select as (owner: unknown) => unknown;
+    expect(select({ sessionId: "sess-nobody-owns" })).toBeNull();
+  });
+
+  it("labels the seven entries and keeps the rail order", () => {
     const { ctx, registrations } = fakeSlots();
     apply(ctx);
 
@@ -89,15 +153,35 @@ describe("client apply", () => {
       "Multica Agents",
       "Multica Skills",
       "Multica Inbox",
+      "Multica Decisions",
       "Multica Chat",
       "Multica Settings",
     ]);
     // A list slot has no grouping API: adjacent order is the grouping, and each
     // row's id is its own, so no shipped row is replaced.
-    expect(rows.map((entry) => entry.options.order)).toEqual([30, 31, 32, 33, 34, 35]);
+    expect(rows.map((entry) => entry.options.order)).toEqual([30, 31, 32, 33, 34, 35, 36]);
     for (const row of rows) expect(row.options.key).toBeUndefined();
-    expect(new Set(rows.map((entry) => entry.options.id)).size).toBe(6);
+    expect(new Set(rows.map((entry) => entry.options.id)).size).toBe(7);
     expect(rows[0]?.options.id).toBe(MULTICA_PANEL_ID);
+  });
+
+  it("binds the shell: the rail follows the active tab and MMX collapses the sidebar", () => {
+    const shell = fakeLayout();
+    const { ctx } = fakeSlots(shell.layout);
+    apply(ctx);
+
+    // The island's ask reaches the entry ids this module registered.
+    selectShellPanel("chat");
+    expect(shell.selected).toEqual(["multica-chat"]);
+
+    // The auto-collapse rides the same layout service: entering an MMX row
+    // collapses, leaving it restores.
+    shell.select(null);
+    const leaving = shell.toggles();
+    shell.select("multica-agents");
+    expect(shell.toggles()).toBe(leaving + 1);
+
+    bindShell(null);
   });
 
   it("addresses each rail row with a matching main cell", () => {
@@ -133,10 +217,35 @@ describe("client apply", () => {
       FAMILY_ROOTS.agents,
       FAMILY_ROOTS.skills,
       FAMILY_ROOTS.inbox,
+      FAMILY_ROOTS.decisions,
       FAMILY_ROOTS.chat,
       FAMILY_ROOTS.settings,
     ]);
     configureHostRuntime(null);
+  });
+});
+
+describe("Decisions rail badge", () => {
+  afterEach(() => setDecisionPendingCount(0));
+
+  it("paints the pending count independently on its own badge node", () => {
+    setDecisionPendingCount(4);
+    const Icon = createRailIcon(createElement as never, "decisions") as (
+      props: { size?: number },
+    ) => ReactElement;
+    const view = render(createElement(Icon));
+    const badge = view.container.querySelector<HTMLElement>("[data-multica-decisions-badge]");
+    expect(badge?.textContent).toBe("4");
+    expect(badge?.style.display).toBe("inline-flex");
+
+    setUnread(2);
+    expect(getDecisionPendingCount()).toBe(4);
+    setDecisionPendingCount(120);
+    expect(badge?.textContent).toBe("99+");
+    setDecisionPendingCount(0);
+    expect(badge?.style.display).toBe("none");
+    setUnread(0);
+    view.unmount();
   });
 });
 

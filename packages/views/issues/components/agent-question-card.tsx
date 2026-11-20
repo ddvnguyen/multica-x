@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   agentAnswerText,
   isAnsweredDraft,
@@ -9,14 +9,15 @@ import {
   type AgentAnswerDraft,
   type AgentQuestion,
 } from "@multica/core/issues/agent-question";
-import { useCreateTaskSupplement } from "@multica/core/issues/mutations";
+import { useAnswerNativeQuestion, useCreateTaskSupplement } from "@multica/core/issues/mutations";
+import { useAskDraftStore, type AskDraftKey } from "@multica/core/issues/stores/ask-draft-store";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
-import { Input } from "@multica/ui/components/ui/input";
 import { cn } from "@multica/ui/lib/utils";
-import { Check, ClipboardList, HelpCircle, Loader2 } from "lucide-react";
+import { Check, ClipboardList, HelpCircle, Loader2 } from "@multica/ui/icons";
 import { ReadonlyContent } from "../../editor";
 import { useT } from "../../i18n";
+import { AskFreeText, AskSubmitHint } from "./ask-free-text";
 
 /**
  * The ask/plan card: a parked run's question, answered in place.
@@ -36,36 +37,103 @@ import { useT } from "../../i18n";
  * words, which is why the pick is sent as the option's label rather than a
  * separate field.
  *
- * Two transports, one form. Without `submit` this is the transcript card: the
- * answer goes to the named turn as a supplement. With it (the S1-A1 card,
- * M-120) the same drafts go to `/question-cards/{id}/answer`. The form, its
- * readiness rule and its pending/sent/error lifecycle are identical either
- * way, which is the point of the seam — the card has no idea which one it is.
+ * Three transports, one form. With `submit` (the S1-A1 card, M-120) the same
+ * drafts go to `/question-cards/{id}/answer`. Without it, the answer goes to
+ * the named turn: with `questionSeq` it names the question too, so the server
+ * can refuse a stale tab or a second window (M-210), and without it the answer
+ * is an ordinary supplement. The form, its readiness rule and its
+ * pending/sent/error lifecycle are identical either way, which is the point of
+ * the seam — the card has no idea which one it is.
  */
 export function AgentQuestionCard({
   issueId,
   taskId,
+  questionSeq,
   questions,
   submit,
+  onSent,
+  draftKey,
 }: {
   issueId: string;
   /** The running turn this answer is delivered to. */
   taskId: string;
+  /**
+   * The transcript sequence this ask was asked at. When present the answer is
+   * fenced to it, so it cannot land on a question the run already left.
+   */
+  questionSeq?: number;
   questions: readonly AgentQuestion[];
   /** Deliver the form's drafts somewhere other than the run's supplement path. */
   submit?: (drafts: readonly AgentAnswerDraft[]) => Promise<void>;
+  /**
+   * A surface that has to re-read after a send, and whose reads the answer
+   * mutation does not own — the Decisions page (M-211). It runs after the
+   * transport resolved, before the card shows its sent state.
+   */
+  onSent?: () => void;
+  /**
+   * Stable draft identity across every surface that renders this card.
+   *
+   * The three S1-A1 mounts (panel, thread, Decisions) render different cards,
+   * but the two native mounts (thread transcript + Decisions native) render
+   * the SAME question twice — once under the run, once in Decisions. The key
+   * below keeps those two in step: a draft typed in either shows in both, and
+   * answering from either clears both. A `submit` card is answered through its
+   * durable card id; a transcript card through `(task, seq)`.
+   */
+  draftKey?: AskDraftKey;
 }) {
   const { t } = useT("issues");
   const supplement = useCreateTaskSupplement(issueId);
-  const [drafts, setDrafts] = useState<readonly AgentAnswerDraft[]>(() =>
-    questions.map(() => ({ selected: [], text: "" })),
-  );
+  const fenced = useAnswerNativeQuestion(issueId);
+  // Seed from the persisted draft when one exists: without this, remounting
+  // the card (navigation, island detach/attach) would show a blank form until
+  // the hydration effect below ran, flashing away the restored text.
+  const [drafts, setDrafts] = useState<readonly AgentAnswerDraft[]>(() => {
+    const stored =
+      draftKey !== undefined
+        ? useAskDraftStore.getState().getAnswers(draftKey)
+        : undefined;
+    if (stored !== undefined && stored.length === questions.length) return stored;
+    return questions.map(() => ({ selected: [], text: "" }));
+  });
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const [pending, setPending] = useState(false);
   const plan = useMemo(() => isPlanReview(questions), [questions]);
   const approveLabel = useMemo(() => planApprovalAnswer(questions), [questions]);
   const ready = drafts.every(isAnsweredDraft);
+
+  // The store hydrates asynchronously (workspace-scoped localStorage), and a
+  // second mount of the same question (thread + Decisions) writes through the
+  // same key — so subscribe after mount rather than reading once.
+  useEffect(() => {
+    if (draftKey === undefined) return;
+    const apply = (): void => {
+      const stored = useAskDraftStore.getState().getAnswers(draftKey);
+      if (stored !== undefined && stored.length === questions.length) {
+        setDrafts((current) =>
+          current.every(
+            (draft, at) =>
+              draft.selected.join(",") === stored[at]?.selected.join(",") &&
+              draft.text === stored[at]?.text,
+          )
+          ? current
+          : stored,
+        );
+      }
+    };
+    apply();
+    return useAskDraftStore.subscribe(apply);
+  }, [draftKey, questions.length]);
+
+  // Persist every keystroke/selection for restore after navigation, reload,
+  // or island detach/attach. `writeDraft` drops the record once it carries
+  // nothing, so clearing the form clears the draft for free.
+  useEffect(() => {
+    if (draftKey === undefined) return;
+    useAskDraftStore.getState().setAnswers(draftKey, issueId, drafts);
+  }, [draftKey, issueId, drafts]);
 
   const pick = (index: number, option: number, multiple: boolean, checked: boolean) => {
     setDrafts((current) => current.map((draft, at) => {
@@ -98,7 +166,10 @@ export function AgentQuestionCard({
     setPending(true);
     try {
       await deliver();
+      // The answer is on the server: the draft is spent, in every mount.
+      if (draftKey !== undefined) useAskDraftStore.getState().clearDraft(draftKey);
       setSent(true);
+      onSent?.();
     } catch (cause) {
       const detail =
         submit !== undefined && cause instanceof Error && cause.message !== ""
@@ -110,10 +181,22 @@ export function AgentQuestionCard({
     }
   };
 
-  /** The plan review's two verdicts — always the transcript's supplement. */
+  /**
+   * The one delivery path for text: the caller's transport when there is one,
+   * else the answer fenced to this question when the card knows its sequence,
+   * else an ordinary supplement.
+   */
+  const deliver = (content: string): Promise<unknown> =>
+    submit !== undefined
+      ? submit(drafts)
+      : questionSeq !== undefined
+        ? fenced.mutateAsync({ taskId, questionSeq, content })
+        : supplement.mutateAsync({ taskId, content });
+
+  /** The plan review's two verdicts — the same transcript transport. */
   const send = (content: string): void => {
     if (content === "" || pending) return;
-    void run(() => supplement.mutateAsync({ taskId, content }));
+    void run(() => deliver(content));
   };
 
   /**
@@ -124,11 +207,7 @@ export function AgentQuestionCard({
   const answerForm = (): void => {
     const content = agentAnswerText(questions, drafts);
     if (content === "" || pending) return;
-    void run(
-      submit !== undefined
-        ? () => submit(drafts)
-        : () => supplement.mutateAsync({ taskId, content }),
-    );
+    void run(() => deliver(content));
   };
 
   // A plan review's two verdicts are buttons, not options: "request changes"
@@ -212,37 +291,45 @@ export function AgentQuestionCard({
                 </>
               )}
               {(plan || question.options.length === 0) && (
-                <Input
-                  className="mt-1.5 h-8 text-caption"
+                <AskFreeText
+                  id={
+                    draftKey !== undefined
+                      ? `${draftKey}:${index}`
+                      : `ask-free-text:${question.id}:${index}`
+                  }
+                  className="mt-1.5"
                   value={draft.text}
-                  maxLength={2000}
+                  max={2000}
+                  showCount
+                  hint={t(($) => $.agent_question.multiline_hint)}
                   placeholder={t(($) => $.agent_question.answer_placeholder)}
                   aria-label={t(($) => $.agent_question.answer_label, {
                     question: question.header ?? question.question,
                   })}
+                  disabled={pending || sent}
                   onChange={(event) => write(index, event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.nativeEvent.isComposing || plan) return;
-                    event.preventDefault();
-                    answerForm();
-                  }}
+                  onSubmit={answerForm}
                 />
               )}
               {!plan && question.options.length > 0 && (
-                <Input
-                  className="mt-1.5 h-8 text-caption"
+                <AskFreeText
+                  id={
+                    draftKey !== undefined
+                      ? `${draftKey}:${index}`
+                      : `ask-free-text:${question.id}:${index}`
+                  }
+                  className="mt-1.5"
                   value={draft.text}
-                  maxLength={2000}
+                  max={2000}
+                  showCount
+                  hint={t(($) => $.agent_question.multiline_hint)}
                   placeholder={t(($) => $.agent_question.other_placeholder)}
                   aria-label={t(($) => $.agent_question.answer_label, {
                     question: question.header ?? question.question,
                   })}
+                  disabled={pending || sent}
                   onChange={(event) => write(index, event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                    event.preventDefault();
-                    answerForm();
-                  }}
+                  onSubmit={answerForm}
                 />
               )}
             </fieldset>
@@ -251,8 +338,10 @@ export function AgentQuestionCard({
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
-        {error !== null && (
+        {error !== null ? (
           <span role="alert" className="mr-auto text-caption text-destructive">{error}</span>
+        ) : (
+          <AskSubmitHint id={draftKey !== undefined ? `${draftKey}-submit` : undefined} />
         )}
         {sent ? (
           <span className="flex items-center gap-1.5 text-caption text-success">
@@ -261,7 +350,8 @@ export function AgentQuestionCard({
         ) : plan ? (
           <>
             <span className="mr-auto text-caption text-muted-foreground">
-              {t(($) => $.agent_question.plan_hint)}
+              {t(($) => $.agent_question.plan_hint)}{" "}
+              <AskSubmitHint />
             </span>
             <Button
               size="xs"

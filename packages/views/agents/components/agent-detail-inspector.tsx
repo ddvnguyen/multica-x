@@ -18,8 +18,6 @@ import {
   accountRequestFields,
   agentAccountSelection,
   freebuffAccountsOptions,
-  isRuntimeUsableForUser,
-  runtimeModelsOptions,
   runtimeSupportsAccounts,
   type AgentAccountSelection,
 } from "@multica/core/runtimes";
@@ -28,6 +26,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
   SettingsCard,
@@ -49,13 +48,11 @@ import {
   agentFreebuffAccountId,
   setAgentFreebuffAccountId,
 } from "./agent-freebuff-account-field";
-import {
-  buildModelChangeUpdate,
-  type ModelCatalog,
-} from "./inspector/model-change-cleanup";
 import { RuntimePicker } from "./inspector/runtime-picker";
+import { TierPicker } from "./inspector/tier-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
+import { useExecutionControls } from "./inspector/use-execution-controls";
 
 interface InspectorProps {
   agent: Agent;
@@ -156,15 +153,16 @@ export function AgentDetailInspector({
     isEqual: profileDraftsEqual,
   });
 
-  // A Qoder agent is bound to an agent in Qoder Cloud Agents, and the model lives there. Moving
-  // between Qoder and any other runtime would need a different configuration
-  // the server either rejects or the bridge refuses, so neither direction is
-  // offered here. It also never opens a chat, so nothing chat-facing applies.
-  const qoderRuntime = runtime?.provider === "qoder_cloud";
+  const {
+    qoderRuntime,
+    canDiscoverRuntimeModels,
+    runtimeOptions,
+    changeModel,
+  } = useExecutionControls({ agent, runtime, runtimes, currentUserId, update });
   const conversationStartersEnabled = useConfigStore(
     (state) => state.agentConversationStartersSupported,
   );
-  const showStarters = conversationStartersEnabled && !qoderRuntime;
+  const showStarters = conversationStartersEnabled;
   const startersComplete = starters.every(
     (item) => item.label.trim() && item.prompt.trim(),
   );
@@ -186,49 +184,13 @@ export function AgentDetailInspector({
     isEqual: startersEqual,
   });
   const startersFocus = useConversationStartersFocus(agent.id, showStarters);
-  const isOnline = runtime?.status === "online";
-  const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, currentUserId);
-  const canDiscoverRuntimeModels = isOnline && canReadRuntime && !qoderRuntime;
   const nameInvalid = name.trim().length === 0;
-  const runtimeOptions = useMemo(
-    () =>
-      qoderRuntime
-        ? runtimes
-        : runtimes.filter((r) => r.provider !== "qoder_cloud"),
-    [qoderRuntime, runtimes],
-  );
-
-  // Same query the Thinking / Speed fields already use, so switching model
-  // costs no extra request. `null` = not authoritative (offline runtime, still
-  // loading, or discovery failed) and must not trigger any clearing.
+  // The runtime-native model/thinking/tier clearing lives in the shared
+  // execution controls; the account part is the fork's, and it must fire with
+  // the same write so the two cannot disagree about which runtime the model
+  // and the account belong to.
   const accountSelection = agentAccountSelection(agent);
   const accountScope = accountModelScope(accountSelection);
-  const modelsQuery = useQuery(
-    runtimeModelsOptions(canDiscoverRuntimeModels ? agent.runtime_id : null, accountScope),
-  );
-  const modelCatalog = useMemo<ModelCatalog>(
-    () =>
-      modelsQuery.isSuccess
-        ? modelsQuery.data.supported
-          ? modelsQuery.data.models
-          : []
-        : null,
-    [modelsQuery.data, modelsQuery.isSuccess],
-  );
-  const handleModelChange = useCallback(
-    (model: string) =>
-      update(
-        buildModelChangeUpdate({
-          provider: runtime?.provider ?? "",
-          model,
-          thinkingLevel: agent.thinking_level ?? "",
-          serviceTier: agent.service_tier ?? "",
-          catalog: modelCatalog,
-        }),
-      ),
-    [agent.service_tier, agent.thinking_level, modelCatalog, runtime?.provider, update],
-  );
 
   return (
     <div className="@container">
@@ -349,6 +311,34 @@ export function AgentDetailInspector({
           >
             <SettingsCard>
               <SettingsRow
+                label={t(($) => $.inspector.prop_use_tiers)}
+                description={t(($) => $.inspector.use_tiers_hint)}
+              >
+                <Switch
+                  checked={agent.use_tiers ?? false}
+                  disabled={!canEdit}
+                  onCheckedChange={(checked) => {
+                    // Toggling off keeps the last single runtime/model as
+                    // the fallback (M-351) — the columns are never cleared.
+                    void update({ use_tiers: checked });
+                  }}
+                  aria-label={t(($) => $.inspector.prop_use_tiers)}
+                />
+              </SettingsRow>
+              {agent.use_tiers ? (
+                <SettingsRow
+                  label={t(($) => $.inspector.prop_tiers)}
+                  description={t(($) => $.inspector.tiers_hint)}
+                >
+                  <TierPicker
+                    value={agent.tier_ids ?? []}
+                    canEdit={canEdit}
+                    onChange={(tier_ids) => update({ tier_ids })}
+                  />
+                </SettingsRow>
+              ) : (
+                <>
+              <SettingsRow
                 label={t(($) => $.inspector.prop_runtime)}
                 size="select-wide"
               >
@@ -414,7 +404,7 @@ export function AgentDetailInspector({
                       value={agent.model ?? ""}
                       canEdit={canEdit}
                       account={accountScope}
-                      onChange={handleModelChange}
+                      onChange={changeModel}
                     />
                   </SettingsRow>
                   <ThinkingSettingField
@@ -443,6 +433,8 @@ export function AgentDetailInspector({
                   />
                 </>
               )}
+                </>
+              )}
               <SettingsRow
                 label={t(($) => $.inspector.prop_concurrency)}
                 size="select-wide"
@@ -457,19 +449,17 @@ export function AgentDetailInspector({
           </SettingsSection>
         </div>
 
-        {qoderRuntime ? null : (
-          <SettingsSection
-            title={t(($) => $.conversation_starters.preview_label)}
-            className="hidden @4xl:sticky @4xl:top-0 @4xl:block"
-          >
-            <NewChatPreview
-              name={name.trim() || agent.name}
-              description={description}
-              avatarUrl={agent.avatar_url ?? null}
-              starters={showStarters ? starters : []}
-            />
-          </SettingsSection>
-        )}
+        <SettingsSection
+          title={t(($) => $.conversation_starters.preview_label)}
+          className="hidden @4xl:sticky @4xl:top-0 @4xl:block"
+        >
+          <NewChatPreview
+            name={name.trim() || agent.name}
+            description={description}
+            avatarUrl={agent.avatar_url ?? null}
+            starters={showStarters ? starters : []}
+          />
+        </SettingsSection>
       </div>
     </div>
   );

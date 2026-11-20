@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentTask } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -27,11 +27,29 @@ vi.mock("../../common/task-transcript", () => ({
 }));
 
 vi.mock("./terminate-task-confirm-dialog", () => ({
-  TerminateTaskConfirmDialog: () => null,
+  TerminateTaskConfirmDialog: ({ open, onConfirm }: { open: boolean; onConfirm: () => void }) =>
+    open ? <button type="button" onClick={onConfirm}>Confirm stop</button> : null,
 }));
 
 vi.mock("@multica/core/workspace/hooks", () => ({
-  useActorName: () => ({ getActorName: () => "Lambda" }),
+  useActorName: () => ({
+    getActorName: () => "Lambda",
+    getActorInitials: () => "L",
+    getActorAvatarUrl: () => null,
+  }),
+}));
+
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return { ...actual, useCurrentWorkspace: () => ({ id: "ws-1" }) };
+});
+
+const TIERS = [
+  { id: "tier-fast", workspace_id: "ws-1", name: "fast", idx: 0, enabled: true, provider_slots: 1 },
+];
+
+vi.mock("@multica/core/workspace/queries", () => ({
+  modelTiersOptions: () => ({ queryKey: ["tiers", "ws-1"], queryFn: async () => TIERS }),
 }));
 
 import {
@@ -45,6 +63,7 @@ import { act, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { issueKeys } from "@multica/core/issues/queries";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
+import { ApiClient, setApiInstance } from "@multica/core/api";
 
 function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
@@ -65,6 +84,15 @@ function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
   };
 }
 
+function renderRow(task: AgentTask, extra?: { onJump?: () => void }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderWithI18n(
+    <QueryClientProvider client={queryClient}>
+      <ActiveTaskRow task={task} issueId="issue-1" onJump={extra?.onJump} />
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -74,18 +102,224 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe("subtree execution log", () => {
+  function renderParent(own: AgentTask[], subtree: AgentTask[]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(issueKeys.tasks("issue-1"), own);
+    queryClient.setQueryData(issueKeys.subtreeTasks("issue-1"), subtree);
+    queryClient.setQueryData([...issueKeys.tasks("issue-1"), "history"], own);
+    queryClient.setQueryData([...issueKeys.subtreeTasks("issue-1"), "history"], subtree);
+    return renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ExecutionLogSection issueId="issue-1" identifier="MUL-1" hasChildren />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("switches counts, cost, active status, rows, and the full timeline together", () => {
+    const own = makeTask({ id: "own", status: "completed", completed_at: "2026-06-08T08:02:00Z", trigger_summary: "Parent run", usage: [usageSlice({ cost_usd_ticks: 1e10 })] });
+    const child = makeTask({ id: "child", issue_id: "child-issue", issue_identifier: "MUL-2", issue_title: "Child", status: "completed", completed_at: "2026-06-08T08:03:00Z", trigger_summary: "Child run", usage: [usageSlice({ cost_usd_ticks: 2e10 })] });
+    const grandchild = makeTask({ id: "grandchild", issue_id: "deep-issue", issue_identifier: "MUL-3", issue_title: "Grandchild", trigger_summary: "Grandchild run" });
+    renderParent([own], [own, child, grandchild]);
+    const toggle = screen.getByRole("checkbox", { name: "Include sub-issues" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Execution log 1" })).toBeInTheDocument();
+    expect(screen.getAllByText("$1.00").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Child run")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(screen.getByRole("button", { name: "Execution log 3" })).toBeInTheDocument();
+    expect(screen.getAllByText("$3.00").length).toBeGreaterThan(0);
+    expect(screen.getByText("Child run")).toBeInTheDocument();
+    expect(screen.getByText("Grandchild run")).toBeInTheDocument();
+    expect(screen.getByText("MUL-2")).toHaveAttribute("title", "Child");
+    expect(screen.getByText("MUL-3")).toBeInTheDocument();
+    const header = screen.getByText("Execution log").closest("div")!;
+    expect(within(header).getByText("1 active")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    const dialog = screen.getByRole("dialog");
+    const dialogToggle = within(dialog).getByRole("checkbox", { name: "Include sub-issues" });
+    expect(dialogToggle).toBeChecked();
+    expect(within(dialog).getByRole("img", { name: "Run activity: $3.00 across 3 runs" })).toBeInTheDocument();
+    expect(within(dialog).getByText("MUL-3")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cumulative" }));
+    expect(within(dialog).getByRole("img", { name: "Cumulative cost over time: $3.00 across 3 runs" })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Per run" }));
+    fireEvent.click(dialogToggle);
+    expect(dialogToggle).not.toBeChecked();
+    expect(toggle).toBeChecked();
+    expect(within(dialog).getByText("Spent").parentElement).toHaveTextContent("$1.00");
+    expect(within(dialog).getByRole("img", { name: "Run activity: $1.00 across 1 run" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Parent run")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Grandchild run")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("MUL-2")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/1 running/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    expect(within(screen.getByRole("dialog")).getByRole("checkbox", { name: "Include sub-issues" })).toBeChecked();
+    expect(within(screen.getByRole("dialog")).getByText("Grandchild run")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Execution log 1" })).toBeInTheDocument();
+    expect(screen.queryByText("Grandchild run")).not.toBeInTheDocument();
+  });
+
+  it("keeps descendant scope while using the shared disclosure and scrolling active list", () => {
+    const own = makeTask({ id: "own", status: "completed", completed_at: "2026-06-08T08:02:00Z" });
+    const descendants = Array.from({ length: 8 }, (_, index) => makeTask({
+      id: `child-${index}`, issue_id: `child-issue-${index}`, issue_identifier: `MUL-${index + 2}`,
+      status: "queued", trigger_summary: `Descendant ${index}`,
+    }));
+    renderParent([own], [own, ...descendants]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include sub-issues" }));
+    const active = screen.getByRole("region", { name: "8 active" });
+    expect(within(active).queryByText(/^Descendant /)).not.toBeInTheDocument();
+    fireEvent.click(within(active).getByRole("button", { name: /8 queued/ }));
+    expect(within(active).getAllByText(/^Descendant /)).toHaveLength(8);
+    expect(within(active).getByText("MUL-9")).toBeInTheDocument();
+    expect(active).toHaveClass("max-h-48", "overflow-y-auto");
+    const disclosure = screen.getByRole("button", { name: "Execution log 9" });
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("checkbox", { name: "Include sub-issues" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("checkbox", { name: "Include sub-issues" })).toBeChecked();
+    expect(within(dialog).getByText("MUL-9")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(disclosure);
+    expect(screen.getByRole("checkbox", { name: "Include sub-issues" })).toBeChecked();
+  });
+
+  it("can expand only the dialog when the sidebar excludes descendants", async () => {
+    vi.useRealTimers();
+    const own = makeTask({ status: "completed", completed_at: "2026-06-08T08:02:00Z", trigger_summary: "Parent run" });
+    const child = makeTask({ id: "child", issue_id: "child-issue", issue_identifier: "MUL-2", trigger_summary: "Child run" });
+    const client = new ApiClient("https://api.example.test");
+    setApiInstance(client);
+    let rejectRequest!: (error: Error) => void;
+    const list = vi.spyOn(client, "listTasksByIssue").mockImplementation(() =>
+      new Promise((_, reject) => { rejectRequest = reject; }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(issueKeys.tasks("issue-1"), [own]);
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ExecutionLogSection issueId="issue-1" hasChildren />
+      </QueryClientProvider>,
+    );
+    const outerToggle = screen.getByRole("checkbox", { name: "Include sub-issues" });
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    const dialog = screen.getByRole("dialog");
+    const toggle = within(dialog).getByRole("checkbox", { name: "Include sub-issues" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    expect(list).toHaveBeenCalledWith("issue-1", true);
+    expect(within(dialog).getByRole("status", { name: "Loading runs..." })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("img")).not.toBeInTheDocument();
+    await act(async () => { rejectRequest(new Error("unavailable")); });
+    const retry = await within(dialog).findByRole("button", { name: "Could not load runs. Retry" });
+    list.mockResolvedValue([own, child]);
+    fireEvent.click(retry);
+    expect(await within(dialog).findByText("Child run")).toBeInTheDocument();
+    expect(outerToggle).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Child run")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    expect(within(screen.getByRole("dialog")).getByRole("checkbox", { name: "Include sub-issues" })).not.toBeChecked();
+    queryClient.clear();
+  });
+
+  it("shows an empty dialog scope when only descendants have runs", () => {
+    renderParent([], [makeTask({ id: "child", issue_id: "child-issue" })]);
+    const outerToggle = screen.getByRole("checkbox", { name: "Include sub-issues" });
+    fireEvent.click(outerToggle);
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Include sub-issues" }));
+    expect(within(dialog).getByText("No runs in this scope.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("img")).not.toBeInTheDocument();
+    expect(outerToggle).toBeChecked();
+  });
+
+  it("offers subtree history even when the parent has no runs, and retries the owning child", async () => {
+    const child = makeTask({ id: "child", issue_id: "child-issue", issue_identifier: "MUL-2", status: "failed", completed_at: "2026-06-08T08:03:00Z" });
+    renderParent([], [child]);
+    expect(screen.getByText("No runs in this scope.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include sub-issues" }));
+    const client = new ApiClient("https://api.example.test");
+    setApiInstance(client);
+    const retry = vi.spyOn(client, "rerunIssue").mockResolvedValue({} as never);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retry run" })); });
+    expect(retry).toHaveBeenCalledWith("child-issue", "child");
+  });
+
+  it("stops a descendant run through its owning issue", async () => {
+    renderParent([], [makeTask({ id: "deep-run", issue_id: "grandchild-issue" })]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include sub-issues" }));
+    const client = new ApiClient("https://api.example.test");
+    setApiInstance(client);
+    const stop = vi.spyOn(client, "cancelTask").mockResolvedValue({} as never);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Confirm stop" })); });
+    expect(stop).toHaveBeenCalledWith("grandchild-issue", "deep-run");
+  });
+
+  it("stops an expanded queued descendant through its owning issue", async () => {
+    renderParent([], [
+      makeTask({ id: "child-queued", issue_id: "child-issue", issue_identifier: "MUL-2", status: "queued" }),
+      makeTask({ id: "deep-queued", issue_id: "grandchild-issue", issue_identifier: "MUL-3", status: "queued" }),
+    ]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include sub-issues" }));
+    fireEvent.click(screen.getByRole("button", { name: /2 queued/ }));
+    const row = screen.getByText("MUL-3").parentElement!;
+    const client = new ApiClient("https://api.example.test");
+    setApiInstance(client);
+    const stop = vi.spyOn(client, "cancelTask").mockResolvedValue({} as never);
+    fireEvent.click(within(row).getByRole("button", { name: "Cancel run" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Confirm stop" })); });
+    expect(stop).toHaveBeenCalledWith("grandchild-issue", "deep-queued");
+  });
+
+  it("shows loading and a retryable error instead of keeping the parent's partial totals", async () => {
+    vi.useRealTimers();
+    const client = new ApiClient("https://api.example.test");
+    setApiInstance(client);
+    let rejectRequest!: (error: Error) => void;
+    const list = vi.spyOn(client, "listTasksByIssue").mockImplementation(() =>
+      new Promise((_, reject) => { rejectRequest = reject; }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(issueKeys.tasks("issue-1"), [makeTask()]);
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ExecutionLogSection issueId="issue-1" hasChildren />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include sub-issues" }));
+    expect(screen.getByRole("status", { name: "Loading runs..." })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Execution log 1" })).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith("issue-1", true, { view: "timeline" });
+    await act(async () => { rejectRequest(new Error("unavailable")); });
+    const retry = await screen.findByRole("button", { name: "Could not load runs. Retry" });
+    list.mockResolvedValue([makeTask({ id: "deep", issue_id: "deep-issue" })]);
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Execution log 1" })).toBeInTheDocument());
+    expect(list).toHaveBeenCalledTimes(2);
+    queryClient.clear();
+  });
 });
 
 describe("ActiveTaskRow", () => {
   it("renders running status as elapsed time only", () => {
-    renderWithI18n(
-      <ActiveTaskRow
-        task={makeTask({
-          trigger_comment_id: "comment-3",
-          coalesced_comment_ids: ["comment-1", "comment-2"],
-        })}
-        issueId="issue-1"
-      />,
+    renderRow(
+      makeTask({
+        trigger_comment_id: "comment-3",
+        coalesced_comment_ids: ["comment-1", "comment-2"],
+      }),
     );
 
     expect(screen.getByText("5m 04s")).toBeInTheDocument();
@@ -98,10 +332,19 @@ describe("ActiveTaskRow", () => {
 
   it("makes the trigger a jump button only when given a jump handler", () => {
     const onJump = vi.fn();
-    const { rerender } = renderWithI18n(<ActiveTaskRow task={makeTask({})} issueId="issue-1" />);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ActiveTaskRow task={makeTask({})} issueId="issue-1" />
+      </QueryClientProvider>,
+    );
     expect(screen.queryByRole("button", { name: /Go to run/ })).not.toBeInTheDocument();
 
-    rerender(<ActiveTaskRow task={makeTask({})} issueId="issue-1" onJump={onJump} />);
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ActiveTaskRow task={makeTask({})} issueId="issue-1" onJump={onJump} />
+      </QueryClientProvider>,
+    );
     const jump = screen.getByRole("button", { name: /Go to run/ });
     expect(jump).toHaveTextContent("Started from comment");
     fireEvent.click(jump);
@@ -292,17 +535,31 @@ function usageSlice(overrides: Partial<TaskUsage> = {}): TaskUsage {
 }
 
 describe("per-run token usage", () => {
+  it.each([
+    ["en", "1.25 Qoder Cloud Agents credits"],
+    ["zh-Hans", "1.25 Qoder Cloud Agents 积分"],
+  ] as const)("names the provider's credits in %s", (locale, expected) => {
+    renderWithI18n(
+      <IssueRunsTotal alone onOpen={() => {}} tasks={[makeTask({
+        status: "completed",
+        usage: [usageSlice({
+          provider: "qoder_cloud", model: "",
+          input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+          credits_micros: 1_250_000,
+        })],
+      })]} />,
+      { locale },
+    );
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(screen.queryByText("1.25 credits")).not.toBeInTheDocument();
+  });
+
   // An active row shows only its timer. The daemon reports usage once, after
   // the run returns, and that write publishes no realtime event — so no
   // running task carries usage in production. Asserting a token figure here
   // would only prove that a hand-written fixture renders.
   it("shows a running row's timer, and no token figure even if usage exists", () => {
-    renderWithI18n(
-      <ActiveTaskRow
-        task={makeTask({ usage: [usageSlice()] })}
-        issueId="issue-1"
-      />,
-    );
+    renderRow(makeTask({ usage: [usageSlice()] }));
 
     expect(screen.getByText("5m 04s")).toBeInTheDocument();
     expect(screen.queryByText("892K")).not.toBeInTheDocument();
@@ -310,11 +567,27 @@ describe("per-run token usage", () => {
     // making next to a ticking timer.
     expect(screen.queryByText("—")).not.toBeInTheDocument();
   });
+
+  it("shows the tier badge with a waiting-for-capacity reason on a parked active row", async () => {
+    // Fake timers (elapsed-time tests above) stall the tiers query + findBy
+    // polling; this row asserts async-loaded content, not the clock.
+    vi.useRealTimers();
+    renderRow(
+      makeTask({
+        status: "queued",
+        tier_id: "tier-fast",
+        tier_explicit: true,
+        tier_parked: true,
+      }),
+    );
+
+    expect(await screen.findByText("fast · waiting")).toBeInTheDocument();
+  });
 });
 
 // Header figures stay readable at every supported sidebar width.
 describe("execution log header geometry", () => {
-  function renderSection(tasks: AgentTask[]) {
+  function renderSection(tasks: AgentTask[], seedHistory = true) {
     // Seed the cache instead of mocking the API: the query is fresh for 30s,
     // so `listTasksByIssue` is never reached and the section renders its real
     // header markup.
@@ -322,6 +595,7 @@ describe("execution log header geometry", () => {
       defaultOptions: { queries: { retry: false } },
     });
     queryClient.setQueryData(issueKeys.tasks("issue-1"), tasks);
+    if (seedHistory) queryClient.setQueryData([...issueKeys.tasks("issue-1"), "history"], tasks);
     return renderWithI18n(
       <QueryClientProvider client={queryClient}>
         <ExecutionLogSection issueId="issue-1" identifier="MUL-1" />
@@ -329,14 +603,49 @@ describe("execution log header geometry", () => {
     );
   }
 
+  it("requests complete run history only when its dialog opens", async () => {
+    const client = new ApiClient("http://localhost");
+    setApiInstance(client);
+    const request = vi.spyOn(client, "listTasksByIssue").mockResolvedValue([]);
+    try {
+      renderSection([makeTask({ status: "completed", completed_at: "2026-06-08T08:01:00Z" })], false);
+      expect(request).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Open timeline" })));
+      expect(request).toHaveBeenCalledWith("issue-1", false);
+    } finally { request.mockRestore(); }
+  });
+
   it("shows the running task before pending tasks in queue order", () => {
     renderSection([
       makeTask({ id: "new", status: "queued", trigger_summary: "Order: second", created_at: "2026-09-08T03:02:00Z" }),
       makeTask({ id: "old", status: "queued", trigger_summary: "Order: first", created_at: "2026-09-08T03:01:00Z" }),
       makeTask({ id: "running", status: "running", trigger_summary: "Order: running", created_at: "2026-09-08T03:00:00Z" }),
     ]);
+    fireEvent.click(screen.getByRole("button", { name: /2 queued/ }));
     expect(screen.getAllByText(/^Order:/).map((el) => el.textContent))
       .toEqual(["Order: running", "Order: first", "Order: second"]);
+  });
+
+  it("folds several queued runs into one expandable row, but not a lone one", () => {
+    const { unmount } = renderSection([
+      makeTask({ id: "running", status: "running", trigger_summary: "Live run" }),
+      makeTask({ id: "q1", status: "queued", trigger_summary: "Queued one" }),
+      makeTask({ id: "q2", status: "queued", trigger_summary: "Queued two" }),
+    ]);
+    const group = screen.getByRole("button", { name: /2 queued/ });
+    expect(group).toHaveAttribute("aria-expanded", "false");
+    expect(group).toHaveTextContent("Lambda");
+    expect(screen.getByText("Live run")).toBeInTheDocument();
+    expect(screen.queryByText("Queued one")).not.toBeInTheDocument();
+    fireEvent.click(group);
+    expect(group).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Queued one")).toBeInTheDocument();
+    expect(screen.getByText("Queued two")).toBeInTheDocument();
+    unmount();
+
+    renderSection([makeTask({ id: "q1", status: "queued", trigger_summary: "Queued one" })]);
+    expect(screen.queryByRole("button", { name: /queued/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Queued one")).toBeInTheDocument();
   });
 
   function headerOf(): HTMLElement {
@@ -418,16 +727,40 @@ describe("execution log past runs", () => {
     expect(screen.getByText("MUL-1 · Wakeups")).toBeInTheDocument();
   });
 
-  it("keeps cost and agent duration visible with usage details in the tooltip", () => {
+  it("lets active runs take the three rows first and fills the rest with past runs", () => {
+    const active = [
+      makeTask({ id: "running", status: "running", trigger_summary: "Live run" }),
+      makeTask({ id: "q1", status: "queued", trigger_summary: "Queued one" }),
+      makeTask({ id: "q2", status: "queued", trigger_summary: "Queued two" }),
+    ];
+    const { unmount } = renderSection([...active, past(1), past(2), past(3), past(4)]);
+    // One running row + one folded queued row leave a single past slot.
+    expect(screen.getAllByText(/^Past run \d$/).map((el) => el.textContent)).toEqual(["Past run 4"]);
+    expect(screen.getByRole("button", { name: "Open timeline · Show 3 more" })).toBeInTheDocument();
+    unmount();
+
+    renderSection([
+      ...active,
+      makeTask({ id: "running-2", status: "running", trigger_summary: "Second live run" }),
+      makeTask({ id: "running-3", status: "running", trigger_summary: "Third live run" }),
+      past(1),
+    ]);
+    expect(screen.queryByText("Past run 1")).not.toBeInTheDocument();
+    expect(screen.getByText("Third live run")).toBeInTheDocument();
+  });
+
+  it("keeps a finished run to one line, with agent, duration and usage in the tooltip", () => {
     renderSection([past(1)]);
 
     const row = screen.getByText("Past run 1").closest("[title]") as HTMLElement;
     expect(within(row).getByText("$2.00")).toBeInTheDocument();
-    expect(row).toHaveTextContent("Lambda · 10m");
-    // Detailed usage remains available without crowding the summary row.
+    expect(row).not.toHaveTextContent("Lambda");
+    expect(row).not.toHaveTextContent("10m");
     expect(row).not.toHaveTextContent("892K tokens");
-    expect(row.getAttribute("title")).toContain("892K tokens");
-    expect(row.getAttribute("title")).toContain("claude-opus-5");
+    const title = row.getAttribute("title");
+    expect(title).toContain("Lambda · 10m");
+    expect(title).toContain("892K tokens");
+    expect(title).toContain("claude-opus-5");
   });
 
   it("puts a failed run's reason where its duration would be", () => {
@@ -466,13 +799,15 @@ describe("execution log past runs", () => {
     expect(chart.querySelectorAll("[data-run]")[29]).toHaveAttribute("data-run", "past-35");
     expect(screen.getByText("Spent", { selector: "dt" }).parentElement).toHaveTextContent("$70.00");
     expect(screen.getAllByText(/^Past run \d+$/)).toHaveLength(3);
-    fireEvent.click(screen.getByRole("button", { name: "Show 32 more" }));
+    expect(screen.queryByText("Latest")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open timeline · Show 32 more" }));
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
   });
 
   it("keeps all active tasks reachable in a separate scrolling region", () => {
     renderSection(Array.from({ length: 8 }, (_, i) => makeTask({ id: `active-${i}`, status: "queued", trigger_summary: `Queued ${i}`, usage: [] })));
     const active = screen.getByRole("region", { name: "8 active" });
+    fireEvent.click(within(active).getByRole("button", { name: /8 queued/ }));
     expect(within(active).getAllByText(/^Queued \d$/)).toHaveLength(8);
     expect(active).toHaveAttribute("tabindex", "0");
   });
@@ -483,8 +818,8 @@ describe("execution log past runs", () => {
       past(2, { usage: [usageSlice({ input_tokens: 1000, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd_ticks: 10_000_000_000 })] }),
     ]);
     const bars = screen.getByRole("button", { name: /Cost per run/ }).querySelectorAll("[data-run]");
-    expect((bars[0] as HTMLElement).style.height).toBe("40px");
-    expect((bars[1] as HTMLElement).style.height).toBe("4px");
+    expect((bars[0] as HTMLElement).style.height).toBe("24px");
+    expect(parseFloat((bars[1] as HTMLElement).style.height)).toBeCloseTo(2.4);
   });
 
   it.each([1, 8, 15, 30])("preserves upstream slots for %i runs", (count) => {
@@ -494,7 +829,7 @@ describe("execution log past runs", () => {
     })));
     const chart = screen.getByRole("button", { name: /Cost per run/ });
     const plot = chart.querySelector("[aria-hidden]") as HTMLElement;
-    expect(plot.style.height).toBe("40px");
+    expect(plot.style.height).toBe("24px");
     expect(plot.children).toHaveLength(Math.max(20, count));
     expect(chart.querySelectorAll("[data-run]")).toHaveLength(count);
     expect(plot.children[plot.children.length - count]).toHaveAttribute("data-run");
@@ -515,7 +850,6 @@ describe("execution log past runs", () => {
     expect(chart.querySelector('[data-run="past-2"]')).toHaveClass("bg-faint-foreground");
     expect(chart.querySelector('[data-run="past-3"]')).toHaveClass("border-dashed");
     expect(chart.querySelector('[data-run="active"]')).toHaveClass("bg-info");
-    expect(chart).toHaveTextContent("Now");
   });
 
   it("makes full details reachable from the first priced run", () => {

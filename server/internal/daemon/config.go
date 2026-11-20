@@ -72,8 +72,7 @@ const (
 	DefaultMaxConcurrentTasks             = 20
 	DefaultGCInterval                     = 2 * time.Hour
 	DefaultGCTTL                          = 24 * time.Hour      // 1 day — AI-coding issues rarely stay open long
-	DefaultGCCompletedTaskTTLCloud        = 14 * 24 * time.Hour // 14 days — Multica Cloud bounds completed issue-task env retention by default; see defaultGCCompletedTaskTTL
-	DefaultGCCompletedTaskTTLSelfHost     = 0                   // disabled — self-host keeps every completed env until its issue goes terminal, unless an operator opts in
+	DefaultGCCompletedTaskTTL             = 14 * 24 * time.Hour // 14 days — bound completed issue-task env retention on every server; see the MULTICA_GC_COMPLETED_TASK_TTL comment in LoadConfig
 	DefaultGCOrphanTTL                    = 72 * time.Hour      // 3 days — orphans with no meta (crashes, pre-GC leftovers)
 	DefaultGCArtifactTTL                  = 12 * time.Hour      // 12h — drop regenerable artifacts once a task has been completed this long
 	DefaultGCCodexSessionTTL              = 14 * 24 * time.Hour // 14 days — reclaim per-issue Codex session stores untouched this long
@@ -111,32 +110,33 @@ type Config struct {
 	CLICommit       string                // full build revision embedded in the running CLI; empty/unknown if unavailable
 	LaunchedBy      string                // "desktop" when spawned by the Electron app, empty for standalone
 	Profile         string                // profile name (empty = default)
-	Agents          map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
+	Agents          map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, droid, amp, mcode, muse, devin, dim, zeroclaw, museapp (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
 	WorkspacesRoot  string                // base path for execution envs (default: ~/multica_workspaces)
 	// MessageSink names where a dsh-runtime task's transcript is owned. Only
 	// "dsh" is recognized (M-102): sessions go to the shared dsh store and the
 	// daemon stops reporting transcript frames — the server's drain-path gate
 	// drops them regardless of daemon version. Empty (the default) keeps the
 	// private per-runtime session root and the legacy task_message transcript.
-	MessageSink                    string        // MESSAGE_SINK, only "dsh" recognized
-	HealthPort                     int           // local HTTP port for health checks (default: 19514)
-	MaxConcurrentTasks             int           // max tasks running in parallel (default: 20)
-	GCEnabled                      bool          // enable periodic workspace garbage collection (default: true)
-	GCInterval                     time.Duration // how often the GC loop runs (default: 2h)
-	GCTTL                          time.Duration // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCCompletedTaskTTL             time.Duration // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
-	GCOrphanTTL                    time.Duration // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
-	GCArtifactTTL                  time.Duration // once a task has been completed for at least this long, drop regenerable artifacts: pattern-matched build outputs when the parent record keeps the directory (an open issue), and the exact daemon-managed Codex cache for every task kind (default: 12h, set 0 to disable both)
-	GCArtifactPatterns             []string      // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
-	GCRepoTTL                      time.Duration // evict a cached bare repo under .repos once no task has created a worktree from it for this long, it has no worktrees left, and it is no longer attached to any watched workspace (default: 30d, set 0 to disable)
-	GCRepoMaintenanceEnabled       bool          // run reflog expiry and git gc after stale agent refs are removed (default: true; disable independently as an operational kill switch)
-	GCCodexSessionTTL              time.Duration // reclaim a per-issue Codex session store (~/.codex/multica-sessions/<agent>/<issue>) untouched for at least this long, so a done/abandoned issue's conversation history does not accumulate forever (default: 14d, set 0 to disable)
-	GCHermesMemoryTTL              time.Duration // reclaim a per-agent Hermes memory store (<profile dir>/hermes-state/<agent>/<profile>) untouched for at least this long, so a deleted agent's memory does not sit on disk forever (default: 90d, set 0 to disable)
-	GCHermesSessionTTL             time.Duration // reclaim a per-conversation Hermes session store (<profile dir>/hermes-sessions/<agent>/<profile>/<conversation>) untouched for at least this long, so a done or abandoned conversation's transcript does not accumulate forever (default: 14d, set 0 to disable)
-	GCTaskTempLegacyTTL            time.Duration // reclaim a per-task temp dir (<temp base>/multica-task-*) that carries no execution lock — i.e. left by a daemon predating the lock — once nothing inside it has been touched for this long. Dirs that DO carry the lock are reclaimed on liveness, never on age, so this knob does not apply to them. Neither does it reclaim a dir holding no task content — an old empty leftover, or a shell left by a daemon that died between creating the dir and publishing its lock — because holding no content is exactly what a dir currently being published looks like (default: 0, disabled — see DefaultGCTaskTempLegacyTTL)
-	AutoUpdateEnabled              bool          // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
-	AutoUpdateCheckInterval        time.Duration // how often the auto-update loop polls for a new release (default: 6h)
-	AutoReloadEnabled              bool          // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
+	MessageSink                    string           // MESSAGE_SINK, only "dsh" recognized
+	DshSummary                     DshSummaryConfig // dsh prompt-cache summary clock (S3-B1); every value is env-tunable, see dsh_summary.go
+	HealthPort                     int              // local HTTP port for health checks (default: 19514)
+	MaxConcurrentTasks             int              // max tasks running in parallel (default: 20)
+	GCEnabled                      bool             // enable periodic workspace garbage collection (default: true)
+	GCInterval                     time.Duration    // how often the GC loop runs (default: 2h)
+	GCTTL                          time.Duration    // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
+	GCCompletedTaskTTL             time.Duration    // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
+	GCOrphanTTL                    time.Duration    // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
+	GCArtifactTTL                  time.Duration    // once a task has been completed for at least this long, drop regenerable artifacts: pattern-matched build outputs when the parent record keeps the directory (an open issue), and the exact daemon-managed Codex cache for every task kind (default: 12h, set 0 to disable both)
+	GCArtifactPatterns             []string         // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
+	GCRepoTTL                      time.Duration    // evict a cached bare repo under .repos once no task has created a worktree from it for this long, it has no worktrees left, and it is no longer attached to any watched workspace (default: 30d, set 0 to disable)
+	GCRepoMaintenanceEnabled       bool             // run reflog expiry and git gc after stale agent refs are removed (default: true; disable independently as an operational kill switch)
+	GCCodexSessionTTL              time.Duration    // reclaim a per-issue Codex session store (~/.codex/multica-sessions/<agent>/<issue>) untouched for at least this long, so a done/abandoned issue's conversation history does not accumulate forever (default: 14d, set 0 to disable)
+	GCHermesMemoryTTL              time.Duration    // reclaim a per-agent Hermes memory store (<profile dir>/hermes-state/<agent>/<profile>) untouched for at least this long, so a deleted agent's memory does not sit on disk forever (default: 90d, set 0 to disable)
+	GCHermesSessionTTL             time.Duration    // reclaim a per-conversation Hermes session store (<profile dir>/hermes-sessions/<agent>/<profile>/<conversation>) untouched for at least this long, so a done or abandoned conversation's transcript does not accumulate forever (default: 14d, set 0 to disable)
+	GCTaskTempLegacyTTL            time.Duration    // reclaim a per-task temp dir (<temp base>/multica-task-*) that carries no execution lock — i.e. left by a daemon predating the lock — once nothing inside it has been touched for this long. Dirs that DO carry the lock are reclaimed on liveness, never on age, so this knob does not apply to them. Neither does it reclaim a dir holding no task content — an old empty leftover, or a shell left by a daemon that died between creating the dir and publishing its lock — because holding no content is exactly what a dir currently being published looks like (default: 0, disabled — see DefaultGCTaskTempLegacyTTL)
+	AutoUpdateEnabled              bool             // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
+	AutoUpdateCheckInterval        time.Duration    // how often the auto-update loop polls for a new release (default: 6h)
+	AutoReloadEnabled              bool             // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
 	PollInterval                   time.Duration
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
 	HeartbeatInterval              time.Duration
@@ -162,6 +162,8 @@ type Config struct {
 	CodexArgs                   []string
 	CodebuddyArgs               []string
 	QwenArgs                    []string
+	DroidArgs                   []string
+	AmpArgs                     []string
 	QwenpawArgs                 []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
@@ -171,6 +173,11 @@ type Config struct {
 	// prefers a matching, executable override over resolving the profile's
 	// command_name on PATH. nil/empty means "always resolve via PATH".
 	ProfileCommandOverrides map[string]string
+
+	// DetachedRuntime enables launching dsh tasks in their own transient
+	// systemd user scope so they survive a daemon restart (S3-C, M-139).
+	// Linux only, off by default.
+	DetachedRuntime bool
 
 	// MoctBaseURL is the base URL of this host's moct-be, the memory plane
 	// (M-97 decision 3). Empty — the default everywhere but a lane that runs
@@ -192,6 +199,8 @@ type Overrides struct {
 	// AgentTimeout is a pointer so an explicit `--agent-timeout 0` (no cap) is
 	// distinguishable from "flag not passed". nil = use env/default.
 	AgentTimeout                   *time.Duration
+	AgentIdleWatchdog              *time.Duration
+	AgentToolWatchdog              *time.Duration
 	CodexSemanticInactivityTimeout time.Duration
 	CodexHandshakeTimeout          time.Duration
 	MaxConcurrentTasks             int
@@ -279,7 +288,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// can re-run the same discovery on a live daemon (MUL-5439).
 	agents := probeAgentCLIs()
 	if len(agents) == 0 && !overrides.AllowNoAgents {
-		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, devin, dim, or zeroclaw and ensure it is on PATH")
+		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, droid, amp, mcode, muse, devin, dim, zeroclaw, or zcode and ensure it is on PATH")
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
@@ -295,6 +304,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 	qwenArgs, err := shellArgsFromEnv("MULTICA_QWEN_ARGS")
+	if err != nil {
+		return Config{}, err
+	}
+	ampArgs, err := shellArgsFromEnv("MULTICA_AMP_ARGS")
+	if err != nil {
+		return Config{}, err
+	}
+	droidArgs, err := shellArgsFromEnv("MULTICA_DROID_ARGS")
 	if err != nil {
 		return Config{}, err
 	}
@@ -351,6 +368,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if overrides.AgentIdleWatchdog != nil {
+		agentIdleWatchdog = *overrides.AgentIdleWatchdog
+	}
 	// MULTICA_OPENCODE_IDLE_WATCHDOG narrows the no-message window for
 	// OpenCode's streamed model responses. Zero removes the provider-specific
 	// override and falls back to MULTICA_AGENT_IDLE_WATCHDOG; positive values
@@ -389,6 +409,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if overrides.AgentToolWatchdog != nil {
+		agentToolWatchdog = *overrides.AgentToolWatchdog
+	}
 
 	// Codex runs a semantic-inactivity timer of its own inside the app-server
 	// protocol, and unlike the daemon's watchdog it is NOT tool-aware: a
@@ -409,12 +432,9 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// built-in default. Disabling the daemon's watchdogs has never disabled this
 	// timer, and quietly turning it into "unbounded" here would be a much larger
 	// change than this one.
-	codexSemanticDefault := agentIdleWatchdog
-	if agentToolWatchdog > codexSemanticDefault {
-		codexSemanticDefault = agentToolWatchdog
-	}
-	if codexSemanticDefault <= 0 {
-		codexSemanticDefault = DefaultCodexSemanticInactivityTimeout
+	codexSemanticDefault := DefaultCodexSemanticInactivityTimeout
+	if agentIdleWatchdog > 0 {
+		codexSemanticDefault = max(agentIdleWatchdog, agentToolWatchdog)
 	}
 	codexSemanticInactivityTimeout, err := durationFromEnv("MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT", codexSemanticDefault)
 	if err != nil {
@@ -566,7 +586,18 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	gcCompletedTaskTTL, err := durationFromEnv("MULTICA_GC_COMPLETED_TASK_TTL", defaultGCCompletedTaskTTL(serverBaseURL))
+	// Full removal of a completed task environment is irreversible: it takes
+	// the checkout, .git (including work an agent left uncommitted), output/
+	// and logs/ with it. The default is bounded on every server, self-host
+	// included, because unbounded retention fills the disk of any long-lived
+	// daemon whose issues sit open (in review, awaiting response, backlog) and
+	// nobody is watching it. 14d is deliberately generous: past that much idle
+	// time main has usually moved far enough that a fresh checkout beats a
+	// stale worktree. Operators who want the old keep-until-terminal behavior
+	// set MULTICA_GC_COMPLETED_TASK_TTL=0.
+	// Local-directory tasks keep their daemon logs and output; this TTL removes
+	// only their Codex home, and only when session history is stored elsewhere.
+	gcCompletedTaskTTL, err := durationFromEnv("MULTICA_GC_COMPLETED_TASK_TTL", DefaultGCCompletedTaskTTL)
 	if err != nil {
 		return Config{}, err
 	}
@@ -648,6 +679,19 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		messageSink = ""
 	}
 
+	// S3-C (M-139): detached runtime scope is Linux-only, off by default and
+	// needs systemd-run. Advertising uses the launcher's own predicate so the
+	// capability is never claimed for runs that would launch attached.
+	detachedRuntime := agent.DshDetachedAvailable()
+
+	// S3-B1: the dsh prompt-cache summary clock. Defaults come from the
+	// M-133 spike's provisional values; every one is env-tunable because the
+	// spike could not measure a real cache TTL (re-measure after M-126).
+	dshSummary, err := dshSummaryConfigFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -658,6 +702,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
 		MessageSink:                     messageSink,
+		DetachedRuntime:                 detachedRuntime,
+		DshSummary:                      dshSummary,
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,
@@ -692,6 +738,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexArgs:                       codexArgs,
 		CodebuddyArgs:                   codebuddyArgs,
 		QwenArgs:                        qwenArgs,
+		DroidArgs:                       droidArgs,
+		AmpArgs:                         ampArgs,
 		QwenpawArgs:                     qwenpawArgs,
 		ProfileCommandOverrides:         profileCommandOverrides,
 		MoctBaseURL:                     moctBaseURL,
@@ -709,38 +757,14 @@ const officialCloudHost = "api.multica.ai"
 // infrastructure we operate but not on someone else's: auto-update (cloud
 // users run a server that publishes the matching CLI release, so opt-in
 // self-update is safe, while self-host users may run a fork or pin to an
-// older server) and the completed-task retention TTL (see
-// defaultGCCompletedTaskTTL). Matching is host-only and case-insensitive —
-// port and path are ignored.
+// older server). Matching is host-only and case-insensitive — port and path
+// are ignored.
 func isOfficialCloudServer(baseURL string) bool {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return false
 	}
 	return strings.EqualFold(u.Hostname(), officialCloudHost)
-}
-
-// defaultGCCompletedTaskTTL picks the completed-task retention default from the
-// deployment kind, the same way the auto-update default is picked.
-//
-// Full removal of a completed task environment is irreversible: it takes the
-// checkout, .git (including work an agent left uncommitted), output/ and logs/
-// with it. On Multica Cloud that trade is ours to make — we operate the nodes,
-// a full disk is our incident rather than a user's, and unbounded retention has
-// no operator watching it. On self-host the same default would turn a routine
-// daemon upgrade into a silent deletion of data the operator never agreed to
-// give up, so it stays disabled until they set MULTICA_GC_COMPLETED_TASK_TTL
-// themselves. Either side can override in either direction; cloud disables it
-// again with an explicit 0.
-//
-// Non-production cloud origins (staging, previews) fall to the self-host value
-// along with everything else officialCloudHost excludes, and opt in explicitly
-// if they want the bound.
-func defaultGCCompletedTaskTTL(serverBaseURL string) time.Duration {
-	if isOfficialCloudServer(serverBaseURL) {
-		return DefaultGCCompletedTaskTTLCloud
-	}
-	return DefaultGCCompletedTaskTTLSelfHost
 }
 
 // NormalizeServerBaseURL converts a WebSocket or HTTP URL to a base HTTP URL.
@@ -1000,8 +1024,24 @@ func isExecutableFile(path string) bool {
 // doesn't require editing this list by hand.
 var defaultAgentCommandNames = append([]string{
 	"claude", "codex", "opencode", "codearts", "deveco", "freebuff", "openclaw", "hermes",
-	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "muse", "devin", "dim", "zeroclaw",
+	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "droid", "amp", "mcode", "muse", "devin", "dim", "zeroclaw", "zcode",
 }, agent.BuiltinRuntimeCommands()...)
+
+// zcodeDesktopAppBundlePaths discovers the CLI in default Desktop installs.
+var zcodeDesktopAppBundlePaths = func() []string {
+	if runtime.GOOS == "linux" {
+		return []string{"/opt/ZCode/zcode"}
+	}
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	const bundle = "ZCode.app/Contents/Resources/glm/zcode.cjs"
+	paths := []string{filepath.Join("/Applications", bundle)}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, "Applications", bundle))
+	}
+	return paths
+}
 
 // codexDesktopAppBundlePaths returns candidate macOS app-bundle locations for
 // the bundled Codex CLI. OpenAI relocated the Desktop app from Codex.app to

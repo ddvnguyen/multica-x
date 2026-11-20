@@ -19,8 +19,11 @@
 
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs"],
-      "project": ["scripts/*.mjs"]
+      "entry": ["scripts/*.mjs", "scripts/brand/*.mjs"],
+      "project": ["scripts/*.mjs", "scripts/brand/*.mjs"],
+      // scripts/theme-preview.mjs drives Tailwind through the PostCSS API; the
+      // root has no Tailwind stylesheets for the plugin to read.
+      "tailwind": false
     },
 
     "apps/web": {
@@ -28,19 +31,47 @@
       // Referenced only by the `@type {import('postcss-load-config').Config}`
       // JSDoc annotation in postcss.config.mjs. Declaring it would add a
       // runtime dependency to satisfy a type comment.
-      "ignoreDependencies": ["postcss-load-config"]
+      "ignoreDependencies": ["postcss-load-config"],
+      // MMX PWA service worker (M-390): served at /sw.js and registered by
+      // URL from PwaUpdateBanner — no import graph reaches it by design.
+      "ignore": ["public/sw.js"]
     },
 
     "apps/desktop": {
       // window-state.node-test.mjs is run by hand (`node --test`, see its
       // header) rather than by a package script, so nothing imports it.
-      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs"],
+      // bundle-cli.node-test.mjs is run the same way. test/electron-guard.ts
+      // needs no entry: the vitest plugin already registers it from its alias
+      // in vitest.config.ts.
+      "entry": [
+        "eslint.config.mjs",
+        "src/main/*.node-test.mjs",
+        "scripts/*.node-test.mjs"
+      ],
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
       "ignoreDependencies": ["@multica/tsconfig"]
     },
 
     "apps/docs": {},
+
+    // Fork-owned plugin; upstream has no such workspace, so nothing upstream
+    // contributes its entries. Everything below is reached only through a
+    // path knip does not follow: the harness pages load their scripts from
+    // `<script src>` in e2e/harness/*.html, and playwright.config.ts — which
+    // knip picks up on its own — starts the harness vite config by path and
+    // leaves e2e/perf to run by hand.
+    "packages/dsh-plugin": {
+      "entry": [
+        "src/index.ts",
+        "e2e/harness/*.{ts,tsx}",
+        "e2e/perf/*.mjs",
+        "e2e/vite.harness.config.ts"
+      ]
+    },
+    "apps/storybook": {
+      "entry": ["eslint.config.mjs"]
+    },
 
     // The three shared packages export raw .ts/.tsx compiled by their
     // consumers (CLAUDE.md "Project Shape"), so `entry` names only the config
@@ -65,7 +96,9 @@
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/views": {
-      "entry": ["eslint.config.mjs"],
+      "project": ["**/*.{ts,tsx}"]
+    },
+    "packages/ee": {
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/core": {
@@ -73,7 +106,11 @@
       "project": ["**/*.{ts,tsx}"]
     },
 
+    "packages/plugin-sdk": {
+      "entry": ["eslint.config.mjs"]
+    },
     "packages/eslint-config": {},
-    "packages/tsconfig": {}
+    "packages/tsconfig": {},
+    "packages/vitest-setup": {}
   }
 }

@@ -16,23 +16,33 @@ UPDATE agent_question_card
 SET status = 'answered',
     answers = $2,
     answered_by = $3,
+    answered_by_type = $4,
     answered_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open'
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
 `
 
 type AnswerAgentQuestionCardParams struct {
-	ID         pgtype.UUID `json:"id"`
-	Answers    []byte      `json:"answers"`
-	AnsweredBy pgtype.UUID `json:"answered_by"`
+	ID             pgtype.UUID `json:"id"`
+	Answers        []byte      `json:"answers"`
+	AnsweredBy     pgtype.UUID `json:"answered_by"`
+	AnsweredByType string      `json:"answered_by_type"`
 }
 
 // Single-answer enforcement (team-room assertDecisionOpen): the CAS on
 // status='open' means a second answer matches no row → pgx.ErrNoRows → the
 // handler maps it to 409. answers is stored verbatim in question order.
+// answered_by_type says WHO decided: 'member' for the Owner (or any workspace
+// member), 'agent' for the project lead answering on the Owner's behalf after
+// the M-332 escalation (answered_by is that agent's id).
 func (q *Queries) AnswerAgentQuestionCard(ctx context.Context, arg AnswerAgentQuestionCardParams) (AgentQuestionCard, error) {
-	row := q.db.QueryRow(ctx, answerAgentQuestionCard, arg.ID, arg.Answers, arg.AnsweredBy)
+	row := q.db.QueryRow(ctx, answerAgentQuestionCard,
+		arg.ID,
+		arg.Answers,
+		arg.AnsweredBy,
+		arg.AnsweredByType,
+	)
 	var i AgentQuestionCard
 	err := row.Scan(
 		&i.ID,
@@ -49,6 +59,10 @@ func (q *Queries) AnswerAgentQuestionCard(ctx context.Context, arg AnswerAgentQu
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -60,7 +74,7 @@ SET status = 'approved',
     approved_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'in_review' AND submitted_revision = $3
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type ApproveAgentPlanParams struct {
@@ -90,6 +104,8 @@ func (q *Queries) ApproveAgentPlan(ctx context.Context, arg ApproveAgentPlanPara
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -100,7 +116,7 @@ SET status = 'cancelled',
     cancelled_at = now(),
     updated_at = now()
 WHERE id = $1 AND status IN ('draft', 'in_review', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 // cancel: any open state -> cancelled; final; frees the issue for a new plan
@@ -124,6 +140,8 @@ func (q *Queries) CancelAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPla
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -173,7 +191,7 @@ INSERT INTO agent_plan (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, 'draft', $7
 )
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type CreateAgentPlanParams struct {
@@ -213,30 +231,140 @@ func (q *Queries) CreateAgentPlan(ctx context.Context, arg CreateAgentPlanParams
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
+}
+
+const createAgentPlanComment = `-- name: CreateAgentPlanComment :one
+
+INSERT INTO agent_plan_comment (
+    id, workspace_id, plan_id, section_id, quote, body,
+    parent_comment_id, author_user_id, revision
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9
+)
+RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision
+`
+
+type CreateAgentPlanCommentParams struct {
+	ID              pgtype.UUID `json:"id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	PlanID          pgtype.UUID `json:"plan_id"`
+	SectionID       string      `json:"section_id"`
+	Quote           string      `json:"quote"`
+	Body            string      `json:"body"`
+	ParentCommentID pgtype.UUID `json:"parent_comment_id"`
+	AuthorUserID    pgtype.UUID `json:"author_user_id"`
+	Revision        pgtype.Int4 `json:"revision"`
+}
+
+// M-275: the plan page's review threads and section history.
+//
+// A comment is anchored to a passage of one section (section_id + quote) and
+// may be a reply (parent_comment_id); it stays pending until a verdict sends
+// it, which stamps delivered_at/delivered_verdict once. The flat
+// agent_plan_review.comments list keeps its contract: the plan page's
+// comments are appended to it as their bodies.
+// M-348: `revision` is the plan revision the comment was made on (the
+// write-time base_revision, now persisted). NULL = predates the label.
+func (q *Queries) CreateAgentPlanComment(ctx context.Context, arg CreateAgentPlanCommentParams) (AgentPlanComment, error) {
+	row := q.db.QueryRow(ctx, createAgentPlanComment,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.PlanID,
+		arg.SectionID,
+		arg.Quote,
+		arg.Body,
+		arg.ParentCommentID,
+		arg.AuthorUserID,
+		arg.Revision,
+	)
+	var i AgentPlanComment
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PlanID,
+		&i.SectionID,
+		&i.Quote,
+		&i.Body,
+		&i.ParentCommentID,
+		&i.AuthorUserID,
+		&i.ResolvedAt,
+		&i.ResolvedBy,
+		&i.DeliveredAt,
+		&i.DeliveredVerdict,
+		&i.CreatedAt,
+		&i.Revision,
+	)
+	return i, err
+}
+
+const createAgentPlanSectionVersion = `-- name: CreateAgentPlanSectionVersion :exec
+INSERT INTO agent_plan_section_version (
+    id, workspace_id, plan_id, section_id, revision, heading, markdown,
+    writer_type, writer_id
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9
+)
+ON CONFLICT (plan_id, section_id, revision) DO NOTHING
+`
+
+type CreateAgentPlanSectionVersionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PlanID      pgtype.UUID `json:"plan_id"`
+	SectionID   string      `json:"section_id"`
+	Revision    int32       `json:"revision"`
+	Heading     string      `json:"heading"`
+	Markdown    string      `json:"markdown"`
+	WriterType  string      `json:"writer_type"`
+	WriterID    pgtype.UUID `json:"writer_id"`
+}
+
+// One row per accepted section write, by the agent or by a Human. ON CONFLICT
+// DO NOTHING makes a replay (the same plan revision writing the same section
+// twice) a no-op instead of a duplicate, and lets the lazy seed probe without
+// a read-then-write race.
+func (q *Queries) CreateAgentPlanSectionVersion(ctx context.Context, arg CreateAgentPlanSectionVersionParams) error {
+	_, err := q.db.Exec(ctx, createAgentPlanSectionVersion,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.PlanID,
+		arg.SectionID,
+		arg.Revision,
+		arg.Heading,
+		arg.Markdown,
+		arg.WriterType,
+		arg.WriterID,
+	)
+	return err
 }
 
 const createAgentQuestionCard = `-- name: CreateAgentQuestionCard :one
 
 INSERT INTO agent_question_card (
     id, workspace_id, issue_id, task_id, agent_id,
-    status, context, questions
+    status, context, questions, trigger_comment_id
 ) VALUES (
     $1, $2, $3, $4, $5,
-    'open', $6, $7
+    'open', $6, $7, $8
 )
-RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
 `
 
 type CreateAgentQuestionCardParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	TaskID      pgtype.UUID `json:"task_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	Context     pgtype.Text `json:"context"`
-	Questions   []byte      `json:"questions"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	TaskID           pgtype.UUID `json:"task_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	Context          pgtype.Text `json:"context"`
+	Questions        []byte      `json:"questions"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
 }
 
 // S1-A1 (M-118) ask/plan queries: question cards (585) and revisioned plans
@@ -254,6 +382,7 @@ func (q *Queries) CreateAgentQuestionCard(ctx context.Context, arg CreateAgentQu
 		arg.AgentID,
 		arg.Context,
 		arg.Questions,
+		arg.TriggerCommentID,
 	)
 	var i AgentQuestionCard
 	err := row.Scan(
@@ -271,12 +400,108 @@ func (q *Queries) CreateAgentQuestionCard(ctx context.Context, arg CreateAgentQu
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const deliverAgentPlanComments = `-- name: DeliverAgentPlanComments :exec
+UPDATE agent_plan_comment
+SET delivered_at = now(),
+    delivered_verdict = $1
+WHERE id = ANY($2::uuid[]) AND delivered_at IS NULL
+`
+
+type DeliverAgentPlanCommentsParams struct {
+	Verdict pgtype.Text   `json:"verdict"`
+	Ids     []pgtype.UUID `json:"ids"`
+}
+
+// Stamped by the verdict that sends them, so a comment reaches the resumed
+// run exactly once and a replayed verdict re-sends nothing.
+func (q *Queries) DeliverAgentPlanComments(ctx context.Context, arg DeliverAgentPlanCommentsParams) error {
+	_, err := q.db.Exec(ctx, deliverAgentPlanComments, arg.Verdict, arg.Ids)
+	return err
+}
+
+const escalateAgentPlan = `-- name: EscalateAgentPlan :one
+UPDATE agent_plan
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND escalated_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
+`
+
+// The plan half of the M-332 escalation: same once-only CAS, status untouched
+// (in_review stays in_review until a human verdict).
+func (q *Queries) EscalateAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, escalateAgentPlan, id)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const escalateAgentQuestionCard = `-- name: EscalateAgentQuestionCard :one
+UPDATE agent_question_card
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND escalated_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
+`
+
+// M-332 escalation, once per card. The CAS on 'escalated_at IS NULL' is the
+// idempotency gate: a second sweep round (or a racing first one) matches no
+// row, so the lead is triggered exactly once and the comment is posted once.
+// The status is NOT touched: the card stays open for the Owner.
+func (q *Queries) EscalateAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
+	row := q.db.QueryRow(ctx, escalateAgentQuestionCard, id)
+	var i AgentQuestionCard
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Status,
+		&i.Context,
+		&i.Questions,
+		&i.Answers,
+		&i.AnsweredBy,
+		&i.AnsweredAt,
+		&i.WithdrawnAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getAgentPlan = `-- name: GetAgentPlan :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at FROM agent_plan WHERE id = $1
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan WHERE id = $1
 `
 
 func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
@@ -298,12 +523,73 @@ func (q *Queries) GetAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, 
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const getAgentPlanComment = `-- name: GetAgentPlanComment :one
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment WHERE id = $1
+`
+
+// A reply is validated against the plan it lands on before it is written.
+func (q *Queries) GetAgentPlanComment(ctx context.Context, id pgtype.UUID) (AgentPlanComment, error) {
+	row := q.db.QueryRow(ctx, getAgentPlanComment, id)
+	var i AgentPlanComment
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PlanID,
+		&i.SectionID,
+		&i.Quote,
+		&i.Body,
+		&i.ParentCommentID,
+		&i.AuthorUserID,
+		&i.ResolvedAt,
+		&i.ResolvedBy,
+		&i.DeliveredAt,
+		&i.DeliveredVerdict,
+		&i.CreatedAt,
+		&i.Revision,
+	)
+	return i, err
+}
+
+const getAgentPlanForUpdate = `-- name: GetAgentPlanForUpdate :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan WHERE id = $1 FOR UPDATE
+`
+
+// M-131 expiry gate: same guarantee for ReviewPlan — a verdict arriving after
+// the sweep's plan-row lock fails its own status/revision CAS against the plan
+// this transaction already cancelled.
+func (q *Queries) GetAgentPlanForUpdate(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, getAgentPlanForUpdate, id)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getAgentQuestionCard = `-- name: GetAgentQuestionCard :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card WHERE id = $1
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card WHERE id = $1
 `
 
 func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
@@ -324,12 +610,51 @@ func (q *Queries) GetAgentQuestionCard(ctx context.Context, id pgtype.UUID) (Age
 		&i.WithdrawnAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const getAgentQuestionCardForUpdate = `-- name: GetAgentQuestionCardForUpdate :one
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card WHERE id = $1 FOR UPDATE
+`
+
+// M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
+// row ITSELF, keyed by the parked task's trigger_evidence_ref_id. A concurrent
+// AnswerQuestionCard then blocks on this lock, and once the sweep commits its
+// status='open' CAS matches no row -> ErrQuestionCardClosed -> 409. First
+// answer wins with no double outcome, in either interleaving.
+func (q *Queries) GetAgentQuestionCardForUpdate(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
+	row := q.db.QueryRow(ctx, getAgentQuestionCardForUpdate, id)
+	var i AgentQuestionCard
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Status,
+		&i.Context,
+		&i.Questions,
+		&i.Answers,
+		&i.AnsweredBy,
+		&i.AnsweredAt,
+		&i.WithdrawnAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
 const getOpenAgentPlanByIssue = `-- name: GetOpenAgentPlanByIssue :one
-SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at FROM agent_plan
+SELECT id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at FROM agent_plan
 WHERE issue_id = $1 AND status IN ('draft', 'in_review', 'changes_requested')
 LIMIT 1
 `
@@ -353,12 +678,147 @@ func (q *Queries) GetOpenAgentPlanByIssue(ctx context.Context, issueID pgtype.UU
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
 
+const listAgentPlanComments = `-- name: ListAgentPlanComments :many
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment
+WHERE plan_id = $1
+ORDER BY created_at ASC
+`
+
+// The plan page and the decision detail read a plan's whole thread set. Its
+// index is (plan_id, created_at), so this is the index order.
+func (q *Queries) ListAgentPlanComments(ctx context.Context, planID pgtype.UUID) ([]AgentPlanComment, error) {
+	rows, err := q.db.Query(ctx, listAgentPlanComments, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPlanComment{}
+	for rows.Next() {
+		var i AgentPlanComment
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PlanID,
+			&i.SectionID,
+			&i.Quote,
+			&i.Body,
+			&i.ParentCommentID,
+			&i.AuthorUserID,
+			&i.ResolvedAt,
+			&i.ResolvedBy,
+			&i.DeliveredAt,
+			&i.DeliveredVerdict,
+			&i.CreatedAt,
+			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentPlanSectionVersions = `-- name: ListAgentPlanSectionVersions :many
+SELECT id, workspace_id, plan_id, section_id, revision, heading, markdown, writer_type, writer_id, created_at FROM agent_plan_section_version
+WHERE plan_id = $1 AND section_id = $2
+ORDER BY revision DESC
+`
+
+type ListAgentPlanSectionVersionsParams struct {
+	PlanID    pgtype.UUID `json:"plan_id"`
+	SectionID string      `json:"section_id"`
+}
+
+// Newest first: the section history panel and the lazy seed's existence check.
+func (q *Queries) ListAgentPlanSectionVersions(ctx context.Context, arg ListAgentPlanSectionVersionsParams) ([]AgentPlanSectionVersion, error) {
+	rows, err := q.db.Query(ctx, listAgentPlanSectionVersions, arg.PlanID, arg.SectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPlanSectionVersion{}
+	for rows.Next() {
+		var i AgentPlanSectionVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PlanID,
+			&i.SectionID,
+			&i.Revision,
+			&i.Heading,
+			&i.Markdown,
+			&i.WriterType,
+			&i.WriterID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentPlanSectionVersionsUpto = `-- name: ListAgentPlanSectionVersionsUpto :many
+SELECT DISTINCT ON (plan_id, section_id) id, workspace_id, plan_id, section_id, revision, heading, markdown, writer_type, writer_id, created_at
+FROM agent_plan_section_version
+WHERE plan_id = $1 AND revision <= $2
+ORDER BY plan_id, section_id, revision DESC
+`
+
+type ListAgentPlanSectionVersionsUptoParams struct {
+	PlanID   pgtype.UUID `json:"plan_id"`
+	Revision int32       `json:"revision"`
+}
+
+// M-348 read-old-revision: every section's version at or before a revision,
+// newest per section first, so the handler keeps the first row per
+// section_id. DISTINCT ON picks per (plan_id, section_id) with the
+// revision ordering; the outer ORDER BY only stabilizes the scan.
+func (q *Queries) ListAgentPlanSectionVersionsUpto(ctx context.Context, arg ListAgentPlanSectionVersionsUptoParams) ([]AgentPlanSectionVersion, error) {
+	rows, err := q.db.Query(ctx, listAgentPlanSectionVersionsUpto, arg.PlanID, arg.Revision)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPlanSectionVersion{}
+	for rows.Next() {
+		var i AgentPlanSectionVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PlanID,
+			&i.SectionID,
+			&i.Revision,
+			&i.Heading,
+			&i.Markdown,
+			&i.WriterType,
+			&i.WriterID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenQuestionCardsByIssue = `-- name: ListOpenQuestionCardsByIssue :many
-SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at FROM agent_question_card
+SELECT id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at FROM agent_question_card
 WHERE issue_id = $1 AND status = 'open'
 ORDER BY created_at DESC
 `
@@ -387,6 +847,127 @@ func (q *Queries) ListOpenQuestionCardsByIssue(ctx context.Context, issueID pgty
 			&i.WithdrawnAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TriggerCommentID,
+			&i.EscalatedAt,
+			&i.AnsweredByType,
+			&i.RemindedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listParkedAskPlanSweepCandidates = `-- name: ListParkedAskPlanSweepCandidates :many
+SELECT
+    t.id AS task_id,
+    t.issue_id,
+    i.workspace_id,
+    i.project_id,
+    w.settings AS workspace_settings,
+    p.settings AS project_settings,
+    COALESCE(c.created_at, pl.updated_at) AS parked_at
+FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+LEFT JOIN workspace w ON w.id = i.workspace_id
+LEFT JOIN project p ON p.id = i.project_id
+LEFT JOIN agent_question_card c ON c.task_id = t.id AND c.status = 'open'
+LEFT JOIN agent_plan pl ON pl.task_id = t.id AND pl.status = 'in_review'
+WHERE t.status = 'blocked'
+  AND t.wait_reason = 'awaiting human answer'
+  AND ((c.id IS NOT NULL AND c.escalated_at IS NULL)
+       OR (pl.id IS NOT NULL AND pl.escalated_at IS NULL))
+ORDER BY COALESCE(c.created_at, pl.updated_at) ASC
+LIMIT $1
+`
+
+type ListParkedAskPlanSweepCandidatesRow struct {
+	TaskID            pgtype.UUID        `json:"task_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	WorkspaceSettings []byte             `json:"workspace_settings"`
+	ProjectSettings   []byte             `json:"project_settings"`
+	ParkedAt          pgtype.Timestamptz `json:"parked_at"`
+}
+
+// M-131 timeout sweep candidate set. A parked ask/plan task is 'blocked' with
+// wait_reason 'awaiting human answer' (BlockTaskForAskPlan), but so is every
+// ANSWERED park — the parked row keeps the session after the resume enqueues —
+// so only rows whose evidence is still LIVE qualify: an open card or an
+// in_review plan. The park clock is the evidence row's own stamp: the card is
+// created immediately before the block, and SubmitAgentPlan sets the plan's
+// updated_at as its last write before the block. Both joins ride their partial
+// indexes (idx_aqc_task WHERE status='open', idx_ap_task WHERE status IN
+// ('draft','in_review','changes_requested')), so the scan touches live evidence
+// only. M-332: a live row that was already escalated is not a candidate — the
+// ladder escalates once and then waits for the Owner.
+// Settings come along because the effective timeout is per project; the
+// escalation judgment itself happens in Go, one row at a time.
+func (q *Queries) ListParkedAskPlanSweepCandidates(ctx context.Context, limit int32) ([]ListParkedAskPlanSweepCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listParkedAskPlanSweepCandidates, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListParkedAskPlanSweepCandidatesRow{}
+	for rows.Next() {
+		var i ListParkedAskPlanSweepCandidatesRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.IssueID,
+			&i.WorkspaceID,
+			&i.ProjectID,
+			&i.WorkspaceSettings,
+			&i.ProjectSettings,
+			&i.ParkedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUndeliveredAgentPlanComments = `-- name: ListUndeliveredAgentPlanComments :many
+SELECT id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision FROM agent_plan_comment
+WHERE plan_id = $1 AND delivered_at IS NULL
+ORDER BY created_at ASC
+`
+
+// The verdict settles exactly the comments still waiting; idx_apc_pending
+// keeps this to the rows that are actually pending.
+func (q *Queries) ListUndeliveredAgentPlanComments(ctx context.Context, planID pgtype.UUID) ([]AgentPlanComment, error) {
+	rows, err := q.db.Query(ctx, listUndeliveredAgentPlanComments, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPlanComment{}
+	for rows.Next() {
+		var i AgentPlanComment
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PlanID,
+			&i.SectionID,
+			&i.Quote,
+			&i.Body,
+			&i.ParentCommentID,
+			&i.AuthorUserID,
+			&i.ResolvedAt,
+			&i.ResolvedBy,
+			&i.DeliveredAt,
+			&i.DeliveredVerdict,
+			&i.CreatedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -442,12 +1023,85 @@ func (q *Queries) RecordAgentPlanReview(ctx context.Context, arg RecordAgentPlan
 	return i, err
 }
 
+const remindAgentPlan = `-- name: RemindAgentPlan :one
+UPDATE agent_plan
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND reminded_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
+`
+
+// The plan half of the M-362 reminder: same once-only CAS, status untouched
+// (in_review stays in_review until a human verdict).
+func (q *Queries) RemindAgentPlan(ctx context.Context, id pgtype.UUID) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, remindAgentPlan, id)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const remindAgentQuestionCard = `-- name: RemindAgentQuestionCard :one
+UPDATE agent_question_card
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND reminded_at IS NULL
+RETURNING id, workspace_id, issue_id, task_id, agent_id, status, context, questions, answers, answered_by, answered_at, withdrawn_at, created_at, updated_at, trigger_comment_id, escalated_at, answered_by_type, reminded_at
+`
+
+// M-362 reminder, once per card. The CAS on 'reminded_at IS NULL' is the
+// idempotency gate: a second sweep round (or a racing first one) matches no
+// row, so the bump fires exactly once. The status is NOT touched: the card
+// stays open for the Owner.
+func (q *Queries) RemindAgentQuestionCard(ctx context.Context, id pgtype.UUID) (AgentQuestionCard, error) {
+	row := q.db.QueryRow(ctx, remindAgentQuestionCard, id)
+	var i AgentQuestionCard
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Status,
+		&i.Context,
+		&i.Questions,
+		&i.Answers,
+		&i.AnsweredBy,
+		&i.AnsweredAt,
+		&i.WithdrawnAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TriggerCommentID,
+		&i.EscalatedAt,
+		&i.AnsweredByType,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
 const requestAgentPlanChanges = `-- name: RequestAgentPlanChanges :one
 UPDATE agent_plan
 SET status = 'changes_requested',
     updated_at = now()
 WHERE id = $1 AND status = 'in_review' AND submitted_revision = $2
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type RequestAgentPlanChangesParams struct {
@@ -477,6 +1131,46 @@ func (q *Queries) RequestAgentPlanChanges(ctx context.Context, arg RequestAgentP
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const resolveAgentPlanComment = `-- name: ResolveAgentPlanComment :one
+UPDATE agent_plan_comment
+SET resolved_at = now(),
+    resolved_by = $3
+WHERE id = $1 AND plan_id = $2 AND resolved_at IS NULL
+RETURNING id, workspace_id, plan_id, section_id, quote, body, parent_comment_id, author_user_id, resolved_at, resolved_by, delivered_at, delivered_verdict, created_at, revision
+`
+
+type ResolveAgentPlanCommentParams struct {
+	ID         pgtype.UUID `json:"id"`
+	PlanID     pgtype.UUID `json:"plan_id"`
+	ResolvedBy pgtype.UUID `json:"resolved_by"`
+}
+
+// Human-only, and a CAS on resolved_at IS NULL: resolving twice matches no row
+// (handler → 409), and the agent's text is never rewritten by a resolve.
+func (q *Queries) ResolveAgentPlanComment(ctx context.Context, arg ResolveAgentPlanCommentParams) (AgentPlanComment, error) {
+	row := q.db.QueryRow(ctx, resolveAgentPlanComment, arg.ID, arg.PlanID, arg.ResolvedBy)
+	var i AgentPlanComment
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PlanID,
+		&i.SectionID,
+		&i.Quote,
+		&i.Body,
+		&i.ParentCommentID,
+		&i.AuthorUserID,
+		&i.ResolvedAt,
+		&i.ResolvedBy,
+		&i.DeliveredAt,
+		&i.DeliveredVerdict,
+		&i.CreatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -489,7 +1183,7 @@ SET status = 'in_review',
     updated_at = now()
 WHERE id = $1 AND revision = $2
   AND status IN ('draft', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type SubmitAgentPlanParams struct {
@@ -525,6 +1219,55 @@ func (q *Queries) SubmitAgentPlan(ctx context.Context, arg SubmitAgentPlanParams
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
+	)
+	return i, err
+}
+
+const updateAgentPlanSection = `-- name: UpdateAgentPlanSection :one
+UPDATE agent_plan
+SET sections = $2,
+    submitted_revision = CASE WHEN status = 'in_review' THEN revision + 1 ELSE submitted_revision END,
+    revision = revision + 1,
+    updated_at = now()
+WHERE id = $1 AND revision = $3
+  AND status IN ('draft', 'in_review', 'changes_requested')
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
+`
+
+type UpdateAgentPlanSectionParams struct {
+	ID           pgtype.UUID `json:"id"`
+	Sections     []byte      `json:"sections"`
+	BaseRevision int32       `json:"base_revision"`
+}
+
+// The Human's edit: rewrite the whole sections array and bump the revision,
+// fenced on base_revision AND on the statuses an edit is allowed in. When the
+// plan is in review the submitted_revision advances with the edit (M-275
+// decision 1), so the reviewer's own verdict rides their edit instead of
+// 409-ing against a revision their save produced.
+func (q *Queries) UpdateAgentPlanSection(ctx context.Context, arg UpdateAgentPlanSectionParams) (AgentPlan, error) {
+	row := q.db.QueryRow(ctx, updateAgentPlanSection, arg.ID, arg.Sections, arg.BaseRevision)
+	var i AgentPlan
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Title,
+		&i.Status,
+		&i.Revision,
+		&i.SubmittedRevision,
+		&i.Sections,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }
@@ -552,7 +1295,7 @@ SET sections = $2,
     updated_at = now()
 WHERE id = $1 AND revision = $3
   AND status IN ('draft', 'changes_requested')
-RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at
+RETURNING id, workspace_id, issue_id, task_id, agent_id, title, status, revision, submitted_revision, sections, approved_by, approved_at, cancelled_at, created_at, updated_at, escalated_at, reminded_at
 `
 
 type WriteAgentPlanSectionParams struct {
@@ -586,6 +1329,8 @@ func (q *Queries) WriteAgentPlanSection(ctx context.Context, arg WriteAgentPlanS
 		&i.CancelledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EscalatedAt,
+		&i.RemindedAt,
 	)
 	return i, err
 }

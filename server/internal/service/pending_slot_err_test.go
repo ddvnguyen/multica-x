@@ -34,6 +34,11 @@ func TestPendingSlotTakenErr_RecognizesBothShapes(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "tier-scoped v4 index name",
+			err:  &pgconn.PgError{Code: "23505", ConstraintName: "idx_one_pending_task_per_issue_agent_tier"},
+			want: true,
+		},
+		{
 			name: "normalized sentinel from the mention path",
 			err:  ErrDuplicatePendingTask,
 			want: true,

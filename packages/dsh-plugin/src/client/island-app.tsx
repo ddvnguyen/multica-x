@@ -1,44 +1,77 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useStore } from "zustand";
 import {
+  islandConfig,
   ISLAND_API_BASE,
   islandWebSocketUrl,
-  loadIslandConfig,
   type IslandConfig,
 } from "./config";
 import {
   BOARD_ROUTE,
   createIslandNavigation,
   ISLAND_FAMILIES,
+  islandPath,
   islandRouteKey,
+  parseIslandRoute,
   type IslandRoute,
 } from "./navigation";
 import { createIslandStorage } from "./storage";
+import { createTabsStore, familyOfRoute } from "./tabs";
+import {
+  createIslandScrollRestorationAdapter,
+  watchScrollMemento,
+} from "./memento-capture";
+import { selectShellPanel } from "./shell";
+import { TabBar } from "./tab-bar";
+import { ProjectPicker } from "./project-picker";
+import { readProjectScope, writeProjectScope } from "./project-scope";
 import { createIslandLocaleAdapter, resolveIslandLocale } from "./locale";
 import { PanelZoomRow } from "./zoom-row";
 import { useZoom } from "./zoom-store";
-import { createMoctGroup, HIDDEN_SETTINGS_TABS } from "./moct-settings";
-import { createAgentMemorySections } from "./moct-agent-memory";
+import { runtimesDeviceTab } from "./moct-runtimes";
+import { ShellButtons } from "./shell-buttons";
 import { UnreadReporter } from "./unread-reporter";
+import { SteerReporter } from "./steer-reporter";
+import { DecisionsBadgeReporter } from "./decisions-badge-reporter";
+import { AskPlanToastReporter } from "./ask-plan-toast-reporter";
 import { IslandVersionBadge } from "./version-badge";
+import { SidePreviewCapability } from "./side-preview-opener";
+import { SidePreviewPortals } from "./side-preview-portals";
+import { hostShell } from "./shell-runtime";
 import {
   AgentDetailPage,
+  createMoctGroup,
+  createAgentMemorySections,
+  HIDDEN_SETTINGS_TABS,
+  useCurrentMember,
   AgentsPage,
   ChatPage,
   CoreProvider,
+  DecisionsPage,
   createIssueViewStore,
   ErrorBoundary,
   InboxPage,
   IssueDetailRoute,
   IssuesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
   mmxBuild,
   ModalRegistry,
+  SearchCommand,
+  PageChromeProvider,
   NavigationProvider,
   PortalContainerProvider,
+  ScrollRestorationProvider,
+  HostStorageProvider,
+  SidebarProvider,
+  projectListOptions,
   RESOURCES,
   setCurrentWorkspace,
   SettingsPage,
   SkillDetailPage,
   SkillsPage,
+  Toaster,
   useWorkspaceList,
   ViewStoreProvider,
   WorkspaceSlugProvider,
@@ -64,8 +97,12 @@ export interface IslandAppProps {
   wsPath: string;
   /** Why the host cannot proxy, when it cannot; shown in settings. */
   problem: string | null;
+  /** Default folder for "All projects" (M-159); empty means none configured. */
+  workspaceFolder?: string;
   /** Entry the seat asked for; the board unless a deep link named one issue. */
   route?: IslandRoute;
+  /** True while a seat holds the island. */
+  attached?: boolean;
 }
 
 /**
@@ -79,16 +116,19 @@ export interface IslandAppProps {
 export function IslandBoot({
   portalHost,
   route,
+  attached = false,
 }: {
   portalHost: HTMLElement;
   route?: IslandRoute;
+  /** True while a seat holds the island; see `MountIslandOptions.attached`. */
+  attached?: boolean;
 }) {
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    loadIslandConfig()
+    islandConfig()
       .then((next) => {
         if (!cancelled) setConfig(next);
       })
@@ -126,7 +166,9 @@ export function IslandBoot({
       wsUrl={islandWebSocketUrl(config.wsPath, window.location)}
       wsPath={config.wsPath}
       problem={config.problem}
+      workspaceFolder={config.workspaceFolder}
       route={route}
+      attached={attached}
     />
   );
 }
@@ -137,7 +179,9 @@ export function IslandApp({
   wsUrl,
   wsPath,
   problem,
+  workspaceFolder = "",
   route,
+  attached = false,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
   // The adapter is what the fork's Preferences page reads its Language row
@@ -182,7 +226,9 @@ export function IslandApp({
             preferredSlug={preferredSlug}
             wsPath={wsPath}
             problem={problem}
+            workspaceFolder={workspaceFolder}
             route={route}
+            attached={attached}
           />
         </PortalContainerProvider>
       </CoreProvider>
@@ -207,32 +253,50 @@ function detectOs(): string {
  * chosen before either page mounts. `setCurrentWorkspace` is the same
  * platform-owned pointer the web layout maintains, and it is what puts
  * `X-Workspace-Slug` on the proxied requests.
+ *
+ * This deployment has exactly one workspace (M-173): the host's
+ * `workspaceSlug` is the only source, and a slug it cannot read is an error
+ * the reader has to fix — never a reason to quietly open a different
+ * workspace's data under the same header.
  */
 function WorkspaceGate({
   preferredSlug,
   wsPath,
   problem,
+  workspaceFolder,
   route,
+  attached,
 }: {
   preferredSlug?: string;
   wsPath: string;
   problem: string | null;
+  workspaceFolder?: string;
   route?: IslandRoute;
+  attached: boolean;
 }) {
   const { workspaces, ready } = useWorkspaceList();
   const workspace = useMemo(() => {
     const preferred = preferredSlug?.trim();
-    if (preferred) {
-      return workspaces.find((entry) => entry.slug === preferred) ?? null;
-    }
-    return workspaces[0] ?? null;
+    if (!preferred) return null;
+    return workspaces.find((entry) => entry.slug === preferred) ?? null;
   }, [preferredSlug, workspaces]);
 
   const slug = workspace?.slug;
   const id = workspace?.id;
-  useEffect(() => {
+  // The pointer every descendant request is stamped from, so it has to be set
+  // before the first descendant mounts. A passive effect here does not do that:
+  // child effects run before the parent's, so the pages' first queries — and
+  // the reporter's unread summary — used to leave without `X-Workspace-Slug`,
+  // and the server answered 400 to each of them until react-query retried
+  // (M-198). A layout effect runs after the DOM is committed and before any
+  // passive effect in the tree, and `armed` keeps the children out of the
+  // render that precedes it, so nothing below ever queries while the pointer
+  // still belongs to another workspace.
+  const [armed, setArmed] = useState<{ slug: string; id: string } | null>(null);
+  useLayoutEffect(() => {
     if (slug === undefined || id === undefined) return;
     setCurrentWorkspace(slug, id);
+    setArmed({ slug, id });
     return () => setCurrentWorkspace(null, null);
   }, [slug, id]);
 
@@ -242,25 +306,38 @@ function WorkspaceGate({
       <IslandMessage
         title="No Multica workspace"
         body={
-          preferredSlug
+          preferredSlug?.trim()
             ? `The configured workspace "${preferredSlug}" is not readable with this token.`
-            : "This token cannot read any workspace on the configured Multica server."
+            : "This deployment has no Multica workspace configured."
         }
       />
     );
   }
+  // One frame, before the layout effect above has armed this workspace: the
+  // pages wait here rather than query against a pointer that is not theirs.
+  if (armed === null || armed.slug !== workspace.slug || armed.id !== workspace.id) {
+    return <IslandMessage title="Connecting to Multica…" />;
+  }
   return (
     <WorkspaceSlugProvider slug={workspace.slug}>
       {/* Beside the app itself, inside CoreProvider's QueryClientProvider:
-          the reporter observes the summary key the inbox page reads and
-          writes the rail dot's store. */}
+          the reporters observe live state and write the rail dot's store. */}
       <UnreadReporter workspaceId={workspace.id} />
+      {/* Which running MMX turn owns each dsh session (M-136): the dsh chat's
+          composer takeover reads this store, and this observer is what keeps
+          it current from the same snapshot query presence already loads. */}
+      <SteerReporter workspaceId={workspace.id} />
+      {/* M-362: the fork's Toaster, mounted once at the island root. No
+          permission prompt on load. */}
+      <Toaster />
       <IslandPages
         slug={workspace.slug}
         workspaceId={workspace.id}
         wsPath={wsPath}
         problem={problem}
+        workspaceFolder={workspaceFolder}
         route={route}
+        attached={attached}
       />
     </WorkspaceSlugProvider>
   );
@@ -274,17 +351,23 @@ function WorkspaceGate({
  * The rail row decides where an island opens; from there the fork's pages
  * navigate the way they do in the web app, so a link between two of these views
  * (an inbox row falling back to its issue, an agent's "message" link) lands on
- * the matching page instead of doing nothing. dsh gives a plugin no way to move
- * the shell's rail selection, so the row keeps marking the entry the reader came
- * through while the island follows the reader.
+ * the matching page instead of doing nothing. The island keeps the shell's rail
+ * selection on the row that owns the active tab's family (`selectShellPanel`),
+ * so a tab that moves the reader into another family moves the highlight with
+ * it (M-197).
  */
 function IslandPage({
   route,
+  projectId,
   /** The agent page's host sections (the MOCT Memory tab); absent, a stock page. */
   extraAgentSections,
 }: {
   /** Settings is mounted by `IslandPages`; it needs props this switch lacks. */
-  route: Exclude<IslandRoute, { view: "settings" }>;
+  route: Exclude<
+    IslandRoute,
+    { view: "settings" } | { view: "runtime" } | { view: "runtime-settings" }
+  >;
+  projectId: string | null;
   extraAgentSections?: ReturnType<typeof createAgentMemorySections>;
 }) {
   switch (route.view) {
@@ -307,8 +390,15 @@ function IslandPage({
       return <SkillDetailPage skillId={route.skillId} />;
     case "inbox":
       return <InboxPage />;
+    case "decisions":
+      return <DecisionsPage projectId={projectId} />;
     case "chat":
       return <ChatPage />;
+    default:
+      // `settings`, `runtime` and `runtime-settings` are mounted by
+      // `IslandPages`, beside this switch: Settings needs the MOCT group and
+      // hidden-page list this switch lacks.
+      return null;
   }
 }
 
@@ -317,96 +407,285 @@ export function IslandPages({
   workspaceId,
   wsPath,
   problem,
+  workspaceFolder = "",
   route: entryRoute = BOARD_ROUTE,
+  attached = false,
 }: {
   slug: string;
-  /** The resolved workspace UUID the MOCT settings tabs write to. */
   workspaceId: string;
   wsPath: string;
   problem: string | null;
-  /** The entry the seat asked for; a rail click re-renders this tree with it. */
+  /** Default folder for "All projects" (M-159); empty means none configured. */
+  workspaceFolder?: string;
   route?: IslandRoute;
+  /** True while a seat holds the island; the rail only follows a seated tab. */
+  attached?: boolean;
 }) {
-  const [route, setRoute] = useState<IslandRoute>(entryRoute);
-  const [refused, setRefused] = useState<string | null>(null);
-  const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+  const storage = useMemo(() => createIslandStorage(), []);
+  // One workspace, one tab set (M-173): the persisted key no longer varies by
+  // slug, so switching the host's slug can never strand a second history.
+  const tabsStore = useMemo(() => createTabsStore(storage, slug), [storage, slug]);
 
-  // The keep-alive island re-renders this tree instead of remounting it, so a
-  // new entry arrives as a prop and has to be folded into the state the
-  // navigation writes. Adjusting during render (not in an effect) means the
-  // first commit after a rail click is already the new page, not the previous
-  // one for a frame. A re-attach of the same entry keeps whatever the reader
-  // had open in that family.
-  const [entry, setEntry] = useState(() => islandRouteKey(entryRoute));
+  // The global project filter: the header picker's selection, read back from
+  // storage on mount and reconciled against the live list below. The fork's
+  // own project query is shared with the pages, so the picker costs no request
+  // of its own once a page has loaded the list.
+  const { data: projects } = useQuery(projectListOptions(workspaceId));
+  const [projectId, setProjectId] = useState<string | null>(() =>
+    readProjectScope(storage, undefined),
+  );
+  useEffect(() => {
+    const resolved = readProjectScope(storage, projects);
+    if (resolved !== projectId) setProjectId(resolved);
+  }, [projectId, projects, storage]);
+  function selectProject(next: string | null) {
+    setProjectId(next);
+    writeProjectScope(storage, next);
+  }
+
+  const [entry, setEntry] = useState<string | null>(null);
+
+  // initial tab
+  useEffect(() => {
+    const st = tabsStore.getState();
+    const url = islandPath(slug, entryRoute);
+    const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
+    if (isRailEntry) st.railEntry(entryRoute);
+    else st.openOrFocus(url);
+  }, [tabsStore, entryRoute, slug]);
+
+  // rail click handling
   const requested = islandRouteKey(entryRoute);
   if (entry !== requested) {
     setEntry(requested);
-    setRoute(entryRoute);
+    const st = tabsStore.getState();
+    const url = islandPath(slug, entryRoute);
+    const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
+    if (isRailEntry) st.railEntry(entryRoute);
+    else st.openOrFocus(url);
   }
+
+  const tabsState = useStore(tabsStore);
+  const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeId) ?? null;
+  const route: IslandRoute =
+    activeTab !== null ? (parseIslandRoute(activeTab.url) ?? entryRoute) : entryRoute;
+
+  // The rail and the strip must never disagree (M-197): whatever the active
+  // tab shows — after a tab click, Back/Forward across tabs, a closed tab, or
+  // a restored session — the sidebar selects the row that owns its family.
+  // Only while a seat holds the island: the warm-up build has no seat, and the
+  // shell is showing whatever the reader left it on.
+  const family = familyOfRoute(route);
+  useEffect(() => {
+    if (!attached) return;
+    selectShellPanel(family);
+  }, [attached, family]);
+
+  const viewStore = useState(() => createIssueViewStore("dsh-issues"))[0];
+  const { role } = useCurrentMember(workspaceId);
+  const canManageMemory = role === "owner" || role === "admin";
+
   const moctGroup = useMemo(
-    () => createMoctGroup({ workspaceSlug: slug, workspaceId, wsPath, problem }),
-    [slug, workspaceId, wsPath, problem],
+    () => createMoctGroup({ apiBasePath: ISLAND_API_BASE, canManageMemory, workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
+    [slug, workspaceId, wsPath, workspaceFolder, problem, canManageMemory],
   );
   const agentMemorySections = useMemo(
-    () => createAgentMemorySections({ workspaceSlug: slug, workspaceId, wsPath, problem }),
-    [slug, workspaceId, wsPath, problem],
+    () => createAgentMemorySections({ apiBasePath: ISLAND_API_BASE, canManageMemory, workspaceSlug: slug, workspaceId, wsPath, workspaceFolder, problem }),
+    [slug, workspaceId, wsPath, workspaceFolder, problem, canManageMemory],
   );
 
   const navigation = useMemo(
     () =>
       createIslandNavigation({
         slug,
-        route,
-        onChange: setRoute,
-        onRefused: setRefused,
+        tabs: tabsStore,
+        onRefused: setRefusedState,
       }),
-    [slug, route],
+    [slug, tabsStore],
   );
+
+  const [refused, setRefused] = useState<string | null>(null);
+  function setRefusedState(v: string) {
+    setRefused(v);
+  }
 
   useEffect(() => {
     if (refused === null) return;
-    // One line, once per destination: a refused path is a deliberate scoping
-    // decision (the five views below, or a Q8 surface), not a bug to report per
-    // click.
     console.info(
       `[multica] ${refused} is not one of the dsh panel's views (${ISLAND_FAMILIES.join(", ")})`,
     );
   }, [refused]);
 
+  // What a re-mounted tab's views come back as (M-174): the capture pass
+  // above serves offsets from the store at mount, straight through the fork's
+  // own restoration protocol — no rival scroll store to keep in step.
+  const restoration = useMemo(
+    () => createIslandScrollRestorationAdapter(tabsStore),
+    [tabsStore],
+  );
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(
+    () => watchScrollMemento(tabsStore, () => pageRootRef.current),
+    [tabsStore],
+  );
+
+  // Reload (M-174) = remount + mark the current page's queries stale.
+  // `type: "active"` is exactly the mounted observers — the current page and
+  // its shared header queries — and `refetchType: "none"` avoids fetching
+  // into the tree that is about to unmount; the remounted page refetches its
+  // now-stale queries. desktop's Coordinator does the same on generation
+  // change.
+  const queryClient = useQueryClient();
+  const seenGeneration = useRef(tabsState.mountGeneration);
+  useEffect(() => {
+    const generation = tabsState.mountGeneration;
+    if (generation === seenGeneration.current) return;
+    seenGeneration.current = generation;
+    queryClient.invalidateQueries({ type: "active", refetchType: "none" });
+  }, [tabsState.mountGeneration, tabsStore, queryClient]);
+
   return (
     <ViewStoreProvider store={viewStore}>
+      {/* Every page's width owner reads through one store: the sidebar widths
+          (M-330), the resizable split layouts and the rich-table columns
+          (M-360). `storage` is the island's namespaced adapter, so none of
+          them touch the bare keys the shell's origin already holds. */}
+      <HostStorageProvider storage={storage}>
       <NavigationProvider value={navigation}>
-        <ErrorBoundary resetKeys={[islandRouteKey(route)]}>
-          {route.view === "settings" ? (
-            // The fork's page, scoped to what this shell can actually render:
-            // no billing, integrations, plugins or shortcut reference, plus the
-            // one group that only exists here.
-            <SettingsPage
-              extraGroups={[moctGroup]}
-              hiddenTabs={HIDDEN_SETTINGS_TABS}
-              preferencesExtraRows={<PanelZoomRow />}
-            />
-          ) : (
-            <IslandPage route={route} extraAgentSections={agentMemorySections} />
-          )}
-        </ErrorBoundary>
-        {/* The fork's pages ask for a dialog through `useModalStore` and one
-            component renders whatever it names; the web and desktop layouts
-            mount it, and the island had no equivalent, so every dialog in the
-            panel (create issue, delete confirm, set parent, …) was a no-op
-            (M-146). It sits here rather than beside `UnreadReporter` because
-            the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
-            (`packages/views/modals/create-issue.tsx:244`) and would throw
-            outside `NavigationProvider`. Inside `IslandPages` it is also
-            outside the route switch, so a dialog survives a page change; the
-            portal container comes from `IslandApp`, so it renders into the
-            island's shadow root and not the shell's document. */}
-        <ModalRegistry />
-        {/* The build stamp (M-155): a sibling of the route switch, so it
-            survives page changes and renders even when the boundary shows
-            its fallback — the one moment an error report needs it most. */}
-        <IslandVersionBadge />
+        {/* M-362: toasts agent_question / plan_review inbox:new rows only,
+            deduped by item id. Inside the provider: the toast action routes
+            through useIntentNavigate. */}
+        <AskPlanToastReporter />
+        <PageChromeProvider titleInHostChrome projectId={projectId}>
+          <DecisionsBadgeReporter workspaceId={workspaceId} projectId={projectId} />
+          <TabBar
+            tabsStore={tabsStore}
+            navigation={navigation}
+            slug={slug}
+            projectPicker={
+              <ProjectPicker
+                projects={projects ?? []}
+                projectId={projectId}
+                onSelect={selectProject}
+              />
+            }
+            headerExtras={
+              <ShellButtons
+                workspaceId={workspaceId}
+                projects={projects}
+                projectId={projectId}
+                workspaceFolder={workspaceFolder}
+                route={route}
+              />
+            }
+          />
+          {/* M-330: the island had no width owner, so every split sized through
+              `--sidebar-width` / `--list-column-width` lost its resize edge
+              (`ListColumn` renders none without a `SidebarProvider`) — the
+              Inbox list column the Owner reported. The provider carries the
+              two widths and the drag commit; `contents` keeps the pages as
+              direct children of the island's flex column, and inheritance of
+              the custom properties follows the DOM tree, not the box tree.
+              Widths persist in the island's namespaced store, never the bare
+              keys the shell's origin already holds. */}
+          <SidebarProvider storage={storage} className="contents">
+          {/* `Side preview` in MMX is dsh's right column (M-336): the plugin
+              registers a tab type there, and a peek-mode click opens the issue
+              into it. A dsh build without the tab registry has no column to
+              open, so there the floating peek is the preview instead of a
+              second mode that cannot work (M-330). The choice is the
+              capability's, not the click's: `openSidePreview` non-null keeps
+              `IssuePeekHost` down, so the two previews never both exist. */}
+          <SidePreviewCapability
+            input={{
+              workspaceId,
+              projects: projects ?? undefined,
+              projectId,
+              workspaceFolder,
+              route,
+              daemonId: hostShell()?.daemonId ?? "",
+            }}
+          >
+            <ScrollRestorationProvider adapter={restoration}>
+            <ErrorBoundary
+              resetKeys={[
+                tabsState.activeId ?? "none",
+                islandRouteKey(route),
+                tabsState.mountGeneration,
+              ]}
+            >
+              {/* The page the active tab mounts into. The key re-mounts the
+                  page on reload (mountGeneration), and `contents` keeps every
+                  layout property the pages had as direct children of the
+                  island's flex column. The capture pass reads only this
+                  element, so the strip and rail never pollute a capture. */}
+              <div
+                ref={pageRootRef}
+                key={`${tabsState.activeId ?? "none"}:${tabsState.mountGeneration}`}
+                className="contents"
+                data-island-page-root=""
+              >
+              {route.view === "runtime" ? (
+                // M-349: a runtime row pushes `/<slug>/runtimes/<machine>`; the
+                // island renders the fork's own detail page instead of
+                // refusing the path. The Settings rail row stays selected: the
+                // family of this route is settings.
+                <RuntimeDetailPage runtimeId={route.machineId} />
+              ) : route.view === "runtime-settings" ? (
+                <RuntimeSettingsPage
+                  machineId={route.machineId}
+                  runtimeId={route.runtimeId}
+                />
+              ) : route.view === "settings" ? (
+                // The fork's page, scoped to what this shell can actually render:
+                // no billing, integrations, plugins or shortcut reference, plus the
+                // one group that only exists here.
+                <SettingsPage
+                  extraGroups={[moctGroup]}
+                  // Runtimes (M-174): the panel's only door to what the
+                  // workspace runs on. The desktop keeps this page in its
+                  // sidebar; a dsh panel has no such navigation, so it takes
+                  // the fork's host-supplied device slot instead.
+                  extraDeviceTabs={[runtimesDeviceTab]}
+                  hiddenTabs={HIDDEN_SETTINGS_TABS}
+                  preferencesExtraRows={<PanelZoomRow />}
+                />
+              ) : (
+                <IslandPage
+                  route={route}
+                  projectId={projectId}
+                  extraAgentSections={agentMemorySections}
+                />
+              )}
+              </div>
+            </ErrorBoundary>
+            </ScrollRestorationProvider>
+          </SidePreviewCapability>
+          </SidebarProvider>
+          {/* The fork's pages ask for a dialog through `useModalStore` and one
+              component renders whatever it names; the web and desktop layouts
+              mount it, and the island had no equivalent, so every dialog in the
+              panel (create issue, delete confirm, set parent, …) was a no-op
+              (M-146). It sits here rather than beside `UnreadReporter` because
+              the dialogs navigate — `CreateIssueDialog` calls `useNavigation()`
+              (`packages/views/modals/create-issue.tsx:244`) and would throw
+              outside `NavigationProvider`. Inside `IslandPages` it is also
+              outside the route switch, so a dialog survives a page change; the
+              portal container comes from `IslandApp`, so it renders into the
+              island's shadow root and not the shell's document. */}
+          <ModalRegistry />
+          {/* The side preview's content, portalled into the dsh tab's container
+              (M-336). It sits here, under every provider the side stack reads,
+              because the portal renders into another React tree's DOM. */}
+          <SidePreviewPortals />
+          <SearchCommand />
+          {/* The build stamp (M-155): a sibling of the route switch, so it
+              survives page changes and renders even when the boundary shows
+              its fallback — the one moment an error report needs it most. */}
+          <IslandVersionBadge />
+        </PageChromeProvider>
       </NavigationProvider>
+      </HostStorageProvider>
     </ViewStoreProvider>
   );
 }

@@ -140,6 +140,67 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"721_question_group_index":                                  "question_group_idx",
+	"729_model_tier_index":                                      "idx_model_tier_workspace",
+	"722_question_task_status_index":                            "question_task_status_idx",
+	"723_question_issue_status_index":                           "question_issue_status_idx",
+	"713_issue_decision_response_request_index":                 "issue_decision_response_request_idx",
+	"714_issue_decision_response_id_index":                      "issue_decision_response_id_idx",
+	"708_decision_delivered_supplement_index":                   "idx_decision_delivered_supplement",
+	"710_native_question_answer_seq_index":                      "uq_native_question_answer_task_seq",
+	"711_native_question_answer_request_index":                  "idx_native_question_answer_request",
+	"706_workspace_account_runtime_index":                       "workspace_account_runtime_id_idx",
+	"707_workspace_account_daemon_id_index":                     "workspace_account_daemon_account_id_uq",
+	"676_chat_wakeup_due_idx":                                   "idx_chat_wakeup_due",
+	"677_chat_wakeup_session_idx":                               "idx_chat_wakeup_session",
+	"678_chat_wakeup_requester_idx":                             "idx_chat_wakeup_requester",
+	"680_entitlement_limit_overage_scope_idx":                   "uq_entitlement_limit_overage_scope",
+	"682_project_folder_name_idx":                               "uq_project_folder_workspace_name",
+	"684_entitlement_feature_attempt_scope_idx":                 "uq_entitlement_feature_attempt_scope",
+	"686_doc_folder_pkey_index":                                 "doc_folder_pkey_idx",
+	"688_doc_pkey_index":                                        "doc_pkey_idx",
+	"690_doc_version_pkey_index":                                "doc_version_pkey_idx",
+	"692_doc_folder_workspace_idx":                              "doc_folder_workspace_idx",
+	"693_doc_workspace_idx":                                     "doc_workspace_idx",
+	"694_doc_version_workspace_idx":                             "doc_version_workspace_idx",
+	"696_inbox_item_active_shown_idx":                           "idx_inbox_active_shown",
+	"671_weixin_account_state_unique_index":                     "weixin_account_state_pkey",
+	"669_weixin_login_session_unique_index":                     "weixin_login_session_pkey",
+	"666_weixin_login_expiry_idx":                               "weixin_login_expiry_idx",
+	"662_chat_task_supplement_message":                          "uq_chat_task_supplement_message",
+	"663_chat_task_supplement_task":                             "idx_chat_task_supplement_task",
+	"664_chat_task_supplement_workspace":                        "idx_chat_task_supplement_workspace",
+	"654_chat_submission_receipt_key":                           "uq_chat_submission_receipt_key",
+	"655_chat_submission_receipt_workspace":                     "idx_chat_submission_receipt_workspace",
+	"651_task_context_receipt_issue_idx":                        "idx_task_context_receipt_issue",
+	"650_task_context_receipt_workspace_idx":                    "idx_task_context_receipt_workspace",
+	"648_project_subscriber_user_idx":                           "idx_project_subscriber_workspace_user",
+	"645_issue_member_creator_index":                            "idx_issue_workspace_member_creator",
+	"644_issue_requester_index":                                 "idx_issue_workspace_requester",
+	"642_issue_environment_config_issue_idx":                    "idx_issue_environment_config_issue",
+	"641_issue_environment_command_logs_idx":                    "idx_issue_environment_command_logs",
+	"640_issue_environment_command_issue_idx":                   "idx_issue_environment_command_issue",
+	"639_issue_environment_command_pending_idx":                 "idx_issue_environment_command_pending",
+	"635_issue_environment_issue_idx":                           "idx_issue_environment_issue",
+	"634_issue_environment_task_key_idx":                        "uq_issue_environment_task_key",
+	"632_project_member_user_idx":                               "idx_project_member_workspace_user",
+	"628_app_action_request_chat_idx":                           "idx_app_action_request_chat",
+	"627_app_tool_call_issue_idx":                               "idx_app_tool_call_issue",
+	"626_app_action_request_task_idx":                           "idx_app_action_request_task",
+	"625_app_tool_call_workspace_idx":                           "idx_app_tool_call_workspace",
+	"624_app_action_request_pending_idx":                        "idx_app_action_request_pending",
+	"623_app_action_request_issue_idx":                          "idx_app_action_request_issue",
+	"622_app_action_rule_scope_idx":                             "idx_app_action_rule_scope",
+	"621_agent_app_workspace_toolkit_idx":                       "idx_agent_app_workspace_toolkit",
+	"620_agent_app_agent_toolkit_idx":                           "idx_agent_app_agent_toolkit",
+	"619_workspace_composio_connection_status_idx":              "idx_workspace_composio_connection_status",
+	"618_workspace_composio_connection_account_idx":             "idx_workspace_composio_connection_account",
+	"613_skill_version_index":                                   "idx_skill_version_skill_version",
+	"606_agent_task_queue_runtime_active_index":                 "idx_agent_task_queue_runtime_active",
+	"604_wecom_install_session_begin_rate_idx":                  "idx_wecom_install_session_begin_rate",
+	"603_wecom_install_session_agent_pending_idx":               "idx_wecom_install_session_agent_pending",
+	"602_wecom_install_session_request_idx":                     "idx_wecom_install_session_request",
+	"601_wecom_install_session_due_idx":                         "idx_wecom_install_session_due",
 	"594_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
 	"563_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
 	"562_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
@@ -190,6 +251,7 @@ var concurrentIndexCleanups = map[string]string{
 	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
 	"587_cloud_agent_connection_provider_index":                 "cloud_agent_connection_provider_index",
 	"590_member_delegation_day_unique_index":                    "member_delegation_day_user_date_uidx",
+	"598_issue_unread_unique_index":                             "issue_unread_workspace_user_issue_uidx",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",
@@ -350,6 +412,7 @@ var concurrentIndexCleanups = map[string]string{
 	"445_comment_delegated_failure_unsettled_index":             "idx_comment_delegated_failure_unsettled",
 	"446_issue_properties_bigm_index":                           "idx_issue_properties_bigm",
 	"452_agent_task_pending_thread_unique":                      "idx_one_pending_task_per_issue_agent_thread",
+	"733_agent_task_pending_tier_unique":                        "idx_one_pending_task_per_issue_agent_tier",
 	"459_chat_message_assistant_task_index":                     "idx_chat_message_assistant_task",
 	"460_agent_task_queue_autopilot_run_created_at_index":       "idx_agent_task_queue_autopilot_run_created_at",
 	"465_agent_task_queue_chat_with_session_index":              "idx_agent_task_queue_chat_with_session_created_at",
@@ -372,6 +435,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",
 	"258_drop_pending_issue_agent_v1":                       "idx_one_pending_task_per_issue_agent",
+	"734_drop_pending_issue_agent_thread_v3":                "idx_one_pending_task_per_issue_agent_thread",
 	"262_drop_agent_task_queue_terminal_completed_at_v1":    "idx_agent_task_queue_terminal_completed_at",
 	"422_channel_chat_route_history":                        "channel_chat_session_binding_installation_id_channel_chat_i_key",
 	"300_drop_redundant_issue_workspace_number_index":       "idx_issue_workspace_number",
@@ -482,6 +546,18 @@ var upMigrationConditions = map[string]migrationCondition{
 	// else, rather than failing the run (and with it backend startup) on every
 	// database without the extension.
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(pgBigmOperatorClass),
+	// Fork-rename gates (M-167, M-165 deploy): the v0.7.1 sync renumbered
+	// migrations previously applied to fork lanes under other numbers, so
+	// their SQL ships again under the 658+ block. A database that ran the
+	// old numbers has the objects and must record these versions without
+	// re-running; a fresh database applies them. See
+	// migrate_fork_rename_conditions.go.
+	"698_agent_question_card":  whenRenamedObjectsAllPresent(objects618AgentQuestionCard),
+	"699_agent_plan":           whenRenamedObjectsAllPresent(objects619AgentPlan),
+	"700_agent_plan_review":    whenRenamedObjectsAllPresent(objects620AgentPlanReview),
+	"702_project_settings":     whenRenamedObjectsAllPresent(objects622ProjectSettings),
+	"703_workspace_account":    whenRenamedObjectsAllPresent(objects623WorkspaceAccount),
+	"704_task_supplement_mode": whenRenamedObjectsAllPresent(objects624TaskSupplementMode),
 }
 
 // Migrations 454 and 455 restore the mutually exclusive comment search index
@@ -981,6 +1057,18 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		)
 	`, tableIdent)); err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	// Fork renumbering (v0.8.1 sync): the fork's 595–614 moved to 617–636 so
+	// upstream could keep 595–616. A lane database recorded those stems under
+	// their old numbers, so rename those rows once, before the apply loop
+	// judges anything — otherwise every renumbered migration looks unapplied and
+	// re-runs its (partly non-idempotent) SQL. Idempotent and a no-op on a fresh
+	// database, which has none of the old rows.
+	if opts.Direction == "up" {
+		if err := renameRenumberedForkMigrations(ctx, conn, tableIdent); err != nil {
+			return err
+		}
 	}
 
 	existsSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent)

@@ -1,10 +1,11 @@
 import { useId } from "react";
-import { Monitor } from "lucide-react";
+import { Monitor } from "@multica/ui/icons";
 import codeartsLogo from "./codearts-logo.svg";
 import qwenLogo from "./qwen-logo.svg";
 import reasonixLogo from "./reasonix-logo.svg";
 import dimLogo from "./dim-logo.png";
 import { FreebuffLogo } from "./freebuff-logo";
+import museappLogo from "./museapp-logo.svg";
 
 // Next.js exposes static imports as objects while Vite exposes URL strings.
 // Normalize both shapes here so shared provider logos work in web and desktop.
@@ -387,6 +388,39 @@ function ZeroClawLogo({ className }: { className: string }) {
   );
 }
 
+// Muse app (Meta's personal AI agent, reached through a remote receptionist) —
+// the squiggle "M" as muse.ai serves it
+// (https://muse.ai/images/landing/brand/muse-logo.svg), copied verbatim. Not
+// the Muse Code CLI mark above: that is a different product with its own
+// runtime. Rendered through <img> like the other asset logos, which also keeps
+// the SVG's own gradient id from colliding when several rows share a page.
+const museappLogoSrc = staticAssetSrc(museappLogo);
+
+function MuseAppLogo({ className }: { className: string }) {
+  return <img src={museappLogoSrc} alt="" aria-hidden className={className} />;
+}
+
+// Minimal placeholder until ZCode ships an official mark; currentColor keeps
+// it legible in both themes. Swap for a real asset when one exists, following
+// the DimLogo <img> pattern.
+function ZCodeLogo({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M5 5h14" />
+      <path d="M19 19H5" />
+      <path d="M19 5L5 19" />
+    </svg>
+  );
+}
+
 /**
  * The runtime fields the logo needs. A custom runtime profile registers under
  * the provider of the family it wraps, so a Freebuff Desktop profile arrives
@@ -429,6 +463,7 @@ export function ProviderLogo({
     case "codex":
       return <CodexLogo className={className} />;
     case "opencode":
+    case "opencode2":
       return <OpenCodeLogo className={className} />;
     case "deveco":
       return <DevecoLogo className={className} />;
@@ -472,6 +507,8 @@ export function ProviderLogo({
       return <McodeLogo className={className} />;
     case "muse":
       return <MuseLogo className={className} />;
+    case "museapp":
+      return <MuseAppLogo className={className} />;
     case "dsh":
       return <DshLogo className={className} />;
     case "freebuff":
@@ -480,6 +517,8 @@ export function ProviderLogo({
       return <DimLogo className={className} />;
     case "zeroclaw":
       return <ZeroClawLogo className={className} />;
+    case "zcode":
+      return <ZCodeLogo className={className} />;
     default:
       return <Monitor className={className} />;
   }

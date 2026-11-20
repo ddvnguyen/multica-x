@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import type { Workspace } from "../types";
+import type { Workspace, ModelTierInput } from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
 import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { workspaceKeys } from "./queries";
+import { sortWorkspaces } from "./sort-workspaces";
 import {
   markWorkspaceDeletePending,
   unmarkWorkspaceDeletePending,
@@ -139,6 +140,49 @@ export function useDeleteWorkspaceMcpServer(wsId: string) {
 }
 
 /**
+ * Model tiers (M-350). Every write invalidates the tier list the Settings
+ * tab and (in M-351) agent pickers share. No optimistic updates: the order
+ * and idx values are server-computed, and the confirm flows await the
+ * mutation before closing.
+ */
+export function useCreateModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ModelTierInput) => api.createModelTier(wsId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useUpdateModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tierId, ...input }: ModelTierInput & { tierId: string }) =>
+      api.updateModelTier(wsId, tierId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useDeleteModelTier(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (tierId: string) => api.deleteModelTier(wsId, tierId),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useReorderModelTiers(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => api.reorderModelTiers(wsId, ids),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+/**
  * Assignment writes all return the agent's resulting list, so the cache is
  * updated from the server's answer rather than a guess.
  */
@@ -167,4 +211,31 @@ export function useSetAgentMcpServerEnabled(agentId: string) {
 export function useRemoveAgentMcpServer(agentId: string) {
   return useAgentMcpMutation(agentId, (serverId: string) =>
     api.removeAgentMcpServer(agentId, serverId));
+}
+
+export function useSetWorkspacePinned() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspaceId, pinned }: { workspaceId: string; pinned: boolean }) =>
+      api.setWorkspacePinned(workspaceId, pinned),
+    onMutate: async ({ workspaceId, pinned }) => {
+      await qc.cancelQueries({ queryKey: workspaceKeys.list() });
+      const previous = qc.getQueryData<Workspace[]>(workspaceKeys.list());
+      qc.setQueryData<Workspace[]>(workspaceKeys.list(), (old) => old && sortWorkspaces(
+        old.map((ws) => ws.id === workspaceId
+          ? { ...ws, pinned_at: pinned ? ws.pinned_at ?? new Date().toISOString() : null }
+          : ws),
+      ));
+      return { previous };
+    },
+    onSuccess: (data, { workspaceId }) => {
+      qc.setQueryData<Workspace[]>(workspaceKeys.list(), (old) => old && sortWorkspaces(
+        old.map((ws) => ws.id === workspaceId ? { ...ws, pinned_at: data.pinned_at } : ws),
+      ));
+    },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) qc.setQueryData(workspaceKeys.list(), context.previous);
+    },
+    onSettled: () => { void qc.invalidateQueries({ queryKey: workspaceKeys.list() }); },
+  });
 }

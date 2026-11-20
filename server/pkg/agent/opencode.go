@@ -37,11 +37,14 @@ var opencodeBlockedArgs = map[string]blockedArgMode{
 	"--format":                       blockedWithValue,  // json output format for daemon communication
 	"--dir":                          blockedWithValue,  // task workdir anchor for skill / AGENTS.md discovery
 	"--variant":                      blockedWithValue,  // owned by agent.thinking_level
+	"--standalone":                    blockedStandalone, // 2.x always runs on a private server for per-run env
 	"--dangerously-skip-permissions": blockedStandalone, // daemon manages non-interactive permission prompts
 }
 
-// opencodeBackend implements Backend by spawning `opencode run --format json`
-// and reading streaming JSON events from stdout — the same pattern as Claude.
+// opencodeBackend implements Backend for OpenCode. Built-in 1.15+ and 2.x
+// runtimes are driven over ACP (`opencode acp`, opencode_acp.go); everything
+// else spawns `opencode run --format json` and reads streaming JSON events from
+// stdout — the same pattern as Claude.
 type opencodeBackend struct {
 	cfg Config
 	// session is per-run state, set by Execute on the copy it scans with, so
@@ -68,14 +71,34 @@ func opencodeSeparatesReasoning(cfg Config) bool {
 	return err == nil && version.Major == 1 && !version.lessThan(semver{Major: 1, Minor: 3, Patch: 16})
 }
 
+// opencodeCommandName returns the CLI this identity spawns when no executable
+// path was pinned. A built-in runtime identity ("opencode2") declares its own
+// binary in the descriptor; the protocol family keeps "opencode". A custom
+// runtime profile always arrives with cfg.ExecutablePath set, so this default
+// never overrides an operator's wrapper.
+func opencodeCommandName(provider string) string {
+	if desc, ok := BuiltinRuntimeByID(provider); ok && desc.DefaultExecutable != "" {
+		return desc.DefaultExecutable
+	}
+	return "opencode"
+}
+
+// applyBuiltinRuntimeOverrides lets the opencode family host runtime
+// identities. There is nothing to copy onto the backend: the identity arrives
+// in Config.provider (NewRuntime sets it to the descriptor ID) and both the
+// executable name and the log label derive from it, so a per-run copy of the
+// backend cannot silently lose an override.
+func (b *opencodeBackend) applyBuiltinRuntimeOverrides(BuiltinRuntime) {}
+
 func resolveOpenCodeExecutable(cfg Config) (string, error) {
+	fallback := opencodeCommandName(cfg.provider)
 	execPath := cfg.ExecutablePath
 	if execPath == "" {
-		execPath = "opencode"
+		execPath = fallback
 	}
 	resolved, err := exec.LookPath(execPath)
 	if err != nil {
-		return "", fmt.Errorf("opencode executable not found at %q: %w", execPath, err)
+		return "", fmt.Errorf("%s executable not found at %q: %w", fallback, execPath, err)
 	}
 	if runtime.GOOS == "windows" {
 		if native := resolveOpenCodeNativeFromShim(resolved, os.Stat); native != "" {
@@ -103,37 +126,27 @@ func openCodeEnvironment(cfg Config, opts ExecOptions) ([]string, error) {
 	if opts.Cwd != "" {
 		env = append(env, "PWD="+opts.Cwd)
 	}
-	// Project agent.mcp_config into OpenCode. The channel differs by major:
-	//
-	// On 1.x, OPENCODE_CONFIG_CONTENT — OpenCode's general inline-config
-	// injection mechanism that merges at "local" scope (after the
-	// project-config loop, before remote / managed configs). MCP is the only
-	// field we currently project there; if a future Multica field needs the
-	// same channel it would assemble a combined OpenCode config slice before
-	// the env append. That path deliberately leaves <workdir>/opencode.json
-	// untouched — the workdir is reused across turns for the same
-	// (agent, issue), and any agent- or user-written model / tools /
-	// permission settings in it must survive across runs.
-	//
-	// 2.x stopped honouring that env var, and the only channel it left puts the
-	// credentials in the agent's own working tree, where the agent can commit
-	// them. Such runs are refused rather than started without their servers —
-	// see ErrOpenCodeV2MCPUnsupported.
-	if opencodeUsesV2Contract(cfg) {
-		if err := opencodeCheckMCPSupport(opts.McpConfig); err != nil {
-			return nil, err
+	// Project agent.mcp_config into OpenCode through OPENCODE_CONFIG_CONTENT —
+	// OpenCode's general inline-config injection mechanism that merges at
+	// "local" scope (after the project-config loop, before remote / managed
+	// configs). MCP is the only field currently projected there; if a future
+	// Multica field needs the same channel it would assemble a combined
+	// OpenCode config slice before the env append. On 2.x the env config is
+	// honoured when the run owns a private server (`opencode run
+	// --standalone`), which Execute always passes on 2.x. That path
+	// deliberately leaves <workdir>/opencode.json untouched — the workdir is
+	// reused across turns for the same (agent, issue), and any agent- or
+	// user-written model / tools / permission settings in it must survive
+	// across runs.
+	mcpContent, err := buildOpenCodeMCPConfigContent(opts.McpConfig)
+	if err != nil {
+		return nil, err
+	}
+	if mcpContent != "" {
+		if _, dup := cfg.Env["OPENCODE_CONFIG_CONTENT"]; dup {
+			cfg.Logger.Warn("agent.custom_env sets OPENCODE_CONFIG_CONTENT but agent.mcp_config takes precedence and overrides it")
 		}
-	} else {
-		mcpContent, err := buildOpenCodeMCPConfigContent(opts.McpConfig)
-		if err != nil {
-			return nil, err
-		}
-		if mcpContent != "" {
-			if _, dup := cfg.Env["OPENCODE_CONFIG_CONTENT"]; dup {
-				cfg.Logger.Warn("agent.custom_env sets OPENCODE_CONFIG_CONTENT but agent.mcp_config takes precedence and overrides it")
-			}
-			env = append(env, "OPENCODE_CONFIG_CONTENT="+mcpContent)
-		}
+		env = append(env, "OPENCODE_CONFIG_CONTENT="+mcpContent)
 	}
 	return env, nil
 }
@@ -142,6 +155,14 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	execPath, err := resolveOpenCodeExecutable(b.cfg)
 	if err != nil {
 		return nil, err
+	}
+	// ACP streams tool starts, which the daemon needs to tell a long tool from
+	// a hang; see opencode_acp.go. Everything below is the run transport, kept
+	// as the fallback.
+	if useACP, reason := opencodeUsesACP(b.cfg, opts); useACP {
+		return b.executeACP(ctx, execPath, prompt, opts)
+	} else {
+		b.cfg.Logger.Info("opencode: using the run transport", "reason", reason)
 	}
 
 	timeout := opts.Timeout
@@ -178,6 +199,17 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 				"thinkingLevel", opts.ThinkingLevel)
 		}
 		model = folded
+		// Give the run a private server that inherits the daemon's
+		// environment, so OPENCODE_CONFIG_CONTENT and per-agent settings
+		// reach it. Without this flag `opencode run` is a thin client to
+		// one resident background service whose environment was fixed at
+		// startup, and managed MCP servers never apply. Skipped when the
+		// operator pinned a connection via custom_args (--server): that
+		// run talks to the chosen service, and the extra flag would confuse
+		// the CLI.
+		if server, _ := opencodeConnectionFromArgs(opts.CustomArgs); server == "" {
+			args = append(args, "--standalone")
+		}
 	}
 	if model != "" {
 		args = append(args, "--model", model)
@@ -673,11 +705,13 @@ func (b *opencodeBackend) handleToolUseEvent(event opencodeEvent, ch chan<- Mess
 		_ = json.Unmarshal(event.Part.State.Input, &input)
 	}
 
+	callID := event.Part.toolCallID()
+
 	// Emit the tool-use message.
 	trySend(ch, Message{
 		Type:   MessageToolUse,
 		Tool:   event.Part.Tool,
-		CallID: event.Part.CallID,
+		CallID: callID,
 		Input:  input,
 	})
 
@@ -693,7 +727,7 @@ func (b *opencodeBackend) handleToolUseEvent(event opencodeEvent, ch chan<- Mess
 		trySend(ch, Message{
 			Type:   MessageToolResult,
 			Tool:   event.Part.Tool,
-			CallID: event.Part.CallID,
+			CallID: callID,
 			Output: outputStr,
 		})
 	}
@@ -792,7 +826,8 @@ func extractToolOutput(output any) string {
 //
 //	"step_start"  — agent step begins
 //	"text"        — text output from agent (part.text)
-//	"tool_use"    — tool invocation with call and result (part.tool, part.callID, part.state)
+//	"tool_use"    — tool invocation with call and result (part.tool, part.state, and
+//	                the call id in part.callID on 1.x or part.id on 2.x)
 //	"error"       — error from opencode (error.name, error.data.message)
 //	"step_finish" — agent step completes (includes token usage)
 type opencodeEvent struct {
@@ -832,6 +867,21 @@ type opencodeEventPart struct {
 	// step_finish reason (FinishReason: "stop", "tool-calls", …). Absent on
 	// older opencode versions whose step-finish parts predate the field.
 	Reason string `json:"reason,omitempty"`
+}
+
+// toolCallID returns the provider call id of a tool part. 1.x reports it as
+// `callID` next to a part id in `id`; 2.x dropped `callID`, moved the part id
+// to `partID`, and reports the call id as `id`. Reading only `callID` left
+// every 2.x tool message with an empty CallID, so the transcript could not
+// pair a call with its result.
+func (p opencodeEventPart) toolCallID() string {
+	if p.CallID != "" {
+		return p.CallID
+	}
+	if p.Type == "tool" {
+		return p.ID
+	}
+	return ""
 }
 
 type opencodePartMetadata struct {

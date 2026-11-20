@@ -24,19 +24,29 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip"
-import { PanelLeftIcon } from "lucide-react"
+import { PanelLeftIcon } from "@multica/ui/icons"
 
-const SIDEBAR_WIDTH_DEFAULT = 256
+const SIDEBAR_WIDTH_DEFAULT = 280
 const SIDEBAR_WIDTH_MIN = 200
-const SIDEBAR_WIDTH_MAX = 360
+const SIDEBAR_WIDTH_MAX = 320
 const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar_width"
+// Until the person drags the edge, a theme picks the width (docs/theming.md).
+// Keep the bounds and default in step with the three constants above.
+const SIDEBAR_WIDTH_THEMED = "clamp(200px, var(--sidebar-panel-width, 280px), 320px)"
+// List columns (Inbox, Chat) hold two-line rows with an avatar, so they get
+// their own width instead of the nav's: one shared value is either too narrow
+// for the rows or too wide for the nav's short labels.
+const LIST_COLUMN_WIDTH_DEFAULT = 320
+const LIST_COLUMN_WIDTH_MIN = 280
+const LIST_COLUMN_WIDTH_MAX = 480
+const LIST_COLUMN_WIDTH_STORAGE_KEY = "list_column_width"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_DRAG_THRESHOLD = 2
-// Tailwind `md`–`xl`: wide enough to keep a two-pane list/detail surface, too
-// narrow to also spend 256px on the nav by default. The nav starts collapsed
-// here and the header's trigger docks it back.
-const SIDEBAR_AUTO_COLLAPSE_QUERY = "(min-width: 768px) and (max-width: 1279px)"
+// Tailwind `md`–`lg`: wide enough to keep a two-pane list/detail surface, too
+// narrow to also spend the panel's width on the nav by default. The nav starts
+// collapsed here and the header's trigger docks it back.
+const SIDEBAR_AUTO_COLLAPSE_QUERY = "(min-width: 768px) and (max-width: 1023px)"
 
 /**
  * Paints an element with whatever the sidebar wrapper is currently filled with.
@@ -56,6 +66,73 @@ const SIDEBAR_WRAPPER_FILL_CLASS = "bg-(--sidebar-wrapper-fill)"
 
 function clampSidebarWidth(width: number) {
   return Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, width))
+}
+
+function clampListColumnWidth(width: number) {
+  return Math.max(LIST_COLUMN_WIDTH_MIN, Math.min(LIST_COLUMN_WIDTH_MAX, width))
+}
+
+/**
+ * Where a committed column width is kept.
+ *
+ * The web app and the desktop write `localStorage` directly, which is correct
+ * there: it is their own origin. A host that shares its origin with another app
+ * must not: the dsh island lives beside the shell's own storage, so it passes a
+ * namespaced adapter instead of letting `sidebar_width` leak into a key the
+ * shell (and any later Multica page on that origin) would read. Passing nothing
+ * uses `localStorage`; passing `null` keeps the width for this page only.
+ */
+export interface WidthStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+function browserWidthStorage(): WidthStorage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage
+  } catch {
+    return null
+  }
+}
+
+function useStoredWidth(
+  storageKey: string,
+  defaultWidth: number,
+  clamp: (width: number) => number,
+  storage?: WidthStorage | null
+) {
+  const store = storage === undefined ? browserWidthStorage() : storage
+  const [width, setWidth] = React.useState(defaultWidth)
+  const [stored, setStored] = React.useState(false)
+  React.useEffect(() => {
+    let stored: string | null = null
+    try {
+      stored = store?.getItem(storageKey) ?? null
+    } catch {
+      // A blocked store costs the preference, never the panel.
+      stored = null
+    }
+    if (stored) {
+      const storedWidth = Number(stored)
+      if (Number.isFinite(storedWidth)) {
+        setWidth(clamp(storedWidth))
+        setStored(true)
+      }
+    }
+  }, [storageKey, clamp, store])
+  const commit = React.useCallback(
+    (w: number) => {
+      const clamped = clamp(w)
+      setWidth(clamped)
+      try {
+        store?.setItem(storageKey, String(clamped))
+      } catch {
+        // See the read above.
+          }
+      },
+    [storageKey, clamp, store]
+  )
+  return [width, commit, stored] as const
 }
 
 type SidebarContextProps = {
@@ -85,6 +162,7 @@ type SidebarContextProps = {
 
 type SidebarResizeContextProps = {
   commitWidth: (width: number) => void
+  commitListWidth: (width: number) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -120,6 +198,7 @@ function SidebarProvider({
   open: openProp,
   onOpenChange: setOpenProp,
   hasExternalTrigger = false,
+  storage,
   className,
   style,
   children,
@@ -128,6 +207,13 @@ function SidebarProvider({
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /**
+   * Where the column widths persist. Omit for `localStorage` (the web and the
+   * desktop); a host on a shared origin passes its own adapter. See
+   * `WidthStorage`. The identity must be stable across renders: a fresh object
+   * each render re-reads the stored width on every commit.
+   */
+  storage?: WidthStorage | null
   /**
    * Declare that this shell keeps its own always-reachable `SidebarTrigger`
    * outside the page chrome. See `SidebarContextProps.hasExternalTrigger`.
@@ -141,21 +227,18 @@ function SidebarProvider({
   const isCompact = useIsCompact()
   const [openMobile, setOpenMobile] = React.useState(false)
 
-  const [width, _setWidth] = React.useState(SIDEBAR_WIDTH_DEFAULT)
-  React.useEffect(() => {
-    const stored = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
-    if (stored) {
-      const storedWidth = Number(stored)
-      if (Number.isFinite(storedWidth)) {
-        _setWidth(clampSidebarWidth(storedWidth))
-      }
-    }
-  }, [])
-  const commitWidth = React.useCallback((w: number) => {
-    const clamped = clampSidebarWidth(w)
-    _setWidth(clamped)
-    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
-  }, [])
+  const [width, commitWidth, widthStored] = useStoredWidth(
+    SIDEBAR_WIDTH_STORAGE_KEY,
+    SIDEBAR_WIDTH_DEFAULT,
+    clampSidebarWidth,
+    storage
+  )
+  const [listWidth, commitListWidth] = useStoredWidth(
+    LIST_COLUMN_WIDTH_STORAGE_KEY,
+    LIST_COLUMN_WIDTH_DEFAULT,
+    clampListColumnWidth,
+    storage
+  )
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -165,7 +248,7 @@ function SidebarProvider({
   // because nothing ever read it, and restoring the pair would be a bug rather
   // than a feature: the auto-collapse below drives `setOpen(false)` from the
   // viewport, so persisting its result would carry a collapse the user never
-  // asked for out of the `md`–`xl` band and into their next session on a wider
+  // asked for out of the `md`–`lg` band and into their next session on a wider
   // display. Persisting this needs a source that distinguishes a user toggle
   // from an automated one — not a cookie on this callback.
   const [_open, _setOpen] = React.useState(defaultOpen)
@@ -182,7 +265,7 @@ function SidebarProvider({
     [setOpenProp, open]
   )
 
-  // Auto-collapse across the `md`–`xl` band. Only the two crossings are
+  // Auto-collapse across the `md`–`lg` band. Only the two crossings are
   // automated: entering it parks the state we came in with and closes the nav,
   // leaving it restores that state. Anything the user does in between — most
   // of all re-opening the nav — is left alone until the next crossing.
@@ -248,8 +331,9 @@ function SidebarProvider({
   const resizeContextValue = React.useMemo<SidebarResizeContextProps>(
     () => ({
       commitWidth,
+      commitListWidth,
     }),
-    [commitWidth]
+    [commitWidth, commitListWidth]
   )
 
   return (
@@ -259,7 +343,8 @@ function SidebarProvider({
           data-slot="sidebar-wrapper"
           style={
             {
-              "--sidebar-width": `${width}px`,
+              "--sidebar-width": widthStored ? `${width}px` : SIDEBAR_WIDTH_THEMED,
+              "--list-column-width": `${listWidth}px`,
               "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
               ...style,
             } as React.CSSProperties
@@ -410,14 +495,14 @@ function SidebarTrigger({
   return (
     <IconButton
       data-sidebar="trigger"
-      data-slot="sidebar-trigger"
       label={t(($) => $.toggle_sidebar)}
       shortcut={shortcut}
       tooltipSide="bottom"
       className={cn(className)}
       onClick={(event) => {
         onClick?.(event)
-        toggleSidebar()
+        // A host that routes the toggle elsewhere prevents the default.
+        if (!event.defaultPrevented) toggleSidebar()
       }}
       {...props}
     >
@@ -686,7 +771,7 @@ function SidebarGroupLabel({
     props: mergeProps<"div">(
       {
         className: cn(
-          "flex h-8 shrink-0 items-center rounded-md px-2 text-caption font-medium text-muted-foreground ring-sidebar-ring outline-hidden transition-[margin,opacity] duration-200 ease-linear group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+          "flex h-8 shrink-0 items-center rounded-md px-2 text-caption text-muted-foreground ring-sidebar-ring outline-hidden transition-[margin,opacity] duration-200 ease-linear group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
           className
         ),
       },
@@ -761,7 +846,7 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-body ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:hover:bg-sidebar-accent [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-body ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground data-active:hover:bg-sidebar-accent data-active:[&_svg_.icon-body]:fill-current data-active:[&_svg_.icon-body]:[fill-opacity:0.2] [&_svg]:size-4.5 [&_svg]:shrink-0 [&>span:last-child]:truncate",
   {
     variants: {
       variant: {
@@ -770,7 +855,7 @@ const sidebarMenuButtonVariants = cva(
           "bg-background shadow-[0_0_0_1px_var(--color-sidebar-border)] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_var(--color-sidebar-accent)]",
       },
       size: {
-        default: "h-8 text-body",
+        default: "h-[34px] text-body",
         sm: "h-7 text-caption",
         lg: "h-12 text-body group-data-[collapsible=icon]:p-0!",
       },
@@ -965,7 +1050,7 @@ function SidebarMenuSubButton({
     props: mergeProps<"a">(
       {
         className: cn(
-          "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground ring-sidebar-ring outline-hidden group-data-[collapsible=icon]:hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-body data-[size=sm]:text-caption data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:hover:bg-sidebar-accent [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
+          "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground ring-sidebar-ring outline-hidden group-data-[collapsible=icon]:hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-body data-[size=sm]:text-caption data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:hover:bg-sidebar-accent [&>span:last-child]:truncate [&>svg]:size-4.5 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
           className
         ),
       },
@@ -1006,6 +1091,9 @@ export {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
+  clampListColumnWidth,
+  clampSidebarWidth,
   useSidebar,
+  useSidebarResize,
   useSidebarSafe,
 }

@@ -8,6 +8,15 @@ Type=simple
 # and the dsh runtime profile in $LANE_HOME/.dsh/profiles/multica.
 Environment=HOME=__LANE_HOME__
 Environment=PATH=/home/ddv/.local/bin:/home/ddv/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
+# Cache redirection (M-147): keep Go/pnpm/npm/bun/Playwright/XDG caches off the root disk.
+Environment=GOCACHE=/mnt/workspace/cache/go-build
+Environment=GOMODCACHE=/mnt/workspace/cache/go-mod
+Environment=XDG_CACHE_HOME=/mnt/workspace/cache/xdg
+Environment=npm_config_cache=/mnt/workspace/cache/npm
+Environment=BUN_INSTALL_CACHE_DIR=/mnt/workspace/cache/bun
+Environment=PLAYWRIGHT_BROWSERS_PATH=/mnt/workspace/cache/playwright
+Environment=PNPM_HOME=/mnt/workspace/cache/pnpm-home
+Environment=npm_config_store_dir=/mnt/workspace/cache/pnpm-store
 ExecStart=__RELEASE_DIR__/current/bin/multica --profile z daemon start --foreground
 EnvironmentFile=__DAEMON_ENV__
 Restart=on-failure

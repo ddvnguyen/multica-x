@@ -49,8 +49,30 @@ const SHELL_LAYER = "[data-shell-overlay]";
  * would otherwise be injected and never land.
  */
 export function shadowStyles(css: string): string {
-  return css.replace(/:root\b/g, ":host");
+  return shadowAppearanceCss(css);
 }
+
+/**
+ * Rewrite a stylesheet written for the document (`:root`, `html`, `.theme-*`,
+ * `data-theme`) so it can live inside a shadow root and target the host.
+ * Used for the generated appearance/theme CSS.
+ */
+export function shadowAppearanceCss(css: string): string {
+  return css
+    // compound class + attribute, e.g. :root.a[b] -> :host(.a[b])
+    .replace(/:root(\.[A-Za-z0-9_-]+)(\[[^\]]*\])/g, ":host($1$2)")
+    .replace(/html(\.[A-Za-z0-9_-]+)(\[[^\]]*\])/g, ":host($1$2)")
+    // attribute-only, e.g. :root[x] -> :host([x])
+    .replace(/:root(\[[^\]]*\])/g, ":host($1)")
+    .replace(/html(\[[^\]]*\])/g, ":host($1)")
+    // class-only, e.g. :root.x -> :host(.x)
+    .replace(/:root(\.[A-Za-z0-9_-]+)/g, ":host($1)")
+    .replace(/html(\.[A-Za-z0-9_-]+)/g, ":host($1)")
+    .replace(/(^|[^\w.(])\.theme-(light|dark)\b/g, "$1:host(.theme-$2)")
+    .replace(/:root\b/g, ":host")
+    .replace(/(^|[\s,{])html\b/g, "$1:host");
+}
+
 
 /** The island stylesheet, rewritten for a shadow tree. */
 export const ISLAND_CSS = shadowStyles(islandCss);
@@ -95,6 +117,8 @@ export interface PopupSeat {
   element: HTMLElement;
   /** Remove the seat and stop waiting for a layer. */
   dispose(): void;
+  /** Subscribe to seat rebuilds (e.g. when the shell overlay layer appears). */
+  onRebuilt(listener: (seat: HTMLElement) => void): () => void;
 }
 
 /** One seat element, with its own copy of the island's stylesheet. */
@@ -157,6 +181,7 @@ export function createPopupSeat(doc: Document): PopupSeat {
   let seat: HTMLElement | null = null;
   let observer: MutationObserver | null = null;
   let settled = false;
+  const rebuildListeners = new Set<(seat: HTMLElement) => void>();
 
   const place = (layer: HTMLElement | null): void => {
     const next = buildSeat(doc, layer !== null);
@@ -164,6 +189,7 @@ export function createPopupSeat(doc: Document): PopupSeat {
     (layer ?? doc.body ?? doc.documentElement).append(next.seat);
     seat?.remove();
     seat = next.seat;
+    rebuildListeners.forEach((cb) => cb(next.seat));
     if (layer === null) return;
     // In the layer: nothing left to wait for. Held by the shell's stacking
     // context from here on.
@@ -197,6 +223,10 @@ export function createPopupSeat(doc: Document): PopupSeat {
       seat?.remove();
       seat = null;
       portalHost.remove();
+    },
+    onRebuilt(listener) {
+      rebuildListeners.add(listener);
+      return () => rebuildListeners.delete(listener);
     },
   };
 }

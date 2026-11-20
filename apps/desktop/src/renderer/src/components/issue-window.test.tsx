@@ -28,11 +28,10 @@ vi.mock("@multica/core/platform", () => ({
   setCurrentWorkspace: vi.fn(),
 }));
 
-vi.mock("@multica/core/paths", () => ({
-  WorkspaceSlugProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-}));
+vi.mock("@multica/core/paths", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/paths")>();
+  return { ...actual };
+});
 
 vi.mock("@multica/ui/components/common/multica-icon", () => ({
   MulticaIcon: () => <div data-testid="workspace-loading" />,
@@ -46,8 +45,23 @@ vi.mock("@multica/views/layout", () => ({
   WorkspacePresencePrefetch: () => null,
 }));
 
+vi.mock("@multica/views/voice", () => ({
+  VoiceWorkspaceWords: () => null,
+}));
+
 vi.mock("@multica/views/platform", () => ({
-  DragStrip: () => null,
+  DragStrip: () => <div data-testid="drag-strip" />,
+  WindowTitleBarProvider: ({
+    value,
+    children,
+  }: {
+    value: { leadingInset: number } | null;
+    children: React.ReactNode;
+  }) => (
+    <div data-testid="title-bar-scope" data-leading-inset={value?.leadingInset ?? ""}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("../pages/issue-detail-page", () => ({
@@ -68,11 +82,25 @@ vi.mock("../pages/auth-recovery", () => ({
   ),
 }));
 
-vi.mock("../platform/issue-window-navigation", () => ({
-  IssueWindowNavigationProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-}));
+vi.mock("../platform/issue-window-navigation", async () => {
+  const { NavigationProvider } = await import("@multica/views/navigation");
+  const adapter = {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/acme/issues/123",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (path: string) => path,
+  };
+  return {
+    IssueWindowNavigationProvider: ({
+      children,
+    }: {
+      children: React.ReactNode;
+    }) => <NavigationProvider value={adapter}>{children}</NavigationProvider>,
+  };
+});
 
 import { IssueWindow } from "./issue-window";
 
@@ -120,5 +148,24 @@ describe("IssueWindow", () => {
     fireEvent.click(retry);
     expect(state.refetch).toHaveBeenCalledOnce();
     expect(screen.queryByTestId("workspace-loading")).toBeNull();
+  });
+
+  it("lets the issue header be the title bar instead of stacking a drag strip over it", async () => {
+    state.ready = true;
+    state.workspaces = [{ id: "ws-1", slug: "acme" }];
+
+    render(<IssueWindow context={context} />);
+
+    expect(await screen.findByTestId("issue-detail")).toBeInTheDocument();
+    expect(screen.queryByTestId("drag-strip")).toBeNull();
+    expect(screen.getByTestId("title-bar-scope")).toHaveAttribute("data-leading-inset", "88");
+  });
+
+  it("keeps the drag strip for states that have no page header", async () => {
+    render(<IssueWindow context={context} />);
+
+    expect(await screen.findByTestId("workspace-loading")).toBeInTheDocument();
+    expect(screen.getByTestId("drag-strip")).toBeInTheDocument();
+    expect(screen.getByTestId("title-bar-scope")).toHaveAttribute("data-leading-inset", "");
   });
 });

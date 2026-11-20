@@ -16,11 +16,14 @@ package handler
 // team-room's stale_doc_revision / assertDecisionOpen semantics.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -35,19 +38,21 @@ import (
 
 // Team-room limits, enforced at the edge (decision-tools.ts @ fefa9c3).
 const (
-	askMaxQuestions     = 6
-	askMaxOptions       = 4
-	askMinOptions       = 2
-	askPromptLimit      = 300
-	askContextLimit     = 1200
-	askLabelLimit       = 40
-	askDescriptionLimit = 200
-	askAnswerTextLimit  = 2000
-	planMaxSections     = 40
-	planSectionCharMax  = 20000
-	planVerdictNoteMax  = 4000
-	planCommentMax      = 4000
-	planMaxComments     = 50
+	askMaxQuestions       = 6
+	askMaxOptions         = 4
+	askMinOptions         = 2
+	askPromptLimit        = 300
+	askContextLimit       = 1200
+	askLabelLimit         = 40
+	askDescriptionLimit   = 200
+	askAnswerTextLimit    = 2000
+	planMaxSections       = 40
+	planSectionCharMax    = 20000
+	planVerdictNoteMax    = 4000
+	planCommentMax        = 4000
+	planMaxComments       = 50
+	planCommentQuoteMax   = 280 // team-room docQuote's DOC_QUOTE_LIMIT
+	planSectionHeadingMax = 300
 )
 
 // ---- request/response shapes ----
@@ -121,6 +126,95 @@ type planResponse struct {
 	SubmittedRevision *int32          `json:"submitted_revision,omitempty"`
 	Sections          json.RawMessage `json:"sections"`
 	ApprovedBy        *string         `json:"approved_by,omitempty"`
+	// M-275: the plan page's passage comments, oldest first. Always present (an
+	// empty array, never null) so the page renders the same shape either way.
+	Comments []planCommentResponse `json:"comments"`
+}
+
+// planCommentResponse is one anchored comment as the plan page reads it.
+// `delivered_at` is the verdict that sent it; `resolved_at` is the human's
+// resolve, which never rewrites the agent's text. `revision` is the plan
+// revision the comment was made on (M-348); nil = predates the label.
+type planCommentResponse struct {
+	ID               string  `json:"id"`
+	PlanID           string  `json:"plan_id"`
+	SectionID        string  `json:"section_id"`
+	Quote            string  `json:"quote"`
+	Body             string  `json:"body"`
+	ParentCommentID  *string `json:"parent_comment_id,omitempty"`
+	AuthorUserID     string  `json:"author_user_id"`
+	ResolvedAt       *string `json:"resolved_at,omitempty"`
+	ResolvedBy       *string `json:"resolved_by,omitempty"`
+	DeliveredAt      *string `json:"delivered_at,omitempty"`
+	DeliveredVerdict *string `json:"delivered_verdict,omitempty"`
+	Revision         *int32  `json:"revision,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+}
+
+// planSectionVersionResponse is one accepted write to a section.
+type planSectionVersionResponse struct {
+	ID         string  `json:"id"`
+	SectionID  string  `json:"section_id"`
+	Revision   int32   `json:"revision"`
+	Heading    string  `json:"heading"`
+	Markdown   string  `json:"markdown"`
+	WriterType string  `json:"writer_type"`
+	WriterID   *string `json:"writer_id,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+func planCommentToResponse(c db.AgentPlanComment) planCommentResponse {
+	resp := planCommentResponse{
+		ID:           uuidToString(c.ID),
+		PlanID:       uuidToString(c.PlanID),
+		SectionID:    c.SectionID,
+		Quote:        c.Quote,
+		Body:         c.Body,
+		AuthorUserID: uuidToString(c.AuthorUserID),
+		CreatedAt:    c.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+	}
+	if c.ParentCommentID.Valid {
+		s := uuidToString(c.ParentCommentID)
+		resp.ParentCommentID = &s
+	}
+	if c.ResolvedAt.Valid {
+		s := c.ResolvedAt.Time.UTC().Format(time.RFC3339Nano)
+		resp.ResolvedAt = &s
+	}
+	if c.ResolvedBy.Valid {
+		s := uuidToString(c.ResolvedBy)
+		resp.ResolvedBy = &s
+	}
+	if c.DeliveredAt.Valid {
+		s := c.DeliveredAt.Time.UTC().Format(time.RFC3339Nano)
+		resp.DeliveredAt = &s
+	}
+	if c.DeliveredVerdict.Valid {
+		s := c.DeliveredVerdict.String
+		resp.DeliveredVerdict = &s
+	}
+	if c.Revision.Valid {
+		v := c.Revision.Int32
+		resp.Revision = &v
+	}
+	return resp
+}
+
+func planSectionVersionToResponse(v db.AgentPlanSectionVersion) planSectionVersionResponse {
+	resp := planSectionVersionResponse{
+		ID:         uuidToString(v.ID),
+		SectionID:  v.SectionID,
+		Revision:   v.Revision,
+		Heading:    v.Heading,
+		Markdown:   v.Markdown,
+		WriterType: v.WriterType,
+		CreatedAt:  v.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+	}
+	if v.WriterID.Valid {
+		s := uuidToString(v.WriterID)
+		resp.WriterID = &s
+	}
+	return resp
 }
 
 type cardQuestionOption struct {
@@ -135,14 +229,15 @@ type cardQuestion struct {
 }
 
 type cardResponse struct {
-	ID        string          `json:"id"`
-	IssueID   string          `json:"issue_id"`
-	TaskID    string          `json:"task_id"`
-	AgentID   string          `json:"agent_id"`
-	Status    string          `json:"status"`
-	Context   *string         `json:"context,omitempty"`
-	Questions json.RawMessage `json:"questions"`
-	Answers   json.RawMessage `json:"answers,omitempty"`
+	ID               string          `json:"id"`
+	IssueID          string          `json:"issue_id"`
+	TaskID           string          `json:"task_id"`
+	AgentID          string          `json:"agent_id"`
+	TriggerCommentID *string         `json:"trigger_comment_id,omitempty"`
+	Status           string          `json:"status"`
+	Context          *string         `json:"context,omitempty"`
+	Questions        json.RawMessage `json:"questions"`
+	Answers          json.RawMessage `json:"answers,omitempty"`
 }
 
 type askPlanStateResponse struct {
@@ -151,6 +246,12 @@ type askPlanStateResponse struct {
 }
 
 func planToResponse(p db.AgentPlan) planResponse {
+	return planToResponseWithComments(p, nil)
+}
+
+// planToResponseWithComments is the plan page's read: the plan plus its
+// commented passages, oldest first.
+func planToResponseWithComments(p db.AgentPlan, comments []db.AgentPlanComment) planResponse {
 	resp := planResponse{
 		ID:       uuidToString(p.ID),
 		IssueID:  uuidToString(p.IssueID),
@@ -159,6 +260,10 @@ func planToResponse(p db.AgentPlan) planResponse {
 		Status:   p.Status,
 		Revision: p.Revision,
 		Sections: json.RawMessage(p.Sections),
+		Comments: make([]planCommentResponse, 0, len(comments)),
+	}
+	for _, c := range comments {
+		resp.Comments = append(resp.Comments, planCommentToResponse(c))
 	}
 	if p.SubmittedRevision.Valid {
 		v := p.SubmittedRevision.Int32
@@ -180,6 +285,10 @@ func cardToResponse(c db.AgentQuestionCard) cardResponse {
 		Status:    c.Status,
 		Questions: json.RawMessage(c.Questions),
 	}
+	if c.TriggerCommentID.Valid {
+		s := uuidToString(c.TriggerCommentID)
+		resp.TriggerCommentID = &s
+	}
 	if c.Context.Valid {
 		resp.Context = &c.Context.String
 	}
@@ -194,19 +303,23 @@ func cardToResponse(c db.AgentQuestionCard) cardResponse {
 // callerRunningIssueTask resolves the task token's task and refuses anything
 // that is not the caller's own RUNNING issue task in the URL workspace. An
 // agent may only park itself, and only while it is executing.
-func (h *Handler) callerRunningIssueTask(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID) (db.AgentTaskQueue, bool) {
+// taskInPath is false for plan section writes and submits, whose routes carry
+// only planId; plan ownership is checked by those handlers after this check.
+func (h *Handler) callerRunningIssueTask(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, taskInPath bool) (db.AgentTaskQueue, bool) {
 	task, ok := h.taskFromRequestHeader(r)
 	if !ok {
 		writeError(w, http.StatusForbidden, "ask/plan requires a running task token")
 		return db.AgentTaskQueue{}, false
 	}
-	pathTaskID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "taskId"), "task_id")
-	if !ok {
-		return db.AgentTaskQueue{}, false
-	}
-	if task.ID != pathTaskID {
-		writeError(w, http.StatusForbidden, "task token does not match the path task")
-		return db.AgentTaskQueue{}, false
+	if taskInPath {
+		pathTaskID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "taskId"), "task_id")
+		if !ok {
+			return db.AgentTaskQueue{}, false
+		}
+		if task.ID != pathTaskID {
+			writeError(w, http.StatusForbidden, "task token does not match the path task")
+			return db.AgentTaskQueue{}, false
+		}
 	}
 	if task.Status != "running" {
 		writeError(w, http.StatusConflict, "task is not running")
@@ -221,6 +334,9 @@ func (h *Handler) callerRunningIssueTask(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusForbidden, "task does not belong to this workspace")
 		return db.AgentTaskQueue{}, false
 	}
+	if !h.requireTaskVisible(w, r, uuidToString(workspaceID), task, http.StatusNotFound, "task not found") {
+		return db.AgentTaskQueue{}, false
+	}
 	return task, true
 }
 
@@ -232,7 +348,7 @@ func (h *Handler) SubmitAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	task, ok := h.callerRunningIssueTask(w, r, workspaceID)
+	task, ok := h.callerRunningIssueTask(w, r, workspaceID, true)
 	if !ok {
 		return
 	}
@@ -284,7 +400,7 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	task, ok := h.callerRunningIssueTask(w, r, workspaceID)
+	task, ok := h.callerRunningIssueTask(w, r, workspaceID, true)
 	if !ok {
 		return
 	}
@@ -303,6 +419,10 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	if gateErr := h.refuseUnlessPlanningPhase(r, task); gateErr != nil {
 		writeError(w, http.StatusConflict, gateErr.Error())
+		return
+	}
+	if !h.isCurrentIssueAssignee(r, task.IssueID, task.AgentID) {
+		writeError(w, http.StatusForbidden, "task agent is not the current issue assignee")
 		return
 	}
 	sections := make([]map[string]any, 0, len(req.Outline))
@@ -331,6 +451,28 @@ func (h *Handler) CreatePlan(w http.ResponseWriter, r *http.Request) {
 		// idx_ap_one_open: another open plan on this issue.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_ap_one_open" {
+			openPlan, loadErr := h.Queries.GetOpenAgentPlanByIssue(r.Context(), task.IssueID)
+			if loadErr == nil && openPlan.TaskID != task.ID && openPlan.IssueID == task.IssueID &&
+				openPlan.WorkspaceID == workspaceID && h.isCurrentIssueAssignee(r, task.IssueID, task.AgentID) {
+				// A reassigned issue can be restarted as a new task. Let its current
+				// assignee replace the abandoned run's open plan, freeing the
+				// one-open-plan-per-issue index before creating the replacement.
+				if _, cancelErr := h.Queries.CancelAgentPlan(r.Context(), openPlan.ID); cancelErr == nil {
+					plan, err = h.Queries.CreateAgentPlan(r.Context(), db.CreateAgentPlanParams{
+						ID:          dbid.NewV7(),
+						WorkspaceID: workspaceID,
+						IssueID:     task.IssueID,
+						TaskID:      task.ID,
+						AgentID:     task.AgentID,
+						Title:       req.Title,
+						Sections:    sectionsJSON,
+					})
+					if err == nil {
+						writeJSON(w, http.StatusCreated, planToResponse(plan))
+						return
+					}
+				}
+			}
 			writeError(w, http.StatusConflict, "the issue already has an open plan")
 			return
 		}
@@ -347,7 +489,7 @@ func (h *Handler) WritePlanSection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	task, ok := h.callerRunningIssueTask(w, r, workspaceID)
+	task, ok := h.callerRunningIssueTask(w, r, workspaceID, false)
 	if !ok {
 		return
 	}
@@ -378,8 +520,9 @@ func (h *Handler) WritePlanSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "plan not found")
 		return
 	}
-	// Only the proposing agent writes sections (team-room author-only rule).
-	if plan.AgentID != task.AgentID {
+	// The current issue assignee may take over an earlier plan; unrelated issues
+	// and stale assignees remain fenced out.
+	if plan.IssueID != task.IssueID || !h.isCurrentIssueAssignee(r, plan.IssueID, task.AgentID) {
 		writeError(w, http.StatusForbidden, "this plan belongs to another agent")
 		return
 	}
@@ -425,7 +568,12 @@ func (h *Handler) WritePlanSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to write plan section")
 		return
 	}
-	writeJSON(w, http.StatusOK, planToResponse(updated))
+	// M-275: the agent's write lands in the same ledger a human edit uses, so a
+	// section's history has no gap. Best-effort: the write itself is committed,
+	// and a missing version costs history, not the plan.
+	h.recordPlanSectionVersion(r.Context(), updated, sectionID, req.Section.Heading, req.Section.Markdown, "agent", task.AgentID)
+	comments, _ := h.Queries.ListAgentPlanComments(r.Context(), planID)
+	writeJSON(w, http.StatusOK, planToResponseWithComments(updated, comments))
 }
 
 // SubmitPlan handles POST /api/workspaces/{id}/plans/{planId}/submit.
@@ -436,7 +584,7 @@ func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	task, ok := h.callerRunningIssueTask(w, r, workspaceID)
+	task, ok := h.callerRunningIssueTask(w, r, workspaceID, false)
 	if !ok {
 		return
 	}
@@ -454,7 +602,7 @@ func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "plan not found")
 		return
 	}
-	if plan.TaskID != task.ID {
+	if plan.IssueID != task.IssueID || !h.isCurrentIssueAssignee(r, plan.IssueID, task.AgentID) {
 		writeError(w, http.StatusForbidden, "this plan belongs to another task")
 		return
 	}
@@ -511,6 +659,13 @@ func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, planToResponse(submitted))
 }
 
+// isCurrentIssueAssignee verifies the task agent still owns the issue.
+func (h *Handler) isCurrentIssueAssignee(r *http.Request, issueID, agentID pgtype.UUID) bool {
+	issue, err := h.Queries.GetIssue(r.Context(), issueID)
+	return err == nil && issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
+		issue.AssigneeID.Valid && issue.AssigneeID == agentID
+}
+
 // ---- human-side handlers ----
 
 // AnswerQuestionCard handles POST /api/workspaces/{id}/question-cards/{cardId}/answer.
@@ -543,7 +698,7 @@ func (h *Handler) AnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answeredBy := parseUUID(requestUserID(r))
-	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), cardID, workspaceID, answeredBy, answersJSON)
+	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), cardID, workspaceID, answeredBy, service.AnsweredByMember, answersJSON)
 	if errors.Is(err, service.ErrQuestionCardClosed) {
 		writeErrorCode(w, http.StatusConflict, "card_closed", "the question card is no longer open")
 		return
@@ -554,6 +709,129 @@ func (h *Handler) AnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("answer question card failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record the answer")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"card":        cardToResponse(answered),
+		"resume_task": uuidToString(resumeTask.ID),
+	})
+}
+
+// leadAnswerCard resolves the card and refuses unless the task-token caller is
+// the issue project's agent lead in the card's workspace. Shared by the read and
+// the answer route so the two can never disagree about who the lead is. The
+// bool is false once the response has been written.
+func (h *Handler) leadAnswerCard(w http.ResponseWriter, r *http.Request) (db.AgentQuestionCard, db.AgentTaskQueue, bool) {
+	cardID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "cardId"), "card_id")
+	if !ok {
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "answering on the Owner's behalf requires an agent task token")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	task, ok := h.taskFromRequestHeader(r)
+	if !ok || !task.AgentID.Valid {
+		writeError(w, http.StatusForbidden, "answering on the Owner's behalf requires an agent task token")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	card, err := h.Queries.GetAgentQuestionCard(r.Context(), cardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if h.resolveWorkspaceID(r) != uuidToString(card.WorkspaceID) {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	issue, err := h.Queries.GetIssue(r.Context(), card.IssueID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if !issue.ProjectID.Valid {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+		ID:          issue.ProjectID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if !project.LeadType.Valid || project.LeadType.String != "agent" || !project.LeadID.Valid || project.LeadID != task.AgentID {
+		writeErrorCode(w, http.StatusForbidden, "not_project_lead", "only the project lead may answer on the Owner's behalf")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	return card, task, true
+}
+
+// GetQuestionCardForLead handles GET /api/question-cards/{cardId} (M-332): the
+// lead reads the card it was escalated to, so it can see the questions and the
+// labels before answering (or see that the Owner already answered it).
+func (h *Handler) GetQuestionCardForLead(w http.ResponseWriter, r *http.Request) {
+	card, _, ok := h.leadAnswerCard(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, cardToResponse(card))
+}
+
+// LeadAnswerQuestionCard handles POST /api/question-cards/{cardId}/lead-answer
+// (M-332): the project lead answering an escalated ask on the Owner's behalf.
+//
+// Gates, all of them fail-closed:
+//
+//   - a task token (X-Actor-Source is server-set by the auth middleware), never
+//     a member session — the point is that this is an agent's call recorded as
+//     an agent's call;
+//   - the caller's agent must BE the issue project's lead (lead_type 'agent',
+//     lead_id = the task's agent), in the card's workspace;
+//   - the card must have been escalated (escalated_at set) — the ladder has to
+//     reach the lead before the lead may stand in for the Owner;
+//   - the first-answer-wins CAS in the service is unchanged, so a lead racing
+//     the Owner (or a second lead run) still loses with card_closed.
+//
+// The answer resumes the original parked run exactly as a member's answer does;
+// only the stored provenance (answered_by_type='agent') and the run's handoff
+// note differ.
+func (h *Handler) LeadAnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
+	card, task, ok := h.leadAnswerCard(w, r)
+	if !ok {
+		return
+	}
+	var req questionAnswerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if !card.EscalatedAt.Valid {
+		writeErrorCode(w, http.StatusConflict, "card_not_escalated", "the card has not reached the lead yet; the Owner answers it first")
+		return
+	}
+	if err := validateCardAnswers(card.Questions, req.Answers); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	answersJSON, err := json.Marshal(req.Answers)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode answers")
+		return
+	}
+	answered, resumeTask, err := h.TaskService.AnswerQuestionCard(r.Context(), card.ID, card.WorkspaceID, task.AgentID, service.AnsweredByAgent, answersJSON)
+	if errors.Is(err, service.ErrQuestionCardClosed) {
+		writeErrorCode(w, http.StatusConflict, "card_closed", "the question card is no longer open")
+		return
+	}
+	if errors.Is(err, service.ErrDuplicatePendingTask) {
+		writeErrorCode(w, http.StatusConflict, "run_already_queued", "a run is already queued for this issue; the answer was not recorded")
+		return
+	}
+	if err != nil {
+		slog.Warn("lead answer question card failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to record the answer")
 		return
 	}
@@ -660,6 +938,459 @@ func (h *Handler) ReviewPlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---- plan review threads (M-275) ----
+
+type planCommentRequest struct {
+	BaseRevision    int32   `json:"base_revision"`
+	SectionID       string  `json:"section_id"`
+	Quote           string  `json:"quote"`
+	Body            string  `json:"body"`
+	ParentCommentID *string `json:"parent_comment_id"`
+}
+
+type planSectionEditRequest struct {
+	BaseRevision int32  `json:"base_revision"`
+	Heading      string `json:"heading"`
+	Markdown     string `json:"markdown"`
+}
+
+// CreatePlanComment handles POST /api/workspaces/{id}/plans/{planId}/comments.
+//
+// Human-only. The base_revision is the page's revision at the moment the human
+// selected the passage: a comment that arrives after the plan moved is refused
+// with the current revision rather than anchored to text it never saw (the
+// same fence every section write and verdict uses).
+func (h *Handler) CreatePlanComment(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	var req planCommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		writeError(w, http.StatusBadRequest, "comment text is required")
+		return
+	}
+	if len(body) > planCommentMax {
+		writeError(w, http.StatusBadRequest, "comment is too long")
+		return
+	}
+	if len(req.Quote) > planCommentQuoteMax {
+		writeError(w, http.StatusBadRequest, "quote is too long")
+		return
+	}
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	if isFinalPlanStatus(plan.Status) {
+		writeErrorCode(w, http.StatusConflict, "plan_closed", "plan is final and no longer changes")
+		return
+	}
+	if plan.Revision != req.BaseRevision {
+		h.writeStalePlanRevision(w, r, planID)
+		return
+	}
+	if req.SectionID != "" {
+		if !planHasSection(plan.Sections, req.SectionID) {
+			writeError(w, http.StatusBadRequest, "unknown section")
+			return
+		}
+	}
+	parent := pgtype.UUID{}
+	if req.ParentCommentID != nil && *req.ParentCommentID != "" {
+		parsed, parsedOK := parseUUIDOrBadRequest(w, *req.ParentCommentID, "parent_comment_id")
+		if !parsedOK {
+			return
+		}
+		parent = parsed
+		// A reply must name a comment on THIS plan, or the thread would point
+		// outside the plan it renders under.
+		parentComment, err := h.Queries.GetAgentPlanComment(r.Context(), parent)
+		if err != nil || parentComment.PlanID != planID {
+			writeError(w, http.StatusBadRequest, "parent comment not found")
+			return
+		}
+	}
+	comment, err := h.Queries.CreateAgentPlanComment(r.Context(), db.CreateAgentPlanCommentParams{
+		ID:              dbid.NewV7(),
+		WorkspaceID:     workspaceID,
+		PlanID:          planID,
+		SectionID:       req.SectionID,
+		Quote:           req.Quote,
+		Body:            body,
+		ParentCommentID: parent,
+		AuthorUserID:    parseUUID(requestUserID(r)),
+		// M-348: the write fence already compared base_revision to the row;
+		// persisting it labels the thread with the revision it saw.
+		Revision: pgtype.Int4{Int32: req.BaseRevision, Valid: true},
+	})
+	if err != nil {
+		slog.Warn("create plan comment failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record the comment")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"comment": planCommentToResponse(comment)})
+}
+
+// ResolvePlanComment handles
+// POST /api/workspaces/{id}/plans/{planId}/comments/{commentId}/resolve.
+//
+// Human-only and idempotent in the honest direction: a second resolve matches
+// no row (the CAS is `resolved_at IS NULL`) and answers 409, so the page knows
+// the thread already moved instead of pretending it just resolved it.
+func (h *Handler) ResolvePlanComment(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	commentID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "commentId"), "comment_id")
+	if !ok {
+		return
+	}
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	resolved, err := h.Queries.ResolveAgentPlanComment(r.Context(), db.ResolveAgentPlanCommentParams{
+		ID:         commentID,
+		PlanID:     planID,
+		ResolvedBy: parseUUID(requestUserID(r)),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErrorCode(w, http.StatusConflict, "comment_resolved", "the comment is already resolved")
+		return
+	}
+	if err != nil {
+		slog.Warn("resolve plan comment failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve the comment")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comment": planCommentToResponse(resolved)})
+}
+
+// UpdatePlanSection handles
+// PUT /api/workspaces/{id}/plans/{planId}/sections/{sectionId}: the human's
+// edit of one section.
+//
+// Fenced on the page's revision. While the plan is in_review the edit also
+// advances submitted_revision (M-275 decision 1), so the reviewer's verdict
+// rides their own edit instead of 409-ing against a revision their save made.
+// The agent's own PUT (no section id in the path) keeps its draft /
+// changes_requested restriction: a human owns the review, the agent does not
+// edit under it.
+func (h *Handler) UpdatePlanSection(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	sectionID := chi.URLParam(r, "sectionId")
+	if sectionID == "" {
+		writeError(w, http.StatusBadRequest, "section_id is required")
+		return
+	}
+	var req planSectionEditRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	heading := strings.TrimSpace(req.Heading)
+	if heading == "" {
+		writeError(w, http.StatusBadRequest, "heading is required")
+		return
+	}
+	if len(heading) > planSectionHeadingMax {
+		writeError(w, http.StatusBadRequest, "heading is too long")
+		return
+	}
+	if len(req.Markdown) > planSectionCharMax {
+		writeError(w, http.StatusBadRequest, "section body is too large")
+		return
+	}
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	if isFinalPlanStatus(plan.Status) {
+		writeErrorCode(w, http.StatusConflict, "plan_closed", "plan is final and no longer changes")
+		return
+	}
+	if plan.Revision != req.BaseRevision {
+		h.writeStalePlanRevision(w, r, planID)
+		return
+	}
+	if !planHasSection(plan.Sections, sectionID) {
+		writeError(w, http.StatusBadRequest, "unknown section")
+		return
+	}
+	merged, mergeErr := mergePlanSection(plan.Sections, sectionID, heading, req.Markdown)
+	if mergeErr != nil {
+		writeError(w, http.StatusBadRequest, mergeErr.Error())
+		return
+	}
+	updated, err := h.Queries.UpdateAgentPlanSection(r.Context(), db.UpdateAgentPlanSectionParams{
+		ID:           planID,
+		Sections:     merged,
+		BaseRevision: req.BaseRevision,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		h.writeStalePlanRevision(w, r, planID)
+		return
+	}
+	if err != nil {
+		slog.Warn("edit plan section failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save the section")
+		return
+	}
+	h.recordPlanSectionVersion(r.Context(), updated, sectionID, heading, req.Markdown, "member", parseUUID(requestUserID(r)))
+	comments, _ := h.Queries.ListAgentPlanComments(r.Context(), planID)
+	writeJSON(w, http.StatusOK, planToResponseWithComments(updated, comments))
+}
+
+// ListPlanSectionHistory handles
+// GET /api/workspaces/{id}/plans/{planId}/sections/{sectionId}/history.
+//
+// The ledger only holds writes made after this migration, so a section that
+// predates it has no history: the first read seeds the current text as its one
+// version, which is what stops the panel from claiming a section was never
+// written.
+func (h *Handler) ListPlanSectionHistory(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	sectionID := chi.URLParam(r, "sectionId")
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	versions, err := h.Queries.ListAgentPlanSectionVersions(r.Context(), db.ListAgentPlanSectionVersionsParams{
+		PlanID:    planID,
+		SectionID: sectionID,
+	})
+	if err != nil {
+		slog.Warn("list plan section versions failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load the section history")
+		return
+	}
+	if len(versions) == 0 {
+		if section, found := planSectionByID(plan.Sections, sectionID); found {
+			h.recordPlanSectionVersion(r.Context(), plan, sectionID, section.Heading, section.Markdown, "agent", plan.AgentID)
+			versions, err = h.Queries.ListAgentPlanSectionVersions(r.Context(), db.ListAgentPlanSectionVersionsParams{
+				PlanID:    planID,
+				SectionID: sectionID,
+			})
+			if err != nil {
+				slog.Warn("relist plan section versions failed", "error", err)
+			}
+		}
+	}
+	items := make([]planSectionVersionResponse, 0, len(versions))
+	for _, v := range versions {
+		items = append(items, planSectionVersionToResponse(v))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"section_id": sectionID,
+		"revision":   plan.Revision,
+		"versions":   items,
+	})
+}
+
+// planRevisionSection is one section as it read at an older revision. A
+// section with no version at or before R predates the ledger: it renders a
+// placeholder row (`available: false`) instead of invented text.
+type planRevisionSection struct {
+	SectionID string `json:"section_id"`
+	Heading   string `json:"heading"`
+	Markdown  string `json:"markdown"`
+	Available bool   `json:"available"`
+}
+
+// GetPlanRevision handles
+// GET /api/workspaces/{id}/plans/{planId}/revisions/{revision}.
+//
+// M-348 read-old-revision: the plan's sections as they read at revision R —
+// per section the newest ledger version at or before R. 404 for R < 1, for
+// R past the current revision, and for a plan in another workspace. Read-only
+// member-visible like the rest of the plan read; no RequireHumanActor.
+func (h *Handler) GetPlanRevision(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := h.workspaceIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	planID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "planId"), "plan_id")
+	if !ok {
+		return
+	}
+	revision64, err := strconv.ParseInt(chi.URLParam(r, "revision"), 10, 32)
+	if err != nil || revision64 < 1 {
+		writeError(w, http.StatusNotFound, "revision not found")
+		return
+	}
+	revision := int32(revision64)
+	plan, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil || plan.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "plan not found")
+		return
+	}
+	if revision > plan.Revision {
+		writeError(w, http.StatusNotFound, "revision not found")
+		return
+	}
+	versions, err := h.Queries.ListAgentPlanSectionVersionsUpto(r.Context(), db.ListAgentPlanSectionVersionsUptoParams{
+		PlanID:   planID,
+		Revision: revision,
+	})
+	if err != nil {
+		slog.Warn("list plan section versions upto failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load the plan revision")
+		return
+	}
+	bySection := make(map[string]db.AgentPlanSectionVersion, len(versions))
+	for _, v := range versions {
+		if _, seen := bySection[v.SectionID]; !seen {
+			bySection[v.SectionID] = v
+		}
+	}
+	var current []planSectionJSON
+	if err := json.Unmarshal(plan.Sections, &current); err != nil {
+		slog.Warn("parse plan sections failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load the plan revision")
+		return
+	}
+	seen := make(map[string]bool, len(current)+len(versions))
+	sections := make([]planRevisionSection, 0, len(current))
+	for _, s := range current {
+		seen[s.SectionID] = true
+		if v, found := bySection[s.SectionID]; found {
+			sections = append(sections, planRevisionSection{
+				SectionID: s.SectionID,
+				Heading:   v.Heading,
+				Markdown:  v.Markdown,
+				Available: true,
+			})
+		} else {
+			sections = append(sections, planRevisionSection{
+				SectionID: s.SectionID,
+				Heading:   s.Heading,
+				Markdown:  "",
+				Available: false,
+			})
+		}
+	}
+	for _, v := range versions {
+		if seen[v.SectionID] {
+			continue
+		}
+		seen[v.SectionID] = true
+		by := bySection[v.SectionID]
+		sections = append(sections, planRevisionSection{
+			SectionID: v.SectionID,
+			Heading:   by.Heading,
+			Markdown:  by.Markdown,
+			Available: true,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plan_id":  uuidToString(planID),
+		"revision": revision,
+		"current":  plan.Revision,
+		"status":   plan.Status,
+		"sections": sections,
+	})
+}
+
+// recordPlanSectionVersion appends one accepted section write to the ledger.
+// Best-effort by design: the write it records is already committed, and the
+// ON CONFLICT in the query makes a replay a no-op.
+func (h *Handler) recordPlanSectionVersion(ctx context.Context, plan db.AgentPlan, sectionID, heading, markdown, writerType string, writerID pgtype.UUID) {
+	if sectionID == "" {
+		return
+	}
+	if err := h.Queries.CreateAgentPlanSectionVersion(ctx, db.CreateAgentPlanSectionVersionParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: plan.WorkspaceID,
+		PlanID:      plan.ID,
+		SectionID:   sectionID,
+		Revision:    plan.Revision,
+		Heading:     heading,
+		Markdown:    markdown,
+		WriterType:  writerType,
+		WriterID:    writerID,
+	}); err != nil {
+		slog.Warn("record plan section version failed", "error", err, "plan_id", uuidToString(plan.ID))
+	}
+}
+
+// planSectionJSON is a stored section as the agent's tool wrote it (camelCase
+// keys inside an otherwise snake_case response).
+type planSectionJSON struct {
+	SectionID string `json:"sectionId"`
+	Heading   string `json:"heading"`
+	Markdown  string `json:"markdown"`
+}
+
+func planSectionByID(sectionsJSON []byte, sectionID string) (planSectionJSON, bool) {
+	var sections []planSectionJSON
+	if err := json.Unmarshal(sectionsJSON, &sections); err != nil {
+		return planSectionJSON{}, false
+	}
+	for _, section := range sections {
+		if section.SectionID == sectionID {
+			return section, true
+		}
+	}
+	return planSectionJSON{}, false
+}
+
+func planHasSection(sectionsJSON []byte, sectionID string) bool {
+	_, found := planSectionByID(sectionsJSON, sectionID)
+	return found
+}
+
+// writeStalePlanRevision is the 409 every fenced plan write answers with: the
+// current revision and status, so the page re-renders instead of retrying blind.
+func (h *Handler) writeStalePlanRevision(w http.ResponseWriter, r *http.Request, planID pgtype.UUID) {
+	latest, err := h.Queries.GetAgentPlan(r.Context(), planID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "plan changed; retry with the current revision")
+		return
+	}
+	body := map[string]any{
+		"error":            "stale_plan_revision",
+		"current_revision": latest.Revision,
+		"current_status":   latest.Status,
+	}
+	if latest.SubmittedRevision.Valid {
+		body["submitted_revision"] = latest.SubmittedRevision.Int32
+	}
+	writeJSON(w, http.StatusConflict, body)
+}
+
 // GetIssueAskPlan handles GET /api/workspaces/{id}/issues/{issueId}/ask-plan:
 // the open cards and open plan the island renders (one read for M-120).
 func (h *Handler) GetIssueAskPlan(w http.ResponseWriter, r *http.Request) {
@@ -679,6 +1410,9 @@ func (h *Handler) GetIssueAskPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
+	if !h.requireProjectVisible(w, r, uuidToString(workspaceID), issue.ProjectID, http.StatusNotFound, "issue not found") {
+		return
+	}
 	cards, err := h.Queries.ListOpenQuestionCardsByIssue(r.Context(), issue.ID)
 	if err != nil {
 		slog.Warn("list open question cards failed", "error", err)
@@ -691,7 +1425,11 @@ func (h *Handler) GetIssueAskPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := h.Queries.GetOpenAgentPlanByIssue(r.Context(), issue.ID)
 	if err == nil {
-		p := planToResponse(plan)
+		comments, commentsErr := h.Queries.ListAgentPlanComments(r.Context(), plan.ID)
+		if commentsErr != nil {
+			slog.Warn("load plan comments failed", "error", commentsErr)
+		}
+		p := planToResponseWithComments(plan, comments)
 		resp.Plan = &p
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("load open plan failed", "error", err)

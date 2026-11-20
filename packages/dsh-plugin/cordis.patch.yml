@@ -15,7 +15,12 @@
         # Workspace the island opens. Empty selects the first workspace the
         # token can read.
         workspaceSlug: ''
-        # moct-be, for the browser's memory seam (docs/moct-seam.md out-path 3).
-        # Leave empty and set MOCT_BASE_URL in the dsh process instead; with
-        # neither set, /moct answers 503 and the memory surfaces stay hidden.
-        moctUrl: ''
+        # Default dsh workspace folder for "All projects" (M-159): the last rung
+        # of the side panel's folder chain, used when no project is picked and
+        # no issue or board filter names one. Empty means none. Set it in the
+        # host's row patch (a lane keeps its own in `data/multica-row.yml`)
+        # rather than in an env var: a rebuilt lane loses its environment but
+        # not its config, which is why lane z's default kept disappearing
+        # (M-316). A picked project addresses its own local_directory resource
+        # instead of this.
+        workspaceFolder: ''

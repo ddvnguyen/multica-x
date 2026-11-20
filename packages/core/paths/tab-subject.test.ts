@@ -10,6 +10,8 @@ describe("parseTabSubject", () => {
     // Collection / tool pages
     ["/acme/issues", { kind: "page", page: "issues" }],
     ["/acme/my-issues", { kind: "page", page: "myIssues" }],
+    ["/acme/my-issues?scope=agents", { kind: "myAgents" }],
+    ["/acme/my-issues?scope=created", { kind: "page", page: "myIssues" }],
     ["/acme/projects", { kind: "page", page: "projects" }],
     ["/acme/autopilots", { kind: "page", page: "autopilots" }],
     ["/acme/agents", { kind: "page", page: "agents" }],
@@ -48,6 +50,11 @@ describe("parseTabSubject", () => {
     ["/acme/inbox", { kind: "inbox", selectedKey: null, archived: false }],
     ["/acme/inbox?issue=MUL-9", { kind: "inbox", selectedKey: "MUL-9", archived: false }],
     ["/acme/inbox?view=archived", { kind: "inbox", selectedKey: null, archived: true }],
+    ["/acme/decisions", { kind: "decisions", selectedKey: null, answered: false }],
+    [
+      "/acme/decisions?state=answered&decision=question%3Acard-9",
+      { kind: "decisions", selectedKey: "question:card-9", answered: true },
+    ],
     [
       "/acme/inbox?view=archived&issue=MUL-9",
       { kind: "inbox", selectedKey: "MUL-9", archived: true },
@@ -92,6 +99,9 @@ describe("tabSubjectKey", () => {
     expect(tabSubjectKey({ kind: "issue", id: "x" })).toBe("issue:x");
     expect(tabSubjectKey({ kind: "chat", sessionId: null })).toBe("chat:");
     expect(tabSubjectKey({ kind: "chat", sessionId: "s1" })).toBe("chat:s1");
+    expect(tabSubjectKey({ kind: "myAgents" })).not.toBe(
+      tabSubjectKey({ kind: "page", page: "myIssues" }),
+    );
     expect(
       tabSubjectKey({ kind: "actor", actorType: "member", id: "m1" }),
     ).toBe("actor:member:m1");
@@ -107,5 +117,8 @@ describe("tabSubjectKey", () => {
     expect(
       tabSubjectKey({ kind: "attachment", id: "a1", filename: "x.pdf" }),
     ).toBe("attachment:a1:x.pdf");
+    expect(
+      tabSubjectKey({ kind: "decisions", selectedKey: "question:card-9", answered: true }),
+    ).toBe("decisions:answered:question:card-9");
   });
 });

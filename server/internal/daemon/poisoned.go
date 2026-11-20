@@ -47,7 +47,7 @@ const (
 )
 
 func classifyOpenCodeClockSkew(provider, errMsg string) (string, bool) {
-	if provider == "opencode" && strings.HasPrefix(errMsg, agent.ErrOpenCodeClockSkew.Error()) {
+	if agent.Family(provider) == "opencode" && strings.HasPrefix(errMsg, agent.ErrOpenCodeClockSkew.Error()) {
 		return FailureReasonOpenCodeClockSkew, true
 	}
 	return "", false
@@ -137,6 +137,7 @@ func classifyPoisonedOutput(output string) (string, bool) {
 // the conversation by ANY backend — see its doc comment for why the defect
 // has to be recognised by wording rather than by status code or provider.
 func classifyPoisonedError(errMsg string) (string, bool) {
+	errMsg = taskfailure.WithoutCodebuddyProtocolSummary(errMsg)
 	if errMsg == "" {
 		return "", false
 	}

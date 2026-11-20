@@ -1,8 +1,16 @@
 import { createElement as bundledCreateElement } from "react";
-import type { DshClientContext } from "../dsh";
+import type { DshClientContext, DshSidebarRightTabs } from "../dsh";
 import { startIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 import { FAMILY_ROOTS } from "./navigation";
+import { bindShell, startBoundSidebarAutoCollapse } from "./shell";
+import { configureHostShell } from "./shell-runtime";
+import type {
+  SessionsLike,
+  SidebarRightLike,
+  WorkspacesLike,
+} from "./shell-link";
+import { familyOfRoute } from "./tabs";
 import {
   createRailIcon,
   createSeatComponent,
@@ -10,6 +18,14 @@ import {
   type RailGlyph,
 } from "./seat";
 import { startUnreadPoll } from "./unread-store";
+import { createSteerComposer, STEER_COMPOSER_ENTRY } from "./steer-composer";
+import {
+  SIDE_PREVIEW_KIND,
+  SIDE_PREVIEW_TAB_ID,
+  SIDE_PREVIEW_TITLES,
+  canOpenSidePreview,
+} from "./side-preview";
+import { createIssuePreviewBody } from "./side-preview-tab";
 
 /**
  * Browser face of the Multica panel.
@@ -19,19 +35,23 @@ import { startUnreadPoll } from "./unread-store";
  * - `sidebar.panellist` (a `list`) renders one sidebar button per registration
  *   and addresses the matching `main` cell by list id. Each entry below is one
  *   of those rows; the sidebar owns the button, the label and the selection
- *   state, which is why the menu is five rows rather than a dropdown the plugin
+ *   state, which is why the menu is seven rows rather than a dropdown the plugin
  *   would have to position inside someone else's column. The list has no
- *   grouping API, so the grouping is expressed by adjacent order (30–34) and a
+ *   grouping API, so the grouping is expressed by adjacent order (30–36) and a
  *   shared glyph family, and each label carries the product name because the
  *   collapsed rail shows only a glyph and a tooltip.
  * - `main` (a `keyed` slot) gets one cell per entry: the seat the React 19
  *   island mounts into, opening at that entry's own view. `priority: -100` is
  *   the additive convention the shipped panels use; nothing shipped is replaced.
  *
- * The sixth row is Settings: the fork's own page, with the surfaces this panel
+ * The seventh row is Settings: the fork's own page, with the surfaces this panel
  * does not render hidden and one MOCT group added. It is a rail row and not a
  * route inside another row because a settings page is a destination a reader
  * returns to, and the shell's rail is where destinations live.
+ *
+ * The rows are also the shell's record of which MMX view is showing: the island
+ * selects the row that owns the active tab's family (`client/shell.ts`), so the
+ * highlight can never disagree with the tab strip (M-197).
  */
 export interface MulticaEntry {
   /** `sidebar.panellist` list id, and the `main` cell key it addresses. */
@@ -44,7 +64,7 @@ export interface MulticaEntry {
   glyph: RailGlyph;
 }
 
-/** The six entries, in the order the Owner named them. */
+/** The seven entries, with Decisions beside Inbox. */
 export const MULTICA_ENTRIES: readonly MulticaEntry[] = [
   {
     id: "multica",
@@ -71,6 +91,12 @@ export const MULTICA_ENTRIES: readonly MulticaEntry[] = [
     glyph: "inbox",
   },
   {
+    id: "multica-decisions",
+    label: "Multica Decisions",
+    route: FAMILY_ROOTS.decisions,
+    glyph: "decisions",
+  },
+  {
     id: "multica-chat",
     label: "Multica Chat",
     route: FAMILY_ROOTS.chat,
@@ -90,10 +116,44 @@ export const MULTICA_PANEL_ID = "multica";
 /** First rail row's order; the entries follow in sequence. */
 const FIRST_ORDER = 30;
 
-/** dsh resolves `inject` before calling `apply`. */
-export const inject = ["slots"];
+/**
+ * Services dsh resolves before calling `apply`.
+ *
+ * `layout` is dsh's own ui-layout service: the package already declares that
+ * module as a client dependency, and injecting the service is what guarantees
+ * `ctx.layout` exists when `apply` binds it (M-197) instead of depending on
+ * which plugin was applied first.
+ *
+ * `sidebarRight`, `workspaces` and `sessions` are the side-panel bridge's
+ * sources (M-159). Injecting them documents the edge the loader reads for
+ * ordering; the apply body still reads each one tolerantly, so a host built
+ * without the right sidebar keeps the rail rows anyway.
+ *
+ * No session-navigation service is injected (M-316): the toggle opens the panel
+ * beside MMX or not at all, and selecting a Session is the shell's navigation —
+ * the one thing that would replace MMX with the dsh page.
+ */
+export const inject = [
+  "slots",
+  "layout",
+  "sidebarRight",
+  "workspaces",
+  "sessions",
+];
 
 let hostCreateElement: HostCreateElement | null = null;
+
+/** A face the shell context carries: undefined when the host does not provide it. */
+type Face = Record<string, unknown>;
+
+/** Read one service off the shell context without assuming it exists. */
+function face(ctx: DshClientContext, name: string): unknown {
+  const source = ctx as unknown as { get?: (name: string) => unknown } & Face;
+  if (typeof source.get === "function") {
+    return source.get(name);
+  }
+  return (source as Face)[name];
+}
 
 /**
  * Hand this module the shell's `createElement`.
@@ -107,6 +167,43 @@ export function configureHostRuntime(createElement: HostCreateElement | null): v
 }
 
 export function apply(ctx: DshClientContext): void {
+  // The side-panel bridge (M-159): the sidebar faces, read tolerantly so a host
+  // without the right sidebar still reaches the rail registration below.
+  const sidebarRight = (face(ctx, "sidebarRight") ?? null) as SidebarRightLike | null;
+  const workspaces = (face(ctx, "workspaces") ?? null) as WorkspacesLike | null;
+  const sessions = (face(ctx, "sessions") ?? null) as SessionsLike | null;
+  const tabTypes = (face(ctx, "sidebarRightTabs") ?? null) as DshSidebarRightTabs | null;
+  const layoutFace = ctx.layout ?? null;
+  configureHostShell({
+    sidebarRight,
+    workspaces,
+    sessions,
+    daemonId: "",
+    sidePreviewKind: canOpenSidePreview(sidebarRight, tabTypes !== null)
+      ? SIDE_PREVIEW_KIND
+      : null,
+  });
+
+  // Card C's opt-in: the right sidebar may render beside a hosted `main`
+  // panel. Register every MMX panel id inside `ctx.effect` — the disposer is
+  // the plugin's teardown — so an MMX view keeps the side panel next to it.
+  // Hosting only keeps the column drawn: which Session's folder it edits is
+  // named per press by the toggle's `retarget` plan, because the project (and
+  // so the folder) changes while MMX stays in the main column. A face without
+  // `hostPanel` has nowhere to draw the column without leaving MMX, so the
+  // toggle disables itself there (M-316) instead of putting a Session on
+  // screen.
+  if (sidebarRight !== null && typeof sidebarRight.hostPanel === "function") {
+    ctx.effect?.(() => {
+      const disposers = MULTICA_ENTRIES.map((entry) =>
+        sidebarRight.hostPanel?.(entry.id) ?? null,
+      ).filter((dispose): dispose is () => void => dispose !== null);
+      return () => {
+        for (const dispose of disposers) dispose();
+      };
+    }, "multica: sidebarRight.hostPanel for the seven MMX panels");
+  }
+
   // The rail dot's baseline count. The browser half has no teardown path —
   // `apply` returns void and the slot registrations below are unregistered by
   // the shell, not by this module — so the poller lives as long as the page;
@@ -114,7 +211,59 @@ export function apply(ctx: DshClientContext): void {
   // a second timer.
   startUnreadPoll();
 
+  // The shell's own two surfaces this plugin keeps in step with the island
+  // (M-197): the rail row that must mark the active tab's family, and the
+  // sidebar that collapses while an MMX view is showing. One binding, read by
+  // the island and by the auto-collapse subscription below.
+  const layout = layoutFace;
+  if (layout !== null) {
+    bindShell({
+      layout,
+      panelOfFamily: new Map(
+        MULTICA_ENTRIES.map((entry) => [familyOfRoute(entry.route), entry.id]),
+      ),
+    });
+    // Page-lifetime, like the rail dot's poller: `apply` returns void and the
+    // shell unloads a plugin with the page.
+    startBoundSidebarAutoCollapse();
+  }
+
   const createElement = hostCreateElement ?? (bundledCreateElement as HostCreateElement);
+
+  // The side preview's tab type (M-336, G6 generalized): one page type in
+  // dsh's own right column. The chip is generic because one tab serves
+  // different targets; the identifier belongs in the body's header.
+  if (tabTypes !== null && canOpenSidePreview(sidebarRight, true)) {
+    ctx.effect?.(
+      () =>
+        tabTypes.register({
+          id: SIDE_PREVIEW_TAB_ID,
+          kind: SIDE_PREVIEW_KIND,
+          title: () => SIDE_PREVIEW_TITLES.title,
+        }),
+      "multica: sidebarRightTabs.register for the side preview",
+    );
+    ctx.slots.inject("sidebar.right.pane.tab", () =>
+      ctx.slots.register(
+        { name: "sidebar.right.pane.tab", key: SIDE_PREVIEW_TAB_ID },
+        createIssuePreviewBody(createElement),
+      ),
+    );
+  }
+
+  // The dsh chat's composer for an MMX-owned session (M-136).
+  //
+  // The selector is the whole safety story: it declines unless exactly one
+  // *running* MMX turn pins this session and negotiated `task-supplement-v1`
+  // with permission for this viewer. A session with no owner, two owners, or a
+  // run that cannot take a message keeps the shell's composer and M-142's
+  // banner.
+  ctx.slots.inject("conversation.composer", () =>
+    ctx.slots.register(
+      { ...STEER_COMPOSER_ENTRY },
+      createSteerComposer(createElement),
+    ),
+  );
 
   MULTICA_ENTRIES.forEach((entry, index) => {
     const railIcon = createRailIcon(createElement, entry.glyph);

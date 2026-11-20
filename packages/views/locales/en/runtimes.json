@@ -1,9 +1,7 @@
 {
   "page": {
     "title": "Runtimes",
-    "learn_more": "Learn more →",
     "connect_remote": "Add a machine",
-    "search_placeholder": "Search…",
     "scope_mine": "Mine",
     "scope_all": "All",
     "live": "Live",
@@ -25,7 +23,7 @@
       "title": "Starting local runtime…",
       "hint": "Connecting to the workspace..."
     },
-    "add": "Add",
+    "add": "Add runtime",
     "add_menu": {
       "machines": "Machines",
       "this_computer": "This computer",
@@ -67,10 +65,12 @@
       "no_matches": "No machines or cloud services match"
     },
     "filters": {
-      "all": "All",
+      "all": "All runtimes",
       "online": "Online",
       "offline": "Offline"
-    }
+    },
+    "learn_more": "Learn more →",
+    "search_placeholder": "Search…"
   },
   "mika_setup": {
     "title": "Your runtime is ready. Start with Mika.",
@@ -93,8 +93,7 @@
     "this_machine": "This device",
     "local_badge": "Local · this machine",
     "pending_custom_runtimes": "Pending custom runtimes",
-    "runtime_count_one": "{{count}} runtime",
-    "runtime_count_other": "{{count}} runtimes",
+    "daemon_title": "Daemon",
     "busy_count_one": "{{count}} busy",
     "busy_count_other": "{{count}} busy",
     "no_matches_title": "No machines",
@@ -133,7 +132,9 @@
       "toast_saved": "Machine renamed",
       "toast_cleared": "Machine name cleared",
       "toast_failed": "Failed to rename machine"
-    }
+    },
+    "runtime_count_one": "{{count}} runtime",
+    "runtime_count_other": "{{count}} runtimes"
   },
   "health": {
     "online": {
@@ -162,16 +163,16 @@
     "fact_owner": "Owner",
     "fact_device": "Device",
     "fact_runtime": "Runtime",
-    "technical_details": "Technical details",
     "fact_daemon_cli": "Daemon CLI",
     "fact_daemon_id": "Daemon ID",
-    "serving_title": "Serving",
-    "serving_count_one": "{{count}} agent",
-    "serving_count_other": "{{count}} agents",
+    "usage_title": "Usage",
     "no_agents": "No agents are bound to this runtime yet.",
-    "diagnostics_title": "Diagnostics",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "Visibility",
+    "concurrency_title": "Concurrency",
+    "concurrency_none": "No limit",
+    "concurrency_hint": "Max runs at once across all agents on this runtime ({{min}}–{{max}}). Leave empty for no limit.",
+    "toast_concurrency_failed": "Failed to update concurrency limit",
     "visibility_label": {
       "private": "Private",
       "public": "Public",
@@ -260,7 +261,12 @@
     "running_chip_one": "· {{count}} running",
     "running_chip_other": "· {{count}} running",
     "queued_chip_one": "· {{count}} queued",
-    "queued_chip_other": "· {{count}} queued"
+    "queued_chip_other": "· {{count}} queued",
+    "technical_details": "Technical details",
+    "serving_title": "Serving",
+    "serving_count_one": "{{count}} agent",
+    "serving_count_other": "{{count}} agents",
+    "diagnostics_title": "Diagnostics"
   },
   "detail_page": {
     "not_found_title": "Runtime not found",
@@ -391,17 +397,18 @@
     "pending_health_warning": "Waiting for daemon sync",
     "pending_health_error": "Registration error",
     "pending_health_disabled": "Disabled",
-    "pending_cli_unknown": "waiting"
+    "pending_cli_unknown": "waiting",
+    "col_rate_limits": "Limits"
   },
   "profiles": {
     "cta": "Add runtime",
     "add_custom": "Add custom runtime",
     "this_machine": "this machine",
     "unassigned_title": "Custom runtimes without a machine",
-    "unassigned_description": "These workspace runtimes are not connected to any machine. Connect a machine with the matching commands, or use a row's actions to edit or delete them.",
+    "unassigned_description": "Reconnect the assigned machine, or edit an older runtime to assign its machine.",
     "dialog_title": "Custom runtimes",
-    "dialog_description": "Custom runtime definitions are workspace-wide and sync to every connected machine. A machine registers the runtime when the command is available there.",
-    "create_dialog_description": "Set up a custom command from {{machine}}. The definition syncs workspace-wide and registers only on machines where that command is available.",
+    "dialog_description": "Custom runtimes belong to one machine.",
+    "create_dialog_description": "Only {{machine}} will register this custom command.",
     "learn_more": "View setup guide",
     "close": "Close",
     "add_new": "New custom runtime",
@@ -439,6 +446,9 @@
       "step_family_hint": "Select the CLI this command is compatible with.",
       "step_details_label": "Configure the runtime",
       "step_progress": "Step {{current}} of {{total}}",
+      "machine_label": "Machine (optional)",
+      "machine_placeholder": "Keep current machines",
+      "machine_hint": "Selecting a machine removes unused copies on other machines.",
       "family_label": "Base runtime",
       "family_locked_hint": "The base runtime cannot be changed after creation.",
       "display_name_label": "Display name",
@@ -480,7 +490,6 @@
   },
   "usage": {
     "period_label": "Period",
-    "dimension_label": "Dimension",
     "kpi_cost_label": "Cost · {{days}}D",
     "kpi_cost_delta": "{{sign}}{{pct}}% vs prev",
     "kpi_cache_label": "Cache savings · {{days}}D",
@@ -488,8 +497,6 @@
     "kpi_tokens_label": "Tokens · {{days}}D",
     "kpi_tokens_hint": "in {{input}} · out {{output}}",
     "when_title": "When this runtime spent",
-    "when_tab_daily": "Daily",
-    "when_tab_weekly": "Weekly",
     "when_tab_heatmap": "Heatmap",
     "daily_metric_cost": "Cost",
     "daily_metric_tokens": "Tokens",
@@ -525,6 +532,7 @@
     "cost_by_title_model": "Cost by model",
     "cost_by_tab_agent": "By agent",
     "cost_by_tab_model": "By model",
+    "cost_by_label": "Group by",
     "cost_by_caption_agent_one": "{{count}} agent on this runtime",
     "cost_by_caption_agent_other": "{{count}} agents on this runtime",
     "cost_by_caption_model_one": "{{count}} model used",
@@ -537,54 +545,6 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
-  },
-  "freebuff": {
-    "title": "Freebuff-CLI accounts",
-    "add_account": "Add account",
-    "empty": "No Freebuff account yet. Add one to sign in.",
-    "new_account": "New account",
-    "default_badge": "Default",
-    "state_requested": "Starting the sign-in…",
-    "state_awaiting_login": "Waiting for you to sign in",
-    "state_signed_out": "Signed out",
-    "state_failed": "Sign-in failed",
-    "state_removing": "Removing…",
-    "state_unknown": "Not signed in",
-    "make_default": "Make default",
-    "sign_in_again": "Sign in again",
-    "remove": "Remove",
-    "confirm_remove": "Confirm remove",
-    "cancel": "Cancel",
-    "open_link_hint": "Open this link in any browser and sign in to Freebuff. This page updates when you finish.",
-    "link_expires": "Expires at {{time}}",
-    "link_label": "Sign-in link",
-    "copy_link": "Copy",
-    "open_link": "Open",
-    "link_copied": "Link copied",
-    "link_copy_failed": "Could not copy the link",
-    "toast_add_failed": "Could not add the account",
-    "toast_action_failed": "That did not work. Try again.",
-    "session_title": "Session",
-    "session_state": "{{state}}",
-    "session_remaining": "{{time}} left",
-    "session_none": "No session slot is open",
-    "credit_title": "Credit",
-    "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
-    "credit_total": "{{total}} Freebucks in total",
-    "prices_title": "Price per model"
-  },
-  "accounts": {
-    "title": "Accounts",
-    "description": "Agents on this runtime can use any of these accounts. The credential reference is a name the daemon resolves on its own machine, never a secret.",
-    "empty": "No accounts yet.",
-    "no_endpoint": "Default endpoint",
-    "enabled_aria": "Enable {{label}}",
-    "delete_aria": "Delete {{label}}",
-    "label_placeholder": "Label",
-    "endpoint_placeholder": "Endpoint (http://host:4320)",
-    "credential_placeholder": "Credential reference",
-    "add": "Add account",
-    "toast_failed": "Could not update the account"
   },
   "qoder": {
     "title": "Qoder Cloud Agents runtime",
@@ -723,5 +683,122 @@
       "cancel": "Cancel",
       "done": "Qoder disconnected"
     }
+  },
+  "intro": {
+    "title": "Give your agents a computer to work on",
+    "description": "A runtime is where agents actually run their work: your computer, a server, or a cloud service.",
+    "slides": {
+      "local": {
+        "title": "This computer connects itself",
+        "description": "Download the desktop app and sign in. Claude Code, Codex and the other CLIs on this computer show up on their own."
+      },
+      "remote": {
+        "title": "Another machine, two commands",
+        "description": "Install the CLI on a server or another computer, then run multica setup to connect it."
+      },
+      "cloud": {
+        "title": "Or use a cloud node",
+        "description": "Rather not manage machines? Create a cloud node hosted by Multica."
+      }
+    },
+    "art": {
+      "this_computer": "This computer · Desktop",
+      "detected": "Detected harnesses",
+      "run_there": "Run on that machine",
+      "connected": "{{name}} connected to Multica"
+    }
+  },
+  "rate_limits": {
+    "title": "Limits",
+    "caption": "Reported by the CLI while tasks run",
+    "updated": "Updated {{ago}}",
+    "empty_title": "No limit data yet",
+    "empty_hint": "Recorded the next time this runtime runs a task. API-key accounts have no plan limits.",
+    "window_session": "Session",
+    "window_session_hours": "{{hours}}-hour session",
+    "window_weekly": "Weekly",
+    "window_weekly_opus": "Weekly · Opus",
+    "window_weekly_sonnet": "Weekly · Sonnet",
+    "window_generic": "Other limit",
+    "short_session": "Session",
+    "short_weekly": "Week",
+    "short_weekly_opus": "Opus",
+    "short_weekly_sonnet": "Sonnet",
+    "short_generic": "Other",
+    "used": "{{pct}}% used",
+    "limited": "Limit reached",
+    "resets_in": "Resets in {{duration}}",
+    "resets_at": "Resets {{time}}",
+    "reset_since": "Reset since last report",
+    "verdict_ahead": "{{pct}}% ahead of pace · runs out in about {{duration}}",
+    "verdict_on_pace": "On pace to last until reset",
+    "verdict_limited": "Resumes after the reset",
+    "credits": "Credits",
+    "credits_balance": "{{balance}} left",
+    "credits_unlimited": "Unlimited",
+    "credits_none": "None",
+    "duration_minutes": "{{minutes}}m",
+    "duration_hours": "{{hours}}h {{minutes}}m",
+    "duration_days": "{{days}}d {{hours}}h"
+  },
+  "freebuff": {
+    "title": "Freebuff-CLI accounts",
+    "add_account": "Add account",
+    "empty": "No Freebuff account yet. Add one to sign in.",
+    "new_account": "New account",
+    "default_badge": "Default",
+    "state_requested": "Starting the sign-in…",
+    "state_awaiting_login": "Waiting for you to sign in",
+    "state_signed_out": "Signed out",
+    "state_failed": "Sign-in failed",
+    "state_removing": "Removing…",
+    "state_unknown": "Not signed in",
+    "make_default": "Make default",
+    "sign_in_again": "Sign in again",
+    "remove": "Remove",
+    "confirm_remove": "Confirm remove",
+    "cancel": "Cancel",
+    "open_link_hint": "Open this link in any browser and sign in to Freebuff. This page updates when you finish.",
+    "link_expires": "Expires at {{time}}",
+    "link_label": "Sign-in link",
+    "copy_link": "Copy",
+    "open_link": "Open",
+    "link_copied": "Link copied",
+    "link_copy_failed": "Could not copy the link",
+    "toast_add_failed": "Could not add the account",
+    "toast_action_failed": "That did not work. Try again.",
+    "session_title": "Session",
+    "session_state": "{{state}}",
+    "session_remaining": "{{time}} left",
+    "session_none": "No session slot is open",
+    "credit_title": "Credit",
+    "credit_daily": "{{remaining}} of {{limit}} Freebucks left today",
+    "credit_total": "{{total}} Freebucks in total",
+    "prices_title": "Price per model",
+    "engine_title": "Engine version",
+    "engine_default": "Default",
+    "engine_none": "No engine versions installed. Install one on the runtime machine with `multica runtime freebuff install-version`.",
+    "engine_pinned_note": "Applies on the next run.",
+    "engine_select_failed": "Could not set the engine version"
+  },
+  "accounts": {
+    "title": "Accounts",
+    "description": "Agents on this runtime can use any of these accounts. The credential reference is a name the daemon resolves on its own machine, never a secret.",
+    "empty": "No accounts yet.",
+    "no_endpoint": "Default endpoint",
+    "enabled_aria": "Enable {{label}}",
+    "delete_aria": "Delete {{label}}",
+    "label_placeholder": "Label",
+    "endpoint_placeholder": "Endpoint (http://host:4320)",
+    "credential_placeholder": "Credential reference",
+    "add": "Add account",
+    "retry": "Retry",
+    "advanced": "Advanced",
+    "copy_login_url_aria": "Copy sign-in link",
+    "open_login_url_aria": "Open sign-in link",
+    "toast_failed": "Could not update the account",
+    "engine_version_aria": "Engine version for {{label}}",
+    "engine_default": "Default",
+    "engine_version_note": "Applies after this account's running tasks finish and its engine restarts."
   }
 }

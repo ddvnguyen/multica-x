@@ -8,10 +8,10 @@
 -- name: CreateAgentQuestionCard :one
 INSERT INTO agent_question_card (
     id, workspace_id, issue_id, task_id, agent_id,
-    status, context, questions
+    status, context, questions, trigger_comment_id
 ) VALUES (
     @id, @workspace_id, @issue_id, @task_id, @agent_id,
-    'open', sqlc.narg('context'), @questions
+    'open', sqlc.narg('context'), @questions, sqlc.narg('trigger_comment_id')
 )
 RETURNING *;
 
@@ -27,13 +27,57 @@ ORDER BY created_at DESC;
 -- Single-answer enforcement (team-room assertDecisionOpen): the CAS on
 -- status='open' means a second answer matches no row → pgx.ErrNoRows → the
 -- handler maps it to 409. answers is stored verbatim in question order.
+-- answered_by_type says WHO decided: 'member' for the Owner (or any workspace
+-- member), 'agent' for the project lead answering on the Owner's behalf after
+-- the M-332 escalation (answered_by is that agent's id).
 UPDATE agent_question_card
 SET status = 'answered',
     answers = @answers,
     answered_by = @answered_by,
+    answered_by_type = @answered_by_type,
     answered_at = now(),
     updated_at = now()
 WHERE id = $1 AND status = 'open'
+RETURNING *;
+
+-- name: EscalateAgentQuestionCard :one
+-- M-332 escalation, once per card. The CAS on 'escalated_at IS NULL' is the
+-- idempotency gate: a second sweep round (or a racing first one) matches no
+-- row, so the lead is triggered exactly once and the comment is posted once.
+-- The status is NOT touched: the card stays open for the Owner.
+UPDATE agent_question_card
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND escalated_at IS NULL
+RETURNING *;
+
+-- name: EscalateAgentPlan :one
+-- The plan half of the M-332 escalation: same once-only CAS, status untouched
+-- (in_review stays in_review until a human verdict).
+UPDATE agent_plan
+SET escalated_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND escalated_at IS NULL
+RETURNING *;
+
+-- name: RemindAgentQuestionCard :one
+-- M-362 reminder, once per card. The CAS on 'reminded_at IS NULL' is the
+-- idempotency gate: a second sweep round (or a racing first one) matches no
+-- row, so the bump fires exactly once. The status is NOT touched: the card
+-- stays open for the Owner.
+UPDATE agent_question_card
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'open' AND reminded_at IS NULL
+RETURNING *;
+
+-- name: RemindAgentPlan :one
+-- The plan half of the M-362 reminder: same once-only CAS, status untouched
+-- (in_review stays in_review until a human verdict).
+UPDATE agent_plan
+SET reminded_at = now(),
+    updated_at = now()
+WHERE id = $1 AND status = 'in_review' AND reminded_at IS NULL
 RETURNING *;
 
 -- name: WithdrawQuestionCardsByTask :exec
@@ -154,3 +198,152 @@ FROM agent_task_queue
 WHERE issue_id = $1
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
   AND id <> sqlc.narg('excluded_task_id')::uuid;
+
+-- name: ListParkedAskPlanSweepCandidates :many
+-- M-131 timeout sweep candidate set. A parked ask/plan task is 'blocked' with
+-- wait_reason 'awaiting human answer' (BlockTaskForAskPlan), but so is every
+-- ANSWERED park — the parked row keeps the session after the resume enqueues —
+-- so only rows whose evidence is still LIVE qualify: an open card or an
+-- in_review plan. The park clock is the evidence row's own stamp: the card is
+-- created immediately before the block, and SubmitAgentPlan sets the plan's
+-- updated_at as its last write before the block. Both joins ride their partial
+-- indexes (idx_aqc_task WHERE status='open', idx_ap_task WHERE status IN
+-- ('draft','in_review','changes_requested')), so the scan touches live evidence
+-- only. M-332: a live row that was already escalated is not a candidate — the
+-- ladder escalates once and then waits for the Owner.
+-- Settings come along because the effective timeout is per project; the
+-- escalation judgment itself happens in Go, one row at a time.
+SELECT
+    t.id AS task_id,
+    t.issue_id,
+    i.workspace_id,
+    i.project_id,
+    w.settings AS workspace_settings,
+    p.settings AS project_settings,
+    COALESCE(c.created_at, pl.updated_at) AS parked_at
+FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+LEFT JOIN workspace w ON w.id = i.workspace_id
+LEFT JOIN project p ON p.id = i.project_id
+LEFT JOIN agent_question_card c ON c.task_id = t.id AND c.status = 'open'
+LEFT JOIN agent_plan pl ON pl.task_id = t.id AND pl.status = 'in_review'
+WHERE t.status = 'blocked'
+  AND t.wait_reason = 'awaiting human answer'
+  AND ((c.id IS NOT NULL AND c.escalated_at IS NULL)
+       OR (pl.id IS NOT NULL AND pl.escalated_at IS NULL))
+ORDER BY COALESCE(c.created_at, pl.updated_at) ASC
+LIMIT $1;
+
+-- name: GetAgentQuestionCardForUpdate :one
+-- M-131 expiry gate (amendment 2): the sweep transaction locks the evidence
+-- row ITSELF, keyed by the parked task's trigger_evidence_ref_id. A concurrent
+-- AnswerQuestionCard then blocks on this lock, and once the sweep commits its
+-- status='open' CAS matches no row -> ErrQuestionCardClosed -> 409. First
+-- answer wins with no double outcome, in either interleaving.
+SELECT * FROM agent_question_card WHERE id = $1 FOR UPDATE;
+
+-- name: GetAgentPlanForUpdate :one
+-- M-131 expiry gate: same guarantee for ReviewPlan — a verdict arriving after
+-- the sweep's plan-row lock fails its own status/revision CAS against the plan
+-- this transaction already cancelled.
+SELECT * FROM agent_plan WHERE id = $1 FOR UPDATE;
+
+-- M-275: the plan page's review threads and section history.
+--
+-- A comment is anchored to a passage of one section (section_id + quote) and
+-- may be a reply (parent_comment_id); it stays pending until a verdict sends
+-- it, which stamps delivered_at/delivered_verdict once. The flat
+-- agent_plan_review.comments list keeps its contract: the plan page's
+-- comments are appended to it as their bodies.
+
+-- M-348: `revision` is the plan revision the comment was made on (the
+-- write-time base_revision, now persisted). NULL = predates the label.
+-- name: CreateAgentPlanComment :one
+INSERT INTO agent_plan_comment (
+    id, workspace_id, plan_id, section_id, quote, body,
+    parent_comment_id, author_user_id, revision
+) VALUES (
+    @id, @workspace_id, @plan_id, @section_id, @quote, @body,
+    sqlc.narg('parent_comment_id'), @author_user_id, sqlc.narg('revision')
+)
+RETURNING *;
+
+-- name: GetAgentPlanComment :one
+-- A reply is validated against the plan it lands on before it is written.
+SELECT * FROM agent_plan_comment WHERE id = $1;
+
+-- name: ListAgentPlanComments :many
+-- The plan page and the decision detail read a plan's whole thread set. Its
+-- index is (plan_id, created_at), so this is the index order.
+SELECT * FROM agent_plan_comment
+WHERE plan_id = $1
+ORDER BY created_at ASC;
+
+-- name: ListUndeliveredAgentPlanComments :many
+-- The verdict settles exactly the comments still waiting; idx_apc_pending
+-- keeps this to the rows that are actually pending.
+SELECT * FROM agent_plan_comment
+WHERE plan_id = $1 AND delivered_at IS NULL
+ORDER BY created_at ASC;
+
+-- name: DeliverAgentPlanComments :exec
+-- Stamped by the verdict that sends them, so a comment reaches the resumed
+-- run exactly once and a replayed verdict re-sends nothing.
+UPDATE agent_plan_comment
+SET delivered_at = now(),
+    delivered_verdict = @verdict
+WHERE id = ANY(@ids::uuid[]) AND delivered_at IS NULL;
+
+-- name: ResolveAgentPlanComment :one
+-- Human-only, and a CAS on resolved_at IS NULL: resolving twice matches no row
+-- (handler → 409), and the agent's text is never rewritten by a resolve.
+UPDATE agent_plan_comment
+SET resolved_at = now(),
+    resolved_by = @resolved_by
+WHERE id = $1 AND plan_id = $2 AND resolved_at IS NULL
+RETURNING *;
+
+-- name: CreateAgentPlanSectionVersion :exec
+-- One row per accepted section write, by the agent or by a Human. ON CONFLICT
+-- DO NOTHING makes a replay (the same plan revision writing the same section
+-- twice) a no-op instead of a duplicate, and lets the lazy seed probe without
+-- a read-then-write race.
+INSERT INTO agent_plan_section_version (
+    id, workspace_id, plan_id, section_id, revision, heading, markdown,
+    writer_type, writer_id
+) VALUES (
+    @id, @workspace_id, @plan_id, @section_id, @revision, @heading, @markdown,
+    @writer_type, sqlc.narg('writer_id')
+)
+ON CONFLICT (plan_id, section_id, revision) DO NOTHING;
+
+-- name: ListAgentPlanSectionVersions :many
+-- Newest first: the section history panel and the lazy seed's existence check.
+SELECT * FROM agent_plan_section_version
+WHERE plan_id = $1 AND section_id = $2
+ORDER BY revision DESC;
+
+-- name: ListAgentPlanSectionVersionsUpto :many
+-- M-348 read-old-revision: every section's version at or before a revision,
+-- newest per section first, so the handler keeps the first row per
+-- section_id. DISTINCT ON picks per (plan_id, section_id) with the
+-- revision ordering; the outer ORDER BY only stabilizes the scan.
+SELECT DISTINCT ON (plan_id, section_id) *
+FROM agent_plan_section_version
+WHERE plan_id = $1 AND revision <= $2
+ORDER BY plan_id, section_id, revision DESC;
+
+-- name: UpdateAgentPlanSection :one
+-- The Human's edit: rewrite the whole sections array and bump the revision,
+-- fenced on base_revision AND on the statuses an edit is allowed in. When the
+-- plan is in review the submitted_revision advances with the edit (M-275
+-- decision 1), so the reviewer's own verdict rides their edit instead of
+-- 409-ing against a revision their save produced.
+UPDATE agent_plan
+SET sections = @sections,
+    submitted_revision = CASE WHEN status = 'in_review' THEN revision + 1 ELSE submitted_revision END,
+    revision = revision + 1,
+    updated_at = now()
+WHERE id = $1 AND revision = @base_revision
+  AND status IN ('draft', 'in_review', 'changes_requested')
+RETURNING *;

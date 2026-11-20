@@ -22,11 +22,13 @@ var MinVersions = map[string]string{
 	"copilot":     "1.0.0",     // --output-format json envelope stable from 1.0.x
 	"grok":        "0.2.89",    // ACP + authenticate/session-load/set_model/MCP and --effort thinking flag
 	"qwen":        "0.20.0",    // stream-json protocol captured and verified against Qwen Code 0.20.0
+	"droid":       "1.8.0",     // native exec stream-json envelope verified against the official executable
 	"dim":         "0.3.10",    // cross-run session/load: per-process lock releases on graceful exit
 	"mcode":       "0.1.2",     // ACP v1 session/new, prompt, MCP capability forwarding
 	"muse":        "1.4.10",    // MSP stable surface: session/start, turn/start, item stream
 	"devin":       "3000.3.22", // devin acp --model was introduced in 3000.3.22
 	"zeroclaw":    "0.8.0",     // persistent ACP sessions and session/resume were added in 0.8.0
+	"zcode":       "0.16.0",    // native NDJSON app-server protocol
 	// opencode: honors TMPDIR/TMP/TEMP from 1.1.54. Earlier builds ignore all
 	// three when their embedded Bun runtime extracts a native module, writing
 	// into the shared system temp dir whatever the daemon exports — one 4-8 MB
@@ -35,6 +37,10 @@ var MinVersions = map[string]string{
 	// filename in a shared /tmp is not safe, so refusing the CLI is the only
 	// place we can stop it. See #8392: ~2,960 files, 11.16 GiB, root at 99%.
 	"opencode": "1.1.54",
+	// opencode2 is the 2.x runtime identity. 2.0.0 is the contract it claims
+	// (see opencodeUsesV2Contract), so a 1.x binary registered under it is
+	// refused rather than launched with argv it does not understand.
+	"opencode2": "2.0.0",
 }
 
 // MinQuickCreateCLIVersion gates the agent-create (quick-create) flow against
@@ -132,6 +138,9 @@ type semver struct {
 func SupportsTaskSupplement(provider, version string) bool {
 	var minimum string
 	switch provider {
+	case "pi":
+		// Pi 1.4 RPC reports authoritative prompt/steer dispositions.
+		minimum = "1.4.0"
 	case "codex":
 		// v0.100.0 exposes turn/steer with the expectedTurnId precondition.
 		minimum = "0.100.0"
@@ -171,7 +180,8 @@ func SupportsTaskSupplement(provider, version string) bool {
 // SupportsTaskMCP reports whether this provider can carry daemon-injected MCP
 // servers (the per-task overlay: saved agent config, remote broker, moct,
 // ask/plan) into a launch without failing it. Every provider consumes the
-// overlay without a version floor except builtin pi, whose gate lives in
+// overlay without a version floor except amp and droid, which reject managed
+// MCP configuration, and builtin pi, whose gate lives in
 // pi.go: preparePiMcpExtension refuses to start when the MCP extension needs
 // a Pi newer than piMcpMinVersion, and an unparseable version fails closed
 // there ("could not verify detected version"). Pre-checking the same floor
@@ -179,6 +189,9 @@ func SupportsTaskSupplement(provider, version string) bool {
 // instead of failing the launch — and a custom profile skips the floor
 // entirely (validatePiMcpVersion), so only builtin pi is gated.
 func SupportsTaskMCP(provider, version string, builtinRuntime bool) bool {
+	if provider == "amp" || provider == "droid" {
+		return false
+	}
 	if provider != "pi" || !builtinRuntime {
 		return true
 	}

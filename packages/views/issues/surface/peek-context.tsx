@@ -1,9 +1,10 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo } from "react";
-import { useIssueOpeningStore, type IssueOpenMode } from "@multica/core/issues/stores/issue-opening-store";
+import type { IssueOpenMode } from "@multica/core/issues/stores/issue-opening-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
+import { useIssueOpeningCapability } from "./issue-opening-capability";
 
 /**
  * Side peek: Shift+Click (or Space) on an issue — a board or swimlane card, a
@@ -107,10 +108,23 @@ export function locateInColumns(
 export function resolveIssueClick(
   event: Pick<MouseEvent, "button" | "shiftKey" | "metaKey" | "ctrlKey" | "altKey">,
   openMode: IssueOpenMode = "page",
+  supportsPeek = true,
+  supportsTabs = false,
 ): IssueOpenMode | null {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return null;
+  // The tabbed island (MMX) offers New tab beside Side preview: the full-page
+  // experience is a new header tab, so Shift toggles between the two and a
+  // legacy in-place page plain-click opens a tab (M-313).
+  if (supportsPeek && supportsTabs) {
+    if (!event.shiftKey) return openMode === "page" ? "tab" : openMode;
+    if (openMode === "tab") return "peek";
+    return "tab";
+  }
   if (!event.shiftKey) return openMode;
-  return openMode === "peek" ? "page" : "peek";
+  if (openMode === "peek") return "page";
+  if (openMode === "tab") return "page";
+  if (supportsPeek) return "peek";
+  return supportsTabs ? "tab" : "page";
 }
 
 export const IssuePeekActionsContext = createContext<IssuePeekActions | null>(null);
@@ -146,19 +160,51 @@ export function useIssuePeekPosition() {
  */
 export function useIssuePeekClick() {
   const peek = useIssuePeekActions();
-  const openMode = useIssueOpeningStore((s) => s.openMode);
+  const capability = useIssueOpeningCapability();
   const { push } = useNavigation();
   const paths = useWorkspacePaths();
-  return useCallback((issueId: string, event?: React.MouseEvent) => {
-    if (!peek || event?.defaultPrevented) return false;
-    const target = event ? resolveIssueClick(event, openMode) : openMode;
+  return useCallback((issueId: string, event?: React.MouseEvent, issueIdentifier?: string) => {
+    if (event?.defaultPrevented) return false;
+    const tabIssueId = issueIdentifier ?? issueId;
+    if (
+      capability.openMode === "tab" &&
+      event?.button === 0 &&
+      (event.metaKey || event.ctrlKey)
+    ) {
+      event.preventDefault();
+      return capability.openIssueInTab(tabIssueId, event.shiftKey);
+    }
+    const target = event
+      ? resolveIssueClick(event, capability.openMode, capability.supportsPeek, capability.supportsTabs)
+      : capability.openMode;
+    if (target === "tab") {
+      if (event) event.preventDefault();
+      return capability.openIssueInTab(tabIssueId);
+    }
     if (target === "peek") {
-      event?.preventDefault();
-      // A plain click opens (or keeps open) the issue. Shift+Click is the
-      // explicit preview gesture and toggles it closed again, like Space.
-      if (event?.shiftKey) peek.toggle(issueId);
-      else peek.open(issueId);
-      return true;
+      // A host that owns the side column (MMX, M-336) draws the preview there;
+      // its column is the preview, so the fork's in-view peek never mounts.
+      const opened = capability.openSidePreview?.(issueId) === true;
+      if (opened) {
+        event?.preventDefault();
+        return true;
+      }
+      if (capability.openSidePreview !== null) {
+        // The host owns the column but could not open it right now (no project
+        // folder yet, M-336). The press never dies silently: it keeps its other
+        // meaning and opens the issue in a new tab instead.
+        if (event) event.preventDefault();
+        return capability.openIssueInTab(tabIssueId);
+      }
+      if (peek) {
+        event?.preventDefault();
+        // A plain click opens (or keeps open) the issue. Shift+Click is the
+        // explicit preview gesture and toggles it closed again, like Space.
+        if (event?.shiftKey) peek.toggle(issueId);
+        else peek.open(issueId);
+        return true;
+      }
+      return false;
     }
     if (target === "page" && event?.shiftKey) {
       // Shift+Click in preview mode opens the full page in place. Left alone,
@@ -168,26 +214,33 @@ export function useIssuePeekClick() {
       return true;
     }
     return false;
-  }, [peek, openMode, push, paths]);
+  }, [peek, capability, push, paths]);
 }
 
 /** Empty outside a peek host, so other issue links retain normal navigation. */
-export function useIssuePeekLinkProps(issueId: string) {
+export function useIssuePeekLinkProps(issueId: string, issueIdentifier?: string) {
   const peek = useIssuePeekActions();
   const handlePeekClick = useIssuePeekClick();
+  const capability = useIssueOpeningCapability();
+  const hasOpeningHandler = peek !== null || capability.supportsTabs;
   return useMemo(
     () =>
-      peek
+      hasOpeningHandler
         ? {
             // Keep the shift-click from extending the text selection.
             onMouseDown: (event: React.MouseEvent) => {
               if (event.shiftKey) event.preventDefault();
             },
             onClick: (event: React.MouseEvent) => {
-              handlePeekClick(issueId, event);
+              handlePeekClick(issueId, event, issueIdentifier);
+            },
+            onAuxClick: (event: React.MouseEvent) => {
+              if (event.button !== 1 || event.defaultPrevented || capability.openMode !== "tab") return;
+              event.preventDefault();
+              capability.openIssueInTab(issueIdentifier ?? issueId, false);
             },
           }
         : {},
-    [peek, handlePeekClick, issueId],
+    [hasOpeningHandler, handlePeekClick, issueId, issueIdentifier, capability],
   );
 }

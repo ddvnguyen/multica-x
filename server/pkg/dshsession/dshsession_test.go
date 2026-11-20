@@ -44,12 +44,12 @@ func TestProjectKeyTruncatesToDSHBound(t *testing.T) {
 }
 
 func TestValidateSessionID(t *testing.T) {
-	for _, ok := range []string{"multica-5b2d76ea-6a66-42e2-ac02-154afa381f0f", "session-b5b5a34a-a312-4a04-99b7-de96df0ed278"} {
+	for _, ok := range []string{"multica-5b2d76ea-6a66-42e2-ac02-154afa381f0f", "session-b5b5a34a-a312-4a04-99b7-de96df0ed278", "sess.1-a_b", "1"} {
 		if !ValidateSessionID(ok) {
 			t.Errorf("ValidateSessionID(%q) = false, want true", ok)
 		}
 	}
-	for _, bad := range []string{"", "../etc", "a/b", "a~002F", "a b"} {
+	for _, bad := range []string{"", "../etc", "a/b", "a~002F", "a b", ".", "..", "-x", "_x", ".hidden"} {
 		if ValidateSessionID(bad) {
 			t.Errorf("ValidateSessionID(%q) = true, want false", bad)
 		}

@@ -11,11 +11,30 @@ import {
   startIsland,
   unmountIsland,
 } from "../src/client/island";
-import { shadowStyles } from "../src/client/popup-seat";
+import { shadowStyles, shadowAppearanceCss } from "../src/client/popup-seat";
 import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 import { attachSeat } from "../src/client/seat";
 import { useModalStore } from "../src/fork";
+import { resetIslandConfig } from "../src/client/config";
+import { configureHostShell, resetHostShell } from "../src/client/shell-runtime";
+import type { SidebarRightLike } from "../src/client/shell-link";
 import { zoomStore } from "../src/client/zoom-store";
+
+// The agent list virtualizes its rows; jsdom has no scroll viewport, so render
+// the complete row set while keeping the real list and detail components.
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 64,
+        end: (index + 1) * 64,
+        size: 64,
+      })),
+    getTotalSize: () => count * 64,
+  }),
+}));
 
 /**
  * The island is a second React tree inside a shadow root, so these tests drive
@@ -25,6 +44,8 @@ import { zoomStore } from "../src/client/zoom-store";
  */
 
 const requests: string[] = [];
+/** Each request with the headers it carried, for the workspace-slug contract. */
+const calls: Array<{ url: string; headers: Record<string, string> }> = [];
 const mounted: HTMLElement[] = [];
 
 afterEach(() => {
@@ -35,8 +56,21 @@ afterEach(() => {
   resetIsland();
   document.body.replaceChildren();
   requests.length = 0;
+  calls.length = 0;
+  // The host config is read once per page; these tests are many pages.
+  resetIslandConfig();
+  resetHostShell();
   vi.unstubAllGlobals();
 });
+
+/** Request headers, lower-cased: `Headers` normalizes names, an object does not. */
+function headerRecord(init: RequestInit | undefined): Record<string, string> {
+  const headers: Record<string, string> = {};
+  new Headers(init?.headers).forEach((value, name) => {
+    headers[name] = value;
+  });
+  return headers;
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -78,30 +112,88 @@ const ISSUE = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
+const RUNTIME = {
+  id: "runtime-1",
+  workspace_id: "ws-1",
+  daemon_id: "daemon-1",
+  name: "Claude (ddv-server)",
+  runtime_mode: "local",
+  provider: "claude",
+  launch_header: "",
+  status: "online",
+  device_info: "ddv-server · claude 1.0.0",
+  metadata: {},
+  owner_id: "user-1",
+  visibility: "private",
+  last_seen_at: "2026-01-01T00:00:00Z",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+const AGENT = {
+  id: "agent-1",
+  workspace_id: "ws-1",
+  runtime_id: "runtime-1",
+  name: "Test agent",
+  description: "",
+  instructions: "",
+  avatar_url: null,
+  runtime_mode: "local",
+  runtime_config: {},
+  custom_args: [],
+  visibility: "workspace",
+  permission_mode: "public_to",
+  invocation_targets: [{ target_type: "workspace", target_id: null }],
+  status: "idle",
+  max_concurrent_tasks: 1,
+  model: "",
+  owner_id: "user-1",
+  skills: [],
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+  archived_at: null,
+  archived_by: null,
+};
+
 function stubBackend(
-  options: { workspaces?: unknown[]; problem?: string | null; issues?: unknown[] } = {},
+  options: {
+    workspaces?: unknown[];
+    problem?: string | null;
+    issues?: unknown[];
+    agents?: unknown[];
+    /** Host-configured slug; `""` is an unconfigured host. */
+    workspaceSlug?: string;
+    projects?: unknown[];
+  } = {},
 ) {
-  const handler = vi.fn(async (input: RequestInfo | URL) => {
+  const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     requests.push(url);
+    calls.push({ url, headers: headerRecord(init) });
     if (url.startsWith("/multica/config")) {
       return json({
         wsPath: "/multica/ws",
-        workspaceSlug: "",
+        // One workspace (M-173): the configured slug is the only source, so
+        // the stub defaults to the workspace it serves.
+        workspaceSlug: options.workspaceSlug ?? WORKSPACE.slug,
         problem: options.problem ?? null,
       });
     }
-    if (url.startsWith("/multica/api/workspaces")) {
+    if (url === "/multica/api/workspaces" || url.startsWith("/multica/api/workspaces?")) {
       return json(options.workspaces ?? [WORKSPACE]);
+    }
+    if (url.startsWith("/multica/api/projects")) {
+      return json({ projects: options.projects ?? [] });
     }
     if (url.startsWith("/multica/api/me")) {
       return json({ id: "user-1", name: "Ada", email: "ada@example.test" });
     }
-    // The memory seam the settings page reads through the host's /moct prefix.
-    if (url.startsWith("/moct/status")) {
+    // The shared screens use the authenticated workspace MOCT API.
+    const moctApi = "/multica/api/workspaces/ws-1/moct";
+    if (url.startsWith(`${moctApi}/status`)) {
       return json({ ok: true, schema: 8, reachable: true });
     }
-    if (url.startsWith("/moct/team/v1/memory/usage")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/usage`)) {
       return json({
         workspaceId: "multica:ws:ws-1",
         capTokens: 1200,
@@ -113,7 +205,7 @@ function stubBackend(
     }
     // The record list the Memory tab opens on: one pending rule, which is what
     // a worker's write looks like before a human approves it.
-    if (url.startsWith("/moct/team/v1/memory?")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory?`)) {
       return json({
         results: [
           {
@@ -137,10 +229,10 @@ function stubBackend(
         nextCursor: null,
       });
     }
-    if (url.startsWith("/moct/team/v1/memory/get")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/get`)) {
       return json({ records: [], missing: ["mem_1"] });
     }
-    if (url.startsWith("/moct/team/v1/memory/mem_1/versions")) {
+    if (url.startsWith(`${moctApi}/team/v1/memory/mem_1/versions`)) {
       return json({ versions: [] });
     }
     if (url.startsWith("/multica/api/issues/grouped")) {
@@ -171,8 +263,14 @@ function stubBackend(
     ) {
       return json([]);
     }
-    if (url.includes("assignee-frequency") || url.includes("/agents") || url.includes("/members")) {
+    if (url.includes("/agents")) {
+      return json(options.agents ?? []);
+    }
+    if (url.includes("assignee-frequency") || url.includes("/members")) {
       return json([]);
+    }
+    if (url.includes("/api/runtimes")) {
+      return json([RUNTIME]);
     }
     // Object-shaped singletons the board reads on mount.
     if (url.startsWith("/multica/api/config") || url.startsWith("/multica/api/onboarding")) {
@@ -192,6 +290,32 @@ function hostElement(): HTMLElement {
   document.body.append(host);
   mounted.push(host);
   return host;
+}
+
+/** A right-sidebar face with only the members the preview and toggle read. */
+function sidebarRight(): SidebarRightLike {
+  return {
+    mounted: { getSnapshot: () => undefined, subscribe: () => () => {} },
+    toggleExpanded: () => {},
+    isExpanded: () => false,
+    hostPanel: () => () => {},
+    selectHostedSession: () => () => {},
+    openTab: () => {},
+  };
+}
+
+/**
+ * The bridge `apply` normally installs. `sidePreviewKind` is the host fact under
+ * test: `null` stands for a dsh build without the plugin tab registry.
+ */
+function installShell({ sidePreviewKind }: { sidePreviewKind: string | null }) {
+  configureHostShell({
+    sidebarRight: sidebarRight(),
+    workspaces: null,
+    sessions: null,
+    daemonId: "",
+    sidePreviewKind,
+  });
 }
 
 /** A `main` cell: an empty element the shell hands the island. */
@@ -279,6 +403,38 @@ describe("mountIsland", () => {
     expect(requests.some((url) => url.startsWith("/multica/api/workspaces"))).toBe(true);
   });
 
+  // Every page load used to open with a burst of 400s: the pages and the
+  // unread reporter queried from their own effects, before the gate's effect
+  // had told the API client which workspace it speaks as (M-198).
+  it("stamps every workspace-scoped request with the slug from the first frame", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
+    });
+
+    // Reads that legitimately carry no slug: the caller's identity, the
+    // workspace list that resolves the slug, and `/api/config`, a public route
+    // outside the workspace middleware (`server/cmd/server/router.go:1527`).
+    // Everything else the panel asks for is scoped by the slug, and the server
+    // answers 400 without it.
+    const scoped = calls.filter(
+      (call) =>
+        call.url.startsWith("/multica/api/") &&
+        !call.url.startsWith("/multica/api/workspaces") &&
+        !call.url.startsWith("/multica/api/me") &&
+        !call.url.startsWith("/multica/api/config"),
+    );
+    expect(scoped.length).toBeGreaterThan(0);
+    expect(
+      scoped
+        .filter((call) => call.headers["x-workspace-slug"] === undefined)
+        .map((call) => call.url),
+    ).toEqual([]);
+  });
+
   it("renders one issue from the backend inside the panel", async () => {
     stubBackend({ issues: [ISSUE] });
     const host = hostElement();
@@ -290,6 +446,168 @@ describe("mountIsland", () => {
       expect(text).toContain(ISSUE.title);
     });
     expect(requests.some((url) => url.includes("issues"))).toBe(true);
+  });
+
+  // CI note: settle() polls real renders; under parallel-suite load on CI one
+  // pass can exceed vitest's 5s default (timed out 1/3 PR runs). 20s is
+  // wall-clock only, no behavior change.
+  it("keeps an agent route when its in-panel settings entry updates the view query", async () => {
+    stubBackend({ agents: [AGENT] });
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, {
+        initialRoute: { view: "agents" },
+      }),
+    );
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain(AGENT.name);
+    });
+
+    const agentName = [...(host.shadowRoot?.querySelectorAll("span") ?? [])].find(
+      (span) => span.textContent?.trim() === AGENT.name,
+    );
+    expect(agentName).toBeDefined();
+    act(() => agentName?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 })));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Assign work");
+    });
+
+    // v0.8.1 replaced the agent page's tab strip with the properties panel, so
+    // the settings entry is the panel's "All settings" row; it must still route
+    // through `?view=` so the island's own tab URL keeps up.
+    const settingsEntry = [...(host.shadowRoot?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+      (button) => button.textContent?.trim() === "All settings",
+    );
+    expect(settingsEntry).toBeDefined();
+    act(() => settingsEntry?.click());
+
+    await settle(() => {
+      const persisted = localStorage.getItem("multica.dsh.tabs.v1");
+      expect(persisted).not.toBeNull();
+      const state = JSON.parse(persisted ?? "{}").state as {
+        tabs: Array<{ id: string; url: string }>;
+        activeId: string;
+      };
+      const active = state.tabs.find((tab) => tab.id === state.activeId);
+      expect(active?.url).toBe(`/demo/agents/${AGENT.id}?view=general`);
+    });
+  }, 20000);
+
+  // M-330: a list-and-detail page renders its resize edge only inside a
+  // `SidebarProvider`, and the island renders pages without the dashboard
+  // shell — so Inbox in MMX had no working handle while the web had one. The
+  // edge must be there, and the widths must stay in the island's own store.
+  it("gives the inbox list column its resize edge inside the panel", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "inbox" } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("Inbox");
+    });
+    expect(host.shadowRoot?.querySelector("[data-slot='space-panel-resize']")).not.toBeNull();
+    // The shell shares this origin, so the island must not write the bare key.
+    expect(localStorage.getItem("list_column_width")).toBeNull();
+  });
+
+  // M-330 gave MMX one open mode while the side preview had nowhere to go;
+  // M-336 corrected that. Both modes are on offer again, and `Side preview`
+  // always has an implementation — the host's column, or the fork's peek below.
+  it("offers both open modes in Preferences", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, { initialRoute: { view: "settings", query: "tab=preferences" } }),
+    );
+
+    const openModes = () =>
+      [
+        ...(host.shadowRoot?.querySelectorAll<HTMLButtonElement>(
+          "[role='group'][aria-label='Clicking a card or row opens'] button",
+        ) ?? []),
+      ].map((button) => button.textContent?.trim());
+
+    await settle(() => {
+      expect(openModes()).toEqual(["New tab", "Side preview"]);
+    });
+  });
+
+  // With dsh's tab seam the column is the preview, so nothing floats beside it:
+  // the issue surface mounts the fork's peek host by default, and a second
+  // preview of the same issue inside the MMX column is what the Owner rejected
+  // (M-313). The host opener is what keeps it out of the shadow root.
+  it("mounts no peek host when the host owns the column", async () => {
+    installShell({ sidePreviewKind: "multica-issue" });
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain(ISSUE.title);
+    });
+    expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).toBeNull();
+  });
+
+  // On a dsh too old to publish the seam there is no column to open, so the
+  // fork's floating peek is the preview (M-336, Owner decision 4).
+  it("falls back to the floating peek without the tab seam", async () => {
+    installShell({ sidePreviewKind: null });
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector("[data-issue-peek-host]")).not.toBeNull();
+    });
+  });
+
+  // M-360: the issue detail's resizable split (and every other
+  // `react-resizable-panels` page — object pages, the agent builder) saves its
+  // layout through `useDefaultLayout`, which defaults to bare `localStorage`
+  // keys on the origin the shell shares. The island supplies its namespaced
+  // store, so a saved layout is read back from there and the bare key stays
+  // untouched.
+  it("keeps the issue detail split layout in the island's store", async () => {
+    localStorage.clear();
+    // A saved layout with the sidebar collapsed at 0%: honoring it is visible
+    // as the sidebar panel's flex growth, which is unset without a layout.
+    localStorage.setItem(
+      "multica.dsh.react-resizable-panels:multica_issue_detail_layout",
+      JSON.stringify({ content: 70, sidebar: 0 }),
+    );
+    stubBackend({ issues: [ISSUE] });
+    const host = hostElement();
+    act(() => mountIsland(host, { initialRoute: { view: "issue", issueId: ISSUE.identifier } }));
+
+    await settle(() => {
+      expect(host.shadowRoot?.querySelector('[data-testid="sidebar"]')).not.toBeNull();
+    });
+    const sidebar = host.shadowRoot?.querySelector<HTMLElement>('[data-testid="sidebar"]');
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.style.flexGrow).toBe("0");
+    // The shell shares this origin, so the island must not read or write the
+    // bare key the web layout uses.
+    expect(localStorage.getItem("react-resizable-panels:multica_issue_detail_layout")).toBeNull();
+
+    // A layout change commits to the island's store, still not the bare key.
+    const separator = host.shadowRoot?.querySelector<HTMLElement>('[role="separator"]');
+    expect(separator).not.toBeNull();
+    await act(async () => {
+      separator!.focus();
+      separator!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    await settle(() => {
+      expect(
+        localStorage.getItem("multica.dsh.react-resizable-panels:multica_issue_detail_layout"),
+      ).not.toBeNull();
+    });
+    expect(localStorage.getItem("react-resizable-panels:multica_issue_detail_layout")).toBeNull();
+    localStorage.clear();
   });
 
   // One row per rail entry: the island has to render each of the five views on
@@ -324,6 +642,54 @@ describe("mountIsland", () => {
       expect(document.querySelector("style[data-multica-styles]")).toBeNull();
     });
   }
+
+  // M-349: the Runtimes settings tab lists the workspace's machines, and a
+  // row click pushes `/<slug>/runtimes/<machine>` — which the island used to
+  // refuse, so the row did nothing. The click must open the fork's detail.
+  it("opens the runtime detail when a Runtimes row is clicked", async () => {
+    stubBackend();
+    const host = hostElement();
+    act(() =>
+      mountIsland(host, {
+        initialRoute: { view: "settings", query: "tab=runtimes" },
+      }),
+    );
+
+    await settle(() => {
+      expect(host.shadowRoot?.textContent ?? "").toContain("ddv-server");
+    });
+
+    const row = [...(host.shadowRoot?.querySelectorAll("[data-row-id]") ?? [])].find(
+      (el) => (el.textContent ?? "").includes("ddv-server"),
+    );
+    expect(row).toBeDefined();
+    act(() => {
+      row?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+
+    await settle(() => {
+      const persisted = localStorage.getItem("multica.dsh.tabs.v1");
+      expect(persisted).not.toBeNull();
+      const state = JSON.parse(persisted ?? "{}").state as {
+        tabs: Array<{ id: string; url: string }>;
+        activeId: string;
+      };
+      const active = state.tabs.find((tab) => tab.id === state.activeId);
+      // The machine id is daemon-scoped (`local:<daemon-id>`): the row links by
+      // machine, not by runtime, and the id survives the URL encoding.
+      expect(active?.url).toBe("/demo/runtimes/local%3Adaemon-1");
+    });
+
+    // And the fork's detail page is what the tab shows: the machine title in
+    // the identity block, not the list again.
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).not.toContain("Connecting to Multica");
+      expect(
+        host.shadowRoot?.querySelector("[data-island-page-root]")?.textContent ?? "",
+      ).toContain("ddv-server");
+    });
+  });
 
   it("opens settings with the MOCT group and without the surfaces this panel hides", async () => {
     stubBackend();
@@ -413,9 +779,10 @@ describe("mountIsland", () => {
       expect(text).toContain("Always run the package suite");
       expect(text).toContain("1 of 1 records");
     });
-    expect(requests).toContain("/moct/status");
-    expect(requests).toContain("/moct/team/v1/memory/usage");
-    const list = requests.find((url) => url.startsWith("/moct/team/v1/memory?"));
+    const moctApi = "/multica/api/workspaces/ws-1/moct";
+    expect(requests).toContain(`${moctApi}/status`);
+    expect(requests).toContain(`${moctApi}/team/v1/memory/usage`);
+    const list = requests.find((url) => url.startsWith(`${moctApi}/team/v1/memory?`));
     expect(new URLSearchParams(list?.split("?")[1] ?? "").get("status")).toBe("pending");
   });
 
@@ -427,7 +794,7 @@ describe("mountIsland", () => {
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("Issues");
     });
-    expect(requests.some((url) => url.startsWith("/moct"))).toBe(false);
+    expect(requests.some((url) => url.includes("/moct/team/v1/memory"))).toBe(false);
   });
 
   it("explains a host that is not configured instead of rendering an empty page", async () => {
@@ -449,6 +816,29 @@ describe("mountIsland", () => {
 
     await settle(() => {
       expect(host.shadowRoot?.textContent ?? "").toContain("No Multica workspace");
+    });
+  });
+
+  // M-173: the island is one workspace. A host slug the token cannot read is
+  // an error to show, never an invitation to open the next workspace the token
+  // happens to see — that would render another tenant's data under this header.
+  it("does not fall back to another workspace when the configured slug is unreadable", async () => {
+    stubBackend({
+      workspaceSlug: "missing",
+      workspaces: [
+        WORKSPACE,
+        { ...WORKSPACE, id: "ws-2", slug: "other", name: "Other" },
+      ],
+    });
+    const host = hostElement();
+    act(() => mountIsland(host));
+
+    await settle(() => {
+      const text = host.shadowRoot?.textContent ?? "";
+      expect(text).toContain("No Multica workspace");
+      expect(text).toContain('The configured workspace "missing" is not readable');
+      // No board, no tabs: the fallback workspace is never mounted.
+      expect(text).not.toContain("Issues");
     });
   });
 
@@ -816,5 +1206,18 @@ describe("modal store", () => {
     await settle(() => {
       expect(dialogElement()).toBeNull();
     });
+  });
+});
+
+
+describe("shadowAppearanceCss", () => {
+  it("scopes selector forms to the host", () => {
+    const css = ":root { --x: 1; }\n:root.theme-light { --y: 2; }\n:root[data-theme] { --z: 3; }\nhtml.foo { --w: 4; }\n.theme-dark { --v: 5; }";
+    const out = shadowAppearanceCss(css);
+    expect(out).toContain(":host { --x: 1; }");
+    expect(out).toContain(":host(.theme-light) { --y: 2; }");
+    expect(out).toContain(":host([data-theme]) { --z: 3; }");
+    expect(out).toContain(":host(.foo) { --w: 4; }");
+    expect(out).toContain(":host(.theme-dark) { --v: 5; }");
   });
 });

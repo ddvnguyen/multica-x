@@ -89,12 +89,26 @@ const (
 	// nothing is pending — the trigger is answered by accepting the issue out of
 	// Triage, not by waiting.
 	ReasonIssueInTriage ReasonCode = "issue_in_triage"
+	// ReasonProjectAccessBlocked: the issue is in a private project that the
+	// run's member or the agent's owner cannot access (MUL-8472). The caller
+	// already sees the issue, so the code reveals nothing new about it.
+	ReasonProjectAccessBlocked ReasonCode = "project_access_blocked"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonTierUnavailable: an explicit `@agent#tier` pick named a tier that
+	// does not exist, is disabled, or is not selected for this agent (M-359).
+	// Blocked — nothing is queued, and there is no fallback: the sender must
+	// fix the name.
+	ReasonTierUnavailable ReasonCode = "tier_unavailable"
+	// ReasonTierWaitingCapacity: an explicit `@agent#tier` pick resolved, but
+	// its runtime is offline or its provider slots are full (M-359). The task
+	// IS queued (tier_parked) and runs when capacity frees — never silently
+	// moved to another tier.
+	ReasonTierWaitingCapacity ReasonCode = "tier_waiting_capacity"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

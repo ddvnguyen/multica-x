@@ -118,17 +118,24 @@ func (h *Handler) validateAgentAccount(ctx context.Context, workspaceID pgtype.U
 	if acc.Provider != accountProviderFreebuffDesktop {
 		return http.StatusBadRequest, "account provider mismatch"
 	}
+	if acc.DaemonAccountID.Valid && (!acc.RuntimeID.Valid || acc.RuntimeID != runtime.ID) {
+		return http.StatusBadRequest, "managed account belongs to another runtime"
+	}
 	if !acc.Enabled {
 		return http.StatusBadRequest, "account is disabled"
+	}
+	if acc.DaemonAccountID.Valid && acc.State != "connected" {
+		return http.StatusBadRequest, "managed account is not connected"
 	}
 	return 0, ""
 }
 
 // claimAccount is the account a claimed task runs against.
 type claimAccount struct {
-	ID            pgtype.UUID
-	Endpoint      string
-	CredentialRef string
+	ID              pgtype.UUID
+	Endpoint        string
+	CredentialRef   string
+	DaemonAccountID string
 }
 
 // errAccountUnavailable means the agent's account setting cannot be honoured
@@ -149,10 +156,13 @@ func (h *Handler) resolveClaimAccount(ctx context.Context, agent db.Agent) (acc 
 		if gerr != nil || !a.Enabled || a.Provider != accountProviderFreebuffDesktop {
 			return claimAccount{}, false, errAccountUnavailable
 		}
-		return claimAccount{ID: a.ID, Endpoint: a.Endpoint.String, CredentialRef: a.CredentialRef.String}, true, nil
+		if a.DaemonAccountID.Valid && (!a.RuntimeID.Valid || a.RuntimeID != agent.RuntimeID || a.State != "connected") {
+			return claimAccount{}, false, errAccountUnavailable
+		}
+		return claimAccount{ID: a.ID, Endpoint: a.Endpoint.String, CredentialRef: a.CredentialRef.String, DaemonAccountID: a.DaemonAccountID.String}, true, nil
 	case accountModeAny:
 		rows, lerr := h.Queries.ListAccountsForDispatch(ctx, db.ListAccountsForDispatchParams{
-			WorkspaceID: agent.WorkspaceID, Provider: accountProviderFreebuffDesktop,
+			WorkspaceID: agent.WorkspaceID, Provider: accountProviderFreebuffDesktop, RuntimeID: agent.RuntimeID,
 		})
 		if lerr != nil {
 			return claimAccount{}, false, lerr
@@ -161,9 +171,71 @@ func (h *Handler) resolveClaimAccount(ctx context.Context, agent db.Agent) (acc 
 			return claimAccount{}, false, nil
 		}
 		r := rows[0] // least busy first
-		return claimAccount{ID: r.ID, Endpoint: r.Endpoint.String, CredentialRef: r.CredentialRef.String}, true, nil
+		return claimAccount{ID: r.ID, Endpoint: r.Endpoint.String, CredentialRef: r.CredentialRef.String, DaemonAccountID: r.DaemonAccountID.String}, true, nil
 	}
 	return claimAccount{}, false, nil
+}
+
+// Runtime default account (M-203, Phase 2 of M-199).
+//
+// An agent whose account_mode is `default` used to mean "no account: the
+// runtime's own configuration applies". On a freebuff-desktop runtime that now
+// resolves to the runtime's pinned `metadata.freebuff.default_account_id`, so an
+// admin picks one account for the whole runtime and every `default` agent on it
+// runs there. The pin is stored in the runtime's own Freebuff block: no new
+// column, and no second default concept beside the one the runtime page sets.
+//
+// An empty pin keeps the old behaviour (no account). A pin that names an
+// account which is gone, disabled or owned by another runtime fails the claim
+// instead of silently running on whatever the runtime defaults to: the pin is a
+// promise, so it is validated exactly like a `specific` selection.
+
+// runtimeDefaultAccountID is the runtime's pinned account id ("" when unset).
+func runtimeDefaultAccountID(rt db.AgentRuntime) string {
+	return strings.TrimSpace(freebuffBlockFromRuntime(rt).DefaultAccountID)
+}
+
+// runtimeDefaultClaimAccount turns a pinned workspace account into a claimable
+// one. It applies the same rules as `specific`: enabled, freebuff-desktop, and
+// for daemon-managed accounts the same runtime and a connected state. ok=false
+// means "not usable", so the caller fails the claim closed.
+func runtimeDefaultClaimAccount(runtimeID pgtype.UUID, acc db.WorkspaceAccount) (claimAccount, bool) {
+	if !acc.Enabled || acc.Provider != accountProviderFreebuffDesktop {
+		return claimAccount{}, false
+	}
+	if acc.DaemonAccountID.Valid && (!acc.RuntimeID.Valid || acc.RuntimeID != runtimeID || acc.State != "connected") {
+		return claimAccount{}, false
+	}
+	return claimAccount{ID: acc.ID, Endpoint: acc.Endpoint.String,
+		CredentialRef: acc.CredentialRef.String, DaemonAccountID: acc.DaemonAccountID.String}, true
+}
+
+// resolveRuntimeDefaultAccount resolves the runtime pin for an agent that
+// selected no account. ok=false with no error means the runtime has no pin (or
+// is not a freebuff-desktop runtime), which is the legacy path.
+func (h *Handler) resolveRuntimeDefaultAccount(ctx context.Context, agent db.Agent, rt db.AgentRuntime) (claimAccount, bool, error) {
+	if rt.Provider != accountRuntimeProvider {
+		return claimAccount{}, false, nil
+	}
+	id := runtimeDefaultAccountID(rt)
+	if id == "" {
+		return claimAccount{}, false, nil
+	}
+	accountID, err := util.ParseUUID(id)
+	if err != nil {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	acc, gerr := h.Queries.GetWorkspaceAccountInWorkspace(ctx, db.GetWorkspaceAccountInWorkspaceParams{
+		ID: accountID, WorkspaceID: agent.WorkspaceID,
+	})
+	if gerr != nil {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	acct, ok := runtimeDefaultClaimAccount(rt.ID, acc)
+	if !ok {
+		return claimAccount{}, false, errAccountUnavailable
+	}
+	return acct, true, nil
 }
 
 // Account scopes a model-discovery request can ask for.
@@ -205,10 +277,11 @@ func resolveModelAccounts(ctx context.Context, q *db.Queries, runtimeID, account
 	}
 	toWire := func(a db.WorkspaceAccount) protocol.DaemonModelAccount {
 		return protocol.DaemonModelAccount{
-			ID:            uuidToString(a.ID),
-			Label:         a.Label,
-			Endpoint:      a.Endpoint.String,
-			CredentialRef: a.CredentialRef.String,
+			ID:              uuidToString(a.ID),
+			Label:           a.Label,
+			Endpoint:        a.Endpoint.String,
+			CredentialRef:   a.CredentialRef.String,
+			DaemonAccountID: a.DaemonAccountID.String,
 		}
 	}
 	if account == modelAccountAll {
@@ -220,6 +293,9 @@ func resolveModelAccounts(ctx context.Context, q *db.Queries, runtimeID, account
 		}
 		out := make([]protocol.DaemonModelAccount, 0, len(accs))
 		for _, a := range accs {
+			if a.DaemonAccountID.Valid && (!a.RuntimeID.Valid || uuidToString(a.RuntimeID) != runtimeID || a.State != "connected") {
+				continue
+			}
 			out = append(out, toWire(a)) // the query already filters enabled
 		}
 		return out
@@ -232,6 +308,9 @@ func resolveModelAccounts(ctx context.Context, q *db.Queries, runtimeID, account
 		ID: accUUID, WorkspaceID: rt.WorkspaceID,
 	})
 	if err != nil || !acc.Enabled || acc.Provider != accountProviderFreebuffDesktop {
+		return nil
+	}
+	if acc.DaemonAccountID.Valid && (!acc.RuntimeID.Valid || uuidToString(acc.RuntimeID) != runtimeID || acc.State != "connected") {
 		return nil
 	}
 	return []protocol.DaemonModelAccount{toWire(acc)}

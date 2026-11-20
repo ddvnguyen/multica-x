@@ -16,6 +16,7 @@
 // Providers and platform state.
 export { CoreProvider, setCurrentWorkspace } from "@multica/core/platform";
 export { WorkspaceSlugProvider } from "@multica/core/paths";
+export { useCurrentMember } from "@multica/core/permissions";
 export { useWorkspaceList } from "@multica/core/workspace";
 
 // The account-level inbox unread summary the rail dot reports on: the same
@@ -29,21 +30,51 @@ export type { InboxWorkspaceUnread } from "@multica/core/types/inbox";
 
 // Navigation and view state.
 export { NavigationProvider } from "@multica/views/navigation";
+export { IssueOpeningCapabilityProvider } from "@multica/views/issues/issue-opening-capability";
+export {
+  useTabPresentation,
+  ResourceLeadingVisual,
+} from "@multica/views/layout";
+export type { TabPresentationResult } from "@multica/views/layout";
+export { PageChromeProvider } from "@multica/views/layout";
+// M-330: the island mounts the same width owner the dashboard does, so its
+// list-and-detail pages (Inbox, Chat) get the resize edge and the shared column
+// widths the web has. `storage` hands those widths the island's namespaced
+// adapter instead of the bare `localStorage` keys, which would collide with the
+// shell's own origin.
+export { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+export type { WidthStorage } from "@multica/ui/components/ui/sidebar";
+// M-360: the same store backs the other width owners the pages render — the
+// `react-resizable-panels` split layouts and rich-table column widths — so no
+// bare key reaches the origin the shell shares.
+export { HostStorageProvider } from "@multica/ui/components/ui/host-storage";
 export type { NavigationAdapter } from "@multica/views/navigation";
 export { ViewStoreProvider } from "@multica/core/issues/stores/view-store-context";
 export { createIssueViewStore } from "@multica/core/issues/stores/view-store";
+// The pull-based state-restoration channel the island serves its tabs'
+// mementos through (M-174): the platform adapter interface the fork's views
+// already consume on desktop, so the island mounts the same plumbing rather
+// than a rival one.
+export { ScrollRestorationProvider } from "@multica/views/platform";
+export type { ScrollRestorationAdapter, ScrollRestorationEntry } from "@multica/views/platform";
 
 // The five surfaces the sidebar menu opens, plus their detail depth.
 export {
   IssuesPage,
   IssueDetailRoute,
 } from "@multica/views/issues/components";
+// The side stacks the preview tab renders in dsh's right column (M-336, G6).
+// Each is the view's own composition, not a second one.
+export { IssueSideStack } from "@multica/views/issues/components";
+export { AgentSideStack } from "@multica/views/agents";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
 // The agent page's extension point, so a host-supplied section (the MOCT
 // Memory tab) rides the fork's own layout instead of a second design.
 export type { ExtraAgentSection } from "@multica/views/agents";
 export { SkillsPage, SkillDetailPage } from "@multica/views/skills";
 export { InboxPage } from "@multica/views/inbox";
+export { DecisionsPage } from "@multica/views/decisions";
+export { decisionsOptions } from "@multica/core/decisions";
 export { ChatPage } from "@multica/views/chat";
 
 // Dialogs. The fork's pages ask for a dialog through a module-level store and
@@ -64,6 +95,8 @@ export {
   SettingsTab,
 } from "@multica/views/settings";
 export type { ExtraSettingsGroup } from "@multica/views/settings";
+export { createMoctGroup, createAgentMemorySections, HIDDEN_SETTINGS_TABS } from "@multica/views/moct";
+export type { MoctConnection } from "@multica/views/moct";
 
 // Form primitives the MOCT tabs edit with. Taken from the fork rather than
 // styled here so a settings control looks and behaves like the web app's own,
@@ -71,13 +104,60 @@ export type { ExtraSettingsGroup } from "@multica/views/settings";
 // would otherwise have to reproduce.
 export { Input } from "@multica/ui/components/ui/input";
 export { Switch } from "@multica/ui/components/ui/switch";
+export { cn } from "@multica/ui/lib/utils";
+export {
+  ArrowLeft,
+  ArrowRight,
+  // `PanelRight*` is the header's side-panel toggle (M-159): the same edge
+  // glyph the dsh right sidebar's own control draws.
+  PanelRight,
+  PanelRightClose,
+  ListX,
+  Plus,
+  RefreshCw,
+  Server,
+  X,
+  Pin,
+  PinOff,
+  Search,
+} from "@multica/ui/icons";
+export { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
+export { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 export {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@multica/ui/components/ui/select";
+
+// The header's project picker (M-173): the workspace's projects as the fork
+// already loads them, and the one page-scope hook every MMX view narrows by.
+export { usePageScope } from "@multica/views/layout";
+export type { PageScope } from "@multica/views/layout";
+export { projectListOptions } from "@multica/core/projects/queries";
+export { projectResourcesOptions } from "@multica/core/projects";
+
+// The side panel's folder chain (M-316) reads the view rather than only the
+// header's picker: the issue on screen names its project, and the board's filter
+// can name one too. Both come from the fork's own stores and route resolver, so
+// the header reads the same cache entries the page it sits above already fills.
+export { useCanonicalIssue } from "@multica/core/issues/canonical-id";
+export { useViewStore } from "@multica/core/issues/stores/view-store-context";
+// The side preview's body header (M-336) names the issue it shows; the
+// workspace pointer is the fork's own page-scope hook, the same one the side
+// stack below the header reads.
+export { useWorkspaceId } from "@multica/core/hooks";
+export type { Project } from "@multica/core/types/project";
+export type { ProjectResource } from "@multica/core/types/project";
+
+// Search: reuse the fork's command palette for results instead of a second search.
+// NB: v0.8.2 moved the palette's open/toggle store out of `views/search`
+// into core, so the island reads it from there and only takes the
+// component from the view package.
+export { SearchCommand } from "@multica/views/search";
+export { useSearchStore } from "@multica/core/command-bar";
 
 // Locale resolution. The island has no cookie and must not write one on dsh's
 // origin, so it supplies its own `LocaleAdapter` over `createIslandStorage` and
@@ -90,9 +170,52 @@ export type { LocaleAdapter } from "@multica/core/i18n";
 // and the portal seat that keeps overlays inside the island's shadow root.
 export { RESOURCES } from "@multica/views/locales";
 export { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
+
+// Which running MMX turn owns a dsh session (M-136). The snapshot is the same
+// workspace-wide key the presence surfaces read, so the composer's takeover
+// store costs no request of its own and follows the realtime invalidation the
+// task events already trigger.
+export { agentTaskSnapshotOptions } from "@multica/core/agents/queries";
+export type { AgentTask } from "@multica/core/types";
 export { PortalContainerProvider } from "@multica/ui/components/ui/portal-container";
+
+// The runtimes surface (M-174): the same page the desktop and web apps render,
+// so the island's Settings can manage what the workspace actually runs on
+// instead of only what it stores. The desktop's own wrapper adds daemon state
+// its shell owns; a dsh panel has no local daemon, so the props stay unset.
+export {
+  RuntimesPage,
+  RuntimeDetailPage,
+  RuntimeSettingsPage,
+} from "@multica/views/runtimes";
 
 // The stamped build identity (M-155): one string for one build, injected by
 // this package's vite config, so the island's badge, the Settings row and the
 // client identity sent to multica-be all read the same value.
 export { mmxBuild } from "@multica/views/build-info";
+
+// In-island toasts for ask/plan arrivals (M-362): the fork's sonner surface
+// and the realtime + navigation hooks the reporter subscribes through, so the
+// island toasts on live `inbox:new` without importing the fork directly.
+export { Toaster } from "@multica/ui/components/ui/sonner";
+export { useWSEvent } from "@multica/core/realtime";
+export { useIntentNavigate } from "@multica/views/navigation";
+export type { InboxItem } from "@multica/core/types/inbox";
+export { toast } from "sonner";
+
+// Appearance: island applies the fork's theme system to its own shadow surface.
+export {
+  APPEARANCE_STORAGE_KEY,
+  APPEARANCE_THEME_ATTR,
+  INSTALLED_THEMES_STORAGE_KEY,
+  THEME_OPTION_ATTR_PREFIX,
+  activeTheme,
+  appearanceRootVariables,
+  appearanceStylesheet,
+  appearanceThemeAttributes,
+  appearanceThemeCss,
+  selectAppearance,
+  useAppearanceStore,
+  useInstalledThemesStore,
+  useThemeSafeMode,
+} from "@multica/core/appearance";

@@ -8,7 +8,7 @@ Two halves, one package:
 
 | Face | Entry | Runs in | Owns |
 | --- | --- | --- | --- |
-| host | `src/index.ts` | the dsh process | `/multica` HTTP + WebSocket transport, and the `/moct` memory seam |
+| host | `src/index.ts` | the dsh process | `/multica` HTTP + WebSocket transport |
 | client | `src/client/index.ts` | the dsh browser shell | six rail rows, their `main` seats, the React 19 island |
 
 The host half exists so the Multica credential never leaves the dsh process: the
@@ -17,12 +17,10 @@ Multica server named in the plugin config, and the browser sees neither the
 server URL nor the token. Same origin means no CORS, and a WebSocket goes through
 `/multica/ws` on the same seam.
 
-`/moct` is the same idea for the memory plane, but closed: moct-be has no auth
-and trusts whoever names a workspace, so the host serves a fixed allow-list of
-memory routes and injects `workspaceId`, `expertId` and `actor` itself. A route
-the panel does not need is a 404 that never reaches the backend; see
-[`docs/moct-seam.md`](../../docs/moct-seam.md) and
-the config comment in [`cordis.patch.yml`](cordis.patch.yml).
+The shared MOCT screens call the authenticated Multica server through this
+same `/multica` transport. The server scopes each request to the workspace and
+enforces owner/admin decisions; the browser never contacts moct-be directly.
+See [`docs/moct-seam.md`](../../docs/moct-seam.md).
 
 ## Configure
 
@@ -97,12 +95,105 @@ The row chooses where an island *opens*; from there the fork's pages navigate as
 they do in the web app — an inbox row that no longer resolves falls back to its
 issue, for instance — and the row keeps marking the entry the reader came
 through. dsh gives a plugin no way to move the shell's rail selection, so the
-island follows the reader instead of fighting the rail.
+island follows the reader, and moves the rail's selection with it (see
+"Keeping the shell in step" below).
 
 Not mapped: the creation flows (`agents/new`, the AI builder). They are real
 routes in the fork, but they are authoring surfaces rather than views of what
 already exists, so a "New agent" click logs one line and stays put rather than
 opening a page this cut does not cover.
+
+## Header tabs
+
+The island carries its own header row above the page: back/forward buttons, a
+horizontally scrolling tab strip, and an empty trailing slot reserved for card
+B. Every MMX view (board, issue, agents, agent, skills, skill, inbox, chat,
+settings) opens as a tab. A rail click focuses that family's tab (or opens
+one), and closing the last tab opens the family root so the strip is never
+empty. The board's own title `PageHeader` is suppressed when the island hosts
+the chrome (`PageChromeProvider`), while its filter toolbar stays.
+
+Back and Forward are **one history for the whole window**, not one per tab
+(`src/client/tabs.ts`). A tab switch and a navigation inside a tab each record
+a visited location; the history stores which tab each location belonged to and
+is saved with the tabs (session), capped at 100. Back from a tab's first
+location therefore lands on the previous tab's last one, and the entries of a
+tab closed since are skipped rather than pruned.
+
+An issue tab is named by its identifier (`M-123`) with the full title in its
+tooltip; while the issue is still loading the name falls back to the URL's own
+segment, which the issue route rewrites to the identifier once it resolves.
+Every other tab keeps the name the fork resolves for it.
+
+### The dsh side panel
+
+The header carries one more control than the strip: dsh's own right-Sidebar
+toggle, next to the tabs. It is the shell's column, not a Multica view — a press
+flips the panel dsh draws, with its own tabs, Start guide and collapse — and it
+addresses the folder of whatever the reader is looking at. The chain is the
+picked project's `local_directory` resource, else the viewed issue's project,
+else the one project the board/list filter names, else the host's
+`workspaceFolder`. A picked project with no folder is reported, never replaced
+by another rung: the header never opens a folder its own picker does not name.
+
+Because it lives in the header the island draws once, the toggle works in every
+MMX view — board, list, issue, agents, skills, inbox, chat, settings — as soon
+as any rung resolves.
+
+Which Session the column edits is the project's, not whatever the Conversation
+last selected: on a host that can host the column beside MMX (card C's
+`hostPanel` and `selectHostedSession`), a press names the folder's Session and
+flips the column in place, so MMX never leaves the main column. **A press never
+navigates.** A host whose build cannot host the column beside MMX gets a
+disabled button ("This dsh build cannot show the side panel next to MMX")
+with no press at all, because the only other place its Sidebar can be drawn is
+over an on-screen Session — which would replace MMX with the dsh page. An open
+column is closed where it is, and a press that cannot proceed reports why in
+the tooltip.
+
+## Side preview
+
+`Side preview` — the issue opening mode in Settings → Preferences — opens the
+issue into dsh's own right column, the same column the header toggle shows. It
+is a plugin page tab type (M-336): `apply` registers `multica-issue` in
+dsh's `sidebarRightTabs` and its body in the keyed `sidebar.right.pane.tab`
+slot, and a peek-mode click calls `openTab('multica-issue', { params: {
+issueId }, revealIfOpened: true })` after the column has a Session to act on.
+`revealIfOpened` is the point: a second press focuses the one preview tab and
+hands it the new issue instead of opening a copy.
+
+The body is an empty element the shell renders; the island portals the issue's
+side stack — Properties, Wakeups, Pull requests, Execution log — into a surface
+inside it, carrying the island's stylesheet in a shadow root of its own (a
+portal into the shell's light DOM would arrive unstyled). The chip is the
+generic `Issue`: dsh captures `title(address)` once per tab and a page type's
+only address is `sidebar://<kind>`, so the identifier follows in the body.
+
+A host without `sidebarRightTabs` (an older dsh) registers nothing and cannot
+open a page tab, so there `Side preview` is the fork's floating peek inside the
+MMX column — the same panel web and desktop show (M-330). Both hosts offer
+`New tab` and `Side preview`; only where the preview lands depends on the shell,
+and the floating panel never mounts beside a host-owned column, so one issue is
+never previewed twice. A reload restores whatever tab dsh saved: if the plugin
+is not loaded yet, dsh renders its own "nothing can view this" notice for the
+tab, and once it loads a tab with no params shows the "No issue open"
+placeholder rather than an empty pane.
+
+## Keeping the shell in step
+
+The rail and the strip are two views of one state, so the island tells the
+shell which row is showing (`src/client/shell.ts`, through dsh's `ctx.layout`):
+whatever moves the active tab — a tab click, Back/Forward across tabs, closing
+the current tab, a restored session — also selects the rail row that owns the
+tab's family. Only a seated island does this; the warm-up build has no seat and
+leaves the shell's selection alone.
+
+The same module collapses the sidebar while an MMX view is active and gives the
+reader back the sidebar they had on leaving (`ctx.layout.toggleSidebar`, with
+the collapsed state read from the frame's own `data-sidebar-collapsed`). A
+sidebar that was already collapsed is left alone, and one the reader expands
+inside MMX is never collapsed again for them: the collapse happens once, on
+entering, and only that collapse is undone on leaving.
 
 ## How it renders
 
@@ -147,6 +238,16 @@ content height (M-143).
 There is no iframe and no loopback page: the board, the filters, the issue page
 and the other four views are the fork's own components, mounted under a fork
 `CoreProvider` whose `ApiClient` points at `/multica`.
+
+The one workspace the panel speaks as is set on the platform's
+current-workspace pointer *before* any page mounts: the gate arms itself in a
+layout effect and renders its children only once the pointer matches the
+workspace it resolved. A passive effect there would be too late — child effects
+run before the parent's — so the first queries of a load went out without
+`X-Workspace-Slug` and the server answered 400 to each until react-query
+retried (M-198). The rail dot's poller takes its slug from the host's own boot
+config for the same reason (it runs before any island exists), and a host with
+no workspace configured is not polled at all.
 
 What the plugin may import from the fork is deliberately narrow — see
 [`FORK.md`](FORK.md). One module, public exports only, enforced by `pnpm lint`.

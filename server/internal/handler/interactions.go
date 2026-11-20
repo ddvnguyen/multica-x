@@ -8,11 +8,13 @@ package handler
 // everyone except a workspace owner or admin.
 //
 // Three deliberate limits, all of them the card's:
-//
-//   - The interaction timeout is STORED AND SURFACED, never enforced. Nothing
-//     here cancels a parked run, resumes one, or writes the notice a reader
-//     would get. Enforcement is M-131; a settings page that silently shortened
-//     a running wait would be a behavior change disguised as a preference.
+//	//   - The interaction wait is stored, surfaced, and ENFORCED by the sweeper
+//     M-131 adds: nothing in this file cancels a parked run or writes the
+//     notice a reader would get — the sweeper escalates a park past
+//     EffectiveAskPlanTimeoutSeconds to the project lead (M-332: once, and
+//     the card stays open afterwards). The resolver lives here (and is
+//     exported) because the settings surfaces and the sweeper must agree on
+//     one number and one source.
 //   - The values live in the existing `workspace.settings` / `project.settings`
 //     objects under their own keys rather than in a new column: every existing
 //     reader treats those objects as open sets, and an absent key falls back to
@@ -24,22 +26,28 @@ package handler
 //     other.
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const (
-	// interactionsDefaultTimeoutSeconds is the shipped ask/plan wait: ten
-	// minutes, the value the card names.
-	interactionsDefaultTimeoutSeconds = 600
+	// interactionsDefaultTimeoutSeconds is the shipped ask/plan wait: five
+	// minutes (Owner decision on M-325, 2026-11-13). After it the card escalates
+	// once to the project lead and then waits for the Owner as long as it takes
+	// — this number bounds the silence before the lead is told, not the life of
+	// the card. A workspace or project may still override it.
+	interactionsDefaultTimeoutSeconds = 300
 	// The bounds are the validation the card asks for. A minute is below any
 	// useful human answer; a day is above any run that still wants resuming.
 	interactionsMinTimeoutSeconds = 60
@@ -106,6 +114,163 @@ type UpdateMoctSettingsRequest struct {
 	MemoryInject json.RawMessage `json:"memory_inject"`
 }
 
+// TurnEndRouterSettingsResponse exposes the workspace's turn-end routing mode.
+type TurnEndRouterSettingsResponse struct {
+	Mode                       string                        `json:"mode"`
+	ModeSet                    bool                          `json:"mode_set"`
+	Editable                   bool                          `json:"editable"`
+	Runs24h                    int64                         `json:"runs_24h"`
+	ProductiveRuns24h          int64                         `json:"productive_runs_24h"`
+	ProductiveRatio24h         float64                       `json:"productive_ratio_24h"`
+	ShadowWouldQueue24h        int64                         `json:"shadow_would_queue_24h"`
+	RunsByReasonDestination24h []TurnEndRouterReasonMetric   `json:"runs_by_reason_destination_24h"`
+	RunsPerIssue24h            []TurnEndRouterIssueRunBucket `json:"runs_per_issue_24h"`
+	RunsPerIssue7d             []TurnEndRouterIssueRunBucket `json:"runs_per_issue_7d"`
+}
+
+type TurnEndRouterReasonMetric struct {
+	Reason          string  `json:"reason"`
+	Destination     string  `json:"destination"`
+	Runs            int64   `json:"runs"`
+	RunShare        float64 `json:"run_share"`
+	ProductiveRuns  int64   `json:"productive_runs"`
+	ProductiveRatio float64 `json:"productive_ratio"`
+}
+
+type TurnEndRouterIssueRunBucket struct {
+	RunsPerIssue int64 `json:"runs_per_issue"`
+	IssueCount   int64 `json:"issue_count"`
+}
+
+type UpdateTurnEndRouterSettingsRequest struct {
+	Mode json.RawMessage `json:"mode"`
+}
+
+const turnEndRouterSettingKey = "turn_end_router_mode"
+
+func turnEndRouterMode(settings []byte) (string, bool) {
+	raw, ok := settingValue(settings, turnEndRouterSettingKey)
+	if !ok {
+		return "shadow", false
+	}
+	mode, ok := raw.(string)
+	if !ok || (mode != "off" && mode != "shadow" && mode != "on") {
+		return "shadow", false
+	}
+	return mode, true
+}
+
+func (h *Handler) GetTurnEndRouterSettings(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
+		return
+	}
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	mode, set := turnEndRouterMode(ws.Settings)
+	response, err := h.turnEndRouterMetrics(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load turn-end router metrics")
+		return
+	}
+	response.Mode, response.ModeSet, response.Editable = mode, set, isWorkspaceAdmin(member)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) UpdateTurnEndRouterSettings(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	if _, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id"); !ok {
+		return
+	}
+	var req UpdateTurnEndRouterSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var mode string
+	if len(req.Mode) == 0 || json.Unmarshal(req.Mode, &mode) != nil || (mode != "off" && mode != "shadow" && mode != "on") {
+		writeError(w, http.StatusBadRequest, "mode must be off, shadow, or on")
+		return
+	}
+	response, err := h.turnEndRouterMetrics(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load turn-end router metrics")
+		return
+	}
+	updated, err := h.setWorkspaceSetting(r, workspaceID, turnEndRouterSettingKey, mode)
+	if err != nil {
+		slog.Error("update turn-end router settings failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update turn-end router settings")
+		return
+	}
+	h.publishWorkspaceSettingsChanged(r, updated)
+	response.Mode, response.ModeSet, response.Editable = mode, true, true
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) turnEndRouterMetrics(ctx context.Context, workspaceID pgtype.UUID) (TurnEndRouterSettingsResponse, error) {
+	response := TurnEndRouterSettingsResponse{
+		RunsByReasonDestination24h: []TurnEndRouterReasonMetric{},
+		RunsPerIssue24h:            []TurnEndRouterIssueRunBucket{},
+		RunsPerIssue7d:             []TurnEndRouterIssueRunBucket{},
+	}
+	now := time.Now()
+	dayAgo := pgtype.Timestamptz{Time: now.Add(-24 * time.Hour), Valid: true}
+	weekAgo := pgtype.Timestamptz{Time: now.Add(-7 * 24 * time.Hour), Valid: true}
+	stats, err := h.Queries.CountWorkspaceTurnEndRouterRunsSince(ctx, workspaceID)
+	if err != nil {
+		return response, err
+	}
+	response.Runs24h, response.ProductiveRuns24h = stats.RunCount, stats.ProductiveCount
+	if stats.RunCount > 0 {
+		response.ProductiveRatio24h = float64(stats.ProductiveCount) / float64(stats.RunCount)
+	}
+	response.ShadowWouldQueue24h, err = h.Queries.CountTurnEndRouterShadowWouldQueueSince(ctx, db.CountTurnEndRouterShadowWouldQueueSinceParams{WorkspaceID: workspaceID, Since: dayAgo})
+	if err != nil {
+		return response, err
+	}
+	reasons, err := h.Queries.ListTurnEndRouterReasonMetrics(ctx, db.ListTurnEndRouterReasonMetricsParams{WorkspaceID: workspaceID, Since: dayAgo})
+	if err != nil {
+		return response, err
+	}
+	for _, row := range reasons {
+		metric := TurnEndRouterReasonMetric{Reason: row.Reason, Destination: row.Destination, Runs: row.RunCount, ProductiveRuns: row.ProductiveCount}
+		if row.RunCount > 0 {
+			metric.ProductiveRatio = float64(row.ProductiveCount) / float64(row.RunCount)
+		}
+		if stats.RunCount > 0 {
+			metric.RunShare = float64(row.RunCount) / float64(stats.RunCount)
+		}
+		response.RunsByReasonDestination24h = append(response.RunsByReasonDestination24h, metric)
+	}
+	response.RunsPerIssue24h, err = h.turnEndRouterIssueHistogram(ctx, workspaceID, dayAgo)
+	if err != nil {
+		return response, err
+	}
+	response.RunsPerIssue7d, err = h.turnEndRouterIssueHistogram(ctx, workspaceID, weekAgo)
+	return response, err
+}
+
+func (h *Handler) turnEndRouterIssueHistogram(ctx context.Context, workspaceID pgtype.UUID, since pgtype.Timestamptz) ([]TurnEndRouterIssueRunBucket, error) {
+	rows, err := h.Queries.ListTurnEndRouterIssueRunHistogram(ctx, db.ListTurnEndRouterIssueRunHistogramParams{WorkspaceID: workspaceID, Since: since})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]TurnEndRouterIssueRunBucket, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, TurnEndRouterIssueRunBucket{RunsPerIssue: row.RunsPerIssue, IssueCount: row.IssueCount})
+	}
+	return result, nil
+}
+
 // settingNumber reads one numeric key out of a settings object. A value that is
 // not a whole number counts as absent: a settings object can be written by
 // clients this file does not control, and a malformed entry must read as "no
@@ -156,6 +321,53 @@ func workspaceTimeoutSeconds(ws db.Workspace) (int, bool) {
 
 func validTimeoutSeconds(seconds int) bool {
 	return seconds >= interactionsMinTimeoutSeconds && seconds <= interactionsMaxTimeoutSeconds
+}
+
+// TimeoutSource names which setting supplied the effective ask/plan wait.
+// M-131 amendment 1: the resolver answers the source alongside the seconds —
+// the sweep's durable escalation comment names it, and the settings response
+// derives `timeout_seconds_set` from it, so one resolution serves both
+// instead of a second pass that could disagree.
+type TimeoutSource int
+
+const (
+	// TimeoutSourceDefault: neither object carries a valid key; the
+	// compiled-in default won.
+	TimeoutSourceDefault TimeoutSource = iota
+	// TimeoutSourceWorkspace: the workspace default won (no project override).
+	TimeoutSourceWorkspace
+	// TimeoutSourceProject: this project's override won.
+	TimeoutSourceProject
+)
+
+// String is the source's name in logs and on the escalation comment.
+func (s TimeoutSource) String() string {
+	switch s {
+	case TimeoutSourceProject:
+		return "project override"
+	case TimeoutSourceWorkspace:
+		return "workspace default"
+	default:
+		return "built-in default"
+	}
+}
+
+// EffectiveAskPlanTimeoutSeconds resolves the ask/plan wait for a project:
+// a valid project override, else a valid workspace value, else the compiled-in
+// default — the resolution order M-123's Architect answer fixed (Q2), and the
+// only place that order lives. projectSettings/workspaceSettings are the raw
+// JSONB bytes; a missing or malformed key reads as "no opinion".
+//
+// Both the Interactions surfaces and M-131's timeout sweeper call this, so a
+// park expires against exactly the number the settings page shows.
+func EffectiveAskPlanTimeoutSeconds(projectSettings, workspaceSettings []byte) (int, TimeoutSource) {
+	if seconds, ok := settingNumber(projectSettings, askPlanTimeoutSettingKey); ok && validTimeoutSeconds(seconds) {
+		return seconds, TimeoutSourceProject
+	}
+	if seconds, ok := settingNumber(workspaceSettings, askPlanTimeoutSettingKey); ok && validTimeoutSeconds(seconds) {
+		return seconds, TimeoutSourceWorkspace
+	}
+	return interactionsDefaultTimeoutSeconds, TimeoutSourceDefault
 }
 
 // moctInjectEnabled is the one reader of the memory switch, and it is
@@ -407,12 +619,15 @@ func (h *Handler) SetProjectInteractions(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if !isWorkspaceAdmin(member) {
-		writeError(w, http.StatusForbidden, "only workspace owners and admins can change a project's interaction timeout")
-		return
-	}
 	projectUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
 	if !ok {
+		return
+	}
+	if !h.requireProjectVisible(w, r, workspaceID, projectUUID, http.StatusNotFound, "project not found") {
+		return
+	}
+	if !isWorkspaceAdmin(member) {
+		writeError(w, http.StatusForbidden, "only workspace owners and admins can change a project's interaction timeout")
 		return
 	}
 	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: projectUUID, WorkspaceID: wsUUID})
@@ -468,25 +683,25 @@ func (h *Handler) SetProjectInteractions(w http.ResponseWriter, r *http.Request)
 // event payload; sending zeros would blank a row the reader is looking at.
 func (h *Handler) projectResponseWithCounts(r *http.Request, project db.Project) ProjectResponse {
 	resp := projectToResponse(project)
-	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), project.WorkspaceID, project.ID)
+	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	return resp
 }
 
 // projectInteractionsResponse is the project's effective wait: its own override
-// when it has one, otherwise the workspace default.
+// when it has one, otherwise the workspace default. One resolver with the
+// sweeper (M-131 amendment 1), so the panel can never show a number the sweep
+// would not enforce.
 func (h *Handler) projectInteractionsResponse(r *http.Request, project db.Project) map[string]any {
-	seconds, set := settingNumber(project.Settings, askPlanTimeoutSettingKey)
-	if !set || !validTimeoutSeconds(seconds) {
-		seconds, set = interactionsDefaultTimeoutSeconds, false
-		if ws, err := h.Queries.GetWorkspace(r.Context(), project.WorkspaceID); err == nil {
-			seconds, set = workspaceTimeoutSeconds(ws)
-		}
+	var workspaceSettings []byte
+	if ws, err := h.Queries.GetWorkspace(r.Context(), project.WorkspaceID); err == nil {
+		workspaceSettings = ws.Settings
 	}
+	seconds, source := EffectiveAskPlanTimeoutSeconds(project.Settings, workspaceSettings)
 	return map[string]any{
 		"project_id":          uuidToString(project.ID),
 		"timeout_seconds":     seconds,
-		"timeout_seconds_set": set,
+		"timeout_seconds_set": source != TimeoutSourceDefault,
 	}
 }
 

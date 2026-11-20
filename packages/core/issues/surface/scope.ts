@@ -8,6 +8,8 @@ export type IssueScope =
       type: "my";
       relation: "all" | "assigned" | "created" | "involved";
       userId: string;
+      /** Host-owned project narrowing; absent means every project. */
+      projectId?: string;
     }
   | { type: "project"; projectId: string; actorKind?: WorkspaceIssueActorKind }
   | {
@@ -65,7 +67,9 @@ export function issueScopeKey(scope: IssueScope): string {
     case "workspace":
       return `workspace:${scope.actorKind ?? "all"}`;
     case "my":
-      return `my:${scope.userId}:${scope.relation}`;
+      return scope.projectId === undefined
+        ? `my:${scope.userId}:${scope.relation}`
+        : `my:${scope.userId}:${scope.relation}:project:${scope.projectId}`;
     case "project":
       // The unrestricted tab keeps the historical key so existing persisted
       // display state survives; Members/Agents get their own key (and thus

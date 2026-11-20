@@ -5,7 +5,7 @@ import {
   initTabCoordinator,
   registerActiveHostElement,
 } from "./tab-coordinator";
-import { getActiveTab, useTabStore } from "@/stores/tab-store";
+import { getActiveTab, useTabStore } from "@multica/core/tabs";
 
 describe("tab-coordinator external scroll sources", () => {
   beforeEach(() => {
@@ -58,6 +58,30 @@ describe("tab-coordinator external scroll sources", () => {
       top: 512,
       height: 4000,
       contentKey: "v1hash",
+    });
+
+    registerActiveHostElement(null);
+  });
+
+  it("captures a scroll root scrolled only sideways with its horizontal offset", () => {
+    const tabId = seedActiveTab("/acme/issues", "Issues");
+    const host = document.createElement("div");
+    const board = document.createElement("div");
+    board.setAttribute("data-tab-scroll-root", "board");
+    board.scrollLeft = 640;
+    Object.defineProperty(board, "scrollHeight", { value: 800, configurable: true });
+    host.appendChild(board);
+    registerActiveHostElement(host);
+
+    useTabStore.getState().openTab("/acme/inbox", "Inbox", { activate: true });
+
+    const outgoing = useTabStore
+      .getState()
+      .byWorkspace.acme.tabs.find((t) => t.id === tabId)!;
+    expect(outgoing.memento.scroll["/acme/issues::board"]).toEqual({
+      top: 0,
+      height: 800,
+      left: 640,
     });
 
     registerActiveHostElement(null);

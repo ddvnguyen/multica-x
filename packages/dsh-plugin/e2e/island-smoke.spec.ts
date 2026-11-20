@@ -32,6 +32,7 @@ const ROUTES: ReadonlyArray<{ label: string; params: Record<string, string>; mar
   { label: "skills", params: { route: "skills" }, marker: "Release notes" },
   { label: "skill", params: { route: "skill", id: "skill-1" }, marker: "Release notes" },
   { label: "inbox", params: { route: "inbox" }, marker: "Inbox row 1" },
+  { label: "decisions", params: { route: "decisions" }, marker: "Decisions" },
   { label: "chat", params: { route: "chat" } },
 ];
 
@@ -170,5 +171,36 @@ test.describe("island smoke sweep", () => {
       );
     }
     report(findings);
+  });
+
+  // M-413: the row click that opens an agent. A list row is whole-row
+  // navigation (`CollectionList` → `useRowLink` → the island's push), so a
+  // broken click leaves the reader on the list with the tab renamed — the
+  // symptom the Owner reported. The unit suite covers the store; this covers
+  // the click itself, in a real browser, in the strip's own shape.
+  test("clicking an agent row opens the agent page in the same tab", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1300 });
+    await page.goto(href({ route: "agents" }));
+    await expect(page.getByText("Ada").first()).toBeVisible({ timeout: 20_000 });
+
+    await page.locator("[data-row-id='agent-1']").first().click();
+
+    await expect(page.getByRole("button", { name: "Assign work" })).toBeVisible({
+      timeout: 20_000,
+    });
+    // One tab: the list tab was navigated, not left behind beside a new one.
+    const strip = page.locator("[data-tab-strip]");
+    await expect(strip.locator("[data-tab-frame]")).toHaveCount(1);
+    await expect(strip.locator("[data-tab-frame]")).toContainText("Ada");
+  });
+
+  test("Decisions renders with its pending count", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1300 });
+    await page.goto(href({ route: "decisions" }));
+    await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Pending 1" })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Question/ })).toBeVisible();
+    await expect(page.getByText("Rail click stays warm").first()).toBeVisible();
+    await page.screenshot({ path: "test-results/m212-decisions.png", fullPage: true });
   });
 });

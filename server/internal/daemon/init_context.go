@@ -22,7 +22,12 @@ import (
 // prompt, so it is subtracted from the prompt's byte count before the task part
 // is priced: counting it twice would report a run as larger than it is and make
 // the memory part's budget meaningless.
-func newInitContext(provider string, brief execenv.RuntimeBrief, memory initctx.PartReport, prompt, memoryBlock string, task Task) *initctx.Report {
+//
+// seed is the seed row for this run: initctx.SeedPart() when the session
+// resumed or started fresh, initctx.SeedPartFor(...) when the daemon composed
+// a summary seed for a forked dsh session (S3-B2/M-138). It is a parameter
+// rather than a constant so the row reports what this run actually sent.
+func newInitContext(provider string, brief execenv.RuntimeBrief, memory initctx.PartReport, prompt, memoryBlock string, task Task, seed initctx.PartReport) *initctx.Report {
 	parts := make([]initctx.PartReport, 0, len(brief.Parts)+4)
 	parts = append(parts, brief.Parts...)
 	parts = append(parts,
@@ -34,7 +39,7 @@ func newInitContext(provider string, brief execenv.RuntimeBrief, memory initctx.
 			Measured: true,
 			Note:     "per-turn task prompt from the " + taskSurface(task) + " surface; never trimmed, so a small one is a short trigger",
 		},
-		initctx.SeedPart(),
+		seed,
 	)
 	return initctx.Finalize(provider, parts, brief.SHA256)
 }

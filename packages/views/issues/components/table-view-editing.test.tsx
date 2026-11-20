@@ -10,6 +10,7 @@
  */
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
 import { IssuePeekActionsContext } from "../surface/peek-context";
+import { IssueOpeningCapabilityProvider } from "../surface/issue-opening-capability";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
@@ -34,6 +35,7 @@ import type {
   IssueTableRowsResponse,
 } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
+import { ScrollRestorationProvider } from "../../platform";
 import { IssueSurfaceSelectionProvider } from "../surface/selection-context";
 import type { IssueSurfaceSelection } from "../surface/selection-context";
 import type { IssueCreateDefaults } from "../surface/types";
@@ -441,7 +443,9 @@ describe("TableView cell editors under data refresh", () => {
     renderWithI18n(
       <QueryClientProvider client={queryClient}>
         <IssuePeekActionsContext.Provider value={peek}>
-          <Harness childProgressMap={new Map()} surfaceKey="test-preferred-peek" />
+          <IssueOpeningCapabilityProvider>
+            <Harness childProgressMap={new Map()} surfaceKey="test-preferred-peek" />
+          </IssueOpeningCapabilityProvider>
         </IssuePeekActionsContext.Provider>
       </QueryClientProvider>,
     );
@@ -570,6 +574,33 @@ describe("TableView cell editors under data refresh", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+  it("brings the table back to where it was scrolled when it mounts again", async () => {
+    serverIssues = [makeIssue("a", "Alpha task", "todo")];
+    const get = vi.fn((key: string) =>
+      key === "table" ? { top: 820, left: 160, height: 4000 } : undefined,
+    );
+
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ScrollRestorationProvider adapter={{ get }}>
+          <Harness
+            childProgressMap={new Map()}
+            surfaceKey={`test-scroll-restore-${Math.floor(Math.random() * 1e9)}`}
+          />
+        </ScrollRestorationProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("MUL-a");
+    const scroller = document.querySelector<HTMLElement>(
+      '[data-tab-scroll-root="table"]',
+    )!;
+    // Marked so the tab coordinator captures it on the way out, and given
+    // both saved offsets back when it attaches.
+    expect(scroller).toContainElement(screen.getByText("MUL-a"));
+    expect(scroller.scrollTop).toBe(820);
+    expect(scroller.scrollLeft).toBe(160);
   });
 });
 

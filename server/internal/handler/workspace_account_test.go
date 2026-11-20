@@ -118,6 +118,7 @@ type accountTestEnv struct {
 	foreignWorkspaceID string
 	foreignAccountID   string
 	codebuddyRuntime   string
+	codebuddyProfile   string
 	memberUserID       string
 }
 
@@ -147,6 +148,16 @@ func newAccountTestEnv(t *testing.T) accountTestEnv {
 	}
 
 	if err := testPool.QueryRow(ctx, `
+		INSERT INTO runtime_profile (workspace_id, display_name, protocol_family, command_name, runtime_type)
+		VALUES ($1, $2, 'codebuddy', 'freebuff-desktop-bridge', 'codebuddy') RETURNING id`,
+		testWorkspaceID, "acct-profile-"+suffix).Scan(&env.codebuddyProfile); err != nil {
+		t.Fatalf("create freebuff-desktop profile: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, env.codebuddyProfile)
+	})
+
+	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
 		VALUES ($1, 'acct-test-machine', $2, 'local', 'codebuddy', 'online', 'x', '{}'::jsonb, now(), 'public', $3)
 		RETURNING id`, testWorkspaceID, "acct-runtime-"+suffix, testUserID).Scan(&env.codebuddyRuntime); err != nil {
@@ -155,6 +166,9 @@ func newAccountTestEnv(t *testing.T) accountTestEnv {
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, env.codebuddyRuntime)
 	})
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET profile_id=$1 WHERE id=$2`, env.codebuddyProfile, env.codebuddyRuntime); err != nil {
+		t.Fatalf("bind freebuff-desktop profile: %v", err)
+	}
 
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO "user" (name, email) VALUES ('Acct Member', $1) RETURNING id`, "acct-member-"+suffix+"@multica.test").Scan(&env.memberUserID); err != nil {
@@ -267,6 +281,145 @@ func TestWorkspaceAccountCRUDAndAuthz(t *testing.T) {
 	}
 	if rec := del(acc.ID); rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestCreateManagedAccountsUseUniqueLabelsAndHideLocalDetails(t *testing.T) {
+	env := newAccountTestEnv(t)
+	createManaged := func(label string) WorkspaceAccountResponse {
+		t.Helper()
+		body := map[string]any{"managed": true, "runtime_id": env.codebuddyRuntime}
+		if label != "" {
+			body["label"] = label
+		}
+		rec := createAccountAs(t, testUserID, body)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("managed create status=%d body=%s", rec.Code, rec.Body)
+		}
+		var account WorkspaceAccountResponse
+		decodeJSON(t, rec, &account)
+		return account
+	}
+	first := createManaged("")
+	second := createManaged("")
+	if first.ID == second.ID || first.Label == second.Label || first.State != "requested" || second.State != "requested" {
+		t.Fatalf("managed accounts are not independently provisioned: first=%+v second=%+v", first, second)
+	}
+	if first.RuntimeID != env.codebuddyRuntime || second.RuntimeID != env.codebuddyRuntime || !first.Enabled || !second.Enabled {
+		t.Fatalf("managed account ownership or initial enablement is wrong: first=%+v second=%+v", first, second)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET login_url='https://freebuff.example/login', credential_ref='/local/path' WHERE id=$1`, parseUUID(first.ID)); err != nil {
+		t.Fatal(err)
+	}
+	var memberRows struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	testutil.Call(t, testHandler.ListWorkspaceAccounts, withURLParam(
+		newRequestAs(env.memberUserID, http.MethodGet, "/x", nil), "id", testWorkspaceID,
+	)).Want(http.StatusOK).JSON(&memberRows)
+	for _, row := range memberRows.Accounts {
+		if row["id"] == first.ID {
+			for _, privateField := range []string{"login_url", "credential_ref", "error", "status", "daemon_account_id"} {
+				if _, exists := row[privateField]; exists {
+					t.Fatalf("member response exposed %s: %#v", privateField, row)
+				}
+			}
+			return
+		}
+	}
+	t.Fatalf("member response omitted managed account %s", first.ID)
+}
+
+func TestManagedAccountRetryAndRemovalTransitions(t *testing.T) {
+	env := newAccountTestEnv(t)
+	rec := createAccountAs(t, testUserID, map[string]any{"managed": true, "runtime_id": env.codebuddyRuntime})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("managed create = %d: %s", rec.Code, rec.Body)
+	}
+	var account WorkspaceAccountResponse
+	decodeJSON(t, rec, &account)
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET state='failed', enabled=FALSE, error='expired', login_url='https://old.example' WHERE id=$1`, parseUUID(account.ID)); err != nil {
+		t.Fatal(err)
+	}
+	retry := testutil.Call(t, testHandler.UpdateWorkspaceAccount, withURLParams(
+		newRequest(http.MethodPatch, "/x", map[string]any{"retry": true}), "id", testWorkspaceID, "accountId", account.ID,
+	))
+	retry.Want(http.StatusAccepted).JSON(&account)
+	if account.State != "requested" || account.LoginURL != "" || account.Error != "" || account.Enabled {
+		t.Fatalf("retry response did not reset sign-in state while preserving disabled choice: %+v", account)
+	}
+	report := testutil.Call(t, testHandler.ReportFreebuffDesktopAccount, withURLParam(
+		newOwnerDaemonRequest(http.MethodPost, "/x", map[string]any{"accounts": []map[string]any{{
+			"id": account.DaemonAccountID, "state": "connected", "endpoint": "http://127.0.0.1:4320",
+		}}}), "runtimeId", env.codebuddyRuntime,
+	))
+	report.Want(http.StatusOK)
+	var connectedEnabled bool
+	var connectedState string
+	if err := testPool.QueryRow(context.Background(), `SELECT state, enabled FROM workspace_account WHERE id=$1`, parseUUID(account.ID)).Scan(&connectedState, &connectedEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if connectedState != "connected" || connectedEnabled {
+		t.Fatalf("status refresh changed disabled preference: state=%q enabled=%v", connectedState, connectedEnabled)
+	}
+	remove := testutil.Call(t, testHandler.DeleteWorkspaceAccount, withURLParams(
+		newRequest(http.MethodDelete, "/x", nil), "id", testWorkspaceID, "accountId", account.ID,
+	))
+	remove.Want(http.StatusAccepted)
+	var state string
+	var enabled bool
+	if err := testPool.QueryRow(context.Background(), `SELECT state, enabled FROM workspace_account WHERE id=$1`, parseUUID(account.ID)).Scan(&state, &enabled); err != nil {
+		t.Fatalf("removing account row was deleted before daemon acknowledgement: %v", err)
+	}
+	if state != "removing" || enabled {
+		t.Fatalf("removal transition state=%q enabled=%v", state, enabled)
+	}
+}
+
+func TestDispatchScopesManagedAccountsToTheirRuntime(t *testing.T) {
+	env := newAccountTestEnv(t)
+	ctx := context.Background()
+	var otherRuntime string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id, profile_id)
+		VALUES ($1, 'acct-other-machine', 'other-runtime', 'local', 'codebuddy', 'online', 'x', '{}'::jsonb, now(), 'public', $2, $3)
+		RETURNING id`, testWorkspaceID, testUserID, env.codebuddyProfile).Scan(&otherRuntime); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id=$1`, otherRuntime) })
+	createManaged := func(runtimeID string) string {
+		t.Helper()
+		rec := createAccountAs(t, testUserID, map[string]any{"managed": true, "runtime_id": runtimeID})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("managed create = %d: %s", rec.Code, rec.Body)
+		}
+		var account WorkspaceAccountResponse
+		decodeJSON(t, rec, &account)
+		if _, err := testPool.Exec(ctx, `UPDATE workspace_account SET state='connected', enabled=TRUE WHERE id=$1`, parseUUID(account.ID)); err != nil {
+			t.Fatal(err)
+		}
+		return account.ID
+	}
+	owned := createManaged(env.codebuddyRuntime)
+	foreign := createManaged(otherRuntime)
+	manual := mustCreateAccount(t, "shared-manual")
+	for runtimeID, wantManaged := range map[string]string{env.codebuddyRuntime: owned, otherRuntime: foreign} {
+		rows, err := testHandler.Queries.ListAccountsForDispatch(ctx, db.ListAccountsForDispatchParams{
+			WorkspaceID: parseUUID(testWorkspaceID), Provider: accountProviderFreebuffDesktop, RuntimeID: parseUUID(runtimeID),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundManual, foundOwned, foundForeign := false, false, false
+		for _, row := range rows {
+			id := uuidToString(row.ID)
+			foundManual = foundManual || id == manual.ID
+			foundOwned = foundOwned || id == wantManaged
+			foundForeign = foundForeign || (id == owned && id != wantManaged) || (id == foreign && id != wantManaged)
+		}
+		if !foundManual || !foundOwned || foundForeign {
+			t.Fatalf("runtime %s dispatch rows=%+v; manual=%v owned=%v foreign=%v", runtimeID, rows, foundManual, foundOwned, foundForeign)
+		}
 	}
 }
 
@@ -397,7 +550,7 @@ func TestAccountLeaseBlocksAndBalances(t *testing.T) {
 	}
 	onA, onB, onAny := mkAgent("specific", a.ID), mkAgent("specific", b.ID), mkAgent("any", "")
 	blocked := func(agentID string) bool {
-		got, err := testHandler.Queries.AgentAccountBlocked(ctx, parseUUID(agentID))
+		got, err := testHandler.Queries.AgentAccountBlocked(ctx, db.AgentAccountBlockedParams{ID: parseUUID(agentID), RuntimeID: parseUUID(env.codebuddyRuntime)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -462,5 +615,169 @@ func TestResolveModelAccountsScopesToTheWorkspace(t *testing.T) {
 	}
 	if got := resolveModelAccounts(ctx, q, env.codebuddyRuntime, env.foreignAccountID); len(got) != 0 {
 		t.Fatalf("another workspace's account must not be enumerated: %+v", got)
+	}
+}
+
+// Lease eligibility must match dispatch eligibility for the claiming runtime,
+// while manual accounts remain available to both runtimes.
+func TestAccountLeaseScopesManagedAccountsToClaimingRuntime(t *testing.T) {
+	env := newAccountTestEnv(t)
+	ctx := context.Background()
+	var otherRuntime string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id, profile_id)
+		VALUES ($1, 'lease-other-machine', 'lease-other', 'local', 'codebuddy', 'online', 'x', '{}'::jsonb, now(), 'public', $2, $3) RETURNING id`, testWorkspaceID, testUserID, env.codebuddyProfile).Scan(&otherRuntime); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id=$1`, otherRuntime) })
+	createManaged := func(runtimeID string) string {
+		t.Helper()
+		rec := createAccountAs(t, testUserID, map[string]any{"managed": true, "runtime_id": runtimeID})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("managed create: %d %s", rec.Code, rec.Body)
+		}
+		var acc WorkspaceAccountResponse
+		decodeJSON(t, rec, &acc)
+		if _, err := testPool.Exec(ctx, `UPDATE workspace_account SET state='connected' WHERE id=$1`, acc.ID); err != nil {
+			t.Fatal(err)
+		}
+		return acc.ID
+	}
+	a, b := createManaged(env.codebuddyRuntime), createManaged(otherRuntime)
+	rec := createAgentWithAccount(t, env.codebuddyRuntime, map[string]any{"account_mode": "any"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("agent create: %d %s", rec.Code, rec.Body)
+	}
+	var ag AgentResponse
+	decodeJSON(t, rec, &ag)
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id=$1`, ag.ID) })
+	blocked := func(runtimeID string) bool {
+		t.Helper()
+		got, err := testHandler.Queries.AgentAccountBlocked(ctx, db.AgentAccountBlockedParams{ID: parseUUID(ag.ID), RuntimeID: parseUUID(runtimeID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	insertAccountTask(t, ag.ID, env.codebuddyRuntime, parseUUID(a), "running")
+	if !blocked(env.codebuddyRuntime) || blocked(otherRuntime) {
+		t.Fatal("busy A must block A but not idle B")
+	}
+	insertAccountTask(t, ag.ID, otherRuntime, parseUUID(b), "dispatched")
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status='completed', completed_at=now() WHERE account_id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
+	if blocked(env.codebuddyRuntime) || !blocked(otherRuntime) {
+		t.Fatal("idle A must not block A or unblock busy B")
+	}
+	manual := mustCreateAccount(t, "lease-shared")
+	if blocked(otherRuntime) {
+		t.Fatal("idle shared manual account must unblock B")
+	}
+	insertAccountTask(t, ag.ID, otherRuntime, parseUUID(manual.ID), "running")
+	if !blocked(otherRuntime) || blocked(env.codebuddyRuntime) {
+		t.Fatal("busy shared manual and B must block B, while idle A remains usable")
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE workspace_account SET state='signed_out' WHERE id=$1`, b); err != nil {
+		t.Fatal(err)
+	}
+	if !blocked(otherRuntime) {
+		t.Fatal("signed-out B must not unblock a busy shared account")
+	}
+}
+
+func TestManagedAccountEngineVersion(t *testing.T) {
+	env := newAccountTestEnv(t)
+	rec := createAccountAs(t, testUserID, map[string]any{"managed": true, "runtime_id": env.codebuddyRuntime})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var account WorkspaceAccountResponse
+	decodeJSON(t, rec, &account)
+	update := func(user, id, version string) *testutil.Response {
+		return testutil.Call(t, testHandler.UpdateWorkspaceAccount, withURLParams(newRequestAs(user, http.MethodPatch, "/x", map[string]any{"engine_version": version}), "id", testWorkspaceID, "accountId", id))
+	}
+	if got := update(env.memberUserID, account.ID, "0.0.196"); got.Code != http.StatusForbidden {
+		t.Fatalf("member: %d %s", got.Code, got.Body)
+	}
+	manual := mustCreateAccount(t, "engine-manual")
+	if got := update(testUserID, manual.ID, "0.0.196"); got.Code != http.StatusBadRequest {
+		t.Fatalf("unmanaged: %d %s", got.Code, got.Body)
+	}
+	if got := update(testUserID, account.ID, "../bad"); got.Code != http.StatusBadRequest {
+		t.Fatalf("invalid: %d %s", got.Code, got.Body)
+	}
+	// Before any versions have been reported, a valid pin is accepted.
+	update(testUserID, account.ID, "0.0.196").Want(http.StatusOK)
+	report := func(body map[string]any) {
+		testutil.Call(t, testHandler.ReportFreebuffDesktopAccount, withURLParam(newOwnerDaemonRequest(http.MethodPost, "/x", body), "runtimeId", env.codebuddyRuntime)).Want(http.StatusOK)
+	}
+	report(map[string]any{"versions": []map[string]string{{"version": "0.0.196", "commit": "abc"}}})
+	if got := update(testUserID, account.ID, "0.0.197"); got.Code != http.StatusConflict {
+		t.Fatalf("unknown: %d %s", got.Code, got.Body)
+	}
+	update(testUserID, account.ID, "0.0.196").Want(http.StatusOK)
+	// The list carries the runtime's installed versions for managed accounts only.
+	var listed struct {
+		Accounts []WorkspaceAccountResponse `json:"accounts"`
+	}
+	testutil.Call(t, testHandler.ListWorkspaceAccounts, withURLParam(
+		newRequestAs(testUserID, http.MethodGet, "/x", nil), "id", testWorkspaceID,
+	)).Want(http.StatusOK).JSON(&listed)
+	sawManaged, sawManual := false, false
+	for _, row := range listed.Accounts {
+		switch row.ID {
+		case account.ID:
+			sawManaged = true
+			if len(row.InstalledVersions) != 1 || row.InstalledVersions[0].Version != "0.0.196" || row.InstalledVersions[0].Commit != "abc" {
+				t.Fatalf("managed account installed_versions: %#v", row.InstalledVersions)
+			}
+		case manual.ID:
+			sawManual = true
+			if len(row.InstalledVersions) != 0 {
+				t.Fatalf("unmanaged account exposed installed_versions: %#v", row.InstalledVersions)
+			}
+		}
+	}
+	if !sawManaged || !sawManual {
+		t.Fatalf("list omitted accounts: managed=%v manual=%v", sawManaged, sawManual)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace_account SET state='connected' WHERE id=$1`, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	var pending struct {
+		Accounts []map[string]any  `json:"accounts"`
+		Pins     map[string]string `json:"pins"`
+	}
+	testutil.Call(t, testHandler.GetFreebuffDesktopPending, withURLParam(newOwnerDaemonRequest(http.MethodGet, "/x", nil), "runtimeId", env.codebuddyRuntime)).Want(http.StatusOK).JSON(&pending)
+	if pending.Pins[account.DaemonAccountID] != "0.0.196" {
+		t.Fatalf("connected account pin: %#v", pending.Pins)
+	}
+	for _, row := range pending.Accounts {
+		if row["id"] == account.DaemonAccountID {
+			t.Fatalf("connected account included in lifecycle queue: %#v", row)
+		}
+	}
+	var metadata []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT metadata FROM agent_runtime WHERE id=$1`, env.codebuddyRuntime).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	versions := freebuffBlockFromMetadata(metadata).InstalledVersions
+	if len(versions) != 1 || versions[0].Commit != "abc" {
+		t.Fatalf("reported versions: %#v", versions)
+	}
+	report(map[string]any{"accounts": []any{}}) // older reports must not erase the versions
+	if err := testPool.QueryRow(context.Background(), `SELECT metadata FROM agent_runtime WHERE id=$1`, env.codebuddyRuntime).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if len(freebuffBlockFromMetadata(metadata).InstalledVersions) != 1 {
+		t.Fatal("omitted versions erased report")
+	}
+	update(testUserID, account.ID, "").Want(http.StatusOK).JSON(&account)
+	if account.EngineVersion != "" {
+		t.Fatalf("pin not cleared: %+v", account)
+	}
+	report(map[string]any{"versions": []any{}})
+	if got := update(testUserID, account.ID, "0.0.196"); got.Code != http.StatusConflict {
+		t.Fatalf("empty installed list: %d %s", got.Code, got.Body)
 	}
 }

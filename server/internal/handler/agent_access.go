@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -47,7 +48,11 @@ import (
 // agent/system principals, but member/team targets fail closed without a
 // matching human.
 func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
-	allowed := h.invokeAgentDecision(ctx, agent, actorType, actorID, originatorUserID, workspaceID)
+	return h.canInvokeAgentWithQueries(ctx, h.Queries, agent, actorType, actorID, originatorUserID, workspaceID)
+}
+
+func (h *Handler) canInvokeAgentWithQueries(ctx context.Context, q *db.Queries, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
+	allowed := h.invokeAgentDecision(ctx, q, agent, actorType, actorID, originatorUserID, workspaceID)
 	if !allowed && actorType != "member" && originatorUserID == "" {
 		// MUL-6490: the wire reason stays the deliberately generic
 		// invocation_not_allowed (dispatch/reason.go — it must not reveal whether a
@@ -70,7 +75,7 @@ func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType,
 
 // invokeAgentDecision is canInvokeAgent's pure verdict, split out so the gate has
 // exactly one place to observe a denial from.
-func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
+func (h *Handler) invokeAgentDecision(ctx context.Context, q *db.Queries, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
 	effectiveUser := actorID
 	if actorType != "member" {
 		// agent / system: never trust the immediate principal, only the
@@ -89,7 +94,7 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 		return false
 	}
 
-	targets, err := h.Queries.ListAgentInvocationTargets(ctx, agent.ID)
+	targets, err := q.ListAgentInvocationTargets(ctx, agent.ID)
 	if err != nil {
 		return false
 	}
@@ -107,8 +112,11 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 	workspaceBroad := actorType == "agent" || actorType == "system"
 	isWorkspaceMember := false
 	if effectiveUser != "" {
-		if _, err := h.getWorkspaceMember(ctx, effectiveUser, workspaceID); err == nil {
-			isWorkspaceMember = true
+		userUUID, userErr := util.ParseUUID(effectiveUser)
+		workspaceUUID, workspaceErr := util.ParseUUID(workspaceID)
+		if userErr == nil && workspaceErr == nil {
+			_, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: userUUID, WorkspaceID: workspaceUUID})
+			isWorkspaceMember = err == nil
 		}
 	}
 
@@ -294,17 +302,96 @@ func (h *Handler) taskFromRequestHeader(r *http.Request) (db.AgentTaskQueue, boo
 // (run counts, activity histograms, task snapshots) that need to filter out
 // private / non-allow-listed agents the member can't access. Returns nil and
 // false on error.
+// ctxKeyAgentAccessCache carries a per-request memo cache in the context,
+// following the same pattern as SetMemberContext in the middleware package.
+type ctxKeyAgentAccessCache struct{}
+
+type agentAccessCacheEntry struct {
+	allowed  map[string]struct{}
+	ok       bool
+	computed bool
+}
+
+type agentAccessCache struct {
+	mu sync.Mutex
+	m  map[string]agentAccessCacheEntry
+}
+
+func agentAccessCacheFor(ctx context.Context) *agentAccessCache {
+	if v := ctx.Value(ctxKeyAgentAccessCache{}); v != nil {
+		if c, ok := v.(*agentAccessCache); ok {
+			return c
+		}
+	}
+	return nil
+}
+
+// WithAgentAccessCache injects a fresh per-request memo cache into ctx.
+func WithAgentAccessCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyAgentAccessCache{}, &agentAccessCache{m: map[string]agentAccessCacheEntry{}})
+}
+
+// AgentAccessCacheFromContext returns the cache injected in ctx, if any.
+func AgentAccessCacheFromContext(ctx context.Context) *agentAccessCache {
+	if v := ctx.Value(ctxKeyAgentAccessCache{}); v != nil {
+		if c, ok := v.(*agentAccessCache); ok {
+			return c
+		}
+	}
+	return nil
+}
+
+// AgentAccessCacheMiddleware injects a per-request memo cache into the
+// request context for all downstream handlers.
+func AgentAccessCacheMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := WithAgentAccessCache(r.Context())
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func (h *Handler) accessibleAgentIDs(ctx context.Context, workspaceID, actorType, actorID, role string) (map[string]struct{}, bool) {
+	cache := agentAccessCacheFor(ctx)
+	key := workspaceID + "|" + actorType + "|" + actorID + "|" + role
+
+	if cache != nil {
+		cache.mu.Lock()
+		if e, ok := cache.m[key]; ok && e.computed {
+			out := make(map[string]struct{}, len(e.allowed))
+			for k := range e.allowed {
+				out[k] = struct{}{}
+			}
+			cache.mu.Unlock()
+			return out, e.ok
+		}
+		cache.mu.Unlock()
+	}
+
 	wsUUID, err := util.ParseUUID(workspaceID)
 	if err != nil {
+		if cache != nil {
+			cache.mu.Lock()
+			cache.m[key] = agentAccessCacheEntry{allowed: nil, ok: false, computed: true}
+			cache.mu.Unlock()
+		}
 		return nil, false
 	}
 	agents, err := h.Queries.ListAllAgents(ctx, wsUUID)
 	if err != nil {
+		if cache != nil {
+			cache.mu.Lock()
+			cache.m[key] = agentAccessCacheEntry{allowed: nil, ok: false, computed: true}
+			cache.mu.Unlock()
+		}
 		return nil, false
 	}
 	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
 	if !ok {
+		if cache != nil {
+			cache.mu.Lock()
+			cache.m[key] = agentAccessCacheEntry{allowed: nil, ok: false, computed: true}
+			cache.mu.Unlock()
+		}
 		return nil, false
 	}
 	allowed := make(map[string]struct{}, len(agents))
@@ -316,7 +403,17 @@ func (h *Handler) accessibleAgentIDs(ctx context.Context, workspaceID, actorType
 		}
 		allowed[uuidToString(a.ID)] = struct{}{}
 	}
-	return allowed, true
+
+	if cache != nil {
+		cache.mu.Lock()
+		cache.m[key] = agentAccessCacheEntry{allowed: allowed, ok: true, computed: true}
+		cache.mu.Unlock()
+	}
+	out := make(map[string]struct{}, len(allowed))
+	for k := range allowed {
+		out[k] = struct{}{}
+	}
+	return out, true
 }
 
 // restrictedAgentIDs returns the ids of agents that EXIST in the workspace but

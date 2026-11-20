@@ -31,10 +31,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
-import { Check, Copy, Maximize2, RotateCcw } from "lucide-react";
+import { Check, Copy, Maximize2, RotateCcw } from "@multica/ui/icons";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { usePortalContainer } from "@multica/ui/components/ui/portal-container";
+import { useHostStorage } from "@multica/ui/components/ui/host-storage";
 import { useT } from "../i18n";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
@@ -180,6 +181,9 @@ export interface RichTableFrameProps {
 
 export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children }: RichTableFrameProps) {
   const portalContainer = usePortalContainer();
+  // A host on a shared origin keeps the widths in its namespaced store
+  // (M-360); `undefined` falls back to `localStorage` on an owned origin.
+  const widthStorage = useHostStorage();
   const { t } = useT("editor");
   const columnCount = model.headerText.length;
   const storageKey = useMemo(() => columnWidthKey(model), [model]);
@@ -210,17 +214,17 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
   useLayoutEffect(() => {
     const previousKey = keyRef.current;
     keyRef.current = storageKey;
-    const stored = readColumnWidths(storageKey, columnCount);
+    const stored = readColumnWidths(storageKey, columnCount, widthStorage);
     const carried =
       !stored && previousKey !== storageKey && widthsRef.current?.length === columnCount
         ? widthsRef.current
         : null;
     if (carried) {
-      writeColumnWidths(previousKey, null);
-      writeColumnWidths(storageKey, carried);
+      writeColumnWidths(previousKey, null, widthStorage);
+      writeColumnWidths(storageKey, carried, widthStorage);
     }
     setWidths(stored ?? carried);
-  }, [storageKey, columnCount]);
+  }, [storageKey, columnCount, widthStorage]);
 
   const [autoWidths, setAutoWidths] = useState<number[] | null>(null);
   useLayoutEffect(() => {
@@ -239,11 +243,15 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     fit();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     observer?.observe(wrapper);
-    // Content widths change when a web font replaces its fallback.
-    void document.fonts?.ready.then(() => {
-      measuredAt = -1;
-      fit();
-    });
+    // Content widths change when a web font replaces its fallback. Once the
+    // fonts have loaded, `ready` resolves at once and a second measure of every
+    // table would only repeat the first.
+    if (document.fonts && document.fonts.status !== "loaded") {
+      void document.fonts.ready.then(() => {
+        measuredAt = -1;
+        fit();
+      });
+    }
     return () => {
       active = false;
       observer?.disconnect();
@@ -299,7 +307,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     const baseWidths = () => widthsRef.current ?? renderedWidths();
     const commit = (next: number[]) => {
       setWidths(next);
-      writeColumnWidths(storageKey, next);
+      writeColumnWidths(storageKey, next, widthStorage);
     };
     const columnOf = (handle: HTMLElement) => Number(handle.dataset.column ?? -1);
 
@@ -376,11 +384,11 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         commit(baseWidths().map((w, i) => (i === index ? clampWidth(w + delta) : w)));
       },
     };
-  }, [storageKey]);
+  }, [storageKey, widthStorage]);
 
   const resetWidths = () => {
     setWidths(null);
-    writeColumnWidths(storageKey, null);
+    writeColumnWidths(storageKey, null, widthStorage);
   };
 
   const copyMarkdown = async () => {

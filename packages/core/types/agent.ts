@@ -86,6 +86,12 @@ export interface RuntimeDevice {
    * a missing value as `null` (built-in).
    */
   profile_id?: string | null;
+  /**
+   * Runtime-wide cap on tasks running at once across every agent bound to
+   * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
+   * own limit still applies. Older backends omit the field.
+   */
+  max_concurrent_tasks?: number | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -130,10 +136,13 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "grok",
   "qwen",
   "qwenpaw",
+  "droid",
+  "amp",
   "mcode",
   "muse",
   "devin",
   "zeroclaw",
+  "zcode",
 ] as const;
 
 export type RuntimeProtocolFamily =
@@ -142,6 +151,7 @@ export type RuntimeProtocolFamily =
 export const RUNTIME_PROFILE_RUNTIME_TYPES = [
   ...RUNTIME_PROFILE_PROTOCOL_FAMILIES,
   "omp",
+  "opencode2",
 ] as const;
 export type RuntimeProfileType = (typeof RUNTIME_PROFILE_RUNTIME_TYPES)[number];
 
@@ -152,6 +162,7 @@ export type RuntimeProfileVisibility = "workspace" | "private";
 export interface RuntimeProfile {
   id: string;
   workspace_id: string;
+  daemon_id?: string | null;
   display_name: string;
   protocol_family: RuntimeProtocolFamily;
   runtime_type?: RuntimeProfileType;
@@ -170,6 +181,7 @@ export interface RuntimeProfile {
 // Optional fields are omitted entirely when unset (never sent as null/empty)
 // so the server applies its own defaults.
 export interface CreateRuntimeProfileRequest {
+  daemon_id?: string;
   display_name: string;
   protocol_family?: RuntimeProtocolFamily;
   runtime_type?: RuntimeProfileType;
@@ -183,6 +195,7 @@ export interface CreateRuntimeProfileRequest {
 // PATCH body — every field optional; `protocol_family` is intentionally
 // absent because it is immutable.
 export interface UpdateRuntimeProfileRequest {
+  daemon_id?: string;
   display_name?: string;
   command_name?: string;
   description?: string | null;
@@ -303,6 +316,9 @@ export interface TaskCancellationActor {
 }
 
 export interface AgentTask {
+  /** Owning issue labels supplied by subtree execution-history reads. */
+  issue_identifier?: string;
+  issue_title?: string;
   wakeup_id?: string;
   id: string;
   agent_id: string;
@@ -377,6 +393,8 @@ export interface AgentTask {
   supplement_comment_ids?: string[];
   /** Server-side invocation verdict for the current member and this agent. */
   can_supplement?: boolean;
+  /** Whether this run's bridge supports queue mode (steer + queue), not just steer. */
+  steer_queue_capable?: boolean;
   /**
    * Canonical short description of what triggered this task — snapshot
    * taken at creation time. For comment-triggered tasks it's the
@@ -392,6 +410,15 @@ export interface AgentTask {
    * distinguish creation work from later direct runs on that issue.
    */
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct";
+  /**
+   * M-359 run record: workspace tier id stamped at enqueue (absent = none).
+   * tier_explicit marks a sender's `@agent#tier` / picker pick vs the
+   * idx-ranked auto resolver; tier_parked marks a queued row waiting on its
+   * tier's capacity. Resolve the tier NAME from the cached tiers list.
+   */
+  tier_id?: string;
+  tier_explicit?: boolean;
+  tier_parked?: boolean;
   /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
@@ -426,6 +453,15 @@ export interface AgentTask {
    * durable path directly; older backends omit both fields.
    */
   relative_durable_work_dir?: string;
+  /**
+   * Provider session this run writes to, pinned by the daemon as soon as the
+   * provider reports it (M-136). The only correct key for a live turn: a
+   * seeded run may abandon `prior_session_id` and continue in a fresh session,
+   * so matching a running turn on the prior id can miss or collide.
+   *
+   * Absent until the provider reports a session, and on older backends.
+   */
+  session_id?: string;
   /**
    * Base URL of the dsh web app whose sidebar lists this run's session.
    * Set ONLY for dsh-runtime tasks whose transcript is owned by the dsh
@@ -477,6 +513,10 @@ export interface AgentTask {
  * instead. Unlike the aggregate rows there is no `uncosted_*` split here: a
  * `task_usage` row is priced or it isn't, so "uncosted" is just "all of them
  * when cost_usd_ticks is absent", which is what the estimator already assumes.
+ *
+ * `credits_micros` is the charge of a provider that bills in its own credits
+ * instead of exposing tokens (Qoder Cloud Agents), in millionths of a credit.
+ * It has no USD rate and is shown beside the cost, never folded into it.
  */
 export interface TaskUsage {
   provider?: string;
@@ -486,6 +526,63 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+  credits_micros?: number;
+}
+
+/**
+ * Per-run context receipt (MUL-9013): which context sources the daemon handed
+ * a run, with sizes, short hashes, delivery and load evidence. Metadata only.
+ * String enums stay open (`string`) so a newer daemon's value still renders.
+ */
+export type ContextReceiptLoad =
+  | "delivered"
+  | "verified"
+  | "verified_other_version"
+  | "unverified"
+  | "not_delivered"
+  | (string & {});
+
+export interface ContextReceiptSource {
+  kind: string;
+  name?: string;
+  bytes: number;
+  sha256?: string;
+  delivery: string;
+  path?: string;
+  load: ContextReceiptLoad;
+  verified_version?: string;
+  /** Set when this source is a section inside another (e.g. `runtime_brief`). */
+  parent?: string;
+}
+
+export interface ContextReceipt {
+  schema_version: number;
+  runtime: string;
+  runtime_version?: string;
+  model?: string;
+  prompt_bytes: number;
+  brief_bytes: number;
+  brief_delivery: string;
+  resumed_session: boolean;
+  fresh_retry?: boolean;
+  mcp_servers: string[];
+  sources: ContextReceiptSource[];
+}
+
+export interface TaskContextReceiptResponse {
+  /** Null when the run has none: an older daemon, or a run that never launched. */
+  receipt: ContextReceipt | null;
+  recorded_at?: string;
+}
+
+export interface TaskMemoryReport {
+  task_id: string;
+  workspace_id: string;
+  memory: {
+    part: "memory";
+    note?: string;
+    entries: { id: string; type: string; title: string; body: string }[];
+  } | null;
 }
 
 /**
@@ -605,6 +702,18 @@ export interface Agent {
   status: AgentStatus;
   max_concurrent_tasks: number;
   model: string;
+  /**
+   * Workspace tier mode (M-351). True = the agent resolves runtime/model per
+   * task from its selected tiers at enqueue; false = today's single runtime
+   * + model. Older backends omit it; treat undefined as false.
+   */
+  use_tiers?: boolean;
+  /**
+   * Selected workspace tier ids. A late-deleted/disabled tier still present
+   * here renders as "unavailable" — the server never silently drops it.
+   * Older backends omit it; treat undefined as [].
+   */
+  tier_ids?: string[];
   /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
@@ -829,6 +938,10 @@ export interface UpdateAgentRequest {
   status?: AgentStatus;
   max_concurrent_tasks?: number;
   model?: string;
+  /** M-351: omitted = keep; absent on older backends. */
+  use_tiers?: boolean;
+  /** M-351: omitted = keep, empty = clear all. */
+  tier_ids?: string[];
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change
@@ -906,6 +1019,32 @@ export interface SkillFile {
   content: string;
   created_at: string;
   updated_at: string;
+}
+
+/** How a skill reached a version. Unknown server values fall back to "update". */
+export type SkillVersionSource =
+  | "baseline"
+  | "create"
+  | "update"
+  | "import"
+  | "refresh"
+  | "restore";
+
+export interface SkillVersionSummary {
+  id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  source: SkillVersionSource;
+  restored_from_version: number | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface SkillVersion extends SkillVersionSummary {
+  description: string;
+  content: string;
+  files: { path: string; content: string }[];
 }
 
 export interface CreateSkillRequest {
@@ -1045,12 +1184,57 @@ export interface FreebuffAccount {
   updated_at?: string | null;
 }
 
+// One orchestrator bundle installed on the daemon's machine. The daemon owns
+// the list; the runtime page only mirrors it.
+export interface FreebuffVersion {
+  version: string;
+  commit?: string | null;
+}
+
 // The accounts a Freebuff runtime holds. `default_account_id` is the account
-// tasks run on.
+// tasks run on. `engine_version` pins the orchestrator bundle tasks run on
+// (empty = the daemon's default); `installed_versions` is what the daemon
+// last reported having.
 export interface FreebuffAccounts {
   accounts: FreebuffAccount[];
   default_account_id?: string | null;
+  engine_version?: string | null;
+  installed_versions?: FreebuffVersion[] | null;
   updated_at?: string | null;
+}
+// Subscription rate limits of the account a runtime's agent CLI runs under
+// (`GET /api/runtimes/:id/rate-limits`, MUL-9427), as the CLI last reported
+// them during a task. Window kinds and statuses fall back to "other" / ""
+// when a newer server sends a value this client does not know.
+export type RuntimeRateLimitWindowKind =
+  | "session"
+  | "weekly"
+  | "weekly_opus"
+  | "weekly_sonnet"
+  | "other";
+
+export type RuntimeRateLimitStatus = "allowed" | "warning" | "rejected" | "";
+
+export interface RuntimeRateLimitWindow {
+  kind: RuntimeRateLimitWindowKind;
+  /** 0-100; can run slightly past 100. Absent when the CLI did not say. */
+  used_percent?: number;
+  /** 0 when unknown. */
+  window_minutes: number;
+  resets_at?: string;
+  status: RuntimeRateLimitStatus;
+}
+
+export interface RuntimeRateLimits {
+  plan_type: string;
+  status: RuntimeRateLimitStatus;
+  windows: RuntimeRateLimitWindow[];
+  credits?: { has_credits: boolean; unlimited: boolean; balance: string };
+  observed_at: string;
+}
+
+export interface RuntimeRateLimitsResponse {
+  rate_limits: RuntimeRateLimits | null;
 }
 
 // One (agent, provider, model) row of the "Cost by agent" tab on the runtime
@@ -1440,21 +1624,33 @@ export type AgentAccountMode = "default" | "specific" | "any";
 
 export interface WorkspaceAccount {
   id: string;
-  workspace_id: string;
+  workspaceId: string;
   provider: string;
   label: string;
   endpoint?: string;
   enabled: boolean;
-  credential_ref?: string;
-  created_at: string;
-  updated_at: string;
+  credentialRef?: string;
+  state?: string;
+  loginUrl?: string;
+  expiresAt?: string;
+  error?: string;
+  status?: unknown;
+  daemonAccountId?: string;
+  runtimeId?: string;
+  engineVersion?: string | null;
+  installedVersions?: FreebuffVersion[] | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateWorkspaceAccountRequest {
-  label: string;
+  label?: string;
   endpoint?: string;
   credential_ref?: string;
   enabled?: boolean;
+  managed?: boolean;
+  runtime_id?: string;
+  engine_version?: string;
 }
 
-export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest>;
+export type UpdateWorkspaceAccountRequest = Partial<CreateWorkspaceAccountRequest> & { retry?: boolean };

@@ -34,7 +34,7 @@ vi.mock("@multica/core/auth", () => ({
 
 import { DesktopNavigationProvider, routeContentLinkPath } from "./navigation";
 import { currentPath, useNavigation } from "@multica/views/navigation";
-import { useTabStore, getActiveTab } from "@/stores/tab-store";
+import { useTabStore, getActiveTab } from "@multica/core/tabs";
 
 let unbindWorkspaces: () => void = () => {};
 
@@ -398,5 +398,58 @@ describe("existing reserved workspace navigation", () => {
     act(() => adapter().push("/invite/issues/MUL-123"));
     expect(overlay.open).not.toHaveBeenCalled();
     expect(getActiveTab(useTabStore.getState())?.url).toBe("/invite/issues/MUL-123");
+  });
+});
+
+describe("workspaces shown in another window", () => {
+  function withOtherWindow(slug: string) {
+    const focusWorkspaceWindow = vi.fn(
+      (target: string, _path?: string) => target === slug,
+    );
+    Object.defineProperty(window, "desktopAPI", {
+      configurable: true,
+      value: {
+        runtimeConfig: { ok: true, config: { appUrl: "https://app.example" } },
+        windowContext: { kind: "main" },
+        focusWorkspaceWindow,
+      },
+    });
+    return focusWorkspaceWindow;
+  }
+
+  it.each(["push", "replace", "openInNewTab", "content"])(
+    "hands %s to the window that shows the workspace",
+    (action) => {
+      const focusWorkspaceWindow = withOtherWindow("butter");
+      const adapter = renderProvider();
+      act(() => {
+        if (action === "content") routeContentLinkPath("/butter/issues/BUT-1");
+        else if (action === "openInNewTab") adapter().openInNewTab!("/butter/issues/BUT-1");
+        else if (action === "replace") adapter().replace("/butter/issues/BUT-1");
+        else adapter().push("/butter/issues/BUT-1");
+      });
+
+      expect(focusWorkspaceWindow).toHaveBeenCalledWith("butter", "/butter/issues/BUT-1");
+      expect(useTabStore.getState().activeWorkspaceSlug).toBe("acme");
+      expect(useTabStore.getState().byWorkspace.butter).toBeUndefined();
+    },
+  );
+
+  it("focuses that window without a path for a workspace switcher click", () => {
+    const focusWorkspaceWindow = withOtherWindow("butter");
+    const adapter = renderProvider();
+    act(() => adapter().push("/butter/issues"));
+
+    expect(focusWorkspaceWindow).toHaveBeenCalledWith("butter", undefined);
+    expect(useTabStore.getState().activeWorkspaceSlug).toBe("acme");
+  });
+
+  it("switches in place when no other window shows the workspace", () => {
+    const focusWorkspaceWindow = withOtherWindow("butter");
+    const adapter = renderProvider();
+    act(() => adapter().push("/zebra/issues"));
+
+    expect(focusWorkspaceWindow).toHaveBeenCalledWith("zebra", undefined);
+    expect(useTabStore.getState().activeWorkspaceSlug).toBe("zebra");
   });
 });

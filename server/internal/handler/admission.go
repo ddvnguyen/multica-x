@@ -68,6 +68,9 @@ const (
 	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
+	ReasonTierUnavailable       = dispatch.ReasonTierUnavailable
+	ReasonTierWaitingCapacity   = dispatch.ReasonTierWaitingCapacity
 	ReasonInternalError         = dispatch.ReasonInternalError
 )
 
@@ -138,6 +141,12 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "a run is already active for this target"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
+	case ReasonProjectAccessBlocked:
+		return "the agent's owner is not a member of this private project"
+	case ReasonTierUnavailable:
+		return "the selected tier is unknown, disabled, or not available to this agent"
+	case ReasonTierWaitingCapacity:
+		return "the selected tier has no free capacity; the run is queued and will start when a slot frees"
 	default:
 		return "the run was blocked"
 	}

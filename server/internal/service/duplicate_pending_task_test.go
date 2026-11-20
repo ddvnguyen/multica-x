@@ -24,6 +24,8 @@ func TestIsDuplicatePendingTaskErr(t *testing.T) {
 	for _, indexName := range []string{
 		"idx_one_pending_task_per_issue_agent",
 		"idx_one_pending_task_per_issue_agent_v2",
+		"idx_one_pending_task_per_issue_agent_thread",
+		"idx_one_pending_task_per_issue_agent_tier",
 	} {
 		dup := &pgconn.PgError{Code: "23505", ConstraintName: indexName}
 		if !isDuplicatePendingTaskErr(dup) {

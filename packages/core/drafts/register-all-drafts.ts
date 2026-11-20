@@ -17,9 +17,11 @@
 import "../issues/stores/draft-store";
 import "../issues/stores/quick-create-store";
 import "../issues/stores/comment-draft-store";
+import "../issues/stores/ask-draft-store";
 import "../projects/draft-store";
 import "../feedback/draft-store";
 import "../agents/manual-draft-store";
+import "../docs/draft-store";
 import { registerDraftCleanup } from "./cleanup-registry";
 
 // Retired: drafts for a running turn now live in the thread's reply draft.

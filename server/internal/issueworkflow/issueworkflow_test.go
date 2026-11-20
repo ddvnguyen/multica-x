@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestValidateRejectsBrokenWorkflows(t *testing.T) {
 		"duplicate status": {name: "x", middle: []string{"implement", "implement"}, want: "more than once"},
 	}
 	broken := stepsFor([]string{"implement"})
-	broken[0].Handler = Handler{Type: HandlerSquad, ID: testAgentID}
+	broken[0].Handler = Handler{Type: HandlerCreator}
 	name, desc, steps := Normalize("x", "", broken)
 	if err := Validate(name, desc, steps, false, testCatalog()); err == nil || !strings.Contains(err.Error(), "hand off to an agent") {
 		t.Fatalf("Validate must check handoffs, got %v", err)
@@ -110,6 +111,7 @@ func TestValidateHandoff(t *testing.T) {
 	}{
 		"not a column":      {step: Step{StatusKey: "nope", Handler: Handler{Type: HandlerProjectLead}}, want: "not part"},
 		"needs an id":       {step: Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent}}, want: "choose a agent"},
+		"squad needs an id": {step: Step{StatusKey: "implement", Handler: Handler{Type: HandlerSquad}}, want: "choose a squad"},
 		"unknown handler":   {step: Step{StatusKey: "implement", Handler: Handler{Type: "robot"}}, want: "unknown handler"},
 		"backlog parks":     {step: Step{StatusKey: "backlog", Handler: Handler{Type: HandlerProjectLead}}, want: "cannot be handed off"},
 		"done finishes":     {step: Step{StatusKey: "done", Handler: Handler{Type: HandlerProjectLead}}, want: "cannot be handed off"},
@@ -126,6 +128,9 @@ func TestValidateHandoff(t *testing.T) {
 	}
 	if err := ValidateHandoff(NormalizeHandoff(Step{StatusKey: "todo", Handler: Handler{Type: HandlerProjectLead}}), def); err != nil {
 		t.Fatalf("todo may hand off: %v", err)
+	}
+	if err := ValidateHandoff(Step{StatusKey: "implement", Handler: Handler{Type: HandlerSquad, ID: testAgentID}}, def); err != nil {
+		t.Fatalf("squad may receive a handoff: %v", err)
 	}
 }
 
@@ -228,9 +233,21 @@ func TestCheckStatusListsAllowedKeys(t *testing.T) {
 		t.Fatalf("an issue outside projects accepts any status, got %v", err)
 	}
 	if err := CheckStatus(&Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, "code_review"); err != nil {
-		t.Fatalf("Default accepts any status, got %v", err)
+		t.Fatalf("a Default the workspace never stored accepts any status, got %v", err)
 	}
-	err := CheckStatus(&def, "in_review")
+	stored := Definition{ID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true}, Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}
+	if err := CheckStatus(&stored, "in_review"); err != nil {
+		t.Fatalf("stored Default rejected a status it lists: %v", err)
+	}
+	err := CheckStatusOutsideProject(&stored, "code_review")
+	var outside *NotInWorkflowError
+	if !errors.As(err, &outside) || !outside.OutsideProject {
+		t.Fatalf("CheckStatusOutsideProject = %v, want NotInWorkflowError outside a project", err)
+	}
+	if !strings.Contains(err.Error(), "issues outside a project") {
+		t.Fatalf("error %q should say the issue is outside a project", err)
+	}
+	err = CheckStatus(&def, "in_review")
 	var notIn *NotInWorkflowError
 	if !errors.As(err, &notIn) {
 		t.Fatalf("CheckStatus = %v, want NotInWorkflowError", err)
@@ -271,6 +288,162 @@ func TestBriefNamesStepCommandsAndHandlers(t *testing.T) {
 	} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("brief is missing %q:\n%s", want, brief)
+		}
+	}
+}
+
+// A move that hands the issue to a human owner is a decision, not a stage of
+// the pipeline: the brief says to use it only when an owner decision is really
+// needed, on both render sites. The review column keeps its normal wording:
+// handing delivered work over is the expected exit (M-233).
+func TestBriefSaysWhenAnOwnerMoveNeedsADecision(t *testing.T) {
+	const caveat = "   (use it only when an owner decision is really needed"
+	member := func(key string) Step {
+		return Step{StatusKey: key, Handler: Handler{Type: HandlerMember, ID: testAgentID}}
+	}
+	workflow := func(keys []string, handoffs ...Step) Definition {
+		return withHandoffs(Definition{Name: "Delivery", Steps: stepsFor(ArrangeKeys(keys))}, handoffs)
+	}
+	cases := []struct {
+		name       string
+		workflow   Definition
+		statusKey  string
+		wantMove   string
+		wantCaveat bool
+	}{
+		{
+			// The handler-less span delivers straight into the decision step.
+			name:       "decision after a handlerless span",
+			workflow:   workflow([]string{"implement", "wait_for_decision"}, member("wait_for_decision")),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 wait_for_decision",
+			wantCaveat: true,
+		},
+		{
+			// The step itself hands off, so the plain next-status branch renders.
+			name: "decision after a step with a handler",
+			workflow: workflow([]string{"implement", "wait_for_decision"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "wait_for_decision"},
+				member("wait_for_decision")),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 wait_for_decision",
+			wantCaveat: true,
+		},
+		{
+			name: "project lead decision",
+			workflow: workflow([]string{"implement", "ask_lead"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "ask_lead"},
+				Step{StatusKey: "ask_lead", Handler: Handler{Type: HandlerProjectLead}}),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 ask_lead",
+			wantCaveat: true,
+		},
+		{
+			name: "creator decision",
+			workflow: workflow([]string{"implement", "ask_creator"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "ask_creator"},
+				Step{StatusKey: "ask_creator", Handler: Handler{Type: HandlerCreator}}),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 ask_creator",
+			wantCaveat: true,
+		},
+		{
+			name: "review column hands delivered work to its owner",
+			workflow: workflow([]string{"implement", "in_review"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "in_review"},
+				member("in_review")),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 in_review",
+			wantCaveat: false,
+		},
+		{
+			name: "agent handoff",
+			workflow: workflow([]string{"implement", "ship"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "ship"},
+				Step{StatusKey: "ship", Handler: Handler{Type: HandlerAgent, ID: testAgentID}}),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 ship",
+			wantCaveat: false,
+		},
+		{
+			name: "squad handoff",
+			workflow: workflow([]string{"implement", "ship"},
+				Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, NextStatusKey: "ship"},
+				Step{StatusKey: "ship", Handler: Handler{Type: HandlerSquad, ID: testAgentID}}),
+			statusKey:  "implement",
+			wantMove:   "Step done      → multica issue status MUL-7 ship",
+			wantCaveat: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			brief := Brief(BriefInput{Workflow: tc.workflow, StatusKey: tc.statusKey, IssueIdentifier: "MUL-7"})
+			moveAt := strings.Index(brief, tc.wantMove)
+			if moveAt < 0 {
+				t.Fatalf("brief is missing %q:\n%s", tc.wantMove, brief)
+			}
+			caveatAt := strings.Index(brief, caveat)
+			if tc.wantCaveat {
+				if caveatAt < moveAt {
+					t.Fatalf("brief does not follow the owner move with the decision caveat:\n%s", brief)
+				}
+				return
+			}
+			if caveatAt >= 0 {
+				t.Fatalf("brief carries the decision caveat on a move that needs no owner decision:\n%s", brief)
+			}
+		})
+	}
+}
+
+func TestBriefForMovedStep(t *testing.T) {
+	for _, current := range []string{"implement", "todo"} {
+		for _, observer := range []bool{false, true} {
+			for _, legacy := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/observer=%v/legacy=%v", current, observer, legacy), func(t *testing.T) {
+					in := BriefInput{
+						Workflow: devDefinition(), StatusKey: current, BoundStep: "waiting_for_merge",
+						IssueIdentifier: "MUL-7", Observer: observer, LegacyRuntimeRules: legacy,
+						MovedBy: "Lin\n\tLee\x01", StatusName: func(key string) string { return testCatalog()[key].Name },
+					}
+					brief := Brief(in)
+					for _, want := range []string{
+						`bound to "waiting_for_merge"`, statusLabel(testCatalog()[current].Name, current),
+						"last moved by Lin Lee", "Do not change", "overrides the status rules", "member",
+						"Statuses in this workflow:", "   ← current",
+					} {
+						if !strings.Contains(brief, want) {
+							t.Errorf("brief missing %q:\n%s", want, brief)
+						}
+					}
+					for _, leak := range []string{
+						"Implement it.", "Step instructions:", "You are handling", "Your moves:", "multica issue status",
+						"Needs changes", "Can't proceed", "unless you are explicitly asked", "Before your run ends, either run",
+						"Lin\n", "\x01",
+					} {
+						if strings.Contains(brief, leak) {
+							t.Errorf("stale run received %q:\n%s", leak, brief)
+						}
+					}
+					in.MovedBy = ""
+					if unknown := Brief(in); !strings.Contains(unknown, "last moved by someone else") {
+						t.Fatalf("missing mover must not prevent a mismatch brief:\n%s", unknown)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBriefMatchingBindingKeepsNormalInstructions(t *testing.T) {
+	for _, observer := range []bool{false, true} {
+		for _, legacy := range []bool{false, true} {
+			in := BriefInput{Workflow: devDefinition(), StatusKey: "implement", IssueIdentifier: "MUL-7", Observer: observer, LegacyRuntimeRules: legacy}
+			unbound := Brief(in)
+			in.BoundStep, in.MovedBy = in.StatusKey, "Lin"
+			if got := Brief(in); got != unbound {
+				t.Errorf("observer=%v/legacy=%v: matching binding changed the normal brief:\n%s", observer, legacy, got)
+			}
 		}
 	}
 }

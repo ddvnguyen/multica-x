@@ -9,14 +9,14 @@ consume, and how it is expected to diverge.
 
 | | |
 | --- | --- |
-| Upstream | `multica-ai/multica` at `v0.6.5` |
-| Fork base | `cbd75011` — `feat(issues): collapse board columns, add and rename lists from the board (M-24)` |
+| Upstream | `multica-ai/multica` at `v0.9.0` |
+| Fork base | `419062164` |
 | Fork of record | this repository, target branch `multica-moct` |
 
-Both bases are recorded so a reader can tell two different questions apart: what
-the fork started from (`v0.6.5`), and where this plugin's rendering was last
-known to be correct (`cbd75011`). A fork update that moves the second number is a
-plugin change, and the island's tests are expected to be re-run with it.
+Both bases are recorded so a reader can tell the upstream release line from the
+fork commit whose plugin rendering was last checked. A fork update that moves
+the second number is a plugin change, and the island's tests are expected to be
+re-run with it.
 
 ## What the plugin may consume
 

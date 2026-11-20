@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Lock, UserMinus } from "lucide-react";
+import { Lock, UserMinus } from "@multica/ui/icons";
 import type { Agent, IssueAssigneeType, UpdateIssueRequest } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
@@ -9,11 +9,12 @@ import { isAgentRuntimeBound } from "@multica/core/agents";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions } from "@multica/core/workspace/queries";
+import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions, modelTiersOptions } from "@multica/core/workspace/queries";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
   PropertyPicker,
+  PickerPanel,
   PickerItem,
   PickerSection,
   PickerEmpty,
@@ -58,6 +59,13 @@ interface AssigneePickerProps {
   open?: boolean;
   onOpenChange?: (v: boolean) => void;
   align?: "start" | "center" | "end";
+  /**
+   * M-359: when true, picking an agent advances to a tier step (Auto default
+   * + enabled tiers) instead of confirming immediately; the confirm sends
+   * `{assignee_type, assignee_id, tier_id?}` in one update. Member/squad and
+   * unassigned picks still confirm immediately.
+   */
+  tierPick?: boolean;
 }
 
 /**
@@ -103,52 +111,15 @@ function AssigneePickerImpl({
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
   align,
+  tierPick = false,
 }: AssigneePickerProps) {
   const { t } = useT("issues");
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [filter, setFilter] = useState("");
-  const user = useAuthStore((s) => s.user);
-  const wsId = useWorkspaceId();
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
-  const { data: frequency = [] } = useQuery(assigneeFrequencyOptions(wsId));
+  const choices = useAssigneeChoices(filter);
   const { getActorName } = useActorName();
-
-  const currentMember = members.find((m) => m.user_id === user?.id);
-  const memberRole = currentMember?.role;
-
-  // Build a lookup map from frequency data for sorting.
-  const freqMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const entry of frequency) {
-      map.set(`${entry.assignee_type}:${entry.assignee_id}`, entry.frequency);
-    }
-    return map;
-  }, [frequency]);
-
-  const getFreq = (type: string, id: string) => freqMap.get(`${type}:${id}`) ?? 0;
-
-  const query = filter.trim().toLowerCase();
-  const filteredMembers = members
-    .filter((m) => m.name.toLowerCase().includes(query) || matchesPinyin(m.name, query))
-    .sort((a, b) => getFreq("member", b.user_id) - getFreq("member", a.user_id));
-  const filteredAgents = agents
-    .filter((a) => !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
-    .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id));
-  const filteredSquads = squads
-    .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(query) || matchesPinyin(s.name, query)))
-    .sort((a, b) => getFreq("squad", b.id) - getFreq("squad", a.id));
-  const runnableAgentIds = new Set(
-    agents
-      .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
-      .map((agent) => agent.id),
-  );
-
-  const isSelected = (type: string, id: string) =>
-    assigneeType === type && assigneeId === id;
 
   const triggerLabel =
     assigneeType && assigneeId
@@ -180,16 +151,162 @@ function AssigneePickerImpl({
         )
       }
     >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        mixed={mixed}
+        tierPick={tierPick}
+        onPick={(updates) => {
+          onUpdate(updates);
+          setOpen(false);
+        }}
+      />
+    </PropertyPicker>
+  );
+}
+
+/**
+ * The assignee picker's search box and list without the popover, for hosting
+ * inside a menu. `onPicked` runs after the choice is applied so the host can
+ * close itself.
+ */
+export function AssigneePickerPanel({
+  assigneeType,
+  assigneeId,
+  onUpdate,
+  onPicked,
+}: {
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
+  onPicked: () => void;
+}) {
+  const { t } = useT("issues");
+  const [filter, setFilter] = useState("");
+  const choices = useAssigneeChoices(filter);
+
+  return (
+    <PickerPanel
+      searchable
+      autoFocusSearch
+      searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
+      onSearchChange={setFilter}
+    >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        tierPick={false}
+        onPick={(updates) => {
+          onUpdate(updates);
+          onPicked();
+        }}
+      />
+    </PickerPanel>
+  );
+}
+
+function useAssigneeChoices(filter: string) {
+  const user = useAuthStore((s) => s.user);
+  const wsId = useWorkspaceId();
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  const { data: frequency = [] } = useQuery(assigneeFrequencyOptions(wsId));
+
+  const currentMember = members.find((m) => m.user_id === user?.id);
+  const memberRole = currentMember?.role;
+
+  // Build a lookup map from frequency data for sorting.
+  const freqMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const entry of frequency) {
+      map.set(`${entry.assignee_type}:${entry.assignee_id}`, entry.frequency);
+    }
+    return map;
+  }, [frequency]);
+
+  const getFreq = (type: string, id: string) => freqMap.get(`${type}:${id}`) ?? 0;
+
+  const query = filter.trim().toLowerCase();
+  const filteredMembers = members
+    .filter((m) => m.name.toLowerCase().includes(query) || matchesPinyin(m.name, query))
+    .sort((a, b) => getFreq("member", b.user_id) - getFreq("member", a.user_id));
+  const filteredAgents = agents
+    .filter((a) => !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
+    .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id));
+  const filteredSquads = squads
+    .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(query) || matchesPinyin(s.name, query)))
+    .sort((a, b) => getFreq("squad", b.id) - getFreq("squad", a.id));
+  const runnableAgentIds = new Set(
+    agents
+      .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
+      .map((agent) => agent.id),
+  );
+
+  return {
+    userId: user?.id ?? null,
+    memberRole,
+    filteredMembers,
+    filteredAgents,
+    filteredSquads,
+    runnableAgentIds,
+  };
+}
+
+function AssigneeOptions({
+  choices,
+  filter,
+  assigneeType,
+  assigneeId,
+  mixed = false,
+  tierPick = false,
+  onPick,
+}: {
+  choices: ReturnType<typeof useAssigneeChoices>;
+  filter: string;
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  mixed?: boolean;
+  tierPick?: boolean;
+  onPick: (updates: Partial<UpdateIssueRequest>) => void;
+}) {
+  const [tierAgent, setTierAgent] = useState<{ id: string; name: string } | null>(null);
+  const { t } = useT("issues");
+  const { userId, memberRole, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds } =
+    choices;
+
+  const isSelected = (type: string, id: string) =>
+    assigneeType === type && assigneeId === id;
+
+  if (tierAgent) {
+    return (
+      <TierStep
+        agentName={tierAgent.name}
+        onBack={() => setTierAgent(null)}
+        onPick={(tierId) =>
+          onPick({
+            assignee_type: "agent",
+            assignee_id: tierAgent.id,
+            ...(tierId ? { tier_id: tierId } : {}),
+          })
+        }
+      />
+    );
+  }
+
+  return (
+    <>
       {/* Unassigned — always the first row, search active or not. Every
           picker in the app puts the empty value there, so "clear this field"
           never moves. */}
       <PickerItem
         emptyValue
         selected={!mixed && !assigneeType && !assigneeId}
-        onClick={() => {
-          onUpdate({ assignee_type: null, assignee_id: null });
-          setOpen(false);
-        }}
+        onClick={() => onPick({ assignee_type: null, assignee_id: null })}
       >
         <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
@@ -202,13 +319,12 @@ function AssigneePickerImpl({
             <PickerItem
               key={m.user_id}
               selected={isSelected("member", m.user_id)}
-              onClick={() => {
-                onUpdate({
+              onClick={() =>
+                onPick({
                   assignee_type: "member",
                   assignee_id: m.user_id,
-                });
-                setOpen(false);
-              }}
+                })
+              }
             >
               <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
               <span className="truncate">{m.name}</span>
@@ -222,7 +338,7 @@ function AssigneePickerImpl({
         <PickerSection label={t(($) => $.pickers.assignee.agents_group)}>
           {filteredAgents.map((a) => {
             const decision = canAssignAgentToIssue(a, {
-              userId: user?.id ?? null,
+              userId,
               role:
                 memberRole === "owner" ||
                 memberRole === "admin" ||
@@ -246,11 +362,14 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!allowed) return;
-                  onUpdate({
+                  if (tierPick) {
+                    setTierAgent({ id: a.id, name: a.name });
+                    return;
+                  }
+                  onPick({
                     assignee_type: "agent",
                     assignee_id: a.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
@@ -282,11 +401,10 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!runtimeBound) return;
-                  onUpdate({
+                  onPick({
                     assignee_type: "squad",
                     assignee_id: s.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="squad" actorId={s.id} size="sm" />
@@ -301,6 +419,48 @@ function AssigneePickerImpl({
         filteredAgents.length === 0 &&
         filteredSquads.length === 0 &&
         filter && <PickerEmpty />}
-    </PropertyPicker>
+    </>
+  );
+}
+
+/**
+ * TierStep is the M-359 second step of the assignee picker: after an agent
+ * is chosen, the sender optionally pins one tier for this run (Auto default
+ * = the idx-ranked resolver). Disabled tiers are hidden — picking one would
+ * only 409 at send.
+ */
+function TierStep({
+  agentName,
+  onBack,
+  onPick,
+}: {
+  agentName: string;
+  onBack: () => void;
+  onPick: (tierId: string | null) => void;
+}) {
+  const { t } = useT("issues");
+  const wsId = useWorkspaceId();
+  const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
+  const enabled = tiers.filter((tier) => tier.enabled);
+
+  return (
+    <>
+      <PickerItem selected={false} onClick={onBack}>
+        <span className="text-muted-foreground">← {agentName}</span>
+      </PickerItem>
+      <PickerSection label={t(($) => $.pickers.tier.tier_group)}>
+        <PickerItem selected={false} onClick={() => onPick(null)}>
+          <span className="truncate">{t(($) => $.pickers.tier.tier_auto)}</span>
+        </PickerItem>
+        {enabled.map((tier) => (
+          <PickerItem key={tier.id} selected={false} onClick={() => onPick(tier.id)}>
+            <span className="truncate">
+              #{tier.name}
+              {tier.model ? <span className="text-muted-foreground"> · {tier.model}</span> : null}
+            </span>
+          </PickerItem>
+        ))}
+      </PickerSection>
+    </>
   );
 }

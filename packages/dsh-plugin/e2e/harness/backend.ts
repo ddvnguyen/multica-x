@@ -27,7 +27,10 @@ const ISSUE_TITLES = [
   "Overlays close on leave",
 ];
 
-function issue(index: number) {
+/** The project `?issue&issueProject` puts the harnessed issue in (M-316). */
+export const ISSUE_PROJECT_ID = "project-issue";
+
+function issue(index: number, projectId: string | null = null) {
   return {
     id: `11111111-1111-4111-8111-11111111111${index}`,
     workspace_id: "ws-1",
@@ -42,7 +45,7 @@ function issue(index: number) {
     creator_type: "member",
     creator_id: "user-1",
     parent_issue_id: null,
-    project_id: null,
+    project_id: projectId,
     position: index * 1000,
     stage: null,
     start_date: null,
@@ -145,18 +148,32 @@ export interface BackendOptions {
   workspaces?: unknown[];
   /** A boot problem the island renders instead of the app. */
   problem?: string | null;
+  /** The folder the "All projects" default addresses (M-159); empty means none. */
+  workspaceFolder?: string;
+  /**
+   * The project the harnessed issue belongs to, and the folder its
+   * `local_directory` resource names (M-316). Unset leaves the issue without a
+   * project, which is what the pre-M-316 pages looked like.
+   */
+  issueProject?: { id: string; folder: string };
+  /** The rows `GET /api/agent-task-snapshot` answers (M-136's ownership map). */
+  agentTasks?: unknown[];
 }
 
 declare global {
   interface Window {
     /** Every `/multica` call the island makes, so a spec can inspect them. */
     __requests?: string[];
+    /** Every write a page made, so a spec asserts on the body, not on internals. */
+    __mutations?: Array<{ method: string; path: string; body: Record<string, unknown> }>;
   }
 }
 
 export function installBackend(options: BackendOptions = {}): void {
   const requests: string[] = [];
   window.__requests = requests;
+  const mutations: NonNullable<Window["__mutations"]> = [];
+  window.__mutations = mutations;
 
   const json = (body: unknown): Response =>
     new Response(JSON.stringify(body), {
@@ -178,11 +195,32 @@ export function installBackend(options: BackendOptions = {}): void {
       }
     };
     const path = url.split("?")[0] ?? "";
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    // M-136's two writes. They answer like the server does — a supplement is a
+    // comment plus a receipt, a cancel is a bare 200 — and record what the page
+    // sent.
+    if (method === "POST" && /^\/multica\/api\/issues\/[^/]+\/tasks\/[^/]+\/supplements$/.test(path)) {
+      mutations.push({ method, path, body: body() });
+      return json({
+        id: "comment-steer-1",
+        supplements: [{ task_id: "task-1", status: "pending", supplement_mode: body().mode }],
+      });
+    }
+    if (method === "POST" && /^\/multica\/api\/issues\/[^/]+\/tasks\/[^/]+\/cancel$/.test(path)) {
+      mutations.push({ method, path, body: body() });
+      return json({ ok: true });
+    }
 
     if (url.startsWith("/multica/config")) {
+      // M-173: the host's slug is the only source the WorkspaceGate reads;
+      // an empty slug boots every page into the no-workspace boundary.
+      // M-159: workspaceFolder is the "All projects" default the header's
+      // Files/Terminal buttons address; the shell harness page names/srv/demo.
       return json({
         wsPath: "/multica/ws",
-        workspaceSlug: "",
+        workspaceSlug: "demo",
+        workspaceFolder: options.workspaceFolder ?? "",
         problem: options.problem ?? null,
       });
     }
@@ -190,6 +228,34 @@ export function installBackend(options: BackendOptions = {}): void {
     // before the workspace list or it would answer with the workspace itself.
     if (/^\/multica\/api\/workspaces\/[^/]+\/members/.test(path)) {
       return json([MEMBER]);
+    }
+    if (/^\/multica\/api\/workspaces\/[^/]+\/decisions(?:\?|$)/.test(url)) {
+      return json({
+        items: [
+          {
+            kind: "question",
+            source_id: "question-1",
+            issue_id: issue(1).id,
+            issue_title: issue(1).title,
+            project_id: null,
+            issue_revision: 1,
+            agent_id: "agent-1",
+            response_id: null,
+            actor_id: null,
+            requested_at: "2026-01-01T00:00:00Z",
+            task_id: null,
+            question_seq: 1,
+            sort_at: "2026-01-01T00:00:00Z",
+            status: "pending",
+            receipt_reason: null,
+          },
+        ],
+        pending_count: 1,
+        next_cursor: null,
+      });
+    }
+    if (/^\/multica\/api\/workspaces\/[^/]+\/decisions\//.test(path)) {
+      return json({ question: "Which option should we use?" });
     }
     if (url.startsWith("/multica/api/workspaces")) {
       return json(options.workspaces ?? [WORKSPACE]);
@@ -231,6 +297,26 @@ export function installBackend(options: BackendOptions = {}): void {
     if (url.startsWith("/multica/api/labels")) {
       return json({ labels: [], total: 0 });
     }
+    // A project's resources are watched before the projects list matcher below,
+    // which would otherwise answer them with the list envelope (M-316).
+    if (/^\/multica\/api\/projects\/[^/]+\/resources$/.test(path)) {
+      const projectId = path.split("/")[4] ?? "";
+      const folder = options.issueProject?.folder;
+      const resources =
+        folder === undefined || options.issueProject?.id !== projectId
+          ? []
+          : [
+              {
+                id: "resource-1",
+                project_id: projectId,
+                resource_type: "local_directory",
+                resource_ref: { local_path: folder, daemon_id: "" },
+                created_at: "2026-01-01T00:00:00Z",
+                updated_at: "2026-01-01T00:00:00Z",
+              },
+            ];
+      return json({ resources, total: resources.length });
+    }
     if (url.startsWith("/multica/api/projects")) return json({ projects: [], total: 0 });
     if (url.startsWith("/multica/api/pins")) return json([]);
     if (url.startsWith("/multica/api/wakeups")) return json({ wakeups: [], total: 0 });
@@ -248,7 +334,7 @@ export function installBackend(options: BackendOptions = {}): void {
       return json({ sessions: [], total: 0 });
     }
     if (url.startsWith("/multica/api/chat")) return json({ messages: [], total: 0 });
-    if (url.startsWith("/multica/api/agent-task-snapshot")) return json([]);
+    if (url.startsWith("/multica/api/agent-task-snapshot")) return json(options.agentTasks ?? []);
     if (url.startsWith("/multica/api/agent-tasks")) return json([]);
     // The board is the table surface: one cursor page per column, addressed by
     // the group key the descriptor named.
@@ -290,7 +376,7 @@ export function installBackend(options: BackendOptions = {}): void {
     // The issue detail page addresses one issue by identifier (M-146's second
     // dialog opens from its actions menu), and reads its comments beside it.
     if (/^\/multica\/api\/issues\/[^/?]+$/.test(path)) {
-      return json(issue(1));
+      return json(issue(1, options.issueProject?.id ?? null));
     }
     if (url.includes("/comments")) return json([]);
     if (url.startsWith("/multica/api/issues")) {
@@ -300,11 +386,12 @@ export function installBackend(options: BackendOptions = {}): void {
     if (url.startsWith("/multica/api/config") || url.startsWith("/multica/api/onboarding")) {
       return json({});
     }
-    // The MOCT plane the settings tabs read through the host's /moct prefix.
-    if (url.startsWith("/moct/status")) {
+    // The MOCT screens use the same authenticated workspace API as the SPA.
+    const moctUrl = url.replace(/^\/multica\/api\/workspaces\/[^/]+\/moct/, "/moct");
+    if (moctUrl.startsWith("/moct/status")) {
       return json({ ok: true, schema: 8, reachable: true });
     }
-    if (url.startsWith("/moct/team/v1/memory/usage")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory/usage")) {
       return json({
         workspaceId: "multica:ws:ws-1",
         capTokens: 1200,
@@ -314,16 +401,16 @@ export function installBackend(options: BackendOptions = {}): void {
         ],
       });
     }
-    if (url.startsWith("/moct/team/v1/memory?")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory?")) {
       return json({ results: [], total: 0, nextCursor: null });
     }
-    if (url.startsWith("/moct/team/v1/memory/get")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory/get")) {
       return json({ records: [], missing: [] });
     }
-    if (url.startsWith("/moct/team/v1/memory")) {
+    if (moctUrl.startsWith("/moct/team/v1/memory")) {
       return json({ records: [], total: 0, nextCursor: null });
     }
-    if (url.startsWith("/moct/")) return json({});
+    if (moctUrl.startsWith("/moct/")) return json({});
     // Everything else the fork reads on mount is a list.
     return json([]);
   };

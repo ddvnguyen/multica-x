@@ -180,6 +180,9 @@ func TestMoctInjectPromptFetchesAndRenders(t *testing.T) {
 	if part.Tokens <= 0 || part.Note == "" {
 		t.Errorf("memory part = %+v, want a measured size and a note", part)
 	}
+	if len(part.Entries) != 1 || part.Entries[0].ID != "rec-1" || part.Entries[0].Body != "From the stub." {
+		t.Errorf("memory entries = %+v, want the injected prompt-ready entry", part.Entries)
+	}
 	if gotQuery.Get("workspaceId") != "multica:ws:"+moctTestWorkspaceID {
 		t.Errorf("workspaceId = %q", gotQuery.Get("workspaceId"))
 	}
@@ -438,5 +441,76 @@ func TestBuildPromptWithoutMoctInjectIsUnchanged(t *testing.T) {
 	}
 	if bare != BuildPrompt(task, "claude", WithMoctInject("")) {
 		t.Fatal("empty inject option changed the prompt")
+	}
+}
+
+// S1-B (M-110 fix-round 1): moct-be whitelists decision attrs to
+// decidedBy/sourceRef/date and 400s anything else (live 400 on
+// attrs.issue_id, lane-z probe T-105). The write-back must send only those
+// attrs, with the session_ref + usage payload in the body.
+func TestMoctRecordUsageSendsOnlyAllowedDecisionAttrs(t *testing.T) {
+	var gotAttrs map[string]any
+	var gotBody struct {
+		Type  string         `json:"type"`
+		Title string         `json:"title"`
+		Body  string         `json:"body"`
+		Attrs map[string]any `json:"attrs"`
+		Home  map[string]any `json:"home"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		if err := json.Unmarshal(raw, &gotBody); err != nil {
+			t.Errorf("decode body %q: %v", raw, err)
+		}
+		gotAttrs = gotBody.Attrs
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"record":{"id":"mem_1","type":"decision","status":"pending",`+
+			`"home":{"kind":"task","ref":"`+moct.IssueRef(moctTestIssueID)+`"}},"nearMatches":[],"notice":null}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	usage := []TaskUsageEntry{{Provider: "p", Model: "m", InputTokens: 10, OutputTokens: 5, CacheReadTokens: 2, CacheWriteTokens: 1}}
+	moctRecordUsage(context.Background(), srv.URL, moctTestTask(), "sess-1", usage, logger)
+
+	if gotBody.Type != "decision" {
+		t.Fatalf("type = %q, want decision", gotBody.Type)
+	}
+	for _, key := range []string{"session_ref", "task_id", "issue_id", "usage", "totals"} {
+		if _, ok := gotAttrs[key]; ok {
+			t.Errorf("attrs carries %q, which moct-be 400s on decision", key)
+		}
+	}
+	for _, key := range []string{"decidedBy", "sourceRef"} {
+		if _, ok := gotAttrs[key]; !ok {
+			t.Errorf("attrs missing required %q", key)
+		}
+	}
+	for _, want := range []string{"session_ref: sess-1", "totals: input=10 output=5", "- p/m: input=10"} {
+		if !strings.Contains(gotBody.Body, want) {
+			t.Errorf("body missing %q:\n%s", want, gotBody.Body)
+		}
+	}
+	if logs.String() != "" {
+		t.Errorf("successful write logged a warning: %q", logs.String())
+	}
+}
+
+// The seam-back direction must degrade like the pre-run inject: moct-be
+// down (or any write error) is a warning, never a block.
+func TestMoctRecordUsageDegradesWhenMoctBeDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close() // now unreachable
+
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	moctRecordUsage(context.Background(), srv.URL, moctTestTask(), "sess-1",
+		[]TaskUsageEntry{{Model: "m", InputTokens: 1}}, logger)
+	if !strings.Contains(logs.String(), "usage write-back failed") {
+		t.Errorf("expected a write-back warning, got %q", logs.String())
 	}
 }

@@ -307,6 +307,56 @@ func TestMoctSettings_InjectSwitch(t *testing.T) {
 	}
 }
 
+func TestTurnEndRouterSettings_Mode(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fx := setupInteractionsFixture(t, "handler-tests-turn-end-router")
+	path := "/api/workspaces/" + fx.WorkspaceID + "/turn-end-router"
+
+	var initial TurnEndRouterSettingsResponse
+	testutil.Call(t, testHandler.GetTurnEndRouterSettings,
+		interactionsRequest(t, "GET", path, fx.WorkspaceID, nil)).Want(http.StatusOK).JSON(&initial)
+	if initial.Mode != "shadow" || initial.ModeSet {
+		t.Fatalf("initial setting = %+v, want default shadow and unset", initial)
+	}
+	if initial.ShadowWouldQueue24h != 0 || len(initial.RunsByReasonDestination24h) != 0 || len(initial.RunsPerIssue24h) != 0 || len(initial.RunsPerIssue7d) != 0 {
+		t.Fatalf("initial router metrics = %+v, want zero counts and initialized histograms", initial)
+	}
+	if _, err := testPool.Exec(context.Background(), `INSERT INTO activity_log(workspace_id,actor_type,action,details)
+		VALUES($1,'system','turn_end_router_shadow','{"reason":"run_failed","destination":"orchestrator"}')`, fx.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE workspace_id=$1 AND action='turn_end_router_shadow'`, fx.WorkspaceID)
+	})
+	var shadow TurnEndRouterSettingsResponse
+	testutil.Call(t, testHandler.GetTurnEndRouterSettings,
+		interactionsRequest(t, "GET", path, fx.WorkspaceID, nil)).Want(http.StatusOK).JSON(&shadow)
+	if shadow.ShadowWouldQueue24h != 1 {
+		t.Fatalf("shadow decisions = %d, want 1", shadow.ShadowWouldQueue24h)
+	}
+
+	var enabled TurnEndRouterSettingsResponse
+	testutil.Call(t, testHandler.UpdateTurnEndRouterSettings,
+		interactionsRequest(t, "PUT", path, fx.WorkspaceID, map[string]any{"mode": "on"})).
+		Want(http.StatusOK).JSON(&enabled)
+	if enabled.Mode != "on" || !enabled.ModeSet {
+		t.Fatalf("after setting on = %+v", enabled)
+	}
+	if value, ok := storedSetting(t, "workspace", turnEndRouterSettingKey, fx.WorkspaceID, ""); !ok || value != "on" {
+		t.Fatalf("stored mode = %v (present=%v), want on", value, ok)
+	}
+	for _, body := range []any{
+		map[string]any{"mode": "enabled"},
+		map[string]any{"mode": false},
+		map[string]any{},
+	} {
+		testutil.Call(t, testHandler.UpdateTurnEndRouterSettings,
+			interactionsRequest(t, "PUT", path, fx.WorkspaceID, body)).Want(http.StatusBadRequest)
+	}
+}
+
 // An absent or malformed setting must read as ON. The switch exists to turn
 // memory OFF; nothing about a settings object this file does not control may
 // silently strip memory from every run in a workspace.
@@ -355,5 +405,43 @@ func TestAgentTaskResponse_MoctMemoryInjectWireName(t *testing.T) {
 	}
 	if got := encoder(nil); strings.Contains(got, "moct_memory_inject") {
 		t.Fatalf("a server without the switch must omit the field, got %s", got)
+	}
+}
+
+// TestEffectiveAskPlanTimeoutSeconds pins the one resolution order (M-123 Q2,
+// M-131 amendment 1): project override, then workspace value, then the
+// compiled-in default — with the source the sweep's escalation comment reads
+// and `projectInteractionsResponse` derives `timeout_seconds_set` from. A key
+// that is absent, malformed, a string, or out of the 60–86400 bounds counts as
+// no opinion at all.
+func TestEffectiveAskPlanTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		name        string
+		project     string
+		workspace   string
+		wantSeconds int
+		wantSource  TimeoutSource
+	}{
+		{"project override beats workspace", `{"ask_plan_timeout_seconds":120}`, `{"ask_plan_timeout_seconds":86400}`, 120, TimeoutSourceProject},
+		{"project override beats default", `{"ask_plan_timeout_seconds":60}`, `{}`, 60, TimeoutSourceProject},
+		{"workspace value when no project key", `{}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
+		{"out-of-bounds project falls through to workspace", `{"ask_plan_timeout_seconds":59}`, `{"ask_plan_timeout_seconds":900}`, 900, TimeoutSourceWorkspace},
+		{"above-bounds workspace falls through to default", `{}`, `{"ask_plan_timeout_seconds":86401}`, 300, TimeoutSourceDefault},
+		{"JSON string is not a number", `{"ask_plan_timeout_seconds":"600"}`, `{}`, 300, TimeoutSourceDefault},
+		{"malformed workspace object reads as absent", `{}`, `not-json`, 300, TimeoutSourceDefault},
+		{"both empty -> built-in default", `{}`, `{}`, 300, TimeoutSourceDefault},
+		{"nil settings -> built-in default", ``, ``, 300, TimeoutSourceDefault},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, source := EffectiveAskPlanTimeoutSeconds([]byte(tc.project), []byte(tc.workspace))
+			if got != tc.wantSeconds || source != tc.wantSource {
+				t.Fatalf("got (%d, %v), want (%d, %v)", got, source, tc.wantSeconds, tc.wantSource)
+			}
+			// The response's set flag is exactly "not the compiled-in default".
+			if set := source != TimeoutSourceDefault; set != (tc.wantSource != TimeoutSourceDefault) {
+				t.Fatalf("set flag mismatch for source %v", source)
+			}
+		})
 	}
 }

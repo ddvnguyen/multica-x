@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { ChevronsUpDown } from "lucide-react";
+import { ChevronsUpDown } from "@multica/ui/icons";
 import { toast } from "sonner";
 import {
   Select,
@@ -24,17 +24,12 @@ import {
   CommandItem,
   CommandList,
 } from "@multica/ui/components/ui/command";
-import { useTheme } from "@multica/ui/components/common/theme-provider";
-import {
-  DEFAULT_LOCALE,
-  SUPPORTED_LOCALES,
-  type SupportedLocale,
-} from "@multica/core/i18n";
-import { useLocaleAdapter } from "@multica/core/i18n/react";
+import type { SupportedLocale } from "@multica/core/i18n";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
 import {
   useCommentComposerStore,
+  type CommentImageLayout,
   type RunningAgentReply,
 } from "@multica/core/issues/stores";
 import {
@@ -54,8 +49,11 @@ import {
 } from "@multica/core/issues/stores/issue-create-settings-store";
 import { api } from "@multica/core/api";
 import { browserTimezone, timezoneOptions } from "../../common/timezone-select";
+import { useLanguageSwitch } from "../../common/use-language-switch";
 import { SegmentedToggle } from "../../common/segmented-toggle";
+import { useIssueOpeningCapability } from "../../issues/surface/issue-opening-capability";
 import { useT } from "../../i18n";
+import { QuickChatAgentRow } from "./quick-chat-agent-row";
 import {
   SettingsCard,
   SettingsRow,
@@ -65,9 +63,10 @@ import {
 
 /**
  * Preferences on one page. The settings here are stored in three different
- * places — the account (language, timezone), this device (theme, composer,
- * chat) and this device for the current workspace (create-dialog fields) —
- * so each section carries a scope badge instead of splitting them into tabs.
+ * places — the account (language, timezone), this device (composer, chat,
+ * opening issues) and this device for the current workspace (create-dialog
+ * fields) — so each section carries a scope badge instead of splitting them
+ * into tabs. Theme, style and frame colour live on the Appearance page.
  * Changes apply immediately; only failures are announced.
  */
 export function PreferencesTab({
@@ -95,17 +94,6 @@ export function PreferencesTab({
       </SettingsSection>
 
       <SettingsSection
-        title={t(($) => $.preferences.appearance_title)}
-        scope="device"
-        anchor="appearance"
-      >
-        <SettingsCard>
-          <ThemeRow />
-          {extraRows}
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection
         title={t(($) => $.preferences.comments_title)}
         scope="device"
         anchor="comments"
@@ -113,7 +101,9 @@ export function PreferencesTab({
         <SettingsCard>
           <StickyCommentBarRow />
           <RunningAgentReplyRow />
+          <CommentImageLayoutRow />
           <FloatingChatRow />
+          <QuickChatAgentRow />
           <TimelineOrderRow />
         </SettingsCard>
       </SettingsSection>
@@ -136,85 +126,33 @@ export function PreferencesTab({
       >
         <IssueFieldsMatrix />
       </SettingsSection>
+
+      {/*
+        Host-owned rows (the dsh panel's zoom). Upstream moved theme to its own
+        Appearance tab, so the fork's hook no longer has a theme section to sit
+        after; it renders only when a host supplies rows, which keeps the web
+        and desktop pages exactly as upstream ships them.
+      */}
+      {extraRows ? (
+        <SettingsSection
+          title={t(($) => $.page.tabs.appearance)}
+          scope="device"
+          anchor="appearance"
+        >
+          <SettingsCard>{extraRows}</SettingsCard>
+        </SettingsSection>
+      ) : null}
     </SettingsTab>
   );
 }
 
-function ThemeRow() {
-  const { t } = useT("settings");
-  const { theme, setTheme } = useTheme();
-  const value = theme === "light" || theme === "dark" ? theme : "system";
-  return (
-    <SettingsRow anchor="theme" label={t(($) => $.preferences.theme.title)}>
-      <div role="group" aria-label={t(($) => $.preferences.theme.title)}>
-        <SegmentedToggle
-          value={value}
-          onChange={setTheme}
-          buttonClassName="px-3 py-1 text-label"
-          options={[
-            ["light", t(($) => $.preferences.theme.light)],
-            ["dark", t(($) => $.preferences.theme.dark)],
-            ["system", t(($) => $.preferences.theme.system)],
-          ]}
-        />
-      </div>
-    </SettingsRow>
-  );
-}
-
 function LanguageRow() {
-  const { t, i18n } = useT("settings");
-  const localeAdapter = useLocaleAdapter();
-  const user = useAuthStore((s) => s.user);
-
-  // i18next.language can be a region-tagged BCP-47 string (e.g. "en-US",
-  // "zh-Hans-CN") returned by intl-localematcher. Normalize to a supported
-  // locale before comparing — otherwise the select shows neither option.
-  const currentLocale: SupportedLocale = SUPPORTED_LOCALES.includes(
-    i18n.language as SupportedLocale,
-  )
-    ? (i18n.language as SupportedLocale)
-    : DEFAULT_LOCALE;
-
-  const languageOptions: { value: SupportedLocale; label: string }[] = [
-    { value: "en", label: t(($) => $.preferences.language.english) },
-    { value: "zh-Hans", label: t(($) => $.preferences.language.chinese) },
-    { value: "zh-Hant", label: t(($) => $.preferences.language.chinese_traditional) },
-    { value: "ko", label: t(($) => $.preferences.language.korean) },
-    { value: "ja", label: t(($) => $.preferences.language.japanese) },
-    { value: "fr", label: t(($) => $.preferences.language.french) },
-  ];
-
-  // Persist locally → sync to user.language → reload. Reload (vs in-place
-  // changeLanguage) avoids hydration mismatch and is the i18next-recommended
-  // pattern for App Router. The reload itself is the confirmation.
-  //
-  // If the cross-device sync (PATCH /api/me) fails, the local cookie is
-  // already written so the new locale will take effect after reload — but
-  // the user's other devices won't see the change. Surface that explicitly
-  // via a toast and delay the reload long enough for the toast to be read,
-  // otherwise the failure would be invisible.
-  const handleLanguageChange = async (next: SupportedLocale) => {
-    if (next === currentLocale) return;
-    localeAdapter.persist(next);
-
-    let syncFailed = false;
-    if (user) {
-      try {
-        await api.updateMe({ language: next });
-      } catch {
-        syncFailed = true;
-      }
-    }
-
-    if (syncFailed) {
-      toast.warning(t(($) => $.preferences.language.sync_failed));
-      // Give the toast 2.5s of visible time before navigating away.
-      setTimeout(() => window.location.reload(), 2500);
-      return;
-    }
-    window.location.reload();
-  };
+  const { t } = useT("settings");
+  const {
+    options: languageOptions,
+    currentLocale,
+    changeLanguage: handleLanguageChange,
+  } = useLanguageSwitch();
 
   return (
     <SettingsRow
@@ -313,6 +251,32 @@ function RunningAgentReplyRow() {
   );
 }
 
+function CommentImageLayoutRow() {
+  const { t } = useT("settings");
+  const value = useCommentComposerStore((s) => s.imageLayout);
+  const setValue = useCommentComposerStore((s) => s.setImageLayout);
+  const label = t(($) => $.preferences.comment_images.title);
+  return (
+    <SettingsRow
+      anchor="comment-images"
+      label={label}
+      description={t(($) => $.preferences.comment_images.hint)}
+    >
+      <div role="group" aria-label={label}>
+        <SegmentedToggle<CommentImageLayout>
+          value={value}
+          onChange={setValue}
+          buttonClassName="px-3 py-1 text-label"
+          options={[
+            ["thumbnails", t(($) => $.preferences.comment_images.thumbnails)],
+            ["full", t(($) => $.preferences.comment_images.full)],
+          ]}
+        />
+      </div>
+    </SettingsRow>
+  );
+}
+
 /**
  * Issue activity reading order, shared with the Activity header toggle: both
  * read and write the same persisted `multica_timeline_display` preference,
@@ -370,7 +334,9 @@ function TimelineOrderRow() {
  */
 function IssueOpeningRow() {
   const { t } = useT("settings");
-  const value = useIssueOpeningStore((s) => s.openMode);
+  const capability = useIssueOpeningCapability();
+  const storedValue = useIssueOpeningStore((s) => s.openMode);
+  const value = capability.openMode ?? storedValue;
   const setValue = useIssueOpeningStore((s) => s.setOpenMode);
   const label = t(($) => $.issue.opening.click);
   return (
@@ -385,8 +351,17 @@ function IssueOpeningRow() {
           onChange={setValue}
           buttonClassName="px-3 py-1 text-label"
           options={[
-            ["page", t(($) => $.issue.opening.page)],
-            ["peek", t(($) => $.issue.opening.peek)],
+            // A host with tabs has no in-place full page: its full-page
+            // experience is a new header tab (M-313).
+            ...(!capability.supportsTabs
+              ? [["page", t(($) => $.issue.opening.page)] as const]
+              : [["tab", t(($) => $.issue.opening.tab)] as const]),
+            // Side preview wherever the host can preview: the column where
+            // the shell publishes one (MMX, M-336), the floating peek
+            // otherwise (M-330).
+            ...(capability.supportsPeek
+              ? [["peek", t(($) => $.issue.opening.peek)] as const]
+              : []),
           ]}
         />
       </div>

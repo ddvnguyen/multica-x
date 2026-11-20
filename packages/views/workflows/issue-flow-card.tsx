@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Settings, Workflow } from "lucide-react";
+import { Settings, Workflow } from "@multica/ui/icons";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useProjectWithWorkflow } from "@multica/core/issue-workflows";
@@ -45,7 +45,6 @@ export function IssueFlowCard({ projectId, currentStatus }: { projectId: string 
           >
             <Workflow aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate text-foreground">{workflow.name}</span>
-            <span className="shrink-0 text-muted-foreground">{t(($) => $.workflows.detail.follows_project)}</span>
           </button>
         }
       />

@@ -17,16 +17,37 @@ import type {
   ListGroupedIssuesParams,
   ListIssuesParams,
   ListIssuesCache,
+  ListIssuesResponse,
 } from "../types";
+import type { SidebarIssuesRequest } from "./sidebar-list";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 
-export function issueTasksOptions(issueId: string) {
+export function issueTasksOptions(issueId: string, includeDescendants = false, view: "timeline" | "history" = "timeline") {
+  const key = includeDescendants ? issueKeys.subtreeTasks(issueId) : issueKeys.tasks(issueId);
   return queryOptions({
-    queryKey: issueKeys.tasks(issueId),
-    queryFn: () => api.listTasksByIssue(issueId),
+    queryKey: view === "history" ? [...key, "history"] : key,
+    queryFn: () => view === "timeline"
+      ? api.listTasksByIssue(issueId, includeDescendants, { view })
+      : api.listTasksByIssue(issueId, includeDescendants),
     enabled: !!issueId,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/**
+ * Open questions on an issue (M-81). Only open ones are fetched: the section
+ * renders nothing when this is empty, and a settled question is not a call to
+ * action. A short staleTime keeps a remount from re-asking immediately while
+ * still picking up an answer made from another tab or the CLI.
+ */
+export function issueOpenQuestionsOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.questions(issueId),
+    queryFn: () => api.listIssueQuestions(issueId, "open"),
+    enabled: !!issueId,
+    staleTime: 10_000,
     refetchOnWindowFocus: true,
   });
 }
@@ -126,6 +147,14 @@ export const issueKeys = {
       projectId,
       assigneeTypes ?? null,
     ] as const,
+  /** Every sidebar issue list — prefix for cross-list refresh. */
+  sidebarAll: (wsId: string) => [...issueKeys.all(wsId), "sidebar"] as const,
+  /**
+   * One expanded sidebar row's issues. `source` (`project:{id}` / `view:{id}` / `builtin:{key}`)
+   * sits at a fixed index so realtime refresh can target a project's lists.
+   */
+  sidebar: (wsId: string, source: string, request: SidebarIssuesRequest, limit: number) =>
+    [...issueKeys.sidebarAll(wsId), source, request, limit] as const,
   detail: (wsId: string, id: string) =>
     [...issueKeys.all(wsId), "detail", id] as const,
   /** S1-A1 ask/plan state for one issue — the single read behind the M-120
@@ -135,6 +164,12 @@ export const issueKeys = {
     [...issueKeys.all(wsId), "ask-plan"] as const,
   askPlan: (wsId: string, id: string) =>
     [...issueKeys.askPlanAll(wsId), id] as const,
+  /** M-275: one section's write history, keyed per plan + section. The plan
+   *  id is in the key because a revised plan is a different ledger. */
+  planHistory: (wsId: string, planId: string, sectionId: string) =>
+    [...issueKeys.all(wsId), "plan-history", planId, sectionId] as const,
+  planHistoryAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "plan-history"] as const,
   /** Resolve a bare issue identifier (e.g. "MUL-123") to an issue. */
   identifier: (wsId: string, identifier: string) =>
     [...issueKeys.all(wsId), "identifier", identifier] as const,
@@ -156,6 +191,11 @@ export const issueKeys = {
     [...issueKeys.childrenByParentsAll(wsId), parentIds] as const,
   childProgress: (wsId: string) =>
     [...issueKeys.all(wsId), "child-progress"] as const,
+  /** Prefix for every per-issue environments query in a workspace. */
+  environmentsAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "environments"] as const,
+  environments: (wsId: string, issueId: string) =>
+    [...issueKeys.environmentsAll(wsId), issueId] as const,
   /** Prefix-match keys for invalidating the per-issue caches below across
    *  all issues. These keys carry no wsId, so `issueKeys.all(wsId)` does NOT
    *  cover them — WS reconnect recovery must invalidate these `*All`
@@ -165,6 +205,8 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  commentThread: (issueId: string, commentId: string) =>
+    [...issueKeys.timeline(issueId), "thread", commentId] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
@@ -194,15 +236,29 @@ export const issueKeys = {
    *  click time. */
   attachments: (issueId: string) =>
     [...issueKeys.attachmentsAll(), issueId] as const,
-  /** Prefix-match key for invalidating tasks across all issues — used by
-   *  the global WS task: prefix path so any task lifecycle event refreshes
-   *  every per-issue list, regardless of which issue is currently mounted. */
+  /** Prefix for reconnects and task events without an issue scope. */
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
+  questionsAll: () => ["issues", "questions"] as const,
+  /** Per-issue open questions (issue-detail question card, M-81). */
+  questions: (issueId: string) =>
+    [...issueKeys.questionsAll(), issueId] as const,
+  subtreeTasks: (issueId: string) => [...issueKeys.tasks(issueId), "subtree"] as const,
+  taskMemoryReport: (issueId: string, taskId: string) =>
+    [...issueKeys.tasks(issueId), taskId, "memory-report"] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
+
+export function taskMemoryReportOptions(issueId: string, taskId: string) {
+  return queryOptions({
+    queryKey: issueKeys.taskMemoryReport(issueId, taskId),
+    queryFn: () => api.getIssueTaskMemoryReport(issueId, taskId),
+    enabled: !!issueId && !!taskId,
+    staleTime: 60_000,
+  });
+}
 
 export function sourceContextPreviewOptions(
   wsId: string,
@@ -222,6 +278,7 @@ export type MyIssuesFilter = Pick<
   | "assignee_ids"
   | "assignee_types"
   | "creator_id"
+  | "created_by_user_id"
   | "project_id"
   | "involves_user_id"
 >;
@@ -455,6 +512,42 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/** The table endpoint caps a page here, so a longer sidebar list is fetched in pages. */
+const SIDEBAR_MAX_PAGE = 100;
+
+async function listSidebarTableIssues(query: IssueTableQuerySpec, limit: number): Promise<ListIssuesResponse> {
+  const issues: Issue[] = [];
+  let total = 0;
+  let cursor: string | null = null;
+  do {
+    const page = await api.listIssueTableRows({
+      query,
+      group: { kind: "none" },
+      group_key: null,
+      hierarchy: { enabled: false },
+      parent_id: null,
+      page: { limit: Math.min(limit - issues.length, SIDEBAR_MAX_PAGE), cursor },
+    });
+    issues.push(...page.rows.map((row) => row.issue));
+    total = page.total;
+    cursor = page.next_cursor;
+  } while (cursor && issues.length < limit);
+  return { issues, total };
+}
+
+/** The first `limit` issues of a sidebar list, with the filtered total. */
+export function sidebarIssuesOptions(
+  wsId: string,
+  source: string,
+  request: SidebarIssuesRequest,
+  limit: number,
+) {
+  return queryOptions({
+    queryKey: issueKeys.sidebar(wsId, source, request, limit),
+    queryFn: () => listSidebarTableIssues(request.table, limit),
+  });
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -477,6 +570,44 @@ export function issueAskPlanOptions(wsId: string, issueId: string) {
     queryKey: issueKeys.askPlan(wsId, issueId),
     queryFn: () => api.getIssueAskPlan(wsId, issueId),
     enabled: !!wsId && !!issueId,
+  });
+}
+
+/**
+ * One plan section's history (M-275), newest version first.
+ *
+ * The server seeds the current text as a version on the first read of a
+ * section that predates the ledger, so an empty list here means the section
+ * itself is gone, never that it was never written. Keyed on the plan and the
+ * section: a revision bump is not a key change — the caller refetches, which
+ * is what makes a save show up in its own history.
+ */
+export function planSectionHistoryOptions(
+  wsId: string,
+  planId: string,
+  sectionId: string,
+  revision: number,
+) {
+  return queryOptions({
+    queryKey: [...issueKeys.planHistory(wsId, planId, sectionId), revision] as const,
+    queryFn: () => api.listPlanSectionVersions(wsId, planId, sectionId),
+    enabled: !!wsId && !!planId && sectionId !== "",
+  });
+}
+
+/**
+ * One older plan revision (M-348), read-only.
+ *
+ * Keyed on the revision: picking another revision is a key change, so each
+ * viewed revision fetches once and caches under its own key. Disabled for
+ * non-positive revisions — the panel only calls it with a picked older
+ * revision, never for the current one.
+ */
+export function planRevisionOptions(wsId: string, planId: string, revision: number) {
+  return queryOptions({
+    queryKey: [...issueKeys.planHistory(wsId, planId, "__revision__"), revision] as const,
+    queryFn: () => api.getPlanRevision(wsId, planId, revision),
+    enabled: !!wsId && !!planId && revision > 0,
   });
 }
 
@@ -643,6 +774,45 @@ export function issueTimelineOptions(issueId: string) {
   });
 }
 
+/**
+ * Warm what the issue page holds its first paint and a comment landing on: the
+ * issue, its timeline, its runs and its sub-issues, so opening it renders from
+ * cache instead of waiting on a request chain. All four are keyed by UUID and
+ * fetched in parallel; `identifier` mirrors the issue under the key an
+ * identifier URL resolves through (`useCanonicalIssue`), so that hop is cached
+ * too. prefetchQuery honours each query's staleTime: a warm entry costs nothing.
+ */
+export async function prefetchIssuePage(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  identifier?: string | null,
+): Promise<void> {
+  await Promise.all([
+    qc.prefetchQuery(issueDetailOptions(wsId, issueId)),
+    qc.prefetchQuery(issueTimelineOptions(issueId)),
+    qc.prefetchQuery(issueTasksOptions(issueId)),
+    qc.prefetchQuery(childIssuesOptions(wsId, issueId)),
+  ]);
+  const issue = qc.getQueryData<Issue>(issueKeys.detail(wsId, issueId));
+  if (identifier && issue) {
+    qc.setQueryData<Issue>(issueKeys.detail(wsId, identifier), (old) => old ?? issue);
+  }
+}
+
+export function issueCommentThreadOptions(issueId: string, commentId: string) {
+  return queryOptions({
+    queryKey: issueKeys.commentThread(issueId, commentId),
+    queryFn: async () => {
+      const comments = await api.listComments(issueId, { thread: commentId });
+      if (!comments.some((comment) => comment.id === commentId)) {
+        throw new Error("Comment not found in thread");
+      }
+      return comments;
+    },
+  });
+}
+
 export function issueReactionsOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.reactions(issueId),
@@ -657,6 +827,25 @@ export function issueSubscribersOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.subscribers(issueId),
     queryFn: () => api.listIssueSubscribers(issueId),
+  });
+}
+
+// Reports arrive over realtime; the interval only re-derives "unreachable"
+// once a daemon goes quiet, and a command expiring when its machine never
+// answers, which no event announces.
+export function issueEnvironmentsOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.environments(wsId, issueId),
+    queryFn: () => api.listIssueEnvironments(issueId),
+    enabled: !!wsId && !!issueId,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const pending = !!data && (
+        data.pending_starts.length > 0 ||
+        data.environments.some((env) => env.pending_action?.status === "pending")
+      );
+      return pending ? 5_000 : 60_000;
+    },
   });
 }
 

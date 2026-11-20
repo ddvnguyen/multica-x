@@ -1,5 +1,5 @@
 import { Extension, type Editor } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 /**
@@ -40,8 +40,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
  * did not type is never armed, so it never opens a picker.
  */
 
-/** Trigger characters any suggestion in this editor listens for. */
-const TRIGGER_CHARS = new Set(["@", "/"]);
+/** Trigger characters any suggestion in this editor listens for. `#` is the
+ * M-359 tier pick (after an `@agent` pill); like `@` and `/` it opens only
+ * when actually typed, never on paste. */
+const TRIGGER_CHARS = new Set(["@", "/", "#"]);
 
 /**
  * Latest armed position per editor.
@@ -54,6 +56,19 @@ const TRIGGER_CHARS = new Set(["@", "/"]);
  * the time `shouldShow` reads it.
  */
 const armedPositions = new WeakMap<Editor, number | null>();
+
+/**
+ * Transaction meta that arms a trigger the user asked for through a control
+ * rather than a keystroke (the block handle's "+" inserts `/` to open the
+ * insert menu). The value is the trigger's position in the transaction's
+ * resulting document.
+ */
+const ARM_META = "suggestionTriggerArming:arm";
+
+/** Marks `pos` in `tr`'s resulting document as a trigger the user requested. */
+export function armSuggestionTrigger(tr: Transaction, pos: number): Transaction {
+  return tr.setMeta(ARM_META, pos);
+}
 
 /** True when `from` is where the user typed a trigger character. */
 export function isTriggerArmedAt(editor: Editor, from: number): boolean {
@@ -103,6 +118,8 @@ export const SuggestionTriggerArmingExtension = Extension.create({
             const next = ((): number | null => {
               // A trigger character was just typed — arm it unconditionally.
               if (pendingArm !== null) return pendingArm;
+              const requested: unknown = tr.getMeta(ARM_META);
+              if (typeof requested === "number") return requested;
               if (prev === null) return null;
 
               // A deliberate caret move (click, arrow key) abandons the trigger.

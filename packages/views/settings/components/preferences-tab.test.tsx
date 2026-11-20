@@ -15,6 +15,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enAuth from "../../locales/en/auth.json";
 import enSettings from "../../locales/en/settings.json";
+import { IssueOpeningCapabilityProvider } from "../../issues/surface/issue-opening-capability";
 
 const navigationState = vi.hoisted(() => ({ search: "", replace: vi.fn() }));
 vi.mock("../../navigation", () => ({
@@ -30,14 +31,9 @@ const mockReload = vi.hoisted(() => vi.fn());
 const mockToastWarning = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
-const mockSetTheme = vi.hoisted(() => vi.fn());
 const mockSetUser = vi.hoisted(() => vi.fn());
 const userRef = vi.hoisted(() => ({
   current: null as { id: string; timezone?: string | null } | null,
-}));
-
-vi.mock("@multica/ui/components/common/theme-provider", () => ({
-  useTheme: () => ({ theme: "light", setTheme: mockSetTheme }),
 }));
 
 vi.mock("@multica/core/i18n/react", async () => {
@@ -67,8 +63,12 @@ vi.mock("@multica/core/chat", () => ({
   ),
 }));
 
+// Reads the workspace's agents; covered by its own test.
+vi.mock("./quick-chat-agent-row", () => ({ QuickChatAgentRow: () => null }));
+
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -121,7 +121,7 @@ const TEST_RESOURCES = {
 function I18nWrapper({ children }: { children: ReactNode }) {
   return (
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      {children}
+      <IssueOpeningCapabilityProvider>{children}</IssueOpeningCapabilityProvider>
     </I18nProvider>
   );
 }
@@ -161,21 +161,6 @@ describe("PreferencesTab — Language switcher", () => {
     expect(mockReload).not.toHaveBeenCalled();
   });
 
-  it("applies the theme on this device without announcing success", async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<PreferencesTab />, { wrapper: I18nWrapper });
-
-    const group = screen.getByRole("group", { name: "Theme" });
-    expect(within(group).getByRole("button", { name: "Light" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await user.click(within(group).getByRole("button", { name: "Dark" }));
-
-    expect(mockSetTheme).toHaveBeenCalledWith("dark");
-    expect(mockToastSuccess).not.toHaveBeenCalled();
-  });
-
   it.each([
     { name: "한국어", locale: "ko" },
     { name: "日本語", locale: "ja" },
@@ -197,6 +182,7 @@ describe("PreferencesTab — Language switcher", () => {
     { name: "简体中文", locale: "zh-Hans" },
     { name: "繁體中文", locale: "zh-Hant" },
     { name: "Français", locale: "fr" },
+    { name: "Español", locale: "es" },
   ])("when logged in: saves $locale before reloading", async ({ name, locale }) => {
     userRef.current = { id: "user-1" };
     mockUpdateMe.mockResolvedValueOnce({});
@@ -449,8 +435,8 @@ describe("PreferencesTab — Scope", () => {
   it("labels where each group of settings is stored", () => {
     render(<PreferencesTab />, { wrapper: I18nWrapper });
     expect(screen.getByText("Account · synced")).toBeInTheDocument();
-    // Appearance, opening issues, comments & chat.
-    expect(screen.getAllByText("This device only")).toHaveLength(3);
+    // Opening issues, comments & chat.
+    expect(screen.getAllByText("This device only")).toHaveLength(2);
   });
 
   it("switches what clicking a card or row opens, and says what Shift does", async () => {
@@ -466,5 +452,52 @@ describe("PreferencesTab — Scope", () => {
     await user.click(preview);
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
     expect(preview).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("offers New tab beside Side preview in the tabbed island, without an in-place page (M-313)", async () => {
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    const user = userEvent.setup();
+    function IslandWrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek>
+            {children}
+          </IssueOpeningCapabilityProvider>
+        </I18nProvider>
+      );
+    }
+    render(<PreferencesTab />, { wrapper: IslandWrapper });
+    const group = screen.getByRole("group", { name: "Clicking a card or row opens" });
+    const newTab = within(group).getByRole("button", { name: "New tab" });
+    const preview = within(group).getByRole("button", { name: "Side preview" });
+    expect(within(group).queryByRole("button", { name: "Full page" })).toBeNull();
+    expect(newTab).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(preview);
+    expect(useIssueOpeningStore.getState().openMode).toBe("peek");
+    expect(preview).toHaveAttribute("aria-pressed", "true");
+  });
+
+  // MMX declares tabs and no peek while dsh cannot host the side view (M-330),
+  // and a single open mode is what that has to look like: no in-place page and
+  // no preview to pick.
+  it("offers only New tab in a tabbed host without a peek (M-330)", () => {
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    function TabsOnlyWrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPeek={false}>
+            {children}
+          </IssueOpeningCapabilityProvider>
+        </I18nProvider>
+      );
+    }
+    render(<PreferencesTab />, { wrapper: TabsOnlyWrapper });
+    const group = screen.getByRole("group", { name: "Clicking a card or row opens" });
+    expect(
+      within(group)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["New tab"]);
   });
 });

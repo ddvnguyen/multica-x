@@ -67,7 +67,7 @@ func TestRenderQuestionAnswerHandoff(t *testing.T) {
 		{"selected": []int{0}},
 		{"selected": []int{0, 1}, "text": "and lint"},
 	})
-	got := renderQuestionAnswerHandoff(card, answersJSON)
+	got := renderQuestionAnswerHandoff(card, answersJSON, "")
 	for _, want := range []string{
 		"Your question was answered by a human",
 		"Q1: Which release day?",
@@ -93,12 +93,34 @@ func TestRenderQuestionAnswerHandoffWithContext(t *testing.T) {
 	card := questionCardForTest(cardJSON)
 	card.Context = pgtype.Text{String: "We are choosing a lane.", Valid: true}
 	answersJSON, _ := json.Marshal([]map[string]any{{"selected": []int{1}}})
-	got := renderQuestionAnswerHandoff(card, answersJSON)
+	got := renderQuestionAnswerHandoff(card, answersJSON, "")
 	if !strings.Contains(got, "We are choosing a lane.") {
 		t.Errorf("handoff missing the ask context:\n%s", got)
 	}
 	if !strings.Contains(got, "\n  - B") {
 		t.Errorf("handoff missing the selected label B:\n%s", got)
+	}
+}
+
+// M-332: when the project lead answered on the Owner's behalf the resumed run
+// is told exactly that, so a lead's inference is never mistaken for a recorded
+// Owner decision.
+func TestRenderQuestionAnswerHandoffByLead(t *testing.T) {
+	cardJSON, _ := json.Marshal([]map[string]any{
+		{"prompt": "Pick one", "options": []map[string]string{{"label": "A"}, {"label": "B"}}},
+	})
+	card := questionCardForTest(cardJSON)
+	card.AnsweredByType = AnsweredByAgent
+	answersJSON, _ := json.Marshal([]map[string]any{{"selected": []int{0}}})
+	got := renderQuestionAnswerHandoff(card, answersJSON, "Claude Architect")
+	if !strings.Contains(got, "Claude Architect") || !strings.Contains(got, "on the Owner's behalf") {
+		t.Errorf("lead handoff must name the lead and the Owner's behalf:\n%s", got)
+	}
+	if strings.Contains(got, "answered by a human") {
+		t.Errorf("lead handoff must not claim a human answered:\n%s", got)
+	}
+	if !strings.Contains(got, "\n  - A") {
+		t.Errorf("lead handoff must still carry the chosen label:\n%s", got)
 	}
 }
 

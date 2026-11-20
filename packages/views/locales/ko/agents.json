@@ -8,7 +8,13 @@
     "of_total": "{{total}}개 중 {{visible}}개",
     "list_load_failed": "에이전트 목록을 불러오지 못했습니다",
     "list_load_failed_default": "에이전트 목록을 가져오는 중 문제가 발생했습니다.",
-    "try_again": "다시 시도"
+    "try_again": "다시 시도",
+    "search": "에이전트 검색",
+    "scope_title": {
+      "mine": "내 에이전트",
+      "all": "모든 에이전트",
+      "archived": "보관된 에이전트"
+    }
   },
   "scope": {
     "mine": "내 것",
@@ -43,7 +49,15 @@
   },
   "empty": {
     "title": "아직 에이전트가 없습니다",
-    "description": "에이전트를 만든 후 태스크를 할당하세요."
+    "description": "에이전트를 만든 후 태스크를 할당하세요.",
+    "setup": {
+      "label": "설정 단계",
+      "runtime": "런타임 연결하기",
+      "agent": "에이전트 만들기",
+      "issue": "태스크 할당하기",
+      "done": "(완료)",
+      "connect_runtime": "연결"
+    }
   },
   "no_matches": {
     "title": "일치하는 결과 없음",
@@ -156,7 +170,12 @@
     "runtime_required_toast": "이 에이전트를 실행하기 전에 런타임을 연결하세요.",
     "assign_work": "작업 할당",
     "more_actions_aria": "에이전트 작업",
-    "updated": "{{when}} 업데이트됨"
+    "updated": "{{when}} 업데이트됨",
+    "settings": "설정",
+    "copy_link": "링크 복사",
+    "copy_id": "에이전트 ID 복사",
+    "link_copied_toast": "링크를 복사했습니다",
+    "id_copied_toast": "에이전트 ID를 복사했습니다"
   },
   "inspector": {
     "section_profile": "프로필",
@@ -266,7 +285,7 @@
     "environment": "환경",
     "custom_args": "사용자 지정 인자",
     "mcp_config": "MCP",
-    "composio_mcp": "MCP 앱",
+    "composio_mcp": "앱",
     "integrations": "연동",
     "runtime_config": "라우팅",
     "qoder_agent": "Qoder Cloud Agents",
@@ -411,7 +430,8 @@
       "reveal_action": "공개하고 수정",
       "revealing": "공개하는 중...",
       "reveal_failed_toast": "환경 변수 값을 불러오지 못했습니다",
-      "empty_editable": "설정된 환경 변수가 없습니다."
+      "empty_editable": "설정된 환경 변수가 없습니다.",
+      "bulk_invalid_key_toast": "일괄 편집은 API_KEY 같은 변수 이름만 지원합니다. \"{{key}}\"은(는) 개별 편집에서 수정하세요"
     },
     "custom_args": {
       "intro": "에이전트를 시작할 때 전달할 CLI 인자를 추가하세요.",
@@ -544,7 +564,8 @@
       "redacted_title": "설정됨 — 보기에서 숨김",
       "redacted_hint": "이 에이전트가 사용할 수 있는 앱은 생성자만 보거나 변경할 수 있습니다.",
       "shared_warning": "이 에이전트는 공유되어 있습니다. 이 에이전트를 실행할 수 있는 사람은 여기서 활성화한 Composio 앱을 사용할 수 있습니다. 이러한 앱이 민감한 데이터를 노출한다면 Private로 설정하거나 접근 범위를 좁히세요.",
-      "workspace_warning": "워크스페이스에 공개: 워크스페이스의 모든 구성원이 이 에이전트를 통해 이러한 Composio 앱을 사용할 수 있습니다."
+      "workspace_warning": "워크스페이스에 공개: 워크스페이스의 모든 구성원이 이 에이전트를 통해 이러한 Composio 앱을 사용할 수 있습니다.",
+      "open_settings": "설정 열기"
     },
     "runtime_config": {
       "mode_label": "라우팅 모드",
@@ -666,6 +687,27 @@
       "started_prefix": "{{when}} 시작됨",
       "dispatched_prefix": "{{when}} 디스패치됨",
       "queued_prefix": "{{when}} 대기 시작"
+    },
+    "connected_apps": {
+      "loading": "앱을 불러오는 중…",
+      "load_failed": "이 에이전트의 앱을 불러오지 못했습니다.",
+      "empty": "연결된 앱이 없습니다.",
+      "level": "수준",
+      "team_connected": "팀 계정 연결됨",
+      "team_missing": "팀 계정 미연결",
+      "personal_connected": "내 계정 연결됨",
+      "personal_missing": "이 앱을 아직 연결하지 않았습니다",
+      "team_admin_only": "에이전트에 팀 계정을 부여할 수 있는 사람은 워크스페이스 관리자뿐입니다.",
+      "team_shared_warning": "이 에이전트를 실행할 수 있는 사람은 누구나 이 팀 계정으로 작업할 수 있습니다.",
+      "manage_link": "설정 → 연결된 앱에서 계정 관리",
+      "save_failed_toast": "저장하지 못했습니다. 다시 시도하세요",
+      "team_help": "관리자가 연결하는 워크스페이스 공용 계정입니다.",
+      "personal_help": "실행을 시작한 사람의 계정을 사용합니다. 각자 계정을 연결해야 합니다.",
+      "available_accounts": "사용 가능: {{accounts}}",
+      "enable": "{{app}} 활성화",
+      "account_for": "{{app}} 계정",
+      "connect_hint": "필요한 앱이 없나요? 설정에서 계정을 연결하세요.",
+      "available_personal": "내 계정"
     }
   },
   "char_counter": {
@@ -817,7 +859,45 @@
     "tool_kind_write": "편집",
     "tool_kind_read": "읽기",
     "tool_kind_misc": "기타",
-    "trigger_wakeup": "깨우기"
+    "trigger_wakeup": "깨우기",
+    "context_receipt_title": "받은 컨텍스트",
+    "context_receipt_summary_other": "소스 {{count}}개",
+    "context_receipt_model": "모델",
+    "context_receipt_session": "세션",
+    "context_receipt_session_resumed": "이전 세션을 재개함 (그 기록도 컨텍스트에 포함)",
+    "context_receipt_session_new": "새 세션",
+    "context_receipt_session_fresh_retry": "재개가 거부되어 새 세션 사용",
+    "context_receipt_mcp": "MCP 서버",
+    "context_receipt_mcp_none": "없음",
+    "context_receipt_warning": "{{source}}: {{status}}",
+    "context_receipt_col_source": "소스",
+    "context_receipt_col_size": "크기",
+    "context_receipt_col_delivery": "전달 방식",
+    "context_receipt_col_load": "로드",
+    "context_receipt_same_as_brief": "런타임 안내와 동일",
+    "context_receipt_footnote": "에이전트 시작 전에 daemon이 기록합니다. 크기와 짧은 해시만 저장하며 내용은 저장하지 않습니다. \"검증됨\"은 이 런타임 버전이 파일을 읽는지 테스트했음을 뜻합니다. skill 크기와 해시는 기록된 전체 패키지를 포함하며 파일 바이트 수는 모델이 실제로 읽은 내용을 뜻하지 않습니다.",
+    "context_source_runtime_brief": "런타임 안내",
+    "context_source_agent_instructions": "에이전트 지침",
+    "context_source_project_description": "프로젝트 설명",
+    "context_source_existing_instructions": "저장소 지침",
+    "context_source_task_prompt": "이번 턴 프롬프트",
+    "context_source_skill": "스킬: {{name}}",
+    "context_delivery_file": "파일",
+    "context_delivery_inline": "시스템 프롬프트",
+    "context_delivery_prompt": "턴 입력",
+    "context_delivery_embedded": "런타임 안내 안",
+    "context_delivery_none": "전달 경로 없음",
+    "context_load_delivered": "전달됨",
+    "context_load_verified": "검증됨",
+    "context_load_verified_other_version": "{{version}}에서만 검증됨",
+    "context_load_unverified": "검증 안 됨",
+    "context_load_not_delivered": "전달 안 됨",
+    "context_receipt_direct_bytes": "직접 입력: {{size}}",
+    "context_receipt_file_bytes": "디스크 파일: {{size}}",
+    "context_receipt_package": "패키지",
+    "context_receipt_instruction_file_bytes": "지침 파일: {{size}}",
+    "context_receipt_skill_package_bytes": "스킬 패키지: {{size}}",
+    "context_receipt_other_file_bytes": "기타 파일: {{size}}"
   },
   "task_failure": {
     "cancelled_by_system": "시스템에서 취소함",
@@ -945,7 +1025,8 @@
       "prompt_assistant": "팀의 프로젝트 계획과 작성 지원",
       "thinking": "초안 업데이트 중…",
       "placeholder": "필요한 에이전트를 설명하세요…",
-      "send": "메시지 보내기"
+      "send": "메시지 보내기",
+      "conversation_tab": "대화"
     },
     "live_draft": "에이전트 설정",
     "live_draft_hint": "초안을 직접 수정할 수 있습니다.",
@@ -971,7 +1052,8 @@
       "runtime": "런타임 선택",
       "configure": "구성",
       "done": "완료",
-      "aria": "에이전트 생성 단계"
+      "aria": "에이전트 생성 단계",
+      "progress": "{{total}}단계 중 {{current}}단계"
     },
     "configure_title": "에이전트 구성",
     "ask_ai": "AI에게 작성 맡기기",
@@ -1046,5 +1128,45 @@
     "label": "계정",
     "runtime_default": "런타임 기본값",
     "hint": "이 에이전트를 실행할 Freebuff-CLI 계정입니다."
+  },
+  "sections": {
+    "runs_count_other": "실행 {{count}}개",
+    "recent_this_week_other": "이번 주 {{count}}개",
+    "view_all": "모두 보기",
+    "open": "열기",
+    "edit": "편집",
+    "add": "추가",
+    "manage": "관리",
+    "instructions_empty": "아직 지침이 없습니다."
+  },
+  "panel": {
+    "status": "상태",
+    "runs_7d": "실행 (7일)",
+    "edit_access_aria": "접근 권한: {{value}}. 접근 권한 변경",
+    "all_settings": "모든 설정"
+  },
+  "intro": {
+    "title": "첫 AI 팀원을 맞이하세요",
+    "description": "에이전트는 팀원처럼 태스크를 맡습니다. 런타임에서 Claude Code, Codex 같은 도구로 작업하고, 끝나면 댓글로 결과를 전달합니다.",
+    "slides": {
+      "describe": {
+        "title": "할 일을 한 문장으로",
+        "description": "역할을 설명하고 런타임과 모델을 고르면 만들 수 있습니다. 지침 수정이나 skill 추가는 언제든 가능합니다."
+      },
+      "assign": {
+        "title": "동료처럼 일을 맡기세요",
+        "description": "어떤 태스크든 담당자로 선택하세요. 알아서 작업을 시작하니 지켜볼 필요가 없습니다."
+      },
+      "deliver": {
+        "title": "작업을 보고, 댓글로 받으세요",
+        "description": "실행 과정을 실시간으로 볼 수 있습니다. 끝나면 결과와 PR을 태스크 댓글로 전달합니다."
+      }
+    },
+    "art": {
+      "prompt": "프런트엔드 PR을 리뷰하고 접근성과 성능을 중점으로 본 뒤, 결론을 PR 댓글로 남겨 주세요.",
+      "issue_title": "요금 페이지 모바일 레이아웃 깨짐",
+      "comment": "수정했습니다. 375px 이하에서 요금 카드가 한 열로 바뀝니다. PR을 열었고 테스트도 통과했습니다.",
+      "step_read": "{{file}} 읽기"
+    }
   }
 }

@@ -10,6 +10,7 @@ func TestTaskSupplementVersionGate(t *testing.T) {
 		provider, version string
 		want              bool
 	}{
+		{"pi", "1.4.0", true}, {"pi", "1.5.2", true}, {"pi", "1.3.9", false}, {"pi", "", false}, {"pi", "dev", false}, {"omp", "1.4.0", false},
 		{"codex", "codex-cli 0.100.0", true}, {"codex", "0.99.0", false},
 		{"claude", "2.1.110 (Claude Code)", true}, {"claude", "2.1.109", false},
 		{"grok", "1.0.14", true}, {"grok", "1.0.13", false}, {"grok", "0.2.120", false},
@@ -27,8 +28,8 @@ func TestTaskSupplementVersionGate(t *testing.T) {
 // The ask/plan (and every other) overlay entry must be skipped when the
 // runtime's own MCP gate would refuse the launch: builtin pi below
 // piMcpMinVersion, or with a version that cannot be verified, fails the
-// start — the daemon degrades to no MCP servers instead. Non-pi providers
-// and custom pi profiles carry the overlay unconditionally.
+// start — the daemon degrades to no MCP servers instead. Amp and Droid
+// reject managed MCP entirely; custom pi profiles have no version floor.
 func TestTaskMCPVersionGate(t *testing.T) {
 	for _, tc := range []struct {
 		provider, version string
@@ -42,6 +43,9 @@ func TestTaskMCPVersionGate(t *testing.T) {
 		{"pi", "not-a-version", true, false},
 		{"pi", "0.98.0", false, true}, // custom profile: no floor (validatePiMcpVersion)
 		{"pi", "", false, true},
+		{"amp", "", true, false},
+		{"droid", "", true, false},
+		{"droid", "", false, false},
 		{"omp", "", true, true},
 		{"dsh", "0.2.1", true, true},
 		{"codex", "", true, true},

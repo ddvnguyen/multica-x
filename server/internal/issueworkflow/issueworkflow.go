@@ -14,8 +14,9 @@
 //
 // A project without a workflow uses the workspace Default workflow. Default
 // is a stored row once created; before that it is the built-in statuses.
-// Status writes on a Default project are never rejected: issues already on
-// statuses Default does not list keep them, as they always have.
+// Once stored, Default limits status writes like any workflow, on its
+// projects and on issues outside any project alike (MUL-8250). Issues already
+// on statuses Default does not list keep them until someone moves them.
 package issueworkflow
 
 import (
@@ -138,17 +139,6 @@ func keysOf(steps []Step) []string {
 	return keys
 }
 
-// MiddleKeys returns the workflow's own steps, without the fixed statuses.
-func MiddleKeys(keys []string) []string {
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if !IsFixed(key) {
-			out = append(out, key)
-		}
-	}
-	return out
-}
-
 // BuiltInDefaultKeys is Default before a workspace stores its own.
 func BuiltInDefaultKeys() []string {
 	return ArrangeKeys([]string{issuestatus.Backlog, issuestatus.InProgress, issuestatus.InReview, issuestatus.Blocked})
@@ -266,6 +256,14 @@ func stepsFor(keys []string) []Step {
 		steps[i] = Step{StatusKey: key, Handler: Handler{Type: HandlerNone}}
 	}
 	return steps
+}
+
+// Limits reports whether the workflow restricts the statuses its issues may
+// enter. Only a Default the workspace has not stored yet does not: it stands
+// for "the built-in statuses" before the workspace ever used workflows, and
+// limiting by it would strand custom statuses that workspace already uses.
+func (d Definition) Limits() bool {
+	return !d.IsDefault || d.ID.Valid
 }
 
 // Has reports whether the workflow lists the status key.
@@ -499,14 +497,12 @@ func ValidateHandoff(s Step, def Definition) error {
 	}
 	switch s.Handler.Type {
 	case HandlerNone, HandlerProjectLead:
-	case HandlerAgent, HandlerMember:
+	case HandlerAgent, HandlerSquad, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
 		}
-	case HandlerSquad, HandlerCreator:
-		// A squad routes work itself, so a handoff to one would compete with
-		// its own assignment. (MUL-7420)
-		return invalid("hand off to an agent, a member or the project lead")
+	case HandlerCreator:
+		return invalid("hand off to an agent, a squad, a member or the project lead")
 	default:
 		return invalid("unknown handler type %q", s.Handler.Type)
 	}
@@ -559,6 +555,25 @@ func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UU
 	}
 	def, err := ForProjectRow(ctx, q, project)
 	return def, project, err
+}
+
+// OutsideProject loads the workflow that limits the statuses of an issue
+// outside any project: the workspace's stored Default, or nil before the
+// workspace stores one. Nothing hands off outside a project, so it is only
+// for checking statuses; ForProject stays nil there. (MUL-8250)
+func OutsideProject(ctx context.Context, q Querier, workspaceID pgtype.UUID) (*Definition, error) {
+	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	def, err := Decode(row)
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
 }
 
 // ForProjectRow loads the workflow of an already-loaded project. A dangling
@@ -631,9 +646,16 @@ type NotInWorkflowError struct {
 	StatusKey    string
 	WorkflowName string
 	Allowed      []string
+	// OutsideProject marks an issue outside any project, which takes the
+	// statuses of the workspace Default.
+	OutsideProject bool
 }
 
 func (e *NotInWorkflowError) Error() string {
+	if e.OutsideProject {
+		return fmt.Sprintf("status %q is not part of the workflow %q that issues outside a project use; use one of: %s",
+			e.StatusKey, e.WorkflowName, strings.Join(e.Allowed, ", "))
+	}
 	return fmt.Sprintf("status %q is not part of this project's workflow %q; use one of: %s",
 		e.StatusKey, e.WorkflowName, strings.Join(e.Allowed, ", "))
 }
@@ -670,14 +692,25 @@ func statusLabel(name, key string) string {
 	return fmt.Sprintf("%q (%s)", name, key)
 }
 
-// CheckStatus rejects a status a named workflow does not list. Default
-// accepts every status, so issues already on statuses it no longer lists
-// keep working.
+// CheckStatus rejects a status the workflow does not list. Callers skip it
+// when a write keeps the issue's current status, so an issue already on a
+// status its workflow no longer lists keeps working.
 func CheckStatus(def *Definition, key string) error {
-	if def == nil || def.IsDefault || def.Has(key) {
+	if def == nil || !def.Limits() || def.Has(key) {
 		return nil
 	}
 	return &NotInWorkflowError{StatusKey: key, WorkflowName: def.Name, Allowed: def.StatusKeys()}
+}
+
+// CheckStatusOutsideProject is CheckStatus for an issue outside any project,
+// against OutsideProject's workflow.
+func CheckStatusOutsideProject(def *Definition, key string) error {
+	err := CheckStatus(def, key)
+	var notIn *NotInWorkflowError
+	if errors.As(err, &notIn) {
+		notIn.OutsideProject = true
+	}
+	return err
 }
 
 // BriefInput carries what the handoff brief names.
@@ -686,6 +719,12 @@ type BriefInput struct {
 	ProjectName     string
 	StatusKey       string
 	IssueIdentifier string
+	// BoundStep is the task's effective step when its binding must be respected.
+	// A different StatusKey renders a continuation brief without status moves.
+	// Empty preserves the normal handoff, preview and unbound-run brief.
+	BoundStep string
+	// MovedBy names whoever last changed the status, when known.
+	MovedBy string
 	// StatusName resolves a catalog key to its display name.
 	StatusName func(key string) string
 	// HandlerName describes who a step hands off to, e.g. "Sentinel" or
@@ -722,6 +761,7 @@ type BriefInput struct {
 // names are kept to one line.
 func Brief(in BriefInput) string {
 	step, _ := in.Workflow.Step(in.StatusKey)
+	stepMoved := in.BoundStep != "" && in.BoundStep != in.StatusKey
 	name := func(key string) string {
 		if in.StatusName == nil {
 			return key
@@ -749,20 +789,40 @@ func Brief(in BriefInput) string {
 		}
 		return ""
 	}
+	// Moving an issue to a step that hands it to a human owner is a decision,
+	// not a routine stage of the pipeline: say so under the command, so an
+	// agent keeps working instead of parking the card. The workflow's review
+	// column is the exception — handing delivered work there is the normal
+	// exit — so it carries no caveat (M-233).
+	ownerDecisionCaveat := func(key string) {
+		target, ok := in.Workflow.Step(key)
+		if !ok || !isOwnerHandoff(target) {
+			return
+		}
+		b.WriteString("   (use it only when an owner decision is really needed — otherwise leave the issue at its current step for the team to follow)\n")
+	}
 	// An older daemon still states the built-in rules itself, so its brief
 	// keeps the per-step wording rather than add a second in_progress rule.
 	var span handlerlessSpan
-	if !in.Observer && !in.LegacyRuntimeRules {
+	if !stepMoved && !in.Observer && !in.LegacyRuntimeRules {
 		span = in.Workflow.handlerlessSpan(in.StatusKey)
 	}
-	if in.LegacyRuntimeRules {
+	if in.LegacyRuntimeRules && !stepMoved {
 		b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
 		if !in.Workflow.Has(issuestatus.InReview) {
 			fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
 		}
 		b.WriteString(".\n")
 	}
-	if in.Observer {
+	if stepMoved {
+		mover := briefLine(in.MovedBy)
+		if mover == "" {
+			mover = "someone else"
+		}
+		fmt.Fprintf(&b, "This run remains bound to %s, but %s is now at %s (last moved by %s).\n",
+			statusLabel(name(in.BoundStep), in.BoundStep), in.IssueIdentifier, statusLabel(name(in.StatusKey), in.StatusKey), mover)
+		b.WriteString("Do not change the issue's status in this run, including when starting or finishing work; this overrides the status rules in your runtime instructions. Do not retry a refused status change. Leave a comment if something needs attention. A member can review the current state and explicitly rerun the work.\n")
+	} else if in.Observer {
 		assignee := "is unassigned"
 		if who := briefLine(in.AssigneeName); who != "" {
 			assignee = "is assigned to " + who
@@ -807,6 +867,9 @@ func Brief(in BriefInput) string {
 		}
 		b.WriteString("\n")
 	}
+	if stepMoved {
+		return b.String()
+	}
 	if in.Observer {
 		b.WriteString("\nMoving the issue into a step that hands off reassigns it to that step's handler and starts their run.\n")
 		return b.String()
@@ -819,12 +882,14 @@ func Brief(in BriefInput) string {
 		}
 		if span.deliver != "" {
 			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, span.deliver, handsOffTo(span.deliver))
+			ownerDecisionCaveat(span.deliver)
 		} else {
 			fmt.Fprintf(&b, "Step done      → leave the issue at `%s`; `done` is set by a human\n", in.StatusKey)
 		}
 	default:
 		if next := in.Workflow.NextStatus(in.StatusKey); next != "" {
 			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, next, handsOffTo(next))
+			ownerDecisionCaveat(next)
 		}
 	}
 	if step.BackStatusKey != "" {
@@ -849,6 +914,23 @@ func Brief(in BriefInput) string {
 	}
 	b.WriteString("When the issue enters a step you handle, you get a run automatically — do not add a wakeup for that. Wakeups for anything else (a time, a PR, another issue, a step someone else handles) are fine.\n")
 	return b.String()
+}
+
+// isOwnerHandoff reports whether a step hands an issue off to a human owner
+// (a member, the creator, or the project lead) rather than to an agent or
+// squad. Such handoffs are "Wait for decision" style moves: they should only
+// happen when an owner decision is genuinely needed. The review column is not
+// one of them: delivered work normally goes to the owner for acceptance.
+func isOwnerHandoff(s Step) bool {
+	if s.StatusKey == issuestatus.InReview {
+		return false
+	}
+	switch s.Handler.Type {
+	case HandlerMember, HandlerCreator, HandlerProjectLead:
+		// Project leads may be agents; treat as owner-facing by default.
+		return true
+	}
+	return false
 }
 
 // briefLine keeps a user-authored name on one line of a brief: line breaks

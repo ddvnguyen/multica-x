@@ -1,0 +1,187 @@
+import { act, fireEvent } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+import { renderWithI18n } from "../test/i18n";
+import { AppShellProvider, useAppShell } from "./app-shell-context";
+import { ListColumn } from "./list-column";
+
+vi.mock("../navigation", () => ({
+  useNavigation: () => ({ pathname: "/acme/chat" }),
+}));
+
+let shell: ReturnType<typeof useAppShell> = null;
+function Reader() {
+  shell = useAppShell();
+  return null;
+}
+
+/** No stored width: the theme's, or 280px when it sets none. */
+const UNSTORED_SIDEBAR_WIDTH = "clamp(200px, var(--sidebar-panel-width, 280px), 320px)";
+
+describe("ListColumn", () => {
+  it("collapses the list column from its edge, like the space panel", () => {
+    const { container } = renderWithI18n(
+      <SidebarProvider>
+        <AppShellProvider>
+          <Reader />
+          <ListColumn>list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+
+    expect(container.querySelector("[data-slot='list-column']")).toHaveClass(
+      "w-(--sidebar-width)",
+    );
+    fireEvent.click(container.querySelector("[data-slot='space-panel-resize']")!);
+    expect(shell?.listCollapsed).toBe(true);
+  });
+
+  it("sizes a list column by its own width and commits drags there", () => {
+    localStorage.clear();
+    const { container } = renderWithI18n(
+      <SidebarProvider>
+        <AppShellProvider>
+          <ListColumn width="list">list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+    const wrapper = container.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!;
+    const column = container.querySelector<HTMLElement>("[data-slot='list-column']")!;
+    expect(column).toHaveClass("w-[min(var(--list-column-width),40vw)]");
+    expect(wrapper.style.getPropertyValue("--list-column-width")).toBe("320px");
+
+    const handle = container.querySelector<HTMLElement>("[data-slot='space-panel-resize']")!;
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 1, clientX: 320 });
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, clientX: 700 }));
+    });
+    expect(column.style.getPropertyValue("--list-column-width")).toBe("480px");
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, clientX: 700 }));
+    });
+
+    expect(localStorage.getItem("list_column_width")).toBe("480");
+    expect(localStorage.getItem("sidebar_width")).toBeNull();
+    expect(wrapper.style.getPropertyValue("--list-column-width")).toBe("480px");
+    expect(wrapper.style.getPropertyValue("--sidebar-width")).toBe(UNSTORED_SIDEBAR_WIDTH);
+  });
+
+  // M-360: the drag polish attributes must land on the wrapper too, not only
+  // the document root — inside the island's shadow root the CSS rules can only
+  // match selectors against the shadow tree.
+  it("flags the wrapper while a drag is live, not just the document root", () => {
+    const { container } = renderWithI18n(
+      <SidebarProvider>
+        <AppShellProvider>
+          <ListColumn>list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+    const wrapper = container.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!;
+    const column = container.querySelector<HTMLElement>("[data-slot='list-column']")!;
+    const handle = container.querySelector<HTMLElement>("[data-slot='space-panel-resize']")!;
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 240 } as DOMRect);
+
+    expect(document.documentElement).not.toHaveAttribute("data-sidebar-resizing");
+    expect(wrapper).not.toHaveAttribute("data-sidebar-resizing");
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 3, clientX: 240 });
+    expect(document.documentElement).toHaveAttribute("data-sidebar-resizing", "true");
+    expect(wrapper).toHaveAttribute("data-sidebar-resizing", "true");
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 3, clientX: 240 }));
+    });
+    expect(document.documentElement).not.toHaveAttribute("data-sidebar-resizing");
+    expect(wrapper).not.toHaveAttribute("data-sidebar-resizing");
+  });
+
+  it("restores a stored list width within its bounds", () => {
+    localStorage.setItem("list_column_width", "900");
+    const { container } = renderWithI18n(
+      <SidebarProvider>
+        <ListColumn width="list">list</ListColumn>
+      </SidebarProvider>,
+    );
+    const wrapper = container.querySelector<HTMLElement>("[data-slot='sidebar-wrapper']")!;
+    expect(wrapper.style.getPropertyValue("--list-column-width")).toBe("480px");
+    localStorage.clear();
+  });
+
+  // M-330: the dsh island has no `localStorage` of its own — it shares the
+  // shell's origin — so it mounts the provider with a namespaced store. The
+  // edge must render there (the Owner's report was that Inbox in MMX had none)
+  // and the committed width must land in that store, never in the bare key.
+  it("renders its edge and keeps the width in a host-supplied store", () => {
+    localStorage.clear();
+    const stored = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      },
+    };
+    const { container } = renderWithI18n(
+      <SidebarProvider storage={storage}>
+        <AppShellProvider>
+          <ListColumn width="list">list</ListColumn>
+        </AppShellProvider>
+      </SidebarProvider>,
+    );
+    const column = container.querySelector<HTMLElement>("[data-slot='list-column']")!;
+    const handle = container.querySelector<HTMLElement>("[data-slot='space-panel-resize']");
+    expect(handle).not.toBeNull();
+
+    vi.spyOn(column, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    fireEvent.pointerDown(handle!, { button: 0, isPrimary: true, pointerId: 7, clientX: 320 });
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointermove", { pointerId: 7, clientX: 420 }));
+    });
+    act(() => {
+      document.dispatchEvent(new PointerEvent("pointerup", { pointerId: 7, clientX: 420 }));
+    });
+
+    expect(stored.get("list_column_width")).toBe("420");
+    expect(localStorage.getItem("list_column_width")).toBeNull();
+  });
+
+  it("renders without a resize edge outside the shell", () => {
+    const { container } = renderWithI18n(<ListColumn>list</ListColumn>);
+    expect(container.querySelector("[data-slot='space-panel-resize']")).toBeNull();
+  });
+
+  // Collapsing animates the width rather than unmounting, like the space panel.
+  it("stays mounted and inert while collapsed", () => {
+    const { container } = renderWithI18n(<ListColumn collapsed>list</ListColumn>);
+    const column = container.querySelector("[data-slot='list-column']");
+    expect(column).toHaveAttribute("data-state", "collapsed");
+    expect(column).toHaveAttribute("inert");
+    expect(column).toHaveClass("w-0", "transition-[width]");
+    expect(column).toHaveTextContent("list");
+  });
+
+  it("floats over the page while its rail item is hovered, then tucks back", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = renderWithI18n(
+        <SidebarProvider>
+          <AppShellProvider>
+            <Reader />
+            <ListColumn collapsed>list</ListColumn>
+          </AppShellProvider>
+        </SidebarProvider>,
+      );
+      const column = container.querySelector("[data-slot='list-column']");
+      act(() => shell!.requestPeek("chat"));
+      act(() => vi.advanceTimersByTime(200));
+      expect(column).not.toHaveAttribute("inert");
+      expect(column).toHaveClass("w-0");
+      expect(container.querySelector("[data-slot='list-column-peek']")).toHaveTextContent("list");
+
+      act(() => shell!.closePeek());
+      expect(column).toHaveAttribute("inert");
+      expect(container.querySelector("[data-slot='list-column-peek']")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -14,6 +14,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Spinner } from "@multica/ui/components/ui/spinner";
 import type { IssueAssigneeType, IssueStatus, UpdateIssueRequest } from "@multica/core/types";
 import { useUpdateIssue, useBatchUpdateIssues } from "@multica/core/issues/mutations";
+import { useBatchResultToast } from "../issues/components/batch-result-toast";
 import { errorCode } from "@multica/core/api";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -67,6 +68,10 @@ interface RunConfirmData {
   assigneeId?: string;
   assigneeName?: string;
   issueRevision?: number;
+  /** M-359 explicit pick for the run this write starts; omitted = auto. */
+  tierId?: string;
+  runtimeId?: string;
+  model?: string;
   /** Runs after every write applies; never on dismiss, failure, or a partial batch. */
   onApplied?: () => void;
 }
@@ -111,6 +116,7 @@ export function RunConfirmModal({
 
   const updateIssue = useUpdateIssue();
   const batchUpdate = useBatchUpdateIssues();
+  const { report: reportBatch } = useBatchResultToast();
 
   const wsId = useWorkspaceId();
   // Built-ins resolve through i18n, custom statuses through the catalog, so the
@@ -128,6 +134,10 @@ export function RunConfirmModal({
       : {
           assignee_type: d.assigneeType ?? null,
           assignee_id: d.assigneeId ?? null,
+          // M-359 explicit pick from the assign picker; omitted = auto.
+          ...(d.tierId ? { tier_id: d.tierId } : {}),
+          ...(d.runtimeId ? { runtime_id: d.runtimeId } : {}),
+          ...(d.model ? { model: d.model } : {}),
         };
     return { ...base, ...extra };
   };
@@ -153,14 +163,11 @@ export function RunConfirmModal({
           ...payload,
         });
       } else {
-        const { updated } = await batchUpdate.mutateAsync({ ids: issueIds, updates: payload });
+        const response = await batchUpdate.mutateAsync({ ids: issueIds, updates: payload });
         // A partial batch still closes (the applied writes are real), but it
-        // warns with the real count and skips onApplied so the caller keeps
+        // names the skipped issues and skips onApplied so the caller keeps
         // its selection for a retry.
-        if (updated < issueIds.length) {
-          toast.warning(
-            tIssues(($) => $.batch.update_partial, { updated, count: issueIds.length }),
-          );
+        if (!reportBatch(response, issueIds.length, { successMessage: null })) {
           onClose();
           return;
         }
