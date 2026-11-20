@@ -213,8 +213,10 @@ func (s *TaskService) isWorkspaceOwner(ctx context.Context, workspaceID, userID 
 // with a role matches only tiers carrying that role — tiers with empty roles
 // never match a role-set agent. Manual-only tiers never auto-resolve.
 // Within survivors the required quality floor (role band + difficulty from
-// the task issue's Properties) drops measured tiers below the floor; tiers
-// with unknown (NULL) quality stay eligible in idx order but stamp
+// the task issue's Properties) drops measured tiers below the floor and
+// leaves measured-at-or-above plus unknown (NULL) quality tiers in one
+// idx/creation pass — an earlier unknown tier is never skipped for a later
+// measured one (free-first order, M-443) — and an unknown stamp is flagged
 // unverified. When no eligible tier has capacity, the resolver falls back to
 // the highest known-quality available role-matched non-manual tier below the
 // floor (deterministic idx/creation tie-break) and stamps fallback; if none
@@ -255,13 +257,9 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 		important, complex = s.difficultyFromProperties(ctx, agent.WorkspaceID, properties)
 	}
 	required := requiredTierQuality(role, important, complex)
-	eligible, unknown, _ := splitTiersByFloor(enabled, required)
 	runtimes := s.batchTierRuntimes(ctx, enabled)
-	if res, ok := firstTierWithCapacity(ctx, s.Queries, eligible, runtimes, time.Now()); ok {
+	if res, ok := firstTierWithCapacity(ctx, s.Queries, qualifyingTiers(enabled, required), runtimes, time.Now()); ok {
 		return tierResolutionFor(res, false, !res.tier.Quality.Valid), nil
-	}
-	if res, ok := firstTierWithCapacity(ctx, s.Queries, unknown, runtimes, time.Now()); ok {
-		return tierResolutionFor(res, false, true), nil
 	}
 	if res, ok := fallbackTier(ctx, s.Queries, enabled, runtimes, required, time.Now()); ok {
 		return tierResolutionFor(res, true, false), nil
@@ -289,6 +287,22 @@ func tierResolutionFor(av tierAvailability, fallback, unverified bool) tierResol
 		qualityFallback:   fallback,
 		qualityUnverified: unverified,
 	}
+}
+
+// qualifyingTiers keeps every role-matched tier the floor admits — measured
+// at or above it, plus unknown-quality tiers — in the input's idx/creation
+// order. One pass over this set is what preserves free-first ordering: a
+// measured tier further down the table never jumps ahead of an earlier
+// unknown one. The caller stamps unverified per chosen tier.
+func qualifyingTiers(tiers []db.ModelTier, required int) []db.ModelTier {
+	out := make([]db.ModelTier, 0, len(tiers))
+	for _, t := range tiers {
+		if t.Quality.Valid && required > 0 && int(t.Quality.Int32) < required {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // splitTiersByFloor partitions role-matched tiers at the required floor:
