@@ -14,7 +14,6 @@ import {
   agentListOptions,
   memberListOptions,
 } from "@multica/core/workspace/queries";
-import type { MemberWithUser } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
@@ -25,15 +24,12 @@ import {
 } from "@multica/ui/components/ui/dropdown-menu";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
-import { ActorAvatar } from "../../common/actor-avatar";
 import { CollectionPageState } from "../../layout/collection-page";
 import {
   OBJECT_PAGE_BODY,
   ObjectIconMark,
   ObjectIdentity,
   ObjectPage,
-  ObjectPanelSection,
-  ObjectProperty,
   ObjectSection,
   ObjectSectionAction,
   ObjectSectionCard,
@@ -44,7 +40,6 @@ import { buildWorkloadIndex, RuntimeList } from "./runtime-list";
 import {
   buildRuntimeMachines,
   sharedCustomName,
-  type RuntimeMachine,
 } from "./runtime-machines";
 import { RenameMachineDialog } from "./rename-machine-dialog";
 import { RuntimeProfilesDialog } from "./runtime-profiles-dialog";
@@ -57,13 +52,10 @@ import {
 } from "./machine-cli-section";
 import { isQoderLocator, QoderDetailPage } from "./qoder-detail-page";
 import {
-  HealthIcon,
-  ProviderIconStack,
   machineIcon,
-  shortDaemonId,
   useHealthLabel,
 } from "./shared";
-import { useT, useTimeAgo } from "../../i18n";
+import { useT } from "../../i18n";
 
 const LAYOUT_ID = "multica_runtime_detail_layout";
 
