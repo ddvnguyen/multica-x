@@ -250,6 +250,7 @@ func TestDifficultyFromProperties423(t *testing.T) {
 	mkDef := func(name string) db.ListIssuePropertiesRow {
 		made, err := s.qq.CreateIssueProperty(ctx, db.CreateIssuePropertyParams{
 			WorkspaceID: wsUUID, Name: name, Type: "number",
+			Config: []byte(`{}`),
 		})
 		if err != nil {
 			t.Fatalf("create def %s: %v", name, err)
