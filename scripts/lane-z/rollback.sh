@@ -8,10 +8,12 @@
 # Usage:
 #   rollback.sh                  the backend release recorded by the last
 #                                auto-deploy; the PWA follows to the release
-#                                named by the same SHA
+#                                named by the same SHA, or, when that release
+#                                is not on disk, to the complete release named
+#                                by mmx-pwa/previous-release
 #   rollback.sh --to <sha|path>  an explicit backend release (sha prefix or
 #                                directory); the PWA follows to
-#                                mmx-pwa/releases/<that SHA>, env rewritten
+#                                mmx-pwa/releases/<that SHA> only, env rewritten
 #   rollback.sh --list           releases on disk, newest first
 #
 # Exit 0 when the lane answers on the target release, 1 otherwise.
@@ -36,6 +38,7 @@ die() { log "ERROR: $*"; exit 1; }
 RELEASES="$LANE_ROOT/multica-be/releases"
 CURRENT="$LANE_ROOT/multica-be/current"
 TARGET=""
+EXPLICIT=0
 
 case "${1:-}" in
   --list)
@@ -46,8 +49,8 @@ case "${1:-}" in
     done
     exit 0
     ;;
-  --to) TARGET="${2:-}" ;;
-  "") TARGET="" ;;
+  --to) TARGET="${2:-}"; EXPLICIT=1 ;;
+  "") TARGET=""; EXPLICIT=0 ;;
   *) die "unknown argument: $1" ;;
 esac
 
@@ -100,10 +103,62 @@ log "lane z backend is on ${SHA:0:9} ($(jq -r '.version // "unknown"' "$TARGET/r
 # release directly; the default pairs mmx-pwa/releases/$SHA with the backend
 # target. Env is rewritten (NEXT_PUBLIC_APP_VERSION follows the target SHA)
 # before the restart so a rolled-back PWA never serves a stale version stamp.
+# M-455: on the default (non-explicit) path, when mmx-pwa/releases/$SHA is
+# absent from disk — the first post-merge deploy, where the backend previous
+# release predates the PWA install — fall back to the release named in
+# mmx-pwa/previous-release when it is a complete release. Explicit --to keeps
+# exact SHA pairing (no fallback). A missing PWA release with no usable
+# marker stays a loud warning, never a failure (the backend is healthy).
 MMX_REL="$LANE_ROOT/mmx-pwa/releases/$SHA"
-if [ ! -d "$MMX_REL" ]; then
+PWA_SHA="$SHA"
+if [ ! -d "$MMX_REL" ] && [ "$EXPLICIT" = 0 ]; then
+  # The marker holds the absolute path autodeploy recorded for the tree it
+  # replaced. It is usable only when it is a complete M-451 release (dir +
+  # .complete + server.js) whose sw.js is stamped with the SHA its directory
+  # names: a pre-M-451 tree carries an unstamped sw.js, so switching to it
+  # would fail the sw.js gate below after the backend had already rolled back.
+  MARKER_FILE="$LANE_ROOT/mmx-pwa/previous-release"
+  MARKER_CONTENT=""
+  if [ -f "$MARKER_FILE" ]; then
+    MARKER_CONTENT="$(tr -d '\r\n' < "$MARKER_FILE" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
+  fi
+  FALLBACK_CAND=""
+  case "${MARKER_CONTENT:-}" in
+    "") ;;
+    /*) FALLBACK_CAND="$MARKER_CONTENT" ;;
+    *) FALLBACK_CAND="$LANE_ROOT/mmx-pwa/releases/$MARKER_CONTENT" ;;
+  esac
+  FALLBACK_SHA=""
+  if [ -n "$FALLBACK_CAND" ] && [ -d "$FALLBACK_CAND" ] \
+    && [ -f "$FALLBACK_CAND/.complete" ] \
+    && [ -f "$FALLBACK_CAND/apps/web/server.js" ]; then
+    FALLBACK_CAND="$(readlink -f "$FALLBACK_CAND")"
+    FALLBACK_BASE="$(basename "$FALLBACK_CAND")"
+    case "$FALLBACK_BASE" in
+      *[!0-9a-fA-F]*|"") ;;
+      *) if [ "${#FALLBACK_BASE}" -ge 7 ]; then FALLBACK_SHA="$FALLBACK_BASE"; fi ;;
+    esac
+    if [ -n "$FALLBACK_SHA" ] \
+      && ! grep -q "$FALLBACK_SHA" "$FALLBACK_CAND/apps/web/public/sw.js" 2>/dev/null; then
+      log "WARNING: mmx-pwa/previous-release names ${FALLBACK_BASE:0:9}, whose sw.js is not stamped with that SHA (pre-M-451 tree); not switching to it"
+      FALLBACK_SHA=""
+    fi
+  else
+    FALLBACK_CAND=""
+  fi
+  if [ -n "$FALLBACK_CAND" ] && [ -n "$FALLBACK_SHA" ]; then
+    log "mmx-pwa release for ${SHA:0:9} absent; falling back to previous-release ${FALLBACK_SHA:0:9} ($FALLBACK_CAND)"
+    MMX_REL="$FALLBACK_CAND"
+    PWA_SHA="$FALLBACK_SHA"
+  else
+    log "WARNING: no mmx-pwa release for ${SHA:0:9} on disk and no usable mmx-pwa/previous-release marker; leaving mmx-pwa z on $(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || printf unknown) (backend is healthy on ${SHA:0:9})"
+    MMX_REL=""
+  fi
+elif [ ! -d "$MMX_REL" ]; then
   log "WARNING: no mmx-pwa release for ${SHA:0:9} on disk; leaving mmx-pwa z on $(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || printf unknown) (backend is healthy on ${SHA:0:9})"
-else
+  MMX_REL=""
+fi
+if [ -n "$MMX_REL" ] && [ -d "$MMX_REL" ]; then
   [ -f "$MMX_REL/.complete" ] || die "mmx-pwa release $MMX_REL is not complete (no .complete)"
   [ -f "$MMX_REL/apps/web/server.js" ] || die "mmx-pwa release $MMX_REL has no apps/web/server.js"
   MMX_REL="$(readlink -f "$MMX_REL")"
@@ -125,7 +180,7 @@ else
     echo "HOSTNAME=127.0.0.1"
     echo "MMX_BIND_HOST=127.0.0.1"
     echo "REMOTE_API_URL=http://127.0.0.1:${MULTICA_BE_Z_PORT:?MULTICA_BE_Z_PORT is not set}"
-    echo "NEXT_PUBLIC_APP_VERSION=$SHA"
+    echo "NEXT_PUBLIC_APP_VERSION=$PWA_SHA"
     echo "MMX_AUTH_BYPASS=${MMX_AUTH_BYPASS:-1}"
     echo "MULTICA_DEV_VERIFICATION_CODE=${MULTICA_Z_DEV_CODE:?MULTICA_Z_DEV_CODE is not set}"
   } > "$LANE_ROOT/mmx-pwa/env"
@@ -136,8 +191,8 @@ else
   MMX_MANIFEST="$(curl -fsS --max-time 10 "http://127.0.0.1:$MMX_PWA_Z_PORT/manifest.webmanifest" || true)"
   printf '%s' "$MMX_MANIFEST" | grep -q '"name":"MMX"' \
     || die "mmx-pwa z manifest is not the MMX brand after the rollback"
-  curl -fsS --max-time 10 "http://127.0.0.1:$MMX_PWA_Z_PORT/sw.js" | grep -q "$SHA" \
-    || die "mmx-pwa z sw.js is not stamped with $SHA after the rollback"
-  log "mmx-pwa z is on ${SHA:0:9} (brand MMX, sw.js stamped)"
+  curl -fsS --max-time 10 "http://127.0.0.1:$MMX_PWA_Z_PORT/sw.js" | grep -q "$PWA_SHA" \
+    || die "mmx-pwa z sw.js is not stamped with $PWA_SHA after the rollback"
+  log "mmx-pwa z is on ${PWA_SHA:0:9} (brand MMX, sw.js stamped)"
 fi
 log "lane z is on ${SHA:0:9}; the database was NOT touched"
