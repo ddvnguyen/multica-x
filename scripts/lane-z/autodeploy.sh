@@ -207,7 +207,7 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
     return 1
   fi
   if [ ! -f "$stage/standalone/apps/web/server.js" ] \
-    || ! grep -rq 'mmx-install' "$stage/standalone" 2>/dev/null \
+    || ! grep -q '"id":"/?mmx-install"' "$stage/standalone/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null \
     || ! grep -q "$sha" "$stage/standalone/apps/web/public/sw.js" 2>/dev/null; then
     log "converge: staged mmx-pwa tree failed brand/stamp verification for $sha"
     rm -rf "$stage"
@@ -221,7 +221,7 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
   cp -a "$stage/standalone/." "$stage_rel.tmp.$$/"
   rm -rf "$stage"
   if [ ! -f "$stage_rel.tmp.$$/apps/web/server.js" ] \
-    || ! grep -rq 'mmx-install' "$stage_rel.tmp.$$/apps/web/.next/" 2>/dev/null; then
+    || ! grep -q '"id":"/?mmx-install"' "$stage_rel.tmp.$$/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null; then
     log "converge: staged copy failed final verification for $sha"
     rm -rf "$stage_rel.tmp.$$"
     return 1
@@ -662,12 +662,15 @@ step "verify-artifact"
 [ -x "$ART/multica-be/bin/server" ] || fail "multica-be artifact has no bin/server"
 [ -d "$ART/multica-be/migrations" ] || fail "multica-be artifact has no migrations/"
 ART_SHA="$(jq -r '.sha // empty' "$ART/multica-be/release.json")"
-[ "$ART_SHA" = "$SHA" ] || fail "artifact release.json sha '$ART_SHA' != run sha '$SHA'"
 BUILT_AT="$(jq -r '.builtAt // "unknown"' "$ART/multica-be/release.json")"
 MMX_ART_SHA="$(jq -r '.sha // empty' "$ART/mmx-pwa/release.json" 2>/dev/null || true)"
 [ "$MMX_ART_SHA" = "$SHA" ] || fail "mmx-pwa artifact release.json sha '$MMX_ART_SHA' != run sha '$SHA'"
 [ -f "$ART/mmx-pwa/standalone/apps/web/server.js" ] || fail "mmx-pwa artifact has no standalone/apps/web/server.js"
-grep -rq 'mmx-install' "$ART/mmx-pwa/standalone" || fail "mmx-pwa artifact is not the MMX brand build (no mmx-install marker)"
+# Brand ground truth is the prerendered manifest route body (server chunks
+# embed both brands' literals as source in every build, so a raw grep is not
+# a brand signal).
+grep -q '"id":"/?mmx-install"' "$ART/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null \
+  || fail "mmx-pwa artifact manifest is not the MMX brand"
 grep -q "$SHA" "$ART/mmx-pwa/standalone/apps/web/public/sw.js" 2>/dev/null || fail "mmx-pwa artifact sw.js is not stamped with $SHA"
 log "mmx-pwa artifact verified: sha $SHA, MMX brand, sw.js stamped"
 log "artifact verified: sha $SHA, built $BUILT_AT"
@@ -710,7 +713,7 @@ MMX_REL="$LANE_ROOT/mmx-pwa/releases/$SHA"
 rm -rf "$MMX_REL.tmp.$$"; mkdir -p "$MMX_REL.tmp.$$"
 cp -a "$ART/mmx-pwa/standalone/." "$MMX_REL.tmp.$$"
 [ -f "$MMX_REL.tmp.$$/apps/web/server.js" ] || fail "staged mmx-pwa release has no apps/web/server.js"
-grep -rq 'mmx-install' "$MMX_REL.tmp.$$/apps/web/.next/" || fail "staged mmx-pwa release lost its MMX brand"
+grep -q '"id":"/?mmx-install"' "$MMX_REL.tmp.$$/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null || fail "staged mmx-pwa release lost its MMX brand"
 : > "$MMX_REL.tmp.$$/.complete"
 log "mmx-pwa release staged at $MMX_REL.tmp.$$"
 

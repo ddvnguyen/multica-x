@@ -535,8 +535,14 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
-          grep -rq 'mmx-install' apps/web/.next/ 2>/dev/null \
-            && { echo "default web-dist tree carries the MMX brand marker; refusing to upload" >&2; exit 1; } \
+          # The prerendered manifest route body is the brand ground truth.
+          # (A raw 'mmx-install' grep is not: server chunks embed both
+          # brands' literals as source in every build.) The default tree
+          # must NOT serve the MMX manifest.
+          BODY=apps/web/.next/server/app/manifest.webmanifest.body
+          [ -f "$BODY" ] || { echo "manifest route output missing at $BODY" >&2; exit 1; }
+          grep -q '"id":"/?mmx-install"' "$BODY" \
+            && { echo "default web-dist tree serves the MMX manifest; refusing to upload" >&2; exit 1; } \
             || true
 
       - name: Upload web-dist artifact

@@ -72,10 +72,10 @@ case "$1 $2" in
         printf '{"sha":"%s","version":"test","builtAt":"test"}\n' "$sha" > "$dest/release.json"
         ;;
       mmx-pwa-*)
-        mkdir -p "$dest/standalone/apps/web/public" "$dest/standalone/apps/web/.next"
+        mkdir -p "$dest/standalone/apps/web/public" "$dest/standalone/apps/web/.next/server/app"
         printf 'server\n' > "$dest/standalone/apps/web/server.js"
         printf 'const VERSION = "%s";\n' "$sha" > "$dest/standalone/apps/web/public/sw.js"
-        printf 'mmx-install\n' > "$dest/standalone/apps/web/.next/brand-marker"
+        printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$dest/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
         printf '{"sha":"%s","version":"test"}\n' "$sha" > "$dest/release.json"
         ;;
     esac
@@ -89,16 +89,15 @@ chmod +x "$SANDBOX/mock-bin/gh"
 CURRENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 TARGET_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 export PATH="$SANDBOX/mock-bin:$PATH" TEST_TARGET_SHA="$TARGET_SHA"
-
 new_lane() {
   TEST_LANE_ROOT="$SANDBOX/lane-$1"
   export TEST_LANE_ROOT
-  mkdir -p "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/public" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next" "$TEST_LANE_ROOT/data" "$TEST_LANE_ROOT/backups"
+  mkdir -p "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/public" "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next/server/app" "$TEST_LANE_ROOT/data" "$TEST_LANE_ROOT/backups"
   printf '{"sha":"%s","version":"test"}\n' "$CURRENT_SHA" > "$TEST_LANE_ROOT/multica-be/releases/current/release.json"
   ln -s "$TEST_LANE_ROOT/multica-be/releases/current" "$TEST_LANE_ROOT/multica-be/current"
   printf 'server\n' > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/server.js"
   printf 'const VERSION = "%s";\n' "$CURRENT_SHA" > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/public/sw.js"
-  printf 'mmx-install\n' > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next/brand-marker"
+  printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$TEST_LANE_ROOT/mmx-pwa/releases/current/apps/web/.next/server/app/manifest.webmanifest.body"
   ln -s "$TEST_LANE_ROOT/mmx-pwa/releases/current" "$TEST_LANE_ROOT/mmx-pwa/current"
 }
 

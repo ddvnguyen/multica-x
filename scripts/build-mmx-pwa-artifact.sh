@@ -9,9 +9,14 @@
 #            tree (regression-test mode with fixture trees)
 # Output:  $WEB/.next/standalone + release.json (upload these as mmx-pwa-$SHA)
 #
+# Brand gate: the prerendered manifest route body must carry the MMX id and
+# name. A raw 'mmx-install' grep over .next is NOT a brand signal — server
+# chunks embed both brands' literals as source; only the manifest route
+# output proves which brand the build baked.
+#
 # Fails when:
 #   * sw.js has no __MMX_PWA_VERSION__ placeholder (unversioned SW refused),
-#   * the tree carries no mmx-install marker (not the MMX brand build — e.g.
+#   * the manifest body is not the MMX brand (not the MMX brand build — e.g.
 #     the default web-dist tree was uploaded under the wrong name).
 set -euo pipefail
 
@@ -36,6 +41,13 @@ else
   echo "sw.js has no version placeholder; refusing to ship an unversioned service worker" >&2
   exit 1
 fi
-grep -rq 'mmx-install' "$STAND/.next/" \
-  || { echo "MMX brand marker missing; the artifact is not the MMX build" >&2; exit 1; }
+MANIFEST_BODY="$STAND/.next/server/app/manifest.webmanifest.body"
+if [ -f "$MANIFEST_BODY" ] \
+  && grep -q '"id":"/?mmx-install"' "$MANIFEST_BODY" \
+  && grep -q '"name":"MMX"' "$MANIFEST_BODY"; then
+  :
+else
+  echo "MMX brand manifest missing; the artifact is not the MMX build" >&2
+  exit 1
+fi
 echo "mmx-pwa artifact staged for $SHA"
