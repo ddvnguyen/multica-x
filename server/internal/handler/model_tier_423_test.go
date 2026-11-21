@@ -19,14 +19,26 @@ import (
 func TestNormalizeTierInput423(t *testing.T) {
 	str := func(s string) *string { return &s }
 
-	// Create defaults: empty roles, quota none, free true.
+	// Create defaults: Go applies profile defaults (M-481).
 	in := modelTierInput{Name: str("t"), Provider: str("p"), Model: str("m")}
 	params, _, err := normalizeTierInput(in, nil, true)
 	if err != nil {
 		t.Fatalf("create err = %v", err)
 	}
-	if len(params.Roles) != 0 || params.QuotaKind.Valid || params.IsFree.Valid || params.ManualOnly.Valid {
-		t.Fatalf("create omitted = %+v, want invalid (SQL defaults own them)", params)
+	if len(params.Roles) != 0 {
+		t.Fatalf("create roles = %v, want empty", params.Roles)
+	}
+	if !params.AutoPick.Valid || !params.AutoPick.Bool {
+		t.Fatalf("create auto_pick = %+v, want true", params.AutoPick)
+	}
+	if !params.ManualOnly.Valid || params.ManualOnly.Bool {
+		t.Fatalf("create manual_only = %+v, want false", params.ManualOnly)
+	}
+	if !params.CtxMaxTokens.Valid || params.CtxMaxTokens.Int32 != 280000 {
+		t.Fatalf("create ctx_max_tokens = %+v, want 280000", params.CtxMaxTokens)
+	}
+	if !params.CompactAtPct.Valid || params.CompactAtPct.Int32 != 75 {
+		t.Fatalf("create compact_at_pct = %+v, want 75", params.CompactAtPct)
 	}
 
 	// Create validation.

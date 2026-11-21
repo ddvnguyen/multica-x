@@ -48,7 +48,7 @@ func isTierNameConflict(err error) bool {
 // Reads are member-visible (agent owners will pick from these in M-351).
 // Writes are owner/admin; the router gates them and each handler re-checks.
 
-// ModelTierResponse is the wire shape of one tier.
+// ModelTierResponse is the wire shape of one tier profile (M-481).
 type ModelTierResponse struct {
 	ID            string  `json:"id"`
 	WorkspaceID   string  `json:"workspace_id"`
@@ -66,12 +66,19 @@ type ModelTierResponse struct {
 	// Roles served by this tier (M-423). Empty = legacy/unconfigured: matches
 	// only agents with no role set.
 	Roles []string `json:"roles"`
-	// ManualOnly tiers never auto-resolve; explicit picks need a workspace
-	// owner (M-423).
+	// ManualOnly is legacy compat (M-481: auto_pick = NOT manual_only).
 	ManualOnly bool `json:"manual_only"`
-	// QuotaKind is a display/scheduling hint (M-423); the resolver ignores it.
-	QuotaKind string `json:"quota_kind"`
-	IsFree    bool   `json:"is_free"`
+	// AutoPick: when true the system may pick this tier by idx/quota/quality.
+	// When false, manual only (@agent#tier or picker).
+	AutoPick bool `json:"auto_pick"`
+	// QuotaKind is legacy scalar compat; QuotaKinds is the multi-select form.
+	QuotaKind  string   `json:"quota_kind"`
+	QuotaKinds []string `json:"quota_kinds"`
+	IsFree     bool     `json:"is_free"`
+	// Context and compaction profile (stored/shown; harness enforcement may be
+	// advisory until proven per harness).
+	CtxMaxTokens int `json:"ctx_max_tokens"`
+	CompactAtPct int `json:"compact_at_pct"`
 	// CooldownUntil is when a provider-refusal cooldown expires (M-352). Omitted
 	// when the tier is not cooling; the resolver skips a tier while it is set
 	// and in the future, and the Settings row renders it as "until HH:MM".
@@ -92,10 +99,23 @@ func modelTierToResponse(t db.ModelTier) ModelTierResponse {
 		Enabled:       t.Enabled,
 		Roles:         append([]string{}, t.Roles...),
 		ManualOnly:    t.ManualOnly,
+		AutoPick:      t.AutoPick,
 		QuotaKind:     t.QuotaKind,
+		QuotaKinds:    append([]string{}, t.QuotaKinds...),
 		IsFree:        t.IsFree,
+		CtxMaxTokens:  int(t.CtxMaxTokens),
+		CompactAtPct:  int(t.CompactAtPct),
 		CreatedAt:     timestampToString(t.CreatedAt),
 		UpdatedAt:     timestampToString(t.UpdatedAt),
+	}
+	if resp.QuotaKinds == nil {
+		resp.QuotaKinds = []string{}
+	}
+	if resp.CtxMaxTokens == 0 {
+		resp.CtxMaxTokens = 280000
+	}
+	if resp.CompactAtPct == 0 {
+		resp.CompactAtPct = 75
 	}
 	if t.RuntimeID.Valid {
 		resp.RuntimeID = uuidToString(t.RuntimeID)
@@ -144,11 +164,16 @@ type modelTierInput struct {
 	// Roles is a plain slice with a separate presence flag: an explicit []
 	// clears the set (unconfigured), omitted keeps the value. "null" also
 	// keeps (indistinguishable from omitted by choice, same as cost's "").
-	Roles      []string `json:"roles"`
-	RolesSet   bool     `json:"-"`
-	ManualOnly *bool    `json:"manual_only"`
-	QuotaKind  *string  `json:"quota_kind"`
-	IsFree     *bool    `json:"is_free"`
+	Roles         []string `json:"roles"`
+	RolesSet      bool     `json:"-"`
+	ManualOnly    *bool    `json:"manual_only"`
+	AutoPick      *bool    `json:"auto_pick"`
+	QuotaKind     *string  `json:"quota_kind"`
+	QuotaKinds    []string `json:"quota_kinds"`
+	QuotaKindsSet bool     `json:"-"`
+	IsFree        *bool    `json:"is_free"`
+	CtxMaxTokens  *int     `json:"ctx_max_tokens"`
+	CompactAtPct  *int     `json:"compact_at_pct"`
 }
 
 func (in *modelTierInput) UnmarshalJSON(data []byte) error {
@@ -166,8 +191,12 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 		Enabled       *bool    `json:"enabled"`
 		Roles         []string `json:"roles"`
 		ManualOnly    *bool    `json:"manual_only"`
+		AutoPick      *bool    `json:"auto_pick"`
 		QuotaKind     *string  `json:"quota_kind"`
+		QuotaKinds    []string `json:"quota_kinds"`
 		IsFree        *bool    `json:"is_free"`
+		CtxMaxTokens  *int     `json:"ctx_max_tokens"`
+		CompactAtPct  *int     `json:"compact_at_pct"`
 	}
 	var a alias
 	if err := json.Unmarshal(data, &a); err != nil {
@@ -177,11 +206,8 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	in.Provider, in.Model = a.Provider, a.Model
 	in.ThinkingLevel, in.ServiceTier = a.ThinkingLevel, a.ServiceTier
 	in.Quality, in.ProviderSlots, in.Enabled = a.Quality, a.ProviderSlots, a.Enabled
-	in.ManualOnly, in.QuotaKind, in.IsFree = a.ManualOnly, a.QuotaKind, a.IsFree
-	// Presence probe: roles present (even []) vs omitted/null; quality present
-	// (number or explicit null) vs omitted. Explicit null clears quality to
-	// unknown; omitted keeps. A number sets, including 0 which is a
-	// legitimate measured floor, not unknown.
+	in.ManualOnly, in.AutoPick, in.QuotaKind, in.IsFree = a.ManualOnly, a.AutoPick, a.QuotaKind, a.IsFree
+	in.CtxMaxTokens, in.CompactAtPct = a.CtxMaxTokens, a.CompactAtPct
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
@@ -197,6 +223,10 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	if raw, ok := probe["roles"]; ok && string(raw) != "null" {
 		in.RolesSet = true
 		in.Roles = a.Roles
+	}
+	if raw, ok := probe["quota_kinds"]; ok && string(raw) != "null" {
+		in.QuotaKindsSet = true
+		in.QuotaKinds = a.QuotaKinds
 	}
 	if a.Cost == nil {
 		return nil
@@ -271,6 +301,10 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 		params.ManualOnly = pgtype.Bool{Bool: cur.ManualOnly, Valid: true}
 		params.QuotaKind = pgtype.Text{String: cur.QuotaKind, Valid: true}
 		params.IsFree = pgtype.Bool{Bool: cur.IsFree, Valid: true}
+		params.AutoPick = pgtype.Bool{Bool: cur.AutoPick, Valid: true}
+		params.QuotaKinds = append([]string{}, cur.QuotaKinds...)
+		params.CtxMaxTokens = pgtype.Int4{Int32: cur.CtxMaxTokens, Valid: cur.CtxMaxTokens != 0}
+		params.CompactAtPct = pgtype.Int4{Int32: cur.CompactAtPct, Valid: cur.CompactAtPct != 0}
 	}
 
 	name := params.Name
@@ -378,7 +412,7 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	if in.RolesSet {
 		for _, r := range in.Roles {
 			if !validTierRoleName(r) {
-				return params, nil, errors.New("roles must be a subset of architect, leader, reviewer, orchestrator, engineer, planning")
+				return params, nil, errors.New("roles must be a subset of architect, management, engineer, leader, reviewer, orchestrator, planning")
 			}
 		}
 		params.Roles = append([]string{}, in.Roles...)
@@ -391,6 +425,18 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	if in.ManualOnly != nil {
 		params.ManualOnly = pgtype.Bool{Bool: *in.ManualOnly, Valid: true}
 	}
+	if in.AutoPick != nil {
+		params.AutoPick = pgtype.Bool{Bool: *in.AutoPick, Valid: true}
+	}
+	// Keep auto_pick/manual_only in sync (M-481: auto_pick replaces manual_only).
+	if in.AutoPick != nil {
+		params.ManualOnly = pgtype.Bool{Bool: !*in.AutoPick, Valid: true}
+	} else if in.ManualOnly != nil {
+		params.AutoPick = pgtype.Bool{Bool: !*in.ManualOnly, Valid: true}
+	} else if forCreate && !params.AutoPick.Valid {
+		params.AutoPick = pgtype.Bool{Bool: true, Valid: true}
+		params.ManualOnly = pgtype.Bool{Bool: false, Valid: true}
+	}
 	if in.QuotaKind != nil {
 		q := strings.TrimSpace(*in.QuotaKind)
 		switch q {
@@ -400,8 +446,47 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 			return params, nil, errors.New("quota_kind must be daily, monthly, five_hour_weekly or none")
 		}
 	}
+	if in.QuotaKindsSet {
+		seen := map[string]struct{}{}
+		out := make([]string, 0, len(in.QuotaKinds))
+		for _, qk := range in.QuotaKinds {
+			qk = strings.TrimSpace(qk)
+			if qk == "" {
+				continue
+			}
+			if !validTierQuotaKind(qk) {
+				return params, nil, errors.New("quota_kinds must be a subset of free_daily, free, local, quota_5_hours, quota_daily, quota_weekly, quota_monthly")
+			}
+			if _, dup := seen[qk]; dup {
+				continue
+			}
+			seen[qk] = struct{}{}
+			out = append(out, qk)
+		}
+		params.QuotaKinds = out
+		// Best-effort legacy scalar for old binaries.
+		params.QuotaKind = pgtype.Text{String: legacyQuotaKindFromKinds(out), Valid: true}
+	} else if forCreate && params.QuotaKinds == nil {
+		params.QuotaKinds = []string{}
+	}
 	if in.IsFree != nil {
 		params.IsFree = pgtype.Bool{Bool: *in.IsFree, Valid: true}
+	}
+	if in.CtxMaxTokens != nil {
+		if *in.CtxMaxTokens < 1024 || *in.CtxMaxTokens > 2000000 {
+			return params, nil, errors.New("ctx_max_tokens must be between 1024 and 2000000")
+		}
+		params.CtxMaxTokens = pgtype.Int4{Int32: int32(*in.CtxMaxTokens), Valid: true}
+	} else if forCreate && !params.CtxMaxTokens.Valid {
+		params.CtxMaxTokens = pgtype.Int4{Int32: 280000, Valid: true}
+	}
+	if in.CompactAtPct != nil {
+		if *in.CompactAtPct < 1 || *in.CompactAtPct > 100 {
+			return params, nil, errors.New("compact_at_pct must be between 1 and 100")
+		}
+		params.CompactAtPct = pgtype.Int4{Int32: int32(*in.CompactAtPct), Valid: true}
+	} else if forCreate && !params.CompactAtPct.Valid {
+		params.CompactAtPct = pgtype.Int4{Int32: 75, Valid: true}
 	}
 	return params, runtimeID, nil
 }
@@ -411,10 +496,37 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 // final backstop.
 func validTierRoleName(r string) bool {
 	switch r {
-	case "architect", "leader", "reviewer", "orchestrator", "engineer", "planning":
+	case "architect", "management", "engineer",
+		// Legacy roles accepted during transition (M-481).
+		"leader", "reviewer", "orchestrator", "planning":
 		return true
 	}
 	return false
+}
+
+func validTierQuotaKind(k string) bool {
+	switch k {
+	case "free_daily", "free", "local", "quota_5_hours", "quota_daily", "quota_weekly", "quota_monthly":
+		return true
+	}
+	return false
+}
+
+func legacyQuotaKindFromKinds(kinds []string) string {
+	has := map[string]bool{}
+	for _, k := range kinds {
+		has[k] = true
+	}
+	if has["quota_5_hours"] || has["quota_weekly"] {
+		return "five_hour_weekly"
+	}
+	if has["quota_daily"] {
+		return "daily"
+	}
+	if has["quota_monthly"] {
+		return "monthly"
+	}
+	return "none"
 }
 
 // tierManualProtectionWeakened reports whether an update drops manual-only
@@ -509,6 +621,18 @@ func (h *Handler) CreateModelTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create tier")
 		return
 	}
+	// M-481: backfill a first member so the tier is immediately resolvable by
+	// the member-aware resolver. Legacy tier columns remain in sync.
+	_, _ = h.Queries.CreateModelTierMember(r.Context(), db.CreateModelTierMemberParams{
+		TierID:        created.ID,
+		Position:      0,
+		Provider:      created.Provider,
+		Model:         created.Model,
+		ThinkingLevel: created.ThinkingLevel,
+		RuntimeID:     created.RuntimeID,
+		ProviderSlots: created.ProviderSlots,
+		Enabled:       created.Enabled,
+	})
 	writeJSON(w, http.StatusCreated, modelTierToResponse(created))
 }
 
@@ -578,6 +702,10 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 		ManualOnly:    params.ManualOnly,
 		QuotaKind:     params.QuotaKind,
 		IsFree:        params.IsFree,
+		AutoPick:      params.AutoPick,
+		QuotaKinds:    params.QuotaKinds,
+		CtxMaxTokens:  params.CtxMaxTokens,
+		CompactAtPct:  params.CompactAtPct,
 	})
 	if err != nil {
 		if isTierNameConflict(err) {
@@ -586,6 +714,26 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to update tier")
 		return
+	}
+	// M-481: keep a single backfilled member in sync for legacy API callers.
+	// If multiple members exist, members are the source of truth.
+	if members, merr := h.Queries.ListModelTierMembers(r.Context(), tierUUID); merr == nil {
+		if len(members) == 1 {
+			m := members[0]
+			_, _ = h.Queries.UpdateModelTierMember(r.Context(), db.UpdateModelTierMemberParams{
+				ID:            m.ID,
+				Position:      m.Position,
+				Provider:      updated.Provider,
+				Model:         updated.Model,
+				ThinkingLevel: updated.ThinkingLevel,
+				RuntimeID:     updated.RuntimeID,
+				ProviderSlots: updated.ProviderSlots,
+				CooldownUntil: m.CooldownUntil,
+				Enabled:       updated.Enabled,
+			})
+		} else if len(members) > 1 {
+			h.syncTierLegacyFromMembers(r, updated)
+		}
 	}
 	writeJSON(w, http.StatusOK, modelTierToResponse(updated))
 }
@@ -627,6 +775,10 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 	// joins model_tier, so orphan rows would vanish from reads anyway while
 	// leaving dead weight. No FK per repo rule; app-layer cleanup here.
 	if err := h.Queries.DeleteTierAgentSelections(r.Context(), tierUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete tier")
+		return
+	}
+	if err := h.Queries.DeleteModelTierMembersByTier(r.Context(), tierUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete tier")
 		return
 	}
@@ -707,4 +859,424 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 		out = append(out, modelTierToResponse(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tiers": out})
+}
+
+// ── Model tier members (M-481) ───────────────────────────────────────────────
+
+type ModelTierMemberResponse struct {
+	ID            string `json:"id"`
+	TierID        string `json:"tier_id"`
+	Position      int    `json:"position"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	ThinkingLevel string `json:"thinking_level,omitempty"`
+	RuntimeID     string `json:"runtime_id,omitempty"`
+	ProviderSlots int    `json:"provider_slots"`
+	CooldownUntil string `json:"cooldown_until,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+func modelTierMemberToResponse(m db.ModelTierMember) ModelTierMemberResponse {
+	resp := ModelTierMemberResponse{
+		ID:            uuidToString(m.ID),
+		TierID:        uuidToString(m.TierID),
+		Position:      int(m.Position),
+		Provider:      m.Provider,
+		Model:         m.Model,
+		ProviderSlots: int(m.ProviderSlots),
+		Enabled:       m.Enabled,
+		CreatedAt:     timestampToString(m.CreatedAt),
+		UpdatedAt:     timestampToString(m.UpdatedAt),
+	}
+	if m.ThinkingLevel.Valid {
+		resp.ThinkingLevel = m.ThinkingLevel.String
+	}
+	if m.RuntimeID.Valid {
+		resp.RuntimeID = uuidToString(m.RuntimeID)
+	}
+	if m.CooldownUntil.Valid {
+		resp.CooldownUntil = timestampToString(m.CooldownUntil)
+	}
+	return resp
+}
+
+type modelTierMemberInput struct {
+	Position      *int    `json:"position"`
+	Provider      *string `json:"provider"`
+	Model         *string `json:"model"`
+	ThinkingLevel *string `json:"thinking_level"`
+	RuntimeID     *string `json:"runtime_id"`
+	ProviderSlots *int    `json:"provider_slots"`
+	Enabled       *bool   `json:"enabled"`
+}
+
+func normalizeTierMemberInput(in modelTierMemberInput, cur *db.ModelTierMember, forCreate bool) (db.CreateModelTierMemberParams, *pgtype.UUID, error) {
+	var params db.CreateModelTierMemberParams
+	if cur != nil {
+		params.TierID = cur.TierID
+		params.Position = cur.Position
+		params.Provider = cur.Provider
+		params.Model = cur.Model
+		params.ThinkingLevel = cur.ThinkingLevel
+		params.RuntimeID = cur.RuntimeID
+		params.ProviderSlots = cur.ProviderSlots
+		params.CooldownUntil = cur.CooldownUntil
+		params.Enabled = cur.Enabled
+	}
+	if in.Position != nil {
+		if *in.Position < 0 {
+			return params, nil, errors.New("position must be >= 0")
+		}
+		params.Position = int32(*in.Position)
+	} else if forCreate {
+		params.Position = 0
+	}
+	if in.Provider != nil || forCreate {
+		p := strings.TrimSpace(params.Provider)
+		if in.Provider != nil {
+			p = strings.TrimSpace(*in.Provider)
+		}
+		if p == "" {
+			return params, nil, errors.New("provider is required")
+		}
+		params.Provider = p
+	}
+	if in.Model != nil || forCreate {
+		m := strings.TrimSpace(params.Model)
+		if in.Model != nil {
+			m = strings.TrimSpace(*in.Model)
+		}
+		if m == "" {
+			return params, nil, errors.New("model is required")
+		}
+		params.Model = m
+	}
+	if in.ThinkingLevel != nil {
+		params.ThinkingLevel = optionalText(*in.ThinkingLevel)
+	}
+	var runtimeID *pgtype.UUID
+	if in.RuntimeID != nil {
+		s := strings.TrimSpace(*in.RuntimeID)
+		if s == "" {
+			params.RuntimeID = pgtype.UUID{}
+		} else {
+			if _, err := parseUUIDStrict(s); err != nil {
+				return params, nil, errors.New("invalid runtime_id")
+			}
+			u := parseUUID(s)
+			params.RuntimeID = u
+			runtimeID = &u
+		}
+	} else if forCreate {
+		params.RuntimeID = pgtype.UUID{}
+	}
+	if in.ProviderSlots != nil {
+		if *in.ProviderSlots < 1 || *in.ProviderSlots > 1000 {
+			return params, nil, errors.New("provider_slots must be at least 1")
+		}
+		params.ProviderSlots = int32(*in.ProviderSlots)
+	} else if forCreate {
+		params.ProviderSlots = 1
+	}
+	if in.Enabled != nil {
+		params.Enabled = *in.Enabled
+	} else if forCreate {
+		params.Enabled = true
+	}
+	return params, runtimeID, nil
+}
+
+func (h *Handler) syncTierLegacyFromMembers(r *http.Request, tier db.ModelTier) {
+	members, err := h.Queries.ListModelTierMembers(r.Context(), tier.ID)
+	if err != nil || len(members) == 0 {
+		return
+	}
+	// First enabled member in position order, else first member.
+	pick := members[0]
+	for _, m := range members {
+		if m.Enabled {
+			pick = m
+			break
+		}
+	}
+	_, _ = h.Queries.UpdateModelTier(r.Context(), db.UpdateModelTierParams{
+		ID:            tier.ID,
+		Name:          tier.Name,
+		Idx:           tier.Idx,
+		RuntimeID:     pick.RuntimeID,
+		Provider:      pick.Provider,
+		Model:         pick.Model,
+		ThinkingLevel: pick.ThinkingLevel,
+		ServiceTier:   tier.ServiceTier,
+		Cost:          tier.Cost,
+		Quality:       tier.Quality,
+		ProviderSlots: pick.ProviderSlots,
+		Enabled:       tier.Enabled,
+		Roles:         tier.Roles,
+		ManualOnly:    pgtype.Bool{Bool: tier.ManualOnly, Valid: true},
+		QuotaKind:     pgtype.Text{String: tier.QuotaKind, Valid: true},
+		IsFree:        pgtype.Bool{Bool: tier.IsFree, Valid: true},
+		AutoPick:      pgtype.Bool{Bool: tier.AutoPick, Valid: true},
+		QuotaKinds:    tier.QuotaKinds,
+		CtxMaxTokens:  pgtype.Int4{Int32: tier.CtxMaxTokens, Valid: tier.CtxMaxTokens != 0},
+		CompactAtPct:  pgtype.Int4{Int32: tier.CompactAtPct, Valid: tier.CompactAtPct != 0},
+	})
+	// Sync tier cooldown from picked member for legacy readers.
+	_ = h.Queries.SetModelTierCooldown(r.Context(), db.SetModelTierCooldownParams{ID: tier.ID, CooldownUntil: pick.CooldownUntil})
+}
+
+func (h *Handler) ListModelTierMembers(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	tierUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "tierId")), "tier id")
+	if !ok {
+		return
+	}
+	if _, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: wsUUID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tier not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	members, err := h.Queries.ListModelTierMembers(r.Context(), tierUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list tier members")
+		return
+	}
+	out := make([]ModelTierMemberResponse, 0, len(members))
+	for _, m := range members {
+		out = append(out, modelTierMemberToResponse(m))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": out})
+}
+
+func (h *Handler) CreateModelTierMember(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	tierUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "tierId")), "tier id")
+	if !ok {
+		return
+	}
+	tier, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tier not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	var in modelTierMemberInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	params, runtimeID, err := normalizeTierMemberInput(in, nil, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	params.TierID = tierUUID
+	if runtimeID != nil && !h.modelTierRuntimeInWorkspace(r, wsUUID, *runtimeID) {
+		writeError(w, http.StatusBadRequest, "runtime is not in this workspace")
+		return
+	}
+	created, err := h.Queries.CreateModelTierMember(r.Context(), params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create tier member")
+		return
+	}
+	h.syncTierLegacyFromMembers(r, tier)
+	writeJSON(w, http.StatusCreated, modelTierMemberToResponse(created))
+}
+
+func (h *Handler) UpdateModelTierMember(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	tierUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "tierId")), "tier id")
+	if !ok {
+		return
+	}
+	memberUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "memberId")), "member id")
+	if !ok {
+		return
+	}
+	tier, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tier not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	existing, err := h.Queries.GetModelTierMemberInTier(r.Context(), db.GetModelTierMemberInTierParams{ID: memberUUID, TierID: tierUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "member not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load member")
+		return
+	}
+	var in modelTierMemberInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	params, runtimeID, err := normalizeTierMemberInput(in, &existing, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if runtimeID != nil && !h.modelTierRuntimeInWorkspace(r, wsUUID, *runtimeID) {
+		writeError(w, http.StatusBadRequest, "runtime is not in this workspace")
+		return
+	}
+	updated, err := h.Queries.UpdateModelTierMember(r.Context(), db.UpdateModelTierMemberParams{
+		ID:            memberUUID,
+		Position:      params.Position,
+		Provider:      params.Provider,
+		Model:         params.Model,
+		ThinkingLevel: params.ThinkingLevel,
+		RuntimeID:     params.RuntimeID,
+		ProviderSlots: params.ProviderSlots,
+		CooldownUntil: params.CooldownUntil,
+		Enabled:       params.Enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update tier member")
+		return
+	}
+	h.syncTierLegacyFromMembers(r, tier)
+	writeJSON(w, http.StatusOK, modelTierMemberToResponse(updated))
+}
+
+func (h *Handler) DeleteModelTierMember(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	tierUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "tierId")), "tier id")
+	if !ok {
+		return
+	}
+	memberUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "memberId")), "member id")
+	if !ok {
+		return
+	}
+	tier, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tier not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	if _, err := h.Queries.GetModelTierMemberInTier(r.Context(), db.GetModelTierMemberInTierParams{ID: memberUUID, TierID: tierUUID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "member not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load member")
+		return
+	}
+	if err := h.Queries.DeleteModelTierMember(r.Context(), memberUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete tier member")
+		return
+	}
+	h.syncTierLegacyFromMembers(r, tier)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) ReorderModelTierMembers(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	tierUUID, ok := parseUUIDOrBadRequest(w, strings.TrimSpace(chi.URLParam(r, "tierId")), "tier id")
+	if !ok {
+		return
+	}
+	tier, err := h.Queries.GetModelTierInWorkspace(r.Context(), db.GetModelTierInWorkspaceParams{ID: tierUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tier not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load tier")
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 || len(req.IDs) > 200 {
+		writeError(w, http.StatusBadRequest, "ids must list 1 to 200 members")
+		return
+	}
+	seen := map[string]struct{}{}
+	uuids := make([]pgtype.UUID, 0, len(req.IDs))
+	for _, s := range req.IDs {
+		s = strings.TrimSpace(s)
+		if _, dup := seen[s]; dup {
+			writeError(w, http.StatusBadRequest, "ids must not repeat a member")
+			return
+		}
+		seen[s] = struct{}{}
+		u, ok := parseUUIDOrBadRequest(w, s, "member id")
+		if !ok {
+			return
+		}
+		uuids = append(uuids, u)
+	}
+	if err := h.Queries.ReorderModelTierMembers(r.Context(), db.ReorderModelTierMembersParams{Ids: uuids, TierID: tierUUID}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reorder members")
+		return
+	}
+	h.syncTierLegacyFromMembers(r, tier)
+	members, err := h.Queries.ListModelTierMembers(r.Context(), tierUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list tier members")
+		return
+	}
+	out := make([]ModelTierMemberResponse, 0, len(members))
+	for _, m := range members {
+		out = append(out, modelTierMemberToResponse(m))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": out})
 }

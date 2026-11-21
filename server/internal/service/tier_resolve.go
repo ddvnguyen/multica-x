@@ -26,6 +26,7 @@ type tierResolution struct {
 	thinkingLevel pgtype.Text
 	serviceTier   pgtype.Text
 	tierID        pgtype.UUID
+	memberID      pgtype.UUID
 	hasCapacity   bool
 	// M-423: floor missed (fallback stamp) / stamped tier has no measured
 	// quality (unknown). Both ride the task row for the run badge.
@@ -84,34 +85,43 @@ func tierCoolingDown(until pgtype.Timestamptz, now time.Time) bool {
 	return until.Valid && until.Time.After(now)
 }
 
-// M-423: role bands for required quality. Lo..hi per agent role; difficulty
-// (important_level/complexity 1..5, set during planning via issue Properties)
-// interpolates within the band: required = lo + ceil((hi-lo)*(i+c-2)/8).
-// Orchestrator follows the Leader band (Owner grouped them).
+// M-481: 3 roles (architect, management, engineer). Legacy roles map to the
+// new bands during transition. Planning work uses the architect band.
 var tierQualityBands = map[string][2]int{
-	"architect":    {72, 75},
-	"leader":       {65, 70},
-	"reviewer":     {68, 72},
-	"orchestrator": {65, 70},
-	"engineer":     {50, 65},
-	"planning":     {65, 80},
+	"architect":  {72, 75},
+	"management": {65, 72},
+	"engineer":   {50, 65},
+	// Legacy
+	"leader":       {65, 72},
+	"reviewer":     {65, 72},
+	"orchestrator": {65, 72},
+	"planning":     {72, 75},
 }
 
-// validTierRoles is the closed role vocabulary shared by agent.role and
-// tier.roles (mirrors the 735 CHECK constraints).
 var validTierRoles = map[string]bool{
-	"architect": true, "leader": true, "reviewer": true,
-	"orchestrator": true, "engineer": true, "planning": true,
+	"architect": true, "management": true, "engineer": true,
+	"leader": true, "reviewer": true, "orchestrator": true, "planning": true,
 }
 
-// tierAgentRole normalizes agent.Role: set + valid → that role; anything
-// else (NULL, empty, unknown) → "" meaning legacy/unfiltered.
+func normalizeTierRole(r string) string {
+	switch r {
+	case "leader", "reviewer", "orchestrator":
+		return "management"
+	case "planning":
+		return "architect"
+	default:
+		return r
+	}
+}
+
+// tierAgentRole normalizes agent.Role; legacy roles map to the 3-role system.
 func tierAgentRole(agent db.Agent) string {
 	if !agent.Role.Valid {
 		return ""
 	}
-	if validTierRoles[agent.Role.String] {
-		return agent.Role.String
+	r := normalizeTierRole(agent.Role.String)
+	if validTierRoles[r] {
+		return r
 	}
 	return ""
 }
@@ -245,7 +255,7 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	}
 	enabled := make([]db.ModelTier, 0, len(selections))
 	for _, sel := range selections {
-		if !sel.Enabled || sel.ManualOnly {
+		if !sel.Enabled || sel.ManualOnly || !sel.AutoPick {
 			continue
 		}
 		enabled = append(enabled, sel)
@@ -258,25 +268,53 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 		important, complex = s.difficultyFromProperties(ctx, agent.WorkspaceID, properties)
 	}
 	required := requiredTierQuality(role, important, complex)
-	runtimes := s.batchTierRuntimes(ctx, enabled)
-	if res, ok := firstTierWithCapacity(ctx, s.Queries, qualifyingTiers(enabled, required), runtimes, time.Now()); ok {
-		return tierResolutionFor(res, false, !res.tier.Quality.Valid), nil
+	membersByTier, runtimes := s.batchTierMembersAndRuntimes(ctx, enabled)
+	now := time.Now()
+	if res, ok := firstTierMemberWithCapacity(ctx, s.Queries, qualifyingTiers(enabled, required), membersByTier, runtimes, now); ok {
+		return tierResolutionForMember(res, false, !res.tier.Quality.Valid), nil
 	}
-	if res, ok := fallbackTier(ctx, s.Queries, enabled, runtimes, required, time.Now()); ok {
-		return tierResolutionFor(res, true, false), nil
+	if res, ok := fallbackTierMember(ctx, s.Queries, enabled, membersByTier, runtimes, required, now); ok {
+		return tierResolutionForMember(res, true, false), nil
 	}
 	return none, errNoTierCapacity
 }
 
-// tierAvailability is one role-matched candidate tier with its runtime and
-// active-task count resolved for the capacity check.
+// tierMemberAvailability is one role-matched candidate tier+member with its
+// runtime resolved for the capacity check (M-481).
+type tierMemberAvailability struct {
+	tier    db.ModelTier
+	member  db.ModelTierMember
+	runtime db.AgentRuntime
+	legacy  bool // true when falling back to tier-level fields (no members)
+}
+
+// tierAvailability is kept for legacy/test compatibility.
 type tierAvailability struct {
 	tier    db.ModelTier
 	runtime db.AgentRuntime
 }
 
-// tierResolutionFor builds the enqueue stamp, carrying the M-423 quality
-// signal: fallback (floor missed) and unverified (NULL quality).
+func tierResolutionForMember(av tierMemberAvailability, fallback, unverified bool) tierResolution {
+	model := av.member.Model
+	thinking := av.member.ThinkingLevel
+	if av.legacy {
+		model = av.tier.Model
+		thinking = av.tier.ThinkingLevel
+	}
+	return tierResolution{
+		runtimeID:         av.runtime.ID,
+		modelOverride:     pgtype.Text{String: model, Valid: model != ""},
+		thinkingLevel:     tierTextOrNull(thinking),
+		serviceTier:       tierTextOrNull(av.tier.ServiceTier),
+		tierID:            av.tier.ID,
+		memberID:          av.member.ID,
+		hasCapacity:       true,
+		qualityFallback:   fallback,
+		qualityUnverified: unverified,
+	}
+}
+
+// tierResolutionFor builds the enqueue stamp from a legacy tier-level pick.
 func tierResolutionFor(av tierAvailability, fallback, unverified bool) tierResolution {
 	return tierResolution{
 		runtimeID:         av.runtime.ID,
@@ -326,42 +364,97 @@ func splitTiersByFloor(tiers []db.ModelTier, required int) (eligible, unknown, b
 }
 
 // batchTierRuntimes fetches the distinct runtimes behind candidate tiers once.
-func (s *TaskService) batchTierRuntimes(ctx context.Context, tiers []db.ModelTier) map[string]db.AgentRuntime {
-	runtimes := map[string]db.AgentRuntime{}
-	ids := make([]pgtype.UUID, 0, len(tiers))
+func (s *TaskService) batchTierMembersAndRuntimes(ctx context.Context, tiers []db.ModelTier) (map[string][]db.ModelTierMember, map[string]db.AgentRuntime) {
+	membersByTier := map[string][]db.ModelTierMember{}
+	runtimeIDs := map[string]pgtype.UUID{}
 	for _, t := range tiers {
+		tid := util.UUIDToString(t.ID)
+		members, err := s.Queries.ListEnabledModelTierMembersByTier(ctx, t.ID)
+		if err == nil && len(members) > 0 {
+			membersByTier[tid] = members
+			for _, m := range members {
+				if m.RuntimeID.Valid {
+					runtimeIDs[util.UUIDToString(m.RuntimeID)] = m.RuntimeID
+				}
+			}
+			continue
+		}
+		// Legacy fallback: tier with no members behaves like pre-M481 tier.
 		if t.RuntimeID.Valid {
-			ids = append(ids, t.RuntimeID)
+			runtimeIDs[util.UUIDToString(t.RuntimeID)] = t.RuntimeID
 		}
 	}
-	if len(ids) == 0 {
-		return runtimes
+	runtimes := map[string]db.AgentRuntime{}
+	if len(runtimeIDs) == 0 {
+		return membersByTier, runtimes
+	}
+	ids := make([]pgtype.UUID, 0, len(runtimeIDs))
+	for _, id := range runtimeIDs {
+		ids = append(ids, id)
 	}
 	rows, err := s.Queries.GetAgentRuntimes(ctx, ids)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return runtimes
+	if err == nil {
+		for _, rt := range rows {
+			runtimes[util.UUIDToString(rt.ID)] = rt
+		}
 	}
-	for _, rt := range rows {
-		runtimes[util.UUIDToString(rt.ID)] = rt
-	}
-	return runtimes
+	return membersByTier, runtimes
 }
 
-// firstTierWithCapacity returns the first tier (idx/creation order) that is
-// not cooling, bound to an online/fresh runtime, and below provider_slots.
-// The caller threads the same now through the whole pass so a tier cooling
-// at pass start is judged consistently.
-func firstTierWithCapacity(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runtimes map[string]db.AgentRuntime, now time.Time) (tierAvailability, bool) {
+func firstTierMemberWithCapacity(ctx context.Context, q *db.Queries, tiers []db.ModelTier, membersByTier map[string][]db.ModelTierMember, runtimes map[string]db.AgentRuntime, now time.Time) (tierMemberAvailability, bool) {
 	for _, t := range tiers {
-		av, ok := tierCapacity(ctx, q, t, runtimes, now)
-		if ok {
+		if av, ok := tierMemberCapacity(ctx, q, t, membersByTier, runtimes, now); ok {
 			return av, true
 		}
 	}
-	return tierAvailability{}, false
+	return tierMemberAvailability{}, false
 }
 
-// tierCapacity applies the M-351/M-352 availability chain to one tier.
+func tierMemberCapacity(ctx context.Context, q *db.Queries, t db.ModelTier, membersByTier map[string][]db.ModelTierMember, runtimes map[string]db.AgentRuntime, now time.Time) (tierMemberAvailability, bool) {
+	members := membersByTier[util.UUIDToString(t.ID)]
+	if len(members) == 0 {
+		// Legacy tier without members: use tier-level fields.
+		if av, ok := tierCapacity(ctx, q, t, runtimes, now); ok {
+			return tierMemberAvailability{tier: av.tier, runtime: av.runtime, legacy: true}, true
+		}
+		return tierMemberAvailability{}, false
+	}
+	for _, m := range members {
+		if av, ok := memberCapacity(ctx, q, t, m, runtimes, now); ok {
+			return av, true
+		}
+	}
+	return tierMemberAvailability{}, false
+}
+
+func memberCapacity(ctx context.Context, q *db.Queries, t db.ModelTier, m db.ModelTierMember, runtimes map[string]db.AgentRuntime, now time.Time) (tierMemberAvailability, bool) {
+	if !m.Enabled {
+		return tierMemberAvailability{}, false
+	}
+	if tierCoolingDown(m.CooldownUntil, now) {
+		return tierMemberAvailability{}, false
+	}
+	if !m.RuntimeID.Valid {
+		return tierMemberAvailability{}, false
+	}
+	rt, ok := runtimes[util.UUIDToString(m.RuntimeID)]
+	if !ok || !isRuntimeClaimable(rt) {
+		return tierMemberAvailability{}, false
+	}
+	running, err := q.CountActiveTasksByRuntime(ctx, rt.ID)
+	if err != nil {
+		return tierMemberAvailability{}, false
+	}
+	slots := int64(m.ProviderSlots)
+	if slots < 1 {
+		slots = 1
+	}
+	if running >= slots {
+		return tierMemberAvailability{}, false
+	}
+	return tierMemberAvailability{tier: t, member: m, runtime: rt}, true
+}
+
 func tierCapacity(ctx context.Context, q *db.Queries, t db.ModelTier, runtimes map[string]db.AgentRuntime, now time.Time) (tierAvailability, bool) {
 	if tierCoolingDown(t.CooldownUntil, now) {
 		return tierAvailability{}, false
@@ -387,12 +480,35 @@ func tierCapacity(ctx context.Context, q *db.Queries, t db.ModelTier, runtimes m
 	return tierAvailability{tier: t, runtime: rt}, true
 }
 
-// fallbackTier picks the highest known-quality available tier below the
-// floor when nothing eligible has capacity. Deterministic: quality desc,
-// then idx asc, then created_at asc. Unknown-quality tiers never serve as
-// fallback (they ran in the eligible pass, flagged unverified); manual-only
-// tiers never serve as fallback. Returns false when none is available, and
-// the caller queues (errNoTierCapacity).
+func (s *TaskService) batchTierRuntimes(ctx context.Context, tiers []db.ModelTier) map[string]db.AgentRuntime {
+	_, runtimes := s.batchTierMembersAndRuntimes(ctx, tiers)
+	return runtimes
+}
+
+func firstTierWithCapacity(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runtimes map[string]db.AgentRuntime, now time.Time) (tierAvailability, bool) {
+	for _, t := range tiers {
+		if av, ok := tierCapacity(ctx, q, t, runtimes, now); ok {
+			return av, true
+		}
+	}
+	return tierAvailability{}, false
+}
+
+func fallbackTierMember(ctx context.Context, q *db.Queries, tiers []db.ModelTier, membersByTier map[string][]db.ModelTierMember, runtimes map[string]db.AgentRuntime, required int, now time.Time) (tierMemberAvailability, bool) {
+	_, _, below := splitTiersByFloor(tiers, required)
+	if len(below) == 0 {
+		return tierMemberAvailability{}, false
+	}
+	ordered := append([]db.ModelTier(nil), below...)
+	sortTiersByQualityDesc(ordered)
+	for _, t := range ordered {
+		if av, ok := tierMemberCapacity(ctx, q, t, membersByTier, runtimes, now); ok {
+			return av, true
+		}
+	}
+	return tierMemberAvailability{}, false
+}
+
 func fallbackTier(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runtimes map[string]db.AgentRuntime, required int, now time.Time) (tierAvailability, bool) {
 	_, _, below := splitTiersByFloor(tiers, required)
 	if len(below) == 0 {
@@ -561,45 +677,75 @@ func (s *TaskService) LookupExplicitTierAs(ctx context.Context, agent db.Agent, 
 	return tier, nil
 }
 
-// stampExplicitTier applies the capacity gate to one validated tier row. The
-// stamp carries the M-423 quality signal: an explicit pick of an unmeasured
-// (NULL quality) tier stamps unverified — never described as meeting a floor.
+// stampExplicitTier applies member traversal to one validated tier profile
+// (M-481): first available member in position order wins. If all members are
+// unavailable the explicit pick parks (errNoExplicitTierCapacity), no fallback.
 func (s *TaskService) stampExplicitTier(ctx context.Context, tier db.ModelTier) (tierResolution, error) {
 	var none tierResolution
-	if tierCoolingDown(tier.CooldownUntil, time.Now()) {
-		return none, errNoExplicitTierCapacity
+	members, err := s.Queries.ListEnabledModelTierMembersByTier(ctx, tier.ID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return none, err
 	}
-	if !tier.RuntimeID.Valid {
-		return none, errNoExplicitTierCapacity
-	}
-	rt, err := s.Queries.GetAgentRuntime(ctx, tier.RuntimeID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	now := time.Now()
+	if len(members) == 0 {
+		// Legacy tier without members.
+		if tierCoolingDown(tier.CooldownUntil, now) || !tier.RuntimeID.Valid {
 			return none, errNoExplicitTierCapacity
 		}
-		return none, err
+		rt, rerr := s.Queries.GetAgentRuntime(ctx, tier.RuntimeID)
+		if rerr != nil || !isRuntimeClaimable(rt) {
+			return none, errNoExplicitTierCapacity
+		}
+		running, cerr := s.Queries.CountActiveTasksByRuntime(ctx, rt.ID)
+		if cerr != nil {
+			return none, cerr
+		}
+		slots := int64(tier.ProviderSlots)
+		if slots < 1 {
+			slots = 1
+		}
+		if running >= slots {
+			return none, errNoExplicitTierCapacity
+		}
+		return tierResolution{
+			runtimeID:         rt.ID,
+			modelOverride:     pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
+			thinkingLevel:     tierTextOrNull(tier.ThinkingLevel),
+			serviceTier:       tierTextOrNull(tier.ServiceTier),
+			tierID:            tier.ID,
+			hasCapacity:       true,
+			qualityUnverified: !tier.Quality.Valid,
+		}, nil
 	}
-	if !isRuntimeClaimable(rt) {
-		return none, errNoExplicitTierCapacity
+	for _, m := range members {
+		if tierCoolingDown(m.CooldownUntil, now) || !m.RuntimeID.Valid {
+			continue
+		}
+		rt, rerr := s.Queries.GetAgentRuntime(ctx, m.RuntimeID)
+		if rerr != nil || !isRuntimeClaimable(rt) {
+			continue
+		}
+		running, cerr := s.Queries.CountActiveTasksByRuntime(ctx, rt.ID)
+		if cerr != nil {
+			return none, cerr
+		}
+		slots := int64(m.ProviderSlots)
+		if slots < 1 {
+			slots = 1
+		}
+		if running >= slots {
+			continue
+		}
+		return tierResolution{
+			runtimeID:         rt.ID,
+			modelOverride:     pgtype.Text{String: m.Model, Valid: m.Model != ""},
+			thinkingLevel:     tierTextOrNull(m.ThinkingLevel),
+			serviceTier:       tierTextOrNull(tier.ServiceTier),
+			tierID:            tier.ID,
+			memberID:          m.ID,
+			hasCapacity:       true,
+			qualityUnverified: !tier.Quality.Valid,
+		}, nil
 	}
-	running, err := s.Queries.CountActiveTasksByRuntime(ctx, rt.ID)
-	if err != nil {
-		return none, err
-	}
-	slots := int64(tier.ProviderSlots)
-	if slots < 1 {
-		slots = 1
-	}
-	if running >= slots {
-		return none, errNoExplicitTierCapacity
-	}
-	return tierResolution{
-		runtimeID:         rt.ID,
-		modelOverride:     pgtype.Text{String: tier.Model, Valid: tier.Model != ""},
-		thinkingLevel:     tierTextOrNull(tier.ThinkingLevel),
-		serviceTier:       tierTextOrNull(tier.ServiceTier),
-		tierID:            tier.ID,
-		hasCapacity:       true,
-		qualityUnverified: !tier.Quality.Valid,
-	}, nil
+	return none, errNoExplicitTierCapacity
 }
