@@ -30,6 +30,17 @@ rules — the one place the task set separated *behaviour* from the rubric).
 Calibrated 0–100 quality is therefore **not measured** (`a`,`b` need DeepSeek 4.1 Flash *and*
 Sonnet 5.5 measured; one reference exists, the other is unreachable). Publish raw only.
 
+## Caveats per row (blind / contamination / usage provenance)
+
+| Row | Blind? | Contamination / provenance |
+|---|---|---|
+| beam-free 96.88 (16/16) | Non-blind: the same run authored the checks and executed the grading. G1–G4/R1–R4 grades are mechanical (held-out fixtures), so identity cannot move them; V/P grades are model-graded by `glm-5.3` (never a scored subject) and blind to the tag, but not human. | Usage source: harness-reported provider usage per run, committed in `results/*.jsonl` (`metered=false` → cost is a reported zero; zero metering is not proof of $0 billing). Raw chat/usage logs are not committed, so a repo-alone re-grade of V/P is not possible. |
+| muse-spark 96.88 (16/16) | Same as beam-free. | Metered (`metered=true`); usage from the same harness source. |
+| deepseek-v4.1-flash 96.88 (16/16) | Same as beam-free. | Metered (`metered=true`); usage from the same harness source. |
+| hy4-flash-free 13/16 | Non-blind. | No score: stopped on the harness time budget (P2–P4 missing); no usage reported on stopped tasks. |
+| glm-5.3-flash 6/16 | Non-blind. | No score: G2 failed, R2 hit the per-task cap with no usage. |
+| G1 probes (M-424 record) | Non-blind. | M-437/M-438 discarded for exposure; M-428 contaminated; Freebuff and repeat rows non-blind; per-run identity/usage for Beam and Freebuff incomplete. Full caveats live on M-424. |
+
 ## Findings
 
 1. **Ceiling effect — the task set does not rank the cheap/free tier.** Three different providers'
@@ -62,8 +73,9 @@ Sonnet 5.5 measured; one reference exists, the other is unreachable). Publish ra
   `onEdit` wiring removed → FAIL. The checks are not vacuous.
 * Hidden checks are copied in after the process exits; the model never sees them.
 * Every number above comes from `results/<tag>.jsonl`, written by the harness from the provider
-  usage field; nothing is estimated. Cost `$0.000000` for beam-free is a reported zero, not missing
-  billing data (`metered=true` on the paid rows, and its usage was reported on all 16 runs).
+  usage field; nothing is estimated. Cost `$0.000000` for beam-free is a reported zero
+  (`metered=false` on all 16 rows), not missing usage data — but a zero metering bucket is not
+  proof of $0 billing; treat it as "not metered", not "free".
 * Rubric scores come from an independent model (never a model under test) with mechanical
   item-counting: 1 = all items hit, 0.5 = one missing, 0 = otherwise. Human confirmation is still
   outstanding — the spec's V/P tasks were meant to be human-graded.
