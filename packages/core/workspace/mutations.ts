@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import type { Workspace, ModelTierInput } from "../types";
+import type { Workspace, ModelTierInput, ModelTierMemberInput } from "../types";
 import { api } from "../api";
 import { defaultStorage } from "../platform/storage";
 import { clearWorkspaceStorage } from "../platform/storage-cleanup";
@@ -177,6 +177,45 @@ export function useReorderModelTiers(wsId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (ids: string[]) => api.reorderModelTiers(wsId, ids),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+/**
+ * Tier members (M-481). The tier write itself resyncs the legacy provider /
+ * model columns from the first member, so every member write invalidates the
+ * tier list too.
+ */
+export function useCreateModelTierMember(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tierId, ...input }: ModelTierMemberInput & { tierId: string }) =>
+      api.createModelTierMember(wsId, tierId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useUpdateModelTierMember(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      tierId,
+      memberId,
+      ...input
+    }: ModelTierMemberInput & { tierId: string; memberId: string }) =>
+      api.updateModelTierMember(wsId, tierId, memberId, input),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+  });
+}
+
+export function useDeleteModelTierMember(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tierId, memberId }: { tierId: string; memberId: string }) =>
+      api.deleteModelTierMember(wsId, tierId, memberId),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
   });

@@ -22,6 +22,9 @@ export const workspaceKeys = {
     ["workspaces", wsId, "squads", squadId, "members-status"] as const,
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
   tiers: (wsId: string) => ["workspaces", wsId, "tiers"] as const,
+  /** Under `tiers` so any tier write also refreshes its members. */
+  tierMembers: (wsId: string, tierId: string) =>
+    ["workspaces", wsId, "tiers", tierId, "members"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
 };
@@ -265,5 +268,18 @@ export function modelTiersOptions(wsId: string) {
     queryKey: workspaceKeys.tiers(wsId),
     queryFn: () => api.listModelTiers(wsId),
     enabled: wsId !== "",
+  });
+}
+
+/**
+ * One tier's (harness, model) members in pick order (M-481). The tier list
+ * does not embed members, and the Settings list needs them per row for the
+ * chips — one cached query per visible tier.
+ */
+export function modelTierMembersOptions(wsId: string, tierId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.tierMembers(wsId, tierId),
+    queryFn: () => api.listModelTierMembers(wsId, tierId),
+    enabled: wsId !== "" && tierId !== "",
   });
 }

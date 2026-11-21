@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -15,6 +15,7 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import {
@@ -36,18 +37,29 @@ import { Loader2 } from "@multica/ui/icons";
 import { ApiError } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
-import { modelTiersOptions } from "@multica/core/workspace/queries";
+import {
+  modelTierMembersOptions,
+  modelTiersOptions,
+} from "@multica/core/workspace/queries";
 import {
   useCreateModelTier,
+  useCreateModelTierMember,
   useDeleteModelTier,
+  useDeleteModelTierMember,
   useReorderModelTiers,
   useUpdateModelTier,
+  useUpdateModelTierMember,
 } from "@multica/core/workspace/mutations";
 import {
   runtimeListOptions,
   runtimeModelsOptions,
 } from "@multica/core/runtimes";
-import type { ModelTier, ModelTierInput } from "@multica/core/types";
+import type {
+  ModelTier,
+  ModelTierInput,
+  ModelTierMember,
+  ModelTierMemberInput,
+} from "@multica/core/types";
 import { useT } from "../../i18n";
 import {
   SettingsCard,
@@ -57,18 +69,20 @@ import {
 } from "./settings-layout";
 
 /**
- * Workspace model tiers (M-350). The ordered list the M-351 resolver walks at
- * enqueue: index 0 first, 99 last. `provider_slots` is the max simultaneous
- * sessions on that runtime/provider (e.g. Freebuff = 1) — not an agent
- * concurrency cap. Runtime/model pickers reuse the existing runtime catalog
- * (`POST /runtimes/{id}/models`); this tab stores the chosen values only.
+ * Workspace tier profiles (M-350, M-481). A tier is a profile — index, roles,
+ * quality, quota kinds, auto-pick, context ceiling — plus one or more ordered
+ * (harness, model) members. The resolver picks the tier by idx, then its first
+ * available member, so a rate limit on one harness only cools that member.
  */
 
+/** Existing member positions stay far below this; new rows park here first. */
+const POSITION_SCRATCH_GAP = 1000;
+
 /**
- * `HH:MM` in the viewer's own clock for a tier's cooldown deadline (M-352), or
- * null when the tier is not cooling. The server sends an absolute timestamp;
- * an already-expired one renders nothing, since the resolver has the tier back
- * in idx order at its very next pass and a stale label would be misleading.
+ * `HH:MM` in the viewer's own clock for a cooldown deadline (M-352/M-481), or
+ * null when it is not cooling. The server sends an absolute timestamp; an
+ * already-expired one renders nothing, since the resolver has the row back at
+ * its very next pass and a stale label would be misleading.
  */
 function cooldownClock(until?: string): string | null {
   if (!until) return null;
@@ -79,8 +93,54 @@ function cooldownClock(until?: string): string | null {
   return `${hours}:${minutes}`;
 }
 
+function TierMemberChip({
+  member,
+  tierId,
+}: {
+  member: ModelTierMember;
+  tierId: string;
+}) {
+  const { t } = useT("settings");
+  const cooling = cooldownClock(member.cooldown_until);
+  return (
+    <span
+      data-testid={`tier-member-${tierId}-${member.id}`}
+      title={
+        cooling
+          ? t(($) => $.tiers.member_cooling_until, { time: cooling })
+          : [
+              member.runtime_id
+                ? null
+                : t(($) => $.tiers.member_unbound),
+              member.thinking_level || null,
+              `×${member.provider_slots}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+      }
+      className={[
+        "inline-flex max-w-full items-center gap-1 rounded-full border border-surface-border px-2 py-0.5 text-caption",
+        member.enabled ? "" : "opacity-60 line-through",
+        cooling ? "text-muted-foreground" : "",
+      ].join(" ")}
+    >
+      <span className="truncate">
+        {member.provider} · {member.model}
+      </span>
+      {cooling && (
+        <span
+          aria-hidden
+          className="size-1.5 shrink-0 rounded-full bg-warning"
+        />
+      )}
+    </span>
+  );
+}
+
 function TierRow({
   tier,
+  members,
+  membersLoading,
   position,
   total,
   canManage,
@@ -90,6 +150,8 @@ function TierRow({
   movePending,
 }: {
   tier: ModelTier;
+  members: ModelTierMember[];
+  membersLoading: boolean;
   position: number;
   total: number;
   canManage: boolean;
@@ -100,19 +162,35 @@ function TierRow({
 }) {
   const { t } = useT("settings");
   const coolingUntil = cooldownClock(tier.cooldown_until);
+  // Older backends omit auto_pick; `manual_only` is its complement.
+  const autoPick = tier.auto_pick ?? !tier.manual_only;
   return (
     <li
       data-testid={`tier-row-${tier.id}`}
-      className="flex min-w-0 items-center gap-3 px-4 py-3"
+      className="flex min-w-0 items-start gap-3 px-4 py-3"
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="truncate font-medium">{tier.name}</span>
           {!tier.enabled && (
             <Badge variant="secondary">{t(($) => $.tiers.disabled_badge)}</Badge>
           )}
-          {tier.manual_only && (
-            <Badge variant="outline">{t(($) => $.tiers.manual_badge)}</Badge>
+          {autoPick ? (
+            <Badge
+              variant="outline"
+              data-testid={`tier-auto-pick-${tier.id}`}
+              title={t(($) => $.tiers.auto_pick_hint)}
+            >
+              {t(($) => $.tiers.auto_pick_badge)}
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              data-testid={`tier-auto-pick-${tier.id}`}
+              title={t(($) => $.tiers.manual_hint)}
+            >
+              {t(($) => $.tiers.auto_pick_badge_manual)}
+            </Badge>
           )}
           {(tier.roles ?? []).length === 0 && (
             <Badge variant="secondary">
@@ -130,16 +208,37 @@ function TierRow({
           )}
         </div>
         <span className="truncate text-caption text-muted-foreground">
-          {tier.provider} · {tier.model}
-          {tier.runtime_id
-            ? ""
-            : ` · ${t(($) => $.tiers.no_runtime_suffix)}`}
-          {typeof tier.quality === "number" ? ` · Q${tier.quality}` : ""}
+          {typeof tier.quality === "number" ? `Q${tier.quality}` : ""}
           {(tier.roles ?? []).length > 0
             ? ` · ${(tier.roles ?? []).join(", ")}`
             : ""}
-          {` · ×${tier.provider_slots}`}
+          {tier.quota_kinds.length > 0
+            ? ` · ${tier.quota_kinds.length}× quota`
+            : ""}
         </span>
+        <div
+          data-testid={`tier-members-${tier.id}`}
+          className="flex min-w-0 flex-wrap items-center gap-1"
+        >
+          {membersLoading ? (
+            <span className="text-caption text-faint-foreground">…</span>
+          ) : members.length === 0 ? (
+            <span
+              data-testid={`tier-no-members-${tier.id}`}
+              className="text-caption text-muted-foreground"
+            >
+              {t(($) => $.tiers.members_empty)}
+            </span>
+          ) : (
+            members.map((member) => (
+              <TierMemberChip
+                key={member.id}
+                member={member}
+                tierId={tier.id}
+              />
+            ))
+          )}
+        </div>
       </div>
       {canManage && (
         <div className="flex shrink-0 items-center gap-1">
@@ -185,8 +284,31 @@ export function TiersTab() {
   const updateTier = useUpdateModelTier(wsId);
   const deleteTier = useDeleteModelTier(wsId);
   const reorderTiers = useReorderModelTiers(wsId);
+  const createMember = useCreateModelTierMember(wsId);
+  const updateMember = useUpdateModelTierMember(wsId);
+  const deleteMember = useDeleteModelTierMember(wsId);
 
   const tiers = useMemo(() => tiersQuery.data ?? [], [tiersQuery.data]);
+
+  // One cached member query per visible tier: the list payload carries the
+  // profile, and M-481 shows each tier's members as chips.
+  const memberQueries = useQueries({
+    queries: tiers.map((tier) => modelTierMembersOptions(wsId, tier.id)),
+  });
+  const membersByTier = useMemo(() => {
+    const map = new Map<
+      string,
+      { members: ModelTierMember[]; loading: boolean }
+    >();
+    tiers.forEach((tier, index) => {
+      const query = memberQueries[index];
+      map.set(tier.id, {
+        members: query?.data ?? [],
+        loading: Boolean(query?.isLoading),
+      });
+    });
+    return map;
+  }, [tiers, memberQueries]);
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTier, setEditingTier] = useState<ModelTier | null>(null);
@@ -252,22 +374,27 @@ export function TiersTab() {
                 </div>
               )}
               <ul className="divide-y">
-                {tiers.map((tier, index) => (
-                  <TierRow
-                    key={tier.id}
-                    tier={tier}
-                    position={index}
-                    total={tiers.length}
-                    canManage={canManage}
-                    onEdit={() => {
-                      setEditingTier(tier);
-                      setEditorOpen(true);
-                    }}
-                    onDelete={() => setDeletingTier(tier)}
-                    onMove={(direction) => void handleMove(tier, direction)}
-                    movePending={reorderTiers.isPending}
-                  />
-                ))}
+                {tiers.map((tier, index) => {
+                  const state = membersByTier.get(tier.id);
+                  return (
+                    <TierRow
+                      key={tier.id}
+                      tier={tier}
+                      members={state?.members ?? []}
+                      membersLoading={state?.loading ?? false}
+                      position={index}
+                      total={tiers.length}
+                      canManage={canManage}
+                      onEdit={() => {
+                        setEditingTier(tier);
+                        setEditorOpen(true);
+                      }}
+                      onDelete={() => setDeletingTier(tier)}
+                      onMove={(direction) => void handleMove(tier, direction)}
+                      movePending={reorderTiers.isPending}
+                    />
+                  );
+                })}
               </ul>
             </>
           )}
@@ -278,7 +405,6 @@ export function TiersTab() {
         <TierEditorDialog
           wsId={wsId}
           tier={editingTier}
-          isOwner={role === "owner"}
           onClose={() => {
             setEditorOpen(false);
             setEditingTier(null);
@@ -289,6 +415,9 @@ export function TiersTab() {
           }}
           createTier={createTier}
           updateTier={updateTier}
+          createMember={createMember}
+          updateMember={updateMember}
+          deleteMember={deleteMember}
         />
       )}
 
@@ -344,105 +473,262 @@ export interface TierUpdateMutation {
   mutateAsync: (input: ModelTierInput & { tierId: string }) => Promise<ModelTier>;
   isPending: boolean;
 }
+export interface TierMemberMutation {
+  mutateAsync: (
+    input: ModelTierMemberInput & { tierId: string },
+  ) => Promise<ModelTierMember>;
+  isPending: boolean;
+}
+export interface TierMemberUpdateMutation {
+  mutateAsync: (
+    input: ModelTierMemberInput & { tierId: string; memberId: string },
+  ) => Promise<ModelTierMember>;
+  isPending: boolean;
+}
+export interface TierMemberDeleteMutation {
+  mutateAsync: (input: { tierId: string; memberId: string }) => Promise<void>;
+  isPending: boolean;
+}
+
+/** One editable member line. `id` is absent until the row is saved. */
+interface DraftMember {
+  key: string;
+  id?: string;
+  provider: string;
+  model: string;
+  thinkingLevel: string;
+  runtimeId: string;
+  providerSlots: string;
+  enabled: boolean;
+}
+
+let draftSeq = 0;
+function nextDraftKey(): string {
+  draftSeq += 1;
+  return `draft-${draftSeq}`;
+}
+
+function draftFromMember(member: ModelTierMember): DraftMember {
+  return {
+    key: nextDraftKey(),
+    id: member.id,
+    provider: member.provider,
+    model: member.model,
+    thinkingLevel: member.thinking_level ?? "",
+    runtimeId: member.runtime_id ?? "",
+    providerSlots: String(member.provider_slots),
+    enabled: member.enabled,
+  };
+}
+
+function blankDraftMember(): DraftMember {
+  return {
+    key: nextDraftKey(),
+    provider: "",
+    model: "",
+    thinkingLevel: "",
+    runtimeId: "",
+    // A free provider usually runs one session at a time; the admin can raise
+    // it per member (M-481 keeps slots on the member).
+    providerSlots: "1",
+    enabled: true,
+  };
+}
+
 /**
- * Create/edit dialog. Runtime and model are dropdowns fed by the existing
- * runtime list and model catalog — no new backend for catalogs. The model
- * dropdown stays usable when discovery is offline: it renders the error with
- * the stored value kept editable as free text.
+ * Create/edit dialog (M-481). Large and scrollable: a profile block on top and
+ * the ordered member editor below. Members are reconciled on save — deletes,
+ * then per-row writes, then a two-phase position pass — because the API has no
+ * atomic "replace members" call and the (tier_id, position) unique index
+ * rejects a straight swap.
  */
 function TierEditorDialog({
   wsId,
   tier,
-  isOwner,
   onClose,
   onSaved,
   createTier,
   updateTier,
+  createMember,
+  updateMember,
+  deleteMember,
 }: {
   wsId: string;
   tier: ModelTier | null;
-  isOwner: boolean;
   onClose: () => void;
   onSaved: () => void;
   createTier: TierCreateMutation;
   updateTier: TierUpdateMutation;
+  createMember: TierMemberMutation;
+  updateMember: TierMemberUpdateMutation;
+  deleteMember: TierMemberDeleteMutation;
 }) {
   const { t } = useT("settings");
   const [name, setName] = useState(tier?.name ?? "");
-  const [runtimeId, setRuntimeId] = useState(tier?.runtime_id ?? "");
-  const [provider, setProvider] = useState(tier?.provider ?? "");
-  const [model, setModel] = useState(tier?.model ?? "");
-  const [modelCustom, setModelCustom] = useState(false);
-  const [thinkingLevel, setThinkingLevel] = useState(
-    tier?.thinking_level ?? "",
-  );
-  const [serviceTier, setServiceTier] = useState(tier?.service_tier ?? "");
   const [cost, setCost] = useState(tier?.cost ?? "");
   const [quality, setQuality] = useState(
     tier?.quality !== undefined ? String(tier.quality) : "",
   );
   // M-446: explicit clear-to-unknown. Blank-on-edit is NOT a clear (it keeps
   // the value, same as the API's omitted semantics) — the admin must check
-  // this to send quality: null. Only meaningful when editing an existing
-  // measured value; hidden on create.
+  // this to send quality: null. Only meaningful when editing a measured value.
   const [clearQuality, setClearQuality] = useState(false);
-  const [providerSlots, setProviderSlots] = useState(
-    String(tier?.provider_slots ?? 1),
-  );
+  const [serviceTier, setServiceTier] = useState(tier?.service_tier ?? "");
   const [enabled, setEnabled] = useState(tier?.enabled ?? true);
   const [roles, setRoles] = useState<string[]>(tier?.roles ?? []);
-  const [manualOnly, setManualOnly] = useState(tier?.manual_only ?? false);
-  const [quotaKind, setQuotaKind] = useState(tier?.quota_kind ?? "none");
+  const [autoPick, setAutoPick] = useState(
+    tier?.auto_pick ?? !(tier?.manual_only ?? false),
+  );
+  const [quotaKinds, setQuotaKinds] = useState<string[]>(
+    tier?.quota_kinds ?? [],
+  );
   const [isFree, setIsFree] = useState(tier?.is_free ?? true);
+  const [ctxMax, setCtxMax] = useState(
+    String(tier?.ctx_max_tokens ?? 280000),
+  );
+  const [compactPct, setCompactPct] = useState(
+    String(tier?.compact_at_pct ?? 75),
+  );
+  const [rows, setRows] = useState<DraftMember[] | null>(
+    tier ? null : [blankDraftMember()],
+  );
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // Existing members land after the dialog opens; seed the editable rows once.
+  const membersQuery = useQuery(modelTierMembersOptions(wsId, tier?.id ?? ""));
+  useEffect(() => {
+    if (rows !== null || !tier) return;
+    if (!membersQuery.isSuccess) return;
+    setRows(membersQuery.data.map(draftFromMember));
+  }, [rows, tier, membersQuery.isSuccess, membersQuery.data]);
 
   const runtimesQuery = useQuery(runtimeListOptions(wsId));
   const runtimes = useMemo(
     () => runtimesQuery.data ?? [],
     [runtimesQuery.data],
   );
-  const onlineRuntimes = useMemo(
-    () => runtimes.filter((r) => r.status === "online"),
-    [runtimes],
-  );
-  const selectedRuntime =
-    runtimes.find((r) => r.id === runtimeId) ?? null;
 
-  const modelsQuery = useQuery({
-    ...runtimeModelsOptions(runtimeId || null),
-    enabled: runtimeId !== "",
-  });
-  const models = useMemo(
-    () => modelsQuery.data?.models ?? [],
-    [modelsQuery.data],
-  );
-  const thinkingLevels = useMemo(() => {
-    const selected = models.find((m) => m.id === model);
-    return selected?.thinking?.supported_levels ?? [];
-  }, [models, model]);
-  const serviceTiers = useMemo(() => {
-    const selected = models.find((m) => m.id === model);
-    return selected?.service_tiers ?? [];
-  }, [models, model]);
+  const pending =
+    createTier.isPending ||
+    updateTier.isPending ||
+    createMember.isPending ||
+    updateMember.isPending ||
+    deleteMember.isPending;
 
-  const pending = createTier.isPending || updateTier.isPending;
+  const ctxTokens = Number(ctxMax);
+  const compactTokens =
+    Number.isFinite(ctxTokens) && Number.isFinite(Number(compactPct))
+      ? Math.round((ctxTokens * Number(compactPct)) / 100)
+      : 0;
+
+  const updateRow = (key: string, patch: Partial<DraftMember>) => {
+    setRows((prev) =>
+      (prev ?? []).map((row) => (row.key === key ? { ...row, ...patch } : row)),
+    );
+  };
+
+  const moveRow = (index: number, direction: -1 | 1) => {
+    setRows((prev) => {
+      if (!prev) return prev;
+      const to = index + direction;
+      if (to < 0 || to >= prev.length) return prev;
+      const next = [...prev];
+      const [row] = next.splice(index, 1);
+      if (row) next.splice(to, 0, row);
+      return next;
+    });
+  };
+
+  /**
+   * Persists the draft rows against a saved tier. `baseIndex` is the first
+   * position these rows own: 0 when editing, 1 when creating (the server
+   * backfilled member 0 from the profile's first harness/model).
+   */
+  const reconcileMembers = async (
+    tierId: string,
+    draft: DraftMember[],
+    existing: ModelTierMember[],
+    baseIndex = 0,
+  ) => {
+    const keptIds = new Set(draft.map((row) => row.id).filter(Boolean));
+    for (const member of existing) {
+      if (!keptIds.has(member.id)) {
+        await deleteMember.mutateAsync({ tierId, memberId: member.id });
+      }
+    }
+
+    // Park new rows above every stored position: their final slot may still be
+    // occupied while the swap is in progress. With no stored members every
+    // target slot is free, so the rows can be written in final order at once.
+    const slotsFree = existing.length === 0;
+    const scratch =
+      Math.max(0, ...existing.map((member) => member.position)) +
+      POSITION_SCRATCH_GAP;
+    const positions = new Map<string, number>();
+    for (const member of existing) positions.set(member.id, member.position);
+    const createdIds = new Map<string, string>();
+
+    for (const [index, row] of draft.entries()) {
+      const fields: ModelTierMemberInput = {
+        provider: row.provider.trim(),
+        model: row.model.trim(),
+        thinking_level: row.thinkingLevel.trim(),
+        runtime_id: row.runtimeId,
+        provider_slots: Number(row.providerSlots),
+      };
+      if (row.id) {
+        await updateMember.mutateAsync({
+          tierId,
+          memberId: row.id,
+          ...fields,
+        });
+      } else {
+        const position = slotsFree ? baseIndex + index : scratch + index;
+        const created = await createMember.mutateAsync({
+          tierId,
+          position,
+          ...fields,
+        });
+        createdIds.set(row.key, created.id);
+        positions.set(created.id, position);
+      }
+    }
+
+    // Final order is the row order. Resolve every row's id first, then move
+    // the rows whose position is wrong: park them, then place them.
+    const ordered = draft.map((row, index) => ({
+      id: row.id ?? createdIds.get(row.key) ?? "",
+      target: baseIndex + index,
+    }));
+    const moving = ordered.filter(
+      (entry) => entry.id !== "" && positions.get(entry.id) !== entry.target,
+    );
+    if (moving.length === 0) return;
+    const parkingBase =
+      Math.max(0, ...Array.from(positions.values())) + POSITION_SCRATCH_GAP;
+    for (const [index, entry] of moving.entries()) {
+      await updateMember.mutateAsync({
+        tierId,
+        memberId: entry.id,
+        position: parkingBase + index,
+      });
+    }
+    for (const entry of moving) {
+      await updateMember.mutateAsync({
+        tierId,
+        memberId: entry.id,
+        position: entry.target,
+      });
+    }
+  };
 
   const handleSave = async () => {
     setError("");
+    if (rows === null) return;
     const nextErrors: Record<string, string> = {};
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name.trim()) || name.trim().length > 40)
       nextErrors.name = t(($) => $.tiers.name_required);
-    if (!provider.trim())
-      nextErrors.provider = t(($) => $.tiers.provider_required);
-    if (!model.trim())
-      nextErrors.model = t(($) => $.tiers.model_required);
-    const slots = Number(providerSlots);
-    if (!Number.isInteger(slots) || slots < 1)
-      nextErrors.provider_slots = t(
-        ($) => $.tiers.provider_slots_invalid,
-      );
-    // M-446: clearing skips the numeric check (the input is disabled then).
     if (!clearQuality && quality.trim() !== "") {
       const q = Number(quality);
       if (!Number.isInteger(q) || q < 0 || q > 100)
@@ -450,38 +736,67 @@ function TierEditorDialog({
     }
     if (cost.trim() !== "" && !Number.isFinite(Number(cost)))
       nextErrors.cost = t(($) => $.tiers.cost_invalid);
+    const ctx = Number(ctxMax);
+    if (!Number.isInteger(ctx) || ctx < 1024 || ctx > 2000000)
+      nextErrors.ctx = t(($) => $.tiers.ctx_invalid);
+    const pct = Number(compactPct);
+    if (!Number.isInteger(pct) || pct < 1 || pct > 100)
+      nextErrors.compact = t(($) => $.tiers.compact_invalid);
+    if (rows.length === 0) nextErrors.members = t(($) => $.tiers.members_empty);
+    rows.forEach((row, index) => {
+      if (!row.provider.trim() || !row.model.trim())
+        nextErrors[`member-${row.key}`] = t(($) => $.tiers.member_required);
+      const rowSlots = Number(row.providerSlots);
+      if (!Number.isInteger(rowSlots) || rowSlots < 1)
+        nextErrors[`member-slots-${row.key}`] = t(
+          ($) => $.tiers.member_invalid_slots,
+        );
+      void index;
+    });
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    const input = {
+
+    const profile: ModelTierInput = {
       name: name.trim(),
-      runtime_id: runtimeId || "",
-      provider: provider.trim(),
-      model: model.trim(),
-      ...(thinkingLevel.trim()
-        ? { thinking_level: thinkingLevel.trim() }
-        : {}),
       ...(serviceTier.trim() ? { service_tier: serviceTier.trim() } : {}),
       ...(cost.trim() !== "" ? { cost: cost.trim() } : {}),
-      // M-446: checked clear sends an explicit null (unknown). Unchecked
-      // blank omits (keeps the stored value); only the checkbox clears.
+      // M-446: checked clear sends an explicit null (unknown). Unchecked blank
+      // omits (keeps the stored value); only the checkbox clears.
       ...(clearQuality && tier
         ? { quality: null }
         : quality.trim() !== ""
           ? { quality: Number(quality) }
           : {}),
-      provider_slots: Number(providerSlots),
       enabled,
       roles,
-      ...(isOwner ? { manual_only: manualOnly } : {}),
-      quota_kind: quotaKind,
+      // M-481: auto_pick replaces manual_only; the server keeps both in sync.
+      auto_pick: autoPick,
       is_free: isFree,
+      quota_kinds: quotaKinds,
+      ctx_max_tokens: ctx,
+      compact_at_pct: pct,
     };
+
     try {
       if (tier) {
-        await updateTier.mutateAsync({ tierId: tier.id, ...input });
+        await updateTier.mutateAsync({ tierId: tier.id, ...profile });
+        await reconcileMembers(tier.id, rows, membersQuery.data ?? []);
         toast.success(t(($) => $.tiers.updated_toast));
       } else {
-        await createTier.mutateAsync(input);
+        // The create endpoint still needs the profile's first model, and the
+        // server backfills member 0 from it; the rest are added below.
+        const first = rows[0]!;
+        const created = await createTier.mutateAsync({
+          ...profile,
+          provider: first.provider.trim(),
+          model: first.model.trim(),
+          runtime_id: first.runtimeId,
+          ...(first.thinkingLevel.trim()
+            ? { thinking_level: first.thinkingLevel.trim() }
+            : {}),
+          provider_slots: Number(first.providerSlots),
+        });
+        await reconcileMembers(created.id, rows.slice(1), [], 1);
         toast.success(t(($) => $.tiers.added_toast));
       }
       onSaved();
@@ -497,9 +812,27 @@ function TierEditorDialog({
     }
   };
 
+  const quotaOptions = [
+    { kind: "free_daily", label: t(($) => $.tiers.quota_free_daily) },
+    { kind: "free", label: t(($) => $.tiers.quota_free) },
+    { kind: "local", label: t(($) => $.tiers.quota_local) },
+    { kind: "quota_5_hours", label: t(($) => $.tiers.quota_5_hours) },
+    { kind: "quota_daily", label: t(($) => $.tiers.quota_daily) },
+    { kind: "quota_weekly", label: t(($) => $.tiers.quota_weekly) },
+    { kind: "quota_monthly", label: t(($) => $.tiers.quota_monthly) },
+  ];
+  const roleOptions = [
+    { role: "architect", label: t(($) => $.tiers.role_architect) },
+    { role: "management", label: t(($) => $.tiers.role_management) },
+    { role: "engineer", label: t(($) => $.tiers.role_engineer) },
+  ];
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent data-testid="tier-editor">
+      <DialogContent
+        data-testid="tier-editor"
+        className="grid max-h-[calc(100%-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-[960px]"
+      >
         <DialogHeader>
           <DialogTitle>
             {tier
@@ -507,278 +840,29 @@ function TierEditorDialog({
               : t(($) => $.tiers.add_title)}
           </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="tier-name">{t(($) => $.tiers.name_label)}</Label>
-            <Input
-              id="tier-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t(($) => $.tiers.name_placeholder)}
-            />
-            {fieldErrors.name && (
-              <p className="text-caption text-destructive">{fieldErrors.name}</p>
-            )}
-          </div>
+        <div
+          data-testid="tier-editor-body"
+          className="-mx-1 min-h-0 space-y-5 overflow-y-auto px-1 pb-1"
+        >
+          <p className="text-caption text-muted-foreground">
+            {t(($) => $.tiers.editor_description)}
+          </p>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="tier-runtime">
-              {t(($) => $.tiers.runtime_label)}
-            </Label>
-            <Select
-              items={[
-                { value: "__none", label: t(($) => $.tiers.runtime_none) },
-                ...onlineRuntimes.map((r) => ({
-                  value: r.id,
-                  label: `${r.name} · ${r.provider}`,
-                })),
-                ...runtimes
-                  .filter((r) => r.status !== "online")
-                  .map((r) => ({
-                    value: r.id,
-                    label: `${r.name} · ${t(($) => $.tiers.runtime_offline)}`,
-                  })),
-              ]}
-              value={runtimeId || "__none"}
-              onValueChange={(v) => {
-                if (!v) return;
-                const next = v === "__none" ? "" : v;
-                setRuntimeId(next);
-                const rt = runtimes.find((r) => r.id === next);
-                if (rt) setProvider(rt.provider);
-                setModel("");
-                setModelCustom(false);
-              }}
-            >
-              <SelectTrigger id="tier-runtime">
-                <SelectValue
-                  placeholder={t(($) => $.tiers.runtime_placeholder)}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none">
-                  {t(($) => $.tiers.runtime_none)}
-                </SelectItem>
-                {onlineRuntimes.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.name} · {r.provider}
-                  </SelectItem>
-                ))}
-                {runtimes
-                  .filter((r) => r.status !== "online")
-                  .map((r) => (
-                    <SelectItem key={r.id} value={r.id}>
-                      {r.name} · {t(($) => $.tiers.runtime_offline)}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="tier-provider">
-              {t(($) => $.tiers.provider_label)}
-            </Label>
-            <Input
-              id="tier-provider"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder={t(($) => $.tiers.provider_placeholder)}
-            />
-            {fieldErrors.provider && (
-              <p className="text-caption text-destructive">
-                {fieldErrors.provider}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="tier-model">{t(($) => $.tiers.model_label)}</Label>
-            {runtimeId === "" ? (
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-name">{t(($) => $.tiers.name_label)}</Label>
               <Input
-                id="tier-model"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={t(($) => $.tiers.model_placeholder)}
+                id="tier-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t(($) => $.tiers.name_placeholder)}
               />
-            ) : modelsQuery.isPending ? (
-              <p className="flex items-center gap-2 text-body text-muted-foreground">
-                <Loader2 aria-hidden="true" className="size-4 animate-spin" />
-                {t(($) => $.tiers.models_loading)}
-              </p>
-            ) : modelsQuery.isError || modelCustom ? (
-              <div className="space-y-1.5">
-                {modelsQuery.isError && !modelCustom && (
-                  <p className="text-caption text-muted-foreground">
-                    {t(($) => $.tiers.models_offline_note)}
-                  </p>
-                )}
-                <Input
-                  id="tier-model"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={t(($) => $.tiers.model_placeholder)}
-                />
-                {!modelCustom && modelsQuery.isError && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => modelsQuery.refetch()}
-                  >
-                    {t(($) => $.tiers.models_retry)}
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <Select
-                  items={[
-                    ...models.map((m) => ({
-                      value: m.id,
-                      label: m.label || m.id,
-                    })),
-                    {
-                      value: "__custom",
-                      label: t(($) => $.tiers.model_custom),
-                    },
-                  ]}
-                  value={model || "__custom"}
-                  onValueChange={(v) => {
-                    if (!v) return;
-                    if (v === "__custom") {
-                      setModelCustom(true);
-                      return;
-                    }
-                    setModel(v);
-                  }}
-                >
-                  <SelectTrigger id="tier-model">
-                    <SelectValue
-                      placeholder={t(($) => $.tiers.model_placeholder)}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.label || m.id}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value="__custom">
-                      {t(($) => $.tiers.model_custom)}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                {selectedRuntime && modelsQuery.data?.supported === false && (
-                  <p className="text-caption text-muted-foreground">
-                    {t(($) => $.tiers.models_unsupported_note)}
-                  </p>
-                )}
-              </div>
-            )}
-            {fieldErrors.model && (
-              <p className="text-caption text-destructive">
-                {fieldErrors.model}
-              </p>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="tier-thinking">
-                {t(($) => $.tiers.thinking_label)}
-              </Label>
-              {thinkingLevels.length > 0 ? (
-                <Select
-                  items={[
-                    {
-                      value: "__default",
-                      label: t(($) => $.tiers.runtime_default),
-                    },
-                    ...thinkingLevels.map((level) => ({
-                      value: level.value,
-                      label: level.label || level.value,
-                    })),
-                  ]}
-                  value={thinkingLevel || "__default"}
-                  onValueChange={(v) => {
-                    if (!v) return;
-                    setThinkingLevel(v === "__default" ? "" : v);
-                  }}
-                >
-                  <SelectTrigger id="tier-thinking">
-                    <SelectValue
-                      placeholder={t(($) => $.tiers.optional_placeholder)}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default">
-                      {t(($) => $.tiers.runtime_default)}
-                    </SelectItem>
-                    {thinkingLevels.map((level) => (
-                      <SelectItem key={level.value} value={level.value}>
-                        {level.label || level.value}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  id="tier-thinking"
-                  value={thinkingLevel}
-                  onChange={(e) => setThinkingLevel(e.target.value)}
-                  placeholder={t(($) => $.tiers.optional_placeholder)}
-                />
+              {fieldErrors.name && (
+                <p className="text-caption text-destructive">
+                  {fieldErrors.name}
+                </p>
               )}
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="tier-service">
-                {t(($) => $.tiers.service_label)}
-              </Label>
-              {serviceTiers.length > 0 ? (
-                <Select
-                  items={[
-                    {
-                      value: "__default",
-                      label: t(($) => $.tiers.runtime_default),
-                    },
-                    ...serviceTiers.map((tier) => ({
-                      value: tier.id,
-                      label: tier.name || tier.id,
-                    })),
-                  ]}
-                  value={serviceTier || "__default"}
-                  onValueChange={(v) => {
-                    if (!v) return;
-                    setServiceTier(v === "__default" ? "" : v);
-                  }}
-                >
-                  <SelectTrigger id="tier-service">
-                    <SelectValue
-                      placeholder={t(($) => $.tiers.optional_placeholder)}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default">
-                      {t(($) => $.tiers.runtime_default)}
-                    </SelectItem>
-                    {serviceTiers.map((tier) => (
-                      <SelectItem key={tier.id} value={tier.id}>
-                        {tier.name || tier.id}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  id="tier-service"
-                  value={serviceTier}
-                  onChange={(e) => setServiceTier(e.target.value)}
-                  placeholder={t(($) => $.tiers.optional_placeholder)}
-                />
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="tier-cost">{t(($) => $.tiers.cost_label)}</Label>
               <Input
@@ -827,108 +911,231 @@ function TierEditorDialog({
               )}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="tier-slots">{t(($) => $.tiers.slots_label)}</Label>
+              <Label htmlFor="tier-service">
+                {t(($) => $.tiers.service_label)}
+              </Label>
               <Input
-                id="tier-slots"
-                inputMode="numeric"
-                value={providerSlots}
-                onChange={(e) => setProviderSlots(e.target.value)}
+                id="tier-service"
+                value={serviceTier}
+                onChange={(e) => setServiceTier(e.target.value)}
+                placeholder={t(($) => $.tiers.optional_placeholder)}
               />
-              {fieldErrors.provider_slots && (
-                <p className="text-caption text-destructive">
-                  {fieldErrors.provider_slots}
-                </p>
-              )}
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label>{t(($) => $.tiers.roles_label)}</Label>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {roleOptions.map((entry) => (
+                  <label
+                    key={entry.role}
+                    htmlFor={`tier-role-${entry.role}`}
+                    className="flex items-center gap-1.5 text-sm"
+                  >
+                    <Checkbox
+                      id={`tier-role-${entry.role}`}
+                      checked={roles.includes(entry.role)}
+                      onCheckedChange={(checked) => {
+                        setRoles(
+                          checked === true
+                            ? [...roles, entry.role]
+                            : roles.filter((r) => r !== entry.role),
+                        );
+                      }}
+                    />
+                    {entry.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.tiers.roles_hint)}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-auto-pick">
+                {t(($) => $.tiers.auto_pick_label)}
+              </Label>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="tier-auto-pick"
+                  checked={autoPick}
+                  onCheckedChange={setAutoPick}
+                />
+                <span className="text-caption text-muted-foreground">
+                  {autoPick
+                    ? t(($) => $.tiers.auto_pick_badge)
+                    : t(($) => $.tiers.auto_pick_badge_manual)}
+                </span>
+              </div>
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.tiers.auto_pick_hint)}
+              </p>
+            </div>
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="tier-free">{t(($) => $.tiers.free_label)}</Label>
+                <div>
+                  <Switch
+                    id="tier-free"
+                    checked={isFree}
+                    onCheckedChange={setIsFree}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tier-enabled">
+                  {t(($) => $.tiers.enabled_label)}
+                </Label>
+                <div>
+                  <Switch
+                    id="tier-enabled"
+                    checked={enabled}
+                    onCheckedChange={setEnabled}
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <Label>{t(($) => $.tiers.roles_label)}</Label>
-            <p className="text-caption text-muted-foreground">
-              {t(($) => $.tiers.roles_hint)}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {(
-                [
-                  "architect",
-                  "leader",
-                  "reviewer",
-                  "orchestrator",
-                  "engineer",
-                  "planning",
-                ] as const
-              ).map((r) => (
-                <label key={r} className="flex items-center gap-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={roles.includes(r)}
-                    onChange={(e) => {
-                      setRoles(
-                        e.target.checked
-                          ? [...roles, r]
-                          : roles.filter((x) => x !== r),
+            <Label>{t(($) => $.tiers.quota_label)}</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {quotaOptions.map((entry) => (
+                <label
+                  key={entry.kind}
+                  htmlFor={`tier-quota-${entry.kind}`}
+                  className="flex items-center gap-1.5 text-sm"
+                >
+                  <Checkbox
+                    id={`tier-quota-${entry.kind}`}
+                    checked={quotaKinds.includes(entry.kind)}
+                    onCheckedChange={(checked) => {
+                      setQuotaKinds(
+                        checked === true
+                          ? [...quotaKinds, entry.kind]
+                          : quotaKinds.filter((k) => k !== entry.kind),
                       );
                     }}
                   />
-                  {r}
+                  {entry.label}
                 </label>
               ))}
             </div>
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.tiers.quota_helper)}
+            </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-1.5">
-              <Label htmlFor="tier-quota">
-                {t(($) => $.tiers.quota_label)}
+              <Label htmlFor="tier-ctx">{t(($) => $.tiers.ctx_label)}</Label>
+              <Input
+                id="tier-ctx"
+                inputMode="numeric"
+                value={ctxMax}
+                onChange={(e) => setCtxMax(e.target.value)}
+              />
+              {fieldErrors.ctx && (
+                <p className="text-caption text-destructive">
+                  {fieldErrors.ctx}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-compact">
+                {t(($) => $.tiers.compact_label)}
               </Label>
-              <select
-                id="tier-quota"
-                value={quotaKind}
-                onChange={(e) => setQuotaKind(e.target.value)}
-                className="w-full rounded-md border bg-background px-2 py-1 text-sm"
+              <Input
+                id="tier-compact"
+                inputMode="numeric"
+                value={compactPct}
+                onChange={(e) => setCompactPct(e.target.value)}
+              />
+              {fieldErrors.compact && (
+                <p className="text-caption text-destructive">
+                  {fieldErrors.compact}
+                </p>
+              )}
+              {compactTokens > 0 && (
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.tiers.compact_tokens_hint, {
+                    tokens: compactTokens.toLocaleString(),
+                  })}
+                </p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label>{t(($) => $.tiers.advisory_badge)}</Label>
+              <Badge
+                variant="outline"
+                data-testid="tier-context-advisory"
+                title={t(($) => $.tiers.advisory_hint)}
               >
-                {["daily", "monthly", "five_hour_weekly", "none"].map((q) => (
-                  <option key={q} value={q}>
-                    {q}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="tier-free">
-                {t(($) => $.tiers.free_label)}
-              </Label>
-              <Switch
-                id="tier-free"
-                checked={isFree}
-                onCheckedChange={setIsFree}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="tier-manual">
-                {t(($) => $.tiers.manual_label)}
-              </Label>
-              <Switch
-                id="tier-manual"
-                checked={manualOnly}
-                disabled={!isOwner}
-                title={
-                  isOwner ? undefined : t(($) => $.tiers.manual_hint)
-                }
-                onCheckedChange={setManualOnly}
-              />
+                {t(($) => $.tiers.advisory_badge)}
+              </Badge>
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.tiers.advisory_hint)}
+              </p>
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-4">
-            <Label htmlFor="tier-enabled">
-              {t(($) => $.tiers.enabled_label)}
-            </Label>
-            <Switch
-              id="tier-enabled"
-              checked={enabled}
-              onCheckedChange={setEnabled}
-            />
+          <div className="space-y-2" data-testid="tier-members-editor">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label>{t(($) => $.tiers.members_label)}</Label>
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.tiers.members_helper)}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setRows((prev) => [...(prev ?? []), blankDraftMember()])
+                }
+                disabled={rows === null}
+              >
+                {t(($) => $.tiers.add_member)}
+              </Button>
+            </div>
+            {rows === null ? (
+              <p className="flex items-center gap-2 px-2 py-3 text-body text-muted-foreground">
+                <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+                {t(($) => $.tiers.loading)}
+              </p>
+            ) : rows.length === 0 ? (
+              <p className="rounded-md border border-dashed px-3 py-4 text-body text-muted-foreground">
+                {t(($) => $.tiers.members_empty)}
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {rows.map((row, index) => (
+                  <MemberRowEditor
+                    key={row.key}
+                    row={row}
+                    index={index}
+                    total={rows.length}
+                    runtimes={runtimes}
+                    pending={pending}
+                    error={fieldErrors[`member-${row.key}`]}
+                    slotsError={fieldErrors[`member-slots-${row.key}`]}
+                    onChange={(patch) => updateRow(row.key, patch)}
+                    onMove={(direction) => moveRow(index, direction)}
+                    onRemove={() =>
+                      setRows((prev) =>
+                        (prev ?? []).filter((r) => r.key !== row.key),
+                      )
+                    }
+                  />
+                ))}
+              </ul>
+            )}
+            {fieldErrors.members && (
+              <p className="text-caption text-destructive">
+                {fieldErrors.members}
+              </p>
+            )}
           </div>
 
           {error && <p className="text-body text-destructive">{error}</p>}
@@ -937,7 +1144,10 @@ function TierEditorDialog({
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             {t(($) => $.tiers.cancel)}
           </Button>
-          <Button onClick={() => void handleSave()} disabled={pending}>
+          <Button
+            onClick={() => void handleSave()}
+            disabled={pending || rows === null}
+          >
             {pending
               ? t(($) => $.tiers.saving)
               : t(($) => $.tiers.save_action)}
@@ -945,5 +1155,230 @@ function TierEditorDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One mapping line. The model list comes from the runtime catalog (discovery
+ * stays optional: the field falls back to free text when discovery is offline
+ * or the model is custom), while the harness is free text because a profile
+ * spans several harnesses.
+ */
+function MemberRowEditor({
+  row,
+  index,
+  total,
+  runtimes,
+  pending,
+  error,
+  slotsError,
+  onChange,
+  onMove,
+  onRemove,
+}: {
+  row: DraftMember;
+  index: number;
+  total: number;
+  runtimes: Array<{ id: string; name: string; provider: string; status: string }>;
+  pending: boolean;
+  error?: string;
+  slotsError?: string;
+  onChange: (patch: Partial<DraftMember>) => void;
+  onMove: (direction: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useT("settings");
+  const [modelCustom, setModelCustom] = useState(false);
+  const modelsQuery = useQuery({
+    ...runtimeModelsOptions(row.runtimeId || null),
+    enabled: row.runtimeId !== "",
+  });
+  const models = useMemo(
+    () => modelsQuery.data?.models ?? [],
+    [modelsQuery.data],
+  );
+
+  return (
+    <li
+      data-testid={`tier-member-row-${index}`}
+      className="space-y-1 rounded-md border bg-surface-raised/40 px-2 py-2"
+    >
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-[auto_1fr_1fr_7rem_9rem_5rem_auto] md:items-start">
+        <span
+          aria-hidden
+          className="flex h-8 items-center text-caption text-muted-foreground md:w-6"
+          title={t(($) => $.tiers.member_position, { position: index + 1 })}
+        >
+          {index + 1}
+        </span>
+        <div className="space-y-1">
+          <Label htmlFor={`member-provider-${row.key}`} className="text-caption">
+            {t(($) => $.tiers.member_provider_label)}
+          </Label>
+          <Input
+            id={`member-provider-${row.key}`}
+            value={row.provider}
+            onChange={(e) => onChange({ provider: e.target.value })}
+            placeholder={t(($) => $.tiers.member_provider_placeholder)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`member-model-${row.key}`} className="text-caption">
+            {t(($) => $.tiers.member_model_label)}
+          </Label>
+          {row.runtimeId !== "" && !modelCustom && !modelsQuery.isError ? (
+            <Select
+              items={[
+                ...models.map((m) => ({
+                  value: m.id,
+                  label: m.label || m.id,
+                })),
+                { value: "__custom", label: t(($) => $.tiers.model_custom) },
+              ]}
+              value={row.model || "__custom"}
+              onValueChange={(value) => {
+                if (!value) return;
+                if (value === "__custom") {
+                  setModelCustom(true);
+                  return;
+                }
+                onChange({ model: value });
+              }}
+            >
+              <SelectTrigger id={`member-model-${row.key}`}>
+                <SelectValue
+                  placeholder={t(($) => $.tiers.model_placeholder)}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {models.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.label || m.id}
+                  </SelectItem>
+                ))}
+                <SelectItem value="__custom">
+                  {t(($) => $.tiers.model_custom)}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              id={`member-model-${row.key}`}
+              value={row.model}
+              onChange={(e) => onChange({ model: e.target.value })}
+              placeholder={t(($) => $.tiers.member_model_placeholder)}
+            />
+          )}
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`member-thinking-${row.key}`} className="text-caption">
+            {t(($) => $.tiers.member_thinking_label)}
+          </Label>
+          <Input
+            id={`member-thinking-${row.key}`}
+            value={row.thinkingLevel}
+            onChange={(e) => onChange({ thinkingLevel: e.target.value })}
+            placeholder={t(($) => $.tiers.member_thinking_placeholder)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`member-runtime-${row.key}`} className="text-caption">
+            {t(($) => $.tiers.member_runtime_label)}
+          </Label>
+          <Select
+            items={[
+              { value: "__none", label: t(($) => $.tiers.member_runtime_none) },
+              ...runtimes.map((runtime) => ({
+                value: runtime.id,
+                label:
+                  runtime.status === "online"
+                    ? `${runtime.name} · ${runtime.provider}`
+                    : `${runtime.name} · ${t(($) => $.tiers.member_runtime_offline)}`,
+              })),
+            ]}
+            value={row.runtimeId || "__none"}
+            onValueChange={(value) => {
+              if (!value) return;
+              const next = value === "__none" ? "" : value;
+              const runtime = runtimes.find((r) => r.id === next);
+              setModelCustom(false);
+              onChange({
+                runtimeId: next,
+                ...(runtime && !row.provider.trim()
+                  ? { provider: runtime.provider }
+                  : {}),
+              });
+            }}
+          >
+            <SelectTrigger id={`member-runtime-${row.key}`}>
+              <SelectValue
+                placeholder={t(($) => $.tiers.runtime_placeholder)}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none">
+                {t(($) => $.tiers.member_runtime_none)}
+              </SelectItem>
+              {runtimes.map((runtime) => (
+                <SelectItem key={runtime.id} value={runtime.id}>
+                  {runtime.name} ·{" "}
+                  {runtime.status === "online"
+                    ? runtime.provider
+                    : t(($) => $.tiers.member_runtime_offline)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`member-slots-${row.key}`} className="text-caption">
+            {t(($) => $.tiers.member_slots_label)}
+          </Label>
+          <Input
+            id={`member-slots-${row.key}`}
+            inputMode="numeric"
+            value={row.providerSlots}
+            onChange={(e) => onChange({ providerSlots: e.target.value })}
+          />
+        </div>
+        <div className="flex items-start gap-1 pt-5">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={index === 0 || pending}
+            onClick={() => onMove(-1)}
+            aria-label={t(($) => $.tiers.member_move_up, {
+              name: `${row.provider} ${row.model}`.trim(),
+            })}
+          >
+            ↑
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={index === total - 1 || pending}
+            onClick={() => onMove(1)}
+            aria-label={t(($) => $.tiers.member_move_down, {
+              name: `${row.provider} ${row.model}`.trim(),
+            })}
+          >
+            ↓
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={pending}
+            onClick={onRemove}
+            aria-label={t(($) => $.tiers.remove_member)}
+          >
+            ×
+          </Button>
+        </div>
+      </div>
+      {error && <p className="text-caption text-destructive">{error}</p>}
+      {slotsError && (
+        <p className="text-caption text-destructive">{slotsError}</p>
+      )}
+    </li>
   );
 }

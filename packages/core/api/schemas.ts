@@ -116,6 +116,7 @@ import type {
   SkillVersion,
   SkillVersionSummary,
   ModelTier,
+  ModelTierMember,
   Squad,
   TimelineEntry,
   User,
@@ -4797,8 +4798,14 @@ export const ModelTierSchema = z.object({
   // roles as unconfigured (legacy).
   roles: z.array(z.string()).default([]),
   manual_only: z.boolean().default(false),
+  // M-481: the profile's scheduling choices. Older backends omit them, so the
+  // defaults keep the list rendering; `auto_pick` mirrors `NOT manual_only`.
+  auto_pick: z.boolean().optional(),
   quota_kind: z.string().default("none"),
+  quota_kinds: z.array(z.string()).default([]),
   is_free: z.boolean().default(true),
+  ctx_max_tokens: z.number().int().default(280000),
+  compact_at_pct: z.number().int().default(75),
   // M-352: set only while a provider-refusal cooldown keeps the tier out of
   // the resolver's idx order.
   cooldown_until: z.string().optional(),
@@ -4807,6 +4814,36 @@ export const ModelTierSchema = z.object({
 });
 
 export const ModelTierListSchema = z.array(ModelTierSchema);
+
+// Tier members (M-481). `runtime_id` and `cooldown_until` omit when unset.
+export const ModelTierMemberSchema = z.object({
+  id: z.string().default(""),
+  tier_id: z.string().default(""),
+  position: z.number().int().default(0),
+  provider: z.string().default(""),
+  model: z.string().default(""),
+  thinking_level: z.string().optional(),
+  runtime_id: z.string().optional(),
+  provider_slots: z.number().int().default(1),
+  cooldown_until: z.string().optional(),
+  enabled: z.boolean().default(true),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
+export const ModelTierMemberListSchema = z.array(ModelTierMemberSchema);
+
+export const EMPTY_MODEL_TIER_MEMBER: ModelTierMember = {
+  id: "",
+  tier_id: "",
+  position: 0,
+  provider: "",
+  model: "",
+  provider_slots: 1,
+  enabled: true,
+  created_at: "",
+  updated_at: "",
+};
 
 export const AgentPresetSchema = z.object({
   id: z.string().default(""),
@@ -4831,8 +4868,12 @@ export const EMPTY_MODEL_TIER: ModelTier = {
   enabled: true,
   roles: [],
   manual_only: false,
+  auto_pick: true,
   quota_kind: "none",
+  quota_kinds: [],
   is_free: true,
+  ctx_max_tokens: 280000,
+  compact_at_pct: 75,
   created_at: "",
   updated_at: "",
 };
