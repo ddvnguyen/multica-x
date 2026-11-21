@@ -748,6 +748,20 @@ else
   fi
 fi
 
+# pnpm can replace the published sidebar-right package during profile repair.
+# Reapply the lane's checked-out fork on every deploy tick; restart the web only
+# when package contents changed. Backup and rollback details live in lane-lib.
+step "sidebar-right-profile"
+if ensure_sidebar_right_profile; then
+  if [ "${SIDEBAR_RIGHT_PROFILE_CHANGED:-0}" = 1 ]; then
+    systemctl --user restart "$DSH_Z_WEB_UNIT"
+    wait_http "$(resolve_lane_web_url)/" 90 '' || fail "lane web did not come back after sidebar-right repair"
+    assert_health "$SHA" || fail "health check failed after sidebar-right repair"
+  fi
+else
+  fail "could not restore the sidebar-right fork in the web profile"
+fi
+
 step "cleanup"
 rm -rf "$ART"
 prune_releases
