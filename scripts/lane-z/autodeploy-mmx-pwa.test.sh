@@ -40,18 +40,20 @@ printf 'old' > "$LANE_ROOT/mmx-pwa/releases/oldrel/apps/web/server.js"
 : > "$LANE_ROOT/mmx-pwa/releases/oldrel/.complete"
 ln -s "$LANE_ROOT/mmx-pwa/releases/oldrel" "$LANE_ROOT/mmx-pwa/current"
 
-# Fake CI artifact tree: standalone/apps/web/{server.js,public/sw.js,
-# .next/server/app/manifest.webmanifest.body}. The server chunk embeds BOTH
-# brands' literals (as real builds do), proving the gate reads the manifest
-# route output and not a raw string.
+# Fake CI artifact tree: apps/web/.next/standalone/apps/web/{server.js,
+# public/sw.js,.next/server/app/manifest.webmanifest.body} — the nested
+# layout `gh run download` preserves from CI's multi-path upload. The server
+# chunk embeds BOTH brands' literals (as real builds do), proving the gate
+# reads the manifest route output and not a raw string.
 ART="$SANDBOX/art"
-mkdir -p "$ART/mmx-pwa/standalone/apps/web/public" "$ART/mmx-pwa/standalone/apps/web/.next/server/app" "$ART/mmx-pwa/standalone/apps/web/.next/server/chunks"
+NESTED="$ART/mmx-pwa/apps/web/.next/standalone"
+mkdir -p "$NESTED/apps/web/public" "$NESTED/apps/web/.next/server/app" "$NESTED/apps/web/.next/server/chunks"
 printf '{"sha":"%s","version":"test"}\n' "$SHA" > "$ART/mmx-pwa/release.json"
-printf 'server\n' > "$ART/mmx-pwa/standalone/apps/web/server.js"
-printf 'const VERSION = "%s";\n' "$SHA" > "$ART/mmx-pwa/standalone/apps/web/public/sw.js"
-printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$ART/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
-printf '/?mmx-install multica-web both literals\n' > "$ART/mmx-pwa/standalone/apps/web/.next/server/chunks/both.js"
-export ART
+printf 'server\n' > "$NESTED/apps/web/server.js"
+printf 'const VERSION = "%s";\n' "$SHA" > "$NESTED/apps/web/public/sw.js"
+printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$NESTED/apps/web/.next/server/app/manifest.webmanifest.body"
+printf '/?mmx-install multica-web both literals\n' > "$NESTED/apps/web/.next/server/chunks/both.js"
+export ART NESTED
 
 BIN_DIR="$SANDBOX/bin"
 mkdir -p "$BIN_DIR"
@@ -106,6 +108,7 @@ eval "$(sed -n '/^converge_mmx_pwa() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autode
 eval "$(sed -n '/^converge_restore_pwa() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
 eval "$(sed -n '/^promote_staged() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
 eval "$(sed -n '/^write_mmx_pwa_env() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
+eval "$(sed -n '/^mmx_standalone_root() {/,/^}/p' "$REPO_ROOT/scripts/lane-z/autodeploy.sh")"
 export LANE_RUNTIME_ENV="$SANDBOX/runtime.env"
 export LANE_HOME="$SANDBOX/home"
 printf 'MULTICA_Z_DEV_CODE=123456\n' > "$LANE_RUNTIME_ENV"
@@ -115,28 +118,28 @@ verify_mmx_artifact() {
   local got
   got="$(jq -r '.sha // empty' "$ART/mmx-pwa/release.json" 2>/dev/null || true)"
   [ "$got" = "$SHA" ] || return 1
-  [ -f "$ART/mmx-pwa/standalone/apps/web/server.js" ] || return 1
-  grep -q '"id":"/?mmx-install"' "$ART/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null || return 1
-  grep -q "$SHA" "$ART/mmx-pwa/standalone/apps/web/public/sw.js" 2>/dev/null || return 1
+  [ -f "$NESTED/apps/web/server.js" ] || return 1
+  grep -q '"id":"/?mmx-install"' "$NESTED/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null || return 1
+  grep -q "$SHA" "$NESTED/apps/web/public/sw.js" 2>/dev/null || return 1
 }
 verify_mmx_artifact
 
 # Wrong brand is rejected: the manifest body carries the default id even
 # though server chunks still contain both literals (as real builds do).
-printf '{"id":"/","name":"Multica"}\n' > "$ART/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
+printf '{"id":"/","name":"Multica"}\n' > "$NESTED/apps/web/.next/server/app/manifest.webmanifest.body"
 if verify_mmx_artifact; then echo "non-MMX artifact must fail verification" >&2; exit 1; fi
-printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$ART/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
+printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$NESTED/apps/web/.next/server/app/manifest.webmanifest.body"
 
 # Wrong sw.js stamp is rejected.
-printf 'const VERSION = "dev";\n' > "$ART/mmx-pwa/standalone/apps/web/public/sw.js"
+printf 'const VERSION = "dev";\n' > "$NESTED/apps/web/public/sw.js"
 if verify_mmx_artifact; then echo "wrong sw.js stamp must fail verification" >&2; exit 1; fi
-printf 'const VERSION = "%s";\n' "$SHA" > "$ART/mmx-pwa/standalone/apps/web/public/sw.js"
+printf 'const VERSION = "%s";\n' "$SHA" > "$NESTED/apps/web/public/sw.js"
 verify_mmx_artifact
 # --- install step (mirrors the shipped install-mmx-pwa body) ---
 run_install_mmx_pwa() {
   MMX_REL="$LANE_ROOT/mmx-pwa/releases/$SHA"
   rm -rf "$MMX_REL"; mkdir -p "$MMX_REL"
-  cp -a "$ART/mmx-pwa/standalone/." "$MMX_REL/"
+  cp -a "$NESTED/." "$MMX_REL/"
   [ -f "$MMX_REL/apps/web/server.js" ] || { echo "installed mmx-pwa release has no apps/web/server.js" >&2; return 1; }
   grep -q '"id":"/?mmx-install"' "$MMX_REL/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null || { echo "installed mmx-pwa release lost its MMX brand" >&2; return 1; }
   : > "$MMX_REL/.complete"
@@ -260,11 +263,11 @@ printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$LANE_ROOT/mmx-pwa/releases/$O
 ln -s "$LANE_ROOT/mmx-pwa/releases/$OLD_SHA" "$LANE_ROOT/mmx-pwa/current"
 printf 'PRIOR_MARKER_CONTENT\n' > "$LANE_ROOT/mmx-pwa/previous-release"
 printf 'PRIOR_ENV_CONTENT\n' > "$LANE_ROOT/mmx-pwa/env"
-mkdir -p "$SANDBOX/newart/mmx-pwa/standalone/apps/web/public" "$SANDBOX/newart/mmx-pwa/standalone/apps/web/.next/server/app"
+mkdir -p "$SANDBOX/newart/mmx-pwa/apps/web/.next/standalone/apps/web/public" "$SANDBOX/newart/mmx-pwa/apps/web/.next/standalone/apps/web/.next/server/app"
 printf '{"sha":"%s"}\n' "$NEW_SHA" > "$SANDBOX/newart/mmx-pwa/release.json"
-printf 'server\n' > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/server.js"
-printf 'const VERSION = "%s";\n' "$NEW_SHA" > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/public/sw.js"
-printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$SANDBOX/newart/mmx-pwa/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
+printf 'server\n' > "$SANDBOX/newart/mmx-pwa/apps/web/.next/standalone/apps/web/server.js"
+printf 'const VERSION = "%s";\n' "$NEW_SHA" > "$SANDBOX/newart/mmx-pwa/apps/web/.next/standalone/apps/web/public/sw.js"
+printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$SANDBOX/newart/mmx-pwa/apps/web/.next/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
 # Failure injection: gh serves the new artifact; systemctl fails on restart;
 # curl answers health from CURRENT (so post-restart health for NEW fails
 # while the restored OLD tree passes).

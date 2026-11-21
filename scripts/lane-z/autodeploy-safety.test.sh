@@ -72,10 +72,12 @@ case "$1 $2" in
         printf '{"sha":"%s","version":"test","builtAt":"test"}\n' "$sha" > "$dest/release.json"
         ;;
       mmx-pwa-*)
-        mkdir -p "$dest/standalone/apps/web/public" "$dest/standalone/apps/web/.next/server/app"
-        printf 'server\n' > "$dest/standalone/apps/web/server.js"
-        printf 'const VERSION = "%s";\n' "$sha" > "$dest/standalone/apps/web/public/sw.js"
-        printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$dest/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
+        # Mirror the real CI multi-path layout: apps/web/.next/standalone,
+        # not a flat standalone/ dir — the resolver must find it.
+        mkdir -p "$dest/apps/web/.next/standalone/apps/web/public" "$dest/apps/web/.next/standalone/apps/web/.next/server/app"
+        printf 'server\n' > "$dest/apps/web/.next/standalone/apps/web/server.js"
+        printf 'const VERSION = "%s";\n' "$sha" > "$dest/apps/web/.next/standalone/apps/web/public/sw.js"
+        printf '{"id":"/?mmx-install","name":"MMX"}\n' > "$dest/apps/web/.next/standalone/apps/web/.next/server/app/manifest.webmanifest.body"
         printf '{"sha":"%s","version":"test"}\n' "$sha" > "$dest/release.json"
         ;;
     esac
