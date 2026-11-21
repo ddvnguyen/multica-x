@@ -4,17 +4,20 @@
 
 ## Reviewed mapping
 
-The mapping comes from the M-468 inventory proposal accepted by Claude Architect. The script checks each exact profile ID and name against the target workspace, checks the canonical position agent and role, and resolves exactly one tier from the profile's runtime, model, thinking level, and role. Any missing or ambiguous match aborts before writes.
+The mapping is the lane-z revision approved by Claude Architect after the initial snapshot showed that M-423 tiers were curated independently from legacy profile runtime/model/thinking values. The script checks each listed profile ID and name against the target workspace, checks the canonical position agent and role, and resolves the explicitly named tier in that workspace with the required role. A missing/ambiguous profile or tier, or a tier without that role, aborts before writes.
 
-| Legacy profile | Canonical position | Role |
-| --- | --- | --- |
-| Architect; Claude Architect; Opus Architect; Codex \| Architect | Architect | architect |
-| Lead; Lead (Muse Spark) | Lead | management |
-| Orchestrator; Orchestrator (Backup) | Orchestrator | management |
-| Software Engineer; [Go Free] Engineer | Software Engineer | engineer |
-| [Free] Codebuddy Engineer; Codebuddy Senior Engineer | [Free] Codebuddy Engineer | engineer |
+| Legacy profile | Canonical position | Role | Tier | Expected fidelity |
+| --- | --- | --- | --- | --- |
+| Architect | Architect | architect | `arch-glm-flash` | exact |
+| Claude Architect | Architect | architect | `arch-sonnet-5-5` | exact |
+| Opus Architect | Architect | architect | `arch-opus-5-5` | exact |
+| Orchestrator | Orchestrator | management | `orch-beam` | model and thinking match; runtime differs |
+| [Go Free] Engineer | Software Engineer | engineer | `eng-beam` | model and runtime match; thinking differs |
+| [Free] Codebuddy Engineer | [Free] Codebuddy Engineer | engineer | `eng-cb-deepseek` | model matches; runtime and thinking differ |
 
-The other 14 profiles from the inventory are not listed and are left unchanged. `management` reflects M-481's persisted role vocabulary for Lead and Orchestrator.
+The snapshot reports each tier's ordered live member runtime/model/thinking values and enabled state, plus computed fidelity across enabled members: `exact` when any enabled member matches all three legacy values, `model-only` when no enabled member is exact but at least one has the same model, and `differs` when no enabled member has the same model. A tier without an enabled member fails preflight.
+
+The unmapped profiles `Codex | Architect`, `Lead`, `Lead (Muse Spark)`, `Software Engineer`, `Codebuddy Senior Engineer`, and `Orchestrator (Backup)` are left unchanged. The five canonical position agents still receive the full set of tiers for their role, including Lead's `management` role; `management` is M-481's persisted role vocabulary.
 
 ## Snapshot, apply, rollback
 
