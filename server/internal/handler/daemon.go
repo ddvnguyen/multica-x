@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -6919,10 +6920,41 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// dshSessionQueryParam is the dsh web app's session deep-link parameter
+// (M-132 E1). The Multica dsh plugin reads it once at boot and selects that
+// Session; dsh's own web client has no session routing of its own (checked at
+// dsh a6f2f66c: no pushState, hashchange or query read in packages/client), so
+// on a host without the plugin the parameter is inert and the link opens the
+// app at its base URL, which is the pre-E1 behaviour.
+const dshSessionQueryParam = "dsh_session"
+
+// dshSessionURL builds one run's deep link: the operator's dsh web base URL
+// with that run's session id. Empty when the session id is empty. A base that
+// is not an absolute URL is returned unchanged — the operator's existing link
+// keeps working (no deep link) rather than turning into a broken href.
+func dshSessionURL(base, sessionID string) string {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimRight(base, "/")
+	}
+	query := u.Query()
+	query.Set(dshSessionQueryParam, id)
+	u.RawQuery = query.Encode()
+	return u.String()
+}
+
 // hydrateDshSessionURLs stamps dsh_session_url onto the run rows whose runtime
 // is a dsh runtime with a pinned session (M-102). One batched provider lookup
 // covers the whole list — the same N+1-avoidance rule the other hydrators
 // follow. Display metadata: a lookup failure leaves every row without a link.
+//
+// The value names the run's own session (M-132 E1), not just the app: two runs
+// with distinct sessions get distinct links, so "Open session" lands on the
+// trajectory of the run the user clicked instead of the app's last selection.
 func (h *Handler) hydrateDshSessionURLs(ctx context.Context, rows []db.AgentTaskQueue, resp []AgentTaskResponse) {
 	if h.dshWebURL == "" || len(resp) == 0 {
 		return
@@ -6946,10 +6978,21 @@ func (h *Handler) hydrateDshSessionURLs(ctx context.Context, rows []db.AgentTask
 			dshRuntime[uuidToString(rt.ID)] = true
 		}
 	}
-	base := strings.TrimRight(h.dshWebURL, "/")
+	stampDshSessionURLs(rows, resp, dshRuntime, h.dshWebURL)
+}
+
+// stampDshSessionURLs writes the per-run deep link onto every row whose runtime
+// is a dsh runtime and whose run recorded a session. Pure: the caller owns the
+// one provider lookup and the config gate, so the rule itself is unit-testable
+// without a database.
+func stampDshSessionURLs(rows []db.AgentTaskQueue, resp []AgentTaskResponse, dshRuntime map[string]bool, base string) {
+	base = strings.TrimRight(base, "/")
 	for i, t := range rows {
-		if t.SessionID.Valid && strings.TrimSpace(t.SessionID.String) != "" && dshRuntime[uuidToString(t.RuntimeID)] {
-			resp[i].DshSessionURL = base
+		if i >= len(resp) || !dshRuntime[uuidToString(t.RuntimeID)] {
+			continue
+		}
+		if link := dshSessionURL(base, t.SessionID.String); link != "" {
+			resp[i].DshSessionURL = link
 		}
 	}
 }

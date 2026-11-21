@@ -14,10 +14,11 @@ interface DshSessionButtonProps {
 }
 
 /**
- * Compact icon-button that opens the dsh web app for this run's session in a
- * new tab. Rendered ONLY when the server set `dsh_session_url` (dsh-runtime
- * tasks whose transcript is owned by the dsh session store); every other
- * runtime omits the field and the button renders nothing.
+ * Compact icon-button that opens this run's own session in the dsh web app in a
+ * new tab (M-132 E1). The server's URL carries that session, so two runs never
+ * share a destination. Rendered ONLY when the server set `dsh_session_url`
+ * (dsh-runtime tasks whose transcript is owned by the dsh session store); every
+ * other runtime omits the field and the button renders nothing.
  */
 export function DshSessionButton({ task, title, className }: DshSessionButtonProps) {
   if (!task.dsh_session_url) return null;

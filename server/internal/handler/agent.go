@@ -527,9 +527,12 @@ type AgentTaskResponse struct {
 	// and continue in a fresh one. Empty until the daemon reports a session.
 	SessionID string `json:"session_id,omitempty"`
 	// DshSessionURL is set only on dsh-runtime tasks whose transcript is owned
-	// by the dsh session store (M-102): it links to the dsh web app whose
-	// sidebar lists the run's session. Empty everywhere else — the run row's
-	// "Open session" action renders on this field alone.
+	// by the dsh session store (M-102): the dsh web app base URL carrying this
+	// run's own session as `?dsh_session=<id>` (M-132 E1). The Multica dsh
+	// plugin consumes that parameter at boot and selects the session, so the
+	// link lands on the clicked run; a host without the plugin opens the app's
+	// base URL as before. Empty everywhere else — the run row's "Open session"
+	// action renders on this field alone.
 	DshSessionURL string `json:"dsh_session_url,omitempty"`
 	PriorWorkDir  string `json:"prior_work_dir,omitempty"` // work_dir from a previous task on same issue
 	// ModelOverride snapshots the agent's persistent OpenClaw model override at

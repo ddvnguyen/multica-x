@@ -1,5 +1,6 @@
 import { createElement as bundledCreateElement } from "react";
-import type { DshClientContext, DshSidebarRightTabs } from "../dsh";
+import type { DshClientContext, DshSidebarRightTabs, DshUiWorkspace } from "../dsh";
+import { followDshSessionDeepLink } from "./dsh-deep-link";
 import { startIsland } from "./island";
 import type { IslandRoute } from "./navigation";
 import { FAMILY_ROOTS } from "./navigation";
@@ -156,6 +157,20 @@ function face(ctx: DshClientContext, name: string): unknown {
 }
 
 /**
+ * Drop a consumed `dsh_session` from the address bar.
+ *
+ * The parameter is this plugin's one-shot instruction, not page state: leaving
+ * it would re-apply the navigation on every reload, after the reader may have
+ * moved on. Everything else in the URL is preserved.
+ */
+function consumeSessionParam(search: string): void {
+  if (typeof location === "undefined" || typeof history === "undefined") return;
+  const url = new URL(location.href);
+  url.search = search;
+  history.replaceState(history.state, "", url);
+}
+
+/**
  * Hand this module the shell's `createElement`.
  *
  * The bundle wrapper calls it with `require("react")` from the shell's module
@@ -183,6 +198,21 @@ export function apply(ctx: DshClientContext): void {
       ? SIDE_PREVIEW_KIND
       : null,
   });
+
+  // "Open session" on a Multica run row lands here (M-132 E1). The server's
+  // link names the run's own Session; dsh reads no URL for itself, so this is
+  // the page's one chance to select it. Tolerant like every other face read: a
+  // host without ui-workspace keeps the app exactly as the link found it.
+  const uiWorkspace = (face(ctx, "uiWorkspace") ?? null) as DshUiWorkspace | null;
+  const deepLinkDone = followDshSessionDeepLink({
+    search: typeof location === "undefined" ? "" : location.search,
+    sessions,
+    navigation: uiWorkspace,
+    replaceSearch: consumeSessionParam,
+  });
+  if (deepLinkDone !== null) {
+    ctx.effect?.(() => deepLinkDone, "multica: dsh_session deep link");
+  }
 
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
   // panel. Register every MMX panel id inside `ctx.effect` — the disposer is
