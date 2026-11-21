@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -659,4 +662,129 @@ func TestEnqueueMentionWithTier_ExplicitStampsAndMarks(t *testing.T) {
 		t.Errorf("task tier_parked = true, want false (capacity free)")
 	}
 	_ = pool
+}
+
+func TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, rtA, rtB, tierA, tierB, wsID := tierTestSetupWithWorkspace(t, 1, "")
+	svc := newTierTestService(pool, qq)
+	tierAID := util.MustParseUUID(tierA)
+	workspaceID := util.MustParseUUID(wsID)
+	if _, err := pool.Exec(ctx, `UPDATE model_tier SET manual_only = TRUE WHERE id = $1`, tierAID); err != nil {
+		t.Fatalf("mark preset tier manual-only: %v", err)
+	}
+	var presetID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_preset (workspace_id, name, agent_id, tier_id) VALUES ($1, 'owner preset', $2, $3) RETURNING id`, workspaceID, agent.ID, tierAID).Scan(&presetID); err != nil {
+		t.Fatalf("create preset: %v", err)
+	}
+	issueID := util.MustParseUUID(newTierTestIssue(t, pool, agent))
+	issue, err := qq.GetIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	blockers := make([]pgtype.UUID, 0, 100)
+	for i := 0; i < 100; i++ {
+		runtimeID := util.MustParseUUID(rtB)
+		if i == 0 {
+			runtimeID = util.MustParseUUID(rtA)
+		}
+		var blockerID pgtype.UUID
+		if err := pool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1, $2, 'running', 1) RETURNING id`, agent.ID, runtimeID).Scan(&blockerID); err != nil {
+			t.Fatalf("insert capacity blocker %d: %v", i, err)
+		}
+		blockers = append(blockers, blockerID)
+	}
+	var task db.AgentTaskQueue
+	t.Cleanup(func() {
+		for _, id := range blockers {
+			_, _ = qq.CancelAgentTask(context.Background(), id)
+		}
+		_, _ = qq.CancelAgentTask(context.Background(), task.ID)
+	})
+
+	override := TierTriggerOverride{TierID: tierAID, PresetID: presetID, PresetAgentID: agent.ID, Requester: agent.OwnerID}
+	task, err = svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+	if err != nil {
+		t.Fatalf("enqueue parked preset: %v", err)
+	}
+	if task.RuntimeID.Valid || !task.TierParked {
+		t.Fatalf("task runtime=%v parked=%v, want runtime-less parked task", task.RuntimeID, task.TierParked)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(task.Context, &metadata); err != nil {
+		t.Fatalf("decode task context: %v", err)
+	}
+	if metadata["requested_preset_id"] != util.UUIDToString(presetID) || metadata["requested_tier_id"] != tierA {
+		t.Fatalf("requested metadata = %#v, want preset %s and tier %s", metadata, util.UUIDToString(presetID), tierA)
+	}
+	if metadata["preset_fallback_reason"] != "tier_no_capacity" {
+		t.Fatalf("fallback reason = %#v, want tier_no_capacity", metadata["preset_fallback_reason"])
+	}
+	if _, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override); !errors.Is(err, ErrDuplicatePendingTask) {
+		t.Fatalf("duplicate preset enqueue error = %v, want ErrDuplicatePendingTask", err)
+	}
+
+	if _, err := qq.CancelAgentTask(ctx, blockers[1]); err != nil {
+		t.Fatalf("free fallback tier capacity: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, workspaceID, agent.OwnerID); err != nil {
+		t.Fatalf("revoke owner role: %v", err)
+	}
+	if stamped := svc.RestampRuntimelessTierTasks(ctx); len(stamped) != 0 {
+		t.Fatalf("restamp bypassed lost owner authorization: got %d tasks", len(stamped))
+	}
+	if _, err := pool.Exec(ctx, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, workspaceID, agent.OwnerID); err != nil {
+		t.Fatalf("restore owner role: %v", err)
+	}
+	type claimResult struct {
+		task db.AgentTaskQueue
+		err  error
+	}
+	start := make(chan struct{})
+	stampResult := make(chan []db.AgentTaskQueue, 1)
+	claim := make(chan claimResult, 1)
+	go func() {
+		<-start
+		stampResult <- svc.RestampRuntimelessTierTasks(ctx)
+	}()
+	go func() {
+		<-start
+		claimed, err := qq.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
+			AgentID: agent.ID, RuntimeID: util.MustParseUUID(rtB), PrepareLeaseSecs: 60, RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+		})
+		claim <- claimResult{task: claimed, err: err}
+	}()
+	close(start)
+	stamped := <-stampResult
+	claimOutcome := <-claim
+	if len(stamped) != 1 || stamped[0].ID != task.ID {
+		t.Fatalf("restamp = %#v, want queued preset task", stamped)
+	}
+	if claimOutcome.err != nil && !errors.Is(claimOutcome.err, pgx.ErrNoRows) {
+		t.Fatalf("concurrent claim error = %v", claimOutcome.err)
+	}
+	var actualTier, actualRuntime pgtype.UUID
+	var status string
+	var parked bool
+	var contextJSON []byte
+	if err := pool.QueryRow(ctx, `SELECT tier_id, runtime_id, status, tier_parked, context FROM agent_task_queue WHERE id = $1`, task.ID).Scan(&actualTier, &actualRuntime, &status, &parked, &contextJSON); err != nil {
+		t.Fatalf("read task after restamp/claim race: %v", err)
+	}
+	if util.UUIDToString(actualTier) != tierB || util.UUIDToString(actualRuntime) != rtB || parked {
+		t.Fatalf("actual fallback tier/runtime/parked = %s/%s/%v, want %s/%s/false", util.UUIDToString(actualTier), util.UUIDToString(actualRuntime), parked, tierB, rtB)
+	}
+	if status != "queued" && status != "dispatched" {
+		t.Fatalf("status after restamp/claim race = %s, want queued or dispatched", status)
+	}
+	if claimOutcome.err == nil && (claimOutcome.task.ID != task.ID || claimOutcome.task.Status != "dispatched") {
+		t.Fatalf("claimed task = %s/%s, want %s/dispatched", util.UUIDToString(claimOutcome.task.ID), claimOutcome.task.Status, util.UUIDToString(task.ID))
+	}
+	var restampedMetadata map[string]any
+	if err := json.Unmarshal(contextJSON, &restampedMetadata); err != nil {
+		t.Fatalf("decode restamped context: %v", err)
+	}
+	if restampedMetadata["preset_fallback_reason"] != "tier_no_capacity" {
+		t.Fatalf("restamped fallback reason = %#v, want tier_no_capacity", restampedMetadata["preset_fallback_reason"])
+	}
 }

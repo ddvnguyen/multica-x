@@ -2772,8 +2772,8 @@ WITH enqueue_agent AS MATERIALIZED (
           OR $25::text IS NOT NULL
           OR $26::text IS NOT NULL
           OR $27::text IS NOT NULL
-        THEN $35::uuid
-        ELSE COALESCE(a.runtime_id, $35::uuid)
+        THEN $38::uuid
+        ELSE COALESCE(a.runtime_id, $38::uuid)
     END AS runtime_id
     FROM agent a
     WHERE a.id = $1
@@ -2783,8 +2783,8 @@ WITH enqueue_agent AS MATERIALIZED (
           OR $25::text IS NOT NULL
           OR $26::text IS NOT NULL
           OR $27::text IS NOT NULL
-        THEN $35::uuid
-        ELSE COALESCE(a.runtime_id, $35::uuid)
+        THEN $38::uuid
+        ELSE COALESCE(a.runtime_id, $38::uuid)
       END)
     FOR KEY SHARE OF a
 )
@@ -2820,6 +2820,15 @@ SELECT
         WHEN $14::bigint IS NOT NULL
         THEN jsonb_build_object('workflow_handoff_revision', $14::bigint)
         ELSE '{}'::jsonb
+    END || CASE
+        WHEN request_meta.requested_preset_id IS NOT NULL
+        THEN jsonb_build_object('requested_preset_id', request_meta.requested_preset_id,
+                                'requested_tier_id', request_meta.requested_tier_id)
+        ELSE '{}'::jsonb
+    END || CASE
+        WHEN request_meta.preset_fallback_reason <> ''
+        THEN jsonb_build_object('preset_fallback_reason', request_meta.preset_fallback_reason)
+        ELSE '{}'::jsonb
     END, '{}'::jsonb),
     $15,
     $16,
@@ -2844,6 +2853,9 @@ SELECT
     $3,
     COALESCE($34::uuid, gen_random_uuid())
 FROM enqueue_agent
+CROSS JOIN (SELECT $35::uuid AS requested_preset_id,
+                   $36::uuid AS requested_tier_id,
+                   COALESCE($37::text, '') AS preset_fallback_reason) AS request_meta
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id, tier_parked, tier_explicit, tier_quality_fallback, tier_quality_unverified
 `
 
@@ -2882,6 +2894,9 @@ type CreateAgentTaskParams struct {
 	TierQualityUnverified   pgtype.Bool        `json:"tier_quality_unverified"`
 	WorkflowStep            pgtype.Text        `json:"workflow_step"`
 	ID                      pgtype.UUID        `json:"id"`
+	RequestedPresetID       pgtype.UUID        `json:"requested_preset_id"`
+	RequestedTierID         pgtype.UUID        `json:"requested_tier_id"`
+	PresetFallbackReason    pgtype.Text        `json:"preset_fallback_reason"`
 	RuntimeID               pgtype.UUID        `json:"runtime_id"`
 }
 
@@ -2945,6 +2960,9 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.TierQualityUnverified,
 		arg.WorkflowStep,
 		arg.ID,
+		arg.RequestedPresetID,
+		arg.RequestedTierID,
+		arg.PresetFallbackReason,
 		arg.RuntimeID,
 	)
 	var i AgentTaskQueue
@@ -3579,7 +3597,7 @@ FROM agent_task_queue p
 LEFT JOIN agent a ON a.id = p.agent_id
 WHERE p.id = $1
   AND lock_task_owner_rows(p.agent_id, p.issue_id, COALESCE(a.runtime_id, p.runtime_id))
-ON CONFLICT (issue_id, agent_id, (COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)), (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
+ON CONFLICT (issue_id, agent_id, (COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)), (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id, tier_parked, tier_explicit, tier_quality_fallback, tier_quality_unverified
@@ -5504,7 +5522,7 @@ const hasActiveTaskForIssueAndAgent = `-- name: HasActiveTaskForIssueAndAgent :o
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
   -- M-359: same tier slot as the pending check.
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5538,7 +5556,7 @@ const hasActiveTaskForIssueAndAgentInThread = `-- name: HasActiveTaskForIssueAnd
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
   -- M-359: same tier slot as the pending check (thread-scoped).
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5609,7 +5627,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
   -- rows, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger only rows stamped with that tier.
   -- COALESCE keeps the zero-arg call path on the exact legacy key.
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5654,7 +5672,7 @@ const hasPendingTaskForIssueAndAgentExcludingTriggerComment = `-- name: HasPendi
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1
   AND agent_id = $2
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5695,7 +5713,7 @@ const hasPendingTaskForIssueAndAgentExcludingTriggerCommentInThread = `-- name: 
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1
   AND agent_id = $2
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -5738,7 +5756,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   -- M-359: tier-scoped pending slot — a plain trigger only sees tier-less
   -- rows, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger only rows stamped with that tier.
   -- COALESCE keeps the zero-arg call path on the exact legacy key.
-  AND COALESCE(CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND COALESCE((context->>'requested_tier_id')::uuid, CASE WHEN tier_explicit THEN tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
   AND (
     status IN ('queued', 'dispatched')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
@@ -7398,15 +7416,15 @@ func (q *Queries) ListRunningTasksForRuntime(ctx context.Context, runtimeID pgty
 }
 
 const listRuntimelessTierTasks = `-- name: ListRuntimelessTierTasks :many
-SELECT DISTINCT ON (atq.agent_id, COALESCE(CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit, atq.tier_quality_fallback, atq.tier_quality_unverified
+SELECT DISTINCT ON (atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit, atq.tier_quality_fallback, atq.tier_quality_unverified
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
   -- M-359: use_tiers=false agents can hold a parked EXPLICIT row (the pick
   -- overrides the single runtime for that run); sweep those too.
-  AND (a.use_tiers OR atq.tier_explicit)
-ORDER BY atq.agent_id, COALESCE(CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
+  AND (a.use_tiers OR atq.tier_explicit OR atq.context->>'requested_preset_id' IS NOT NULL)
+ORDER BY atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `
 
 // M-351: runtime-less queued rows a tier enqueue left behind when no tier had
@@ -7504,14 +7522,14 @@ func (q *Queries) ListRuntimelessTierTasks(ctx context.Context) ([]AgentTaskQueu
 }
 
 const listRuntimelessTierTasksForWorkspace = `-- name: ListRuntimelessTierTasksForWorkspace :many
-SELECT DISTINCT ON (atq.agent_id, COALESCE(CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit, atq.tier_quality_fallback, atq.tier_quality_unverified
+SELECT DISTINCT ON (atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid)) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, atq.account_id, atq.model_override, atq.thinking_level_override, atq.service_tier_override, atq.tier_id, atq.tier_parked, atq.tier_explicit, atq.tier_quality_fallback, atq.tier_quality_unverified
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND (a.use_tiers OR atq.tier_explicit)
+  AND (a.use_tiers OR atq.tier_explicit OR atq.context->>'requested_preset_id' IS NOT NULL)
   AND a.workspace_id = $1
-ORDER BY atq.agent_id, COALESCE(CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
+ORDER BY atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `
 
 // M-351: workspace-scoped variant of the restamp sweep, run on
@@ -8728,7 +8746,7 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $13
       AND t.agent_id = $14
       -- M-359: never fold across tier slots — a plain trigger folds into a tier-less row, an explicit ` + "`" + `@agent#tier` + "`" + ` trigger into its own tier row. Cross-tier siblings are separate runs.
-      AND COALESCE(CASE WHEN t.tier_explicit THEN t.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($15::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+      AND COALESCE((t.context->>'requested_tier_id')::uuid, CASE WHEN t.tier_explicit THEN t.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($15::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       -- An unclaimed generic turn can become a leader turn. Never overwrite
       -- a worker obligation or a different squad's leader context.
       AND (
@@ -10058,7 +10076,7 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $2
       AND t.agent_id = $3
       -- M-359: same tier-slot rule as the merge — planned ids ride the comment\u2019s own tier run, never a sibling tier\u2019s.
-      AND COALESCE(CASE WHEN t.tier_explicit THEN t.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($4::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+      AND COALESCE((t.context->>'requested_tier_id')::uuid, CASE WHEN t.tier_explicit THEN t.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid) = COALESCE($4::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
       AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
       AND (
@@ -10247,8 +10265,13 @@ SET runtime_id = $1,
     tier_id = $5,
     tier_quality_fallback = $6,
     tier_quality_unverified = $7,
+    context = CASE
+        WHEN COALESCE($8::text, '') = ''
+        THEN COALESCE(context, '{}'::jsonb) - 'preset_fallback_reason'
+        ELSE COALESCE(context, '{}'::jsonb) || jsonb_build_object('preset_fallback_reason', $8::text)
+    END,
     tier_parked = FALSE
-WHERE id = $8
+WHERE id = $9
   AND status = 'queued'
   AND tier_parked
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id, tier_parked, tier_explicit, tier_quality_fallback, tier_quality_unverified
@@ -10262,6 +10285,7 @@ type RestampQueuedTierTaskParams struct {
 	TierID                pgtype.UUID `json:"tier_id"`
 	TierQualityFallback   bool        `json:"tier_quality_fallback"`
 	TierQualityUnverified bool        `json:"tier_quality_unverified"`
+	PresetFallbackReason  string      `json:"preset_fallback_reason"`
 	ID                    pgtype.UUID `json:"id"`
 }
 
@@ -10278,6 +10302,7 @@ func (q *Queries) RestampQueuedTierTask(ctx context.Context, arg RestampQueuedTi
 		arg.TierID,
 		arg.TierQualityFallback,
 		arg.TierQualityUnverified,
+		arg.PresetFallbackReason,
 		arg.ID,
 	)
 	var i AgentTaskQueue

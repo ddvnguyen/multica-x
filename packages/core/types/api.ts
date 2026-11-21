@@ -84,6 +84,8 @@ export interface UpdateIssueRequest {
    *  (tier_unavailable → 409, full/offline → queued parked, omitted = auto).
    *  Control field — strip from optimistic cache patches. */
   tier_id?: string;
+  /** Server-resolved workspace preset; preserves its requested tier on fallback. */
+  preset_id?: string;
   /** M-359 one-off runtime+model override for the run this write starts.
    *  Control fields — strip from optimistic cache patches. */
   runtime_id?: string;

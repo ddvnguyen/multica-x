@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Lock, UserMinus } from "@multica/ui/icons";
 import type { Agent, IssueAssigneeType, UpdateIssueRequest } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
+import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { isAgentRuntimeBound } from "@multica/core/agents";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
@@ -246,14 +247,24 @@ function useAssigneeChoices(filter: string) {
       .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
       .map((agent) => agent.id),
   );
+  const { data: presets = [] } = useQuery({
+    queryKey: ["agent-presets", wsId],
+    queryFn: () => api.listAgentPresets(wsId),
+    enabled: wsId !== "",
+  });
+  const filteredPresets = presets.filter((preset) =>
+    preset.name.toLowerCase().includes(query) || preset.agent_name.toLowerCase().includes(query),
+  );
 
   return {
     userId: user?.id ?? null,
     memberRole,
+    agents,
     filteredMembers,
     filteredAgents,
     filteredSquads,
     runnableAgentIds,
+    filteredPresets,
   };
 }
 
@@ -276,7 +287,7 @@ function AssigneeOptions({
 }) {
   const [tierAgent, setTierAgent] = useState<{ id: string; name: string } | null>(null);
   const { t } = useT("issues");
-  const { userId, memberRole, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds } =
+  const { userId, memberRole, agents, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds, filteredPresets } =
     choices;
 
   const isSelected = (type: string, id: string) =>
@@ -334,6 +345,34 @@ function AssigneeOptions({
       )}
 
       {/* Agents */}
+      {filteredPresets.length > 0 && (
+        <PickerSection label={t(($) => $.pickers.assignee.agents_group)}>
+          {filteredPresets.map((preset) => {
+            const agent = agents.find((candidate) => candidate.id === preset.agent_id && !candidate.archived_at);
+            const decision = agent ? canAssignAgentToIssue(agent, {
+              userId,
+              role: memberRole === "owner" || memberRole === "admin" || memberRole === "member" ? memberRole : null,
+            }) : null;
+            const allowed = Boolean(agent && decision?.allowed && preset.tier_enabled);
+            return (
+              <PickerItem
+                key={`preset-${preset.id}`}
+                selected={assigneeType === "agent" && assigneeId === preset.agent_id}
+                disabled={!allowed}
+                tooltip={!preset.tier_enabled ? undefined : decision?.message}
+                onClick={() => {
+                  if (!allowed) return;
+                  onPick({ assignee_type: "agent", assignee_id: preset.agent_id, preset_id: preset.id });
+                }}
+              >
+                <ActorAvatar actorType="agent" actorId={preset.agent_id} size="sm" showStatusDot />
+                <span className="truncate">{preset.name}</span>
+              </PickerItem>
+            );
+          })}
+        </PickerSection>
+      )}
+
       {filteredAgents.length > 0 && (
         <PickerSection label={t(($) => $.pickers.assignee.agents_group)}>
           {filteredAgents.map((a) => {

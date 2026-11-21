@@ -744,7 +744,7 @@ func isDuplicatePendingTaskErr(err error) bool {
 		return false
 	}
 	switch pgErr.ConstraintName {
-	case "idx_one_pending_task_per_issue_agent", "idx_one_pending_task_per_issue_agent_v2", "idx_one_pending_task_per_issue_agent_thread", "idx_one_pending_task_per_issue_agent_tier":
+	case "idx_one_pending_task_per_issue_agent", "idx_one_pending_task_per_issue_agent_v2", "idx_one_pending_task_per_issue_agent_thread", "idx_one_pending_task_per_issue_agent_tier", "idx_one_pending_task_per_issue_agent_requested_tier":
 		return true
 	default:
 		return false
@@ -1157,14 +1157,16 @@ func taskErrorType(reason string) string {
 // resolver. Requester is the triggering member's user id (invalid = unknown);
 // manual-only tiers fail closed for an unknown requester.
 type TierTriggerOverride struct {
-	TierID    pgtype.UUID
-	RuntimeID pgtype.UUID
-	Model     string
-	Requester pgtype.UUID
+	TierID        pgtype.UUID
+	PresetID      pgtype.UUID
+	PresetAgentID pgtype.UUID
+	RuntimeID     pgtype.UUID
+	Model         string
+	Requester     pgtype.UUID
 }
 
 func (o TierTriggerOverride) IsZero() bool {
-	return !o.TierID.Valid && !o.RuntimeID.Valid && o.Model == ""
+	return !o.TierID.Valid && !o.PresetID.Valid && !o.RuntimeID.Valid && o.Model == ""
 }
 
 // tierExplicitFlag marks the M-359 run record: the stamp came from a
@@ -1206,9 +1208,39 @@ func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent
 		return tierResolution{runtimeID: override.RuntimeID, modelOverride: modelText, hasCapacity: true}, pgtype.Bool{}, false, nil
 	}
 	if override.TierID.Valid {
+		if override.PresetID.Valid && (!override.PresetAgentID.Valid || util.UUIDToString(override.PresetAgentID) != util.UUIDToString(agent.ID)) {
+			return none, pgtype.Bool{}, false, errUnknownTier
+		}
 		r, rerr := s.resolveExplicitTierByIDAs(ctx, agent, override.TierID, override.Requester)
 		if rerr == nil {
 			return r, pgtype.Bool{}, false, nil
+		}
+		if override.PresetID.Valid {
+			// Manual-only authorization is never bypassed by preset fallback.
+			if !errors.Is(rerr, errUnknownTier) && !errors.Is(rerr, errNoExplicitTierCapacity) {
+				return none, pgtype.Bool{}, false, rerr
+			}
+			if tier, terr := s.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{ID: override.TierID, WorkspaceID: agent.WorkspaceID}); terr == nil {
+				if tier.Enabled && tier.ManualOnly && !s.isWorkspaceOwner(ctx, agent.WorkspaceID, override.Requester) {
+					return none, pgtype.Bool{}, false, errUnknownTier
+				}
+			} else if !errors.Is(terr, pgx.ErrNoRows) {
+				return none, pgtype.Bool{}, false, terr
+			}
+			if !agent.UseTiers {
+				none.presetFallbackReason = presetTierFallbackReason(rerr)
+				return none, pgtype.Bool{Bool: true, Valid: true}, true, nil
+			}
+			fallback, ferr := s.resolveAgentTierForIssue(ctx, agent, issueID, properties)
+			if ferr == nil {
+				fallback.presetFallbackReason = presetTierFallbackReason(rerr)
+				return fallback, pgtype.Bool{}, false, nil
+			}
+			if errors.Is(ferr, errNoTierCapacity) {
+				none.presetFallbackReason = presetTierFallbackReason(rerr)
+				return none, pgtype.Bool{Bool: true, Valid: true}, true, nil
+			}
+			return none, pgtype.Bool{}, false, ferr
 		}
 		if errors.Is(rerr, errNoExplicitTierCapacity) {
 			// Parked with the tier stamped: queued, visible, no fallback.
@@ -1241,6 +1273,13 @@ func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent
 		return none, pgtype.Bool{Bool: true, Valid: true}, true, nil
 	}
 	return none, pgtype.Bool{}, false, rerr
+}
+
+func presetTierFallbackReason(err error) string {
+	if errors.Is(err, errNoExplicitTierCapacity) {
+		return "tier_no_capacity"
+	}
+	return "tier_unavailable"
 }
 
 // runtimeGuardedByManualOnlyTier reports whether any enabled manual-only tier
@@ -1482,6 +1521,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 		TierExplicit:          tierExplicit,
 		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
 		TierQualityUnverified: pgtype.Bool{Bool: tierRes.qualityUnverified, Valid: tierRes.qualityUnverified},
+		RequestedPresetID:     override.PresetID,
+		RequestedTierID:       override.TierID,
+		PresetFallbackReason:  pgtype.Text{String: tierRes.presetFallbackReason, Valid: tierRes.presetFallbackReason != ""},
 		IssueID:               issue.ID,
 		Priority:              priorityToInt(issue.Priority),
 		TriggerCommentID:      triggerCommentID,
@@ -5019,7 +5061,33 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 	// idx-ranked fallback. A use_tiers=false agent with a parked explicit
 	// row keeps it too (plain rows never park).
 	var res tierResolution
-	if task.TierExplicit && task.TierID.Valid {
+	var presetRequest struct {
+		PresetID string `json:"requested_preset_id"`
+		TierID   string `json:"requested_tier_id"`
+	}
+	if len(task.Context) > 0 {
+		_ = json.Unmarshal(task.Context, &presetRequest)
+	}
+	if presetRequest.PresetID != "" && presetRequest.TierID != "" {
+		presetID, perr := util.ParseUUID(presetRequest.PresetID)
+		tierID, terr := util.ParseUUID(presetRequest.TierID)
+		if perr != nil || terr != nil {
+			return task, false
+		}
+		var issueProps []byte
+		if task.IssueID.Valid {
+			if issue, ierr := s.Queries.GetIssue(ctx, task.IssueID); ierr == nil {
+				issueProps = issue.Properties
+			}
+		}
+		var queuedOnly bool
+		res, _, queuedOnly, err = s.applyTierResolutionWithOverride(ctx, agent, task.IssueID, issueProps, TierTriggerOverride{
+			TierID: tierID, PresetID: presetID, PresetAgentID: agent.ID, Requester: task.OriginatorUserID,
+		})
+		if queuedOnly {
+			return task, false
+		}
+	} else if task.TierExplicit && task.TierID.Valid {
 		res, err = s.resolveExplicitTierByIDAs(ctx, agent, task.TierID, task.OriginatorUserID)
 	} else {
 		if !agent.UseTiers {
@@ -5052,6 +5120,7 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 		TierID:                res.tierID,
 		TierQualityFallback:   res.qualityFallback,
 		TierQualityUnverified: res.qualityUnverified,
+		PresetFallbackReason:  res.presetFallbackReason,
 	})
 	if serr != nil {
 		slog.Warn("tier restamp write failed: task stays queued",

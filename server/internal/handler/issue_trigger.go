@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -205,7 +206,29 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 // assign write (tier_id, or runtime_id+model one-off). Empty = zero
 // override, plain assign. Unknown tier or runtime → typed error the caller
 // surfaces as a structured block (no silent fallback).
-func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID pgtype.UUID, tierID, runtimeID, model string, requester pgtype.UUID) (service.TierTriggerOverride, error) {
+func (h *Handler) resolveIssueRunTierOverride(ctx context.Context, workspaceID pgtype.UUID, tierID, presetID, runtimeID, model string, requester pgtype.UUID) (service.TierTriggerOverride, error) {
+	if presetID != "" {
+		presetUUID, err := util.ParseUUID(presetID)
+		if err != nil || tierID != "" || runtimeID != "" || model != "" {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		var enabled bool
+		if err := h.DB.QueryRow(ctx, `SELECT settings @> '{"agent_presets_enabled":true}'::jsonb FROM workspace WHERE id = $1`, workspaceID).Scan(&enabled); err != nil || !enabled {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		var agentID, presetTierID pgtype.UUID
+		if err := h.DB.QueryRow(ctx, `SELECT agent_id, tier_id FROM agent_preset WHERE id = $1 AND workspace_id = $2`, presetUUID, workspaceID).Scan(&agentID, &presetTierID); err != nil {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		tier, err := h.Queries.GetModelTierInWorkspace(ctx, db.GetModelTierInWorkspaceParams{ID: presetTierID, WorkspaceID: workspaceID})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		if err == nil && tier.Enabled && tier.ManualOnly && !h.isWorkspaceOwnerMember(ctx, workspaceID, requester) {
+			return service.TierTriggerOverride{}, service.ErrExplicitTierUnavailable
+		}
+		return service.TierTriggerOverride{TierID: presetTierID, PresetID: presetUUID, PresetAgentID: agentID, Requester: requester}, nil
+	}
 	if tierID == "" && runtimeID == "" && model == "" {
 		return service.TierTriggerOverride{}, nil
 	}

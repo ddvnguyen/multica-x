@@ -81,6 +81,7 @@ var routeParamsOutsideProjects = map[string]outsideProjectParam{
 	"decisions/{kind}":                {why: "a workspace decision category", value: func(*privateRouteFixture) string { return "status" }},
 	"revisions/{revision}":            {why: "a workspace plan revision number"},
 	"tiers/{tierId}":                  {why: "a workspace model tier"},
+	"presets/{presetId}":              {why: "a workspace agent preset"},
 	"members/{memberId}":             {why: "a workspace membership"},
 	"invitations/{id}":               {why: "the caller's own workspace invitation"},
 	"invitations/{invitationId}":     {why: "a workspace invitation"},

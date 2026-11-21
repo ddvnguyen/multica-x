@@ -4808,6 +4808,18 @@ export const ModelTierSchema = z.object({
 
 export const ModelTierListSchema = z.array(ModelTierSchema);
 
+export const AgentPresetSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  name: z.string().default(""),
+  agent_id: z.string().default(""),
+  agent_name: z.string().default(""),
+  tier_id: z.string().default(""),
+  tier_name: z.string().default(""),
+  tier_enabled: z.boolean().default(false),
+});
+export const AgentPresetListSchema = z.array(AgentPresetSchema);
+
 export const EMPTY_MODEL_TIER: ModelTier = {
   id: "",
   workspace_id: "",
