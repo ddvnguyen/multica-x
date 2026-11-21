@@ -25,6 +25,9 @@ export const SIDE_PREVIEW_TAB_ID = "@multica/dsh-plugin";
 /** The chip's text, captured once per tab by dsh. */
 export const SIDE_PREVIEW_TITLES = { title: "Preview" } as const;
 
+/** Last target survives dsh restoring the tab shell without its navigation params. */
+export const SIDE_PREVIEW_LAST_TARGET_KEY = "multica.dsh.side-preview-target";
+
 export type SidePreviewView = "issue" | "agent" | "runtime" | "skill" | "project";
 
 export interface SidePreviewTargetRef {
@@ -52,6 +55,27 @@ export function sidePreviewTargetFromParams(params: unknown): SidePreviewTargetR
   const issueId = cleanId(record.issueId);
   if (issueId !== null) return { view: "issue", id: issueId };
   return null;
+}
+
+/** Store the most recently opened target for dsh's parameter-less tab restore. */
+export function rememberSidePreviewTarget(target: SidePreviewTargetRef): void {
+  try {
+    globalThis.localStorage?.setItem(SIDE_PREVIEW_LAST_TARGET_KEY, JSON.stringify(target));
+  } catch {
+    // Storage can be unavailable in restricted browser contexts; live tab params still work.
+  }
+}
+
+/** Prefer the current tab params; use the saved target only for an empty restore. */
+export function sidePreviewTargetFromParamsOrLast(params: unknown): SidePreviewTargetRef | null {
+  const target = sidePreviewTargetFromParams(params);
+  if (target !== null) return target;
+  try {
+    const saved = globalThis.localStorage?.getItem(SIDE_PREVIEW_LAST_TARGET_KEY);
+    return saved === null || saved === undefined ? null : sidePreviewTargetFromParams(JSON.parse(saved));
+  } catch {
+    return null;
+  }
 }
 
 /** The issue a tab is showing (compat helper), read out of dsh's navigation params. */
@@ -95,6 +119,7 @@ async function openTarget(
   }
   if (folder === null) throw new Error("this view names no project folder");
   await prepareHostedColumn(input, folder);
+  rememberSidePreviewTarget(target);
   openTab.call(sidebarRight, SIDE_PREVIEW_KIND, {
     params: { view: target.view, id: target.id },
     revealIfOpened: true,

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   SIDE_PREVIEW_KIND,
+  SIDE_PREVIEW_LAST_TARGET_KEY,
   canOpenSidePreview,
   createSidePreviewOpener,
   createSidePreviewTargetOpener,
@@ -15,6 +16,10 @@ import type {
 } from "../src/client/shell-link";
 
 type TabOptions = Parameters<NonNullable<SidebarRightLike["openTab"]>>[1];
+
+afterEach(() => {
+  localStorage.removeItem(SIDE_PREVIEW_LAST_TARGET_KEY);
+});
 
 interface Opened {
   kind: string;
@@ -136,6 +141,9 @@ describe("createSidePreviewOpener", () => {
 
     await open("iss-7");
 
+    expect(localStorage.getItem(SIDE_PREVIEW_LAST_TARGET_KEY)).toBe(
+      JSON.stringify({ view: "issue", id: "iss-7" }),
+    );
     expect(workspaceCreates).toEqual(["/work/acme"]);
     expect(sessionCreates).toHaveLength(1);
     expect(names).toEqual(["s-new"]);
