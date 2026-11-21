@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { AgentSideStack, IssueSideStack, RuntimeSideStack, SkillSideStack, useCanonicalIssue, useWorkspaceId } from "../fork";
+import { AgentSideStack, IssueSideStack, ProjectSideStack, RuntimeSideStack, SkillSideStack, useCanonicalIssue, useWorkspaceId } from "../fork";
 import {
   getSidePreviewTargets,
   subscribeSidePreview,
@@ -59,7 +59,9 @@ function SidePreviewContent({ target }: { target: SidePreviewTargetRef }) {
   if (target.view === "skill") {
     return <SkillSideStack skillId={target.id} />;
   }
-  // G6: remaining views wired progressively.
+  if (target.view === "project") {
+    return <ProjectSideStack projectId={target.id} />;
+  }
   return <SidePreviewPending target={target} />;
 }
 

@@ -69,6 +69,7 @@ export { IssueSideStack } from "@multica/views/issues/components";
 export { AgentSideStack } from "@multica/views/agents";
 export { RuntimeSideStack } from "@multica/views/runtimes";
 export { SkillSideStack } from "@multica/views/skills";
+export { ProjectSideStack } from "@multica/views/projects/components";
 export { AgentsPage, AgentDetailPage } from "@multica/views/agents";
 // The agent page's extension point, so a host-supplied section (the MOCT
 // Memory tab) rides the fork's own layout instead of a second design.
