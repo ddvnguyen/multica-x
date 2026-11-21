@@ -62,7 +62,7 @@ export function WebTabStrip() {
   return (
     <div
       data-slot="web-tab-strip"
-      className="flex h-7 shrink-0 items-stretch gap-0.5 border-b border-surface-border bg-app-shell pr-2"
+      className="flex h-7 shrink-0 items-stretch gap-0.5 bg-app-shell pr-2"
     >
       <TabHistoryButtons />
       <div className="min-w-0 flex-1">
