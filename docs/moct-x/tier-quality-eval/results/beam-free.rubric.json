@@ -1,0 +1,245 @@
+{
+  "V1": {
+    "task": "V1",
+    "score": 1,
+    "model_score": 1,
+    "hits": 3,
+    "expected": 3,
+    "reason": "All three rubric items hit: exact condition named, rebind/stale-tier blast radius, and a concrete test with scenario plus assertion.",
+    "items": [
+      {
+        "check": "identifies tier_id IS NOT NULL carve-out as fence bypass",
+        "hit": true,
+        "evidence": "\"`atq.tier_id IS NOT NULL` alone is treated as proof the row is claimable... It bypasses `a.runtime_id = atq.runtime_id`\""
+      },
+      {
+        "check": "concrete blast radius: wrong runtime after rebind, or disabled/deleted tier",
+        "hit": true,
+        "evidence": "\"stale rows stamped under the old runtime can run under the new one; if the tier is disabled/deleted, the non-null stamp still keeps the row eligible\""
+      },
+      {
+        "check": "specific test with scenario and assertion",
+        "hit": true,
+        "evidence": "\"rebind the agent to runtime B... call ListQueuedClaimCandidatesByRuntime(B) and assert the row is not returned\""
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "V2": {
+    "task": "V2",
+    "score": 1,
+    "model_score": 1,
+    "hits": 3,
+    "expected": 3,
+    "reason": "All three rubric criteria met: membership-only rejected, typed-position arming path identified, #42 collision risk named, exact assertion given.",
+    "items": [
+      {
+        "check": "membership alone insufficient; arming path named",
+        "hit": true,
+        "evidence": "\"Membership alone does not decide paste safety… picker opens only when trigger's position equals recorded typed position; read input/transaction handler + suggestion filter.\""
+      },
+      {
+        "check": "concrete remaining risk named",
+        "hit": true,
+        "evidence": "issue-reference collision: \"typing an issue reference like #42 can open the picker mid-reference; no context guard\""
+      },
+      {
+        "check": "additional test with exact assertion",
+        "hit": true,
+        "evidence": "paste(\"see #fast\"); type(\" #bar\"); expect(picker(editor, hashKey)).toEqual({ active: true, query: \"bar\" })"
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "V3": {
+    "task": "V3",
+    "score": 1,
+    "model_score": 1,
+    "hits": 3,
+    "expected": 3,
+    "reason": "All three requirements met: down ordering with parked rows violating restored CHECK, both losses named with statements, ordered pre-step fix and seeded up→down→up test.",
+    "items": [
+      {
+        "check": "Down re-adds old CHECK before dropping tier_parked",
+        "hit": true,
+        "evidence": "Constraint re-added (NOT VALID) then 'DROP COLUMN tier_parked removes the only marker'; rows 'violating the now-restored constraint'"
+      },
+      {
+        "check": "Names irreversible loss and location",
+        "hit": true,
+        "evidence": "'parked intent is unrecoverable'; tier link 'permanently lost' via DROP COLUMN tier_id and DROP TABLE agent_tier"
+      },
+      {
+        "check": "Ordered fix plus non-empty round-trip test",
+        "hit": true,
+        "evidence": "Fix resolves parked rows 'while marker still exists' first; test seeds parked+active rows, runs up→down→up, asserts zero violations"
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "V4": {
+    "task": "V4",
+    "score": 1,
+    "model_score": 1,
+    "hits": 3,
+    "expected": 3,
+    "reason": "All three rubric criteria met: TOCTOU window, claim-time fix with rationale against existing claim, deterministic channel-sync test with named seam.",
+    "items": [
+      {
+        "check": "read-then-act window",
+        "hit": true,
+        "evidence": "Two concurrent enqueues both run CountActiveTasksByRuntime before either stamps; both see running < slots; both stamp same runtime."
+      },
+      {
+        "check": "fix location + why claim alone insufficient",
+        "hit": true,
+        "evidence": "Transactional re-check at claim; current claim 'unguarded'; sweeps/promotion 'neither gates concurrent acquisition'."
+      },
+      {
+        "check": "deterministic test with named seam",
+        "hit": true,
+        "evidence": "Injectable CountActiveTasksByRuntime function-field seam; channel barrier blocks both callers; 'No sleeps'."
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "P1": {
+    "task": "P1",
+    "score": 1,
+    "model_score": 1,
+    "hits": 4,
+    "expected": 4,
+    "reason": "All four requirements met: exact five sections, four file paths, three command-backed checks, two mitigated risks.",
+    "items": [
+      {
+        "check": "five sections exact headings",
+        "hit": true,
+        "evidence": "## Outcome, ## Scope, ## Acceptance, ## Risks, ## Files all present exactly"
+      },
+      {
+        "check": "3+ repo file paths",
+        "hit": true,
+        "evidence": "agent.go, agent.sql, daemon.go, migrate/main.go listed under Files"
+      },
+      {
+        "check": "3+ acceptance checks with command/test",
+        "hit": true,
+        "evidence": "two go test -run commands plus SQL count integration check"
+      },
+      {
+        "check": "2+ risks with mitigation",
+        "hit": true,
+        "evidence": "race → FOR UPDATE lock; stale tiers → enabled/health filter with re-resolve"
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "P2": {
+    "task": "P2",
+    "score": 0.5,
+    "model_score": 0.5,
+    "hits": 4,
+    "expected": 5,
+    "reason": "Missing exactly one requirement: trigger rules omit the disabled-tier must-not-open case; the other four are fully satisfied.",
+    "items": [
+      {
+        "check": "Five required sections present",
+        "hit": true,
+        "evidence": "Has Outcome, Trigger rules, Collision analysis, Tests, Risks sections."
+      },
+      {
+        "check": "Three must-not-open cases named",
+        "hit": false,
+        "evidence": "Names paste and mid-token cases; third is 'no preceding agent pill' — disabled-tier case never mentioned."
+      },
+      {
+        "check": "#123 collision decision explicit and justified",
+        "hit": true,
+        "evidence": "Picker precedence only in armed context after agent pill; #123 keeps issue-ref semantics elsewhere, justified as least-surprising reuse."
+      },
+      {
+        "check": "At least three tests including paste",
+        "hit": true,
+        "evidence": "Four tests listed, including doesNotOpenOnPastedHash paste case."
+      },
+      {
+        "check": "Two risks with mitigations",
+        "hit": true,
+        "evidence": "IME/composition misfire and async pill-state lag, each paired with a mitigation."
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "P4": {
+    "task": "P4",
+    "score": 1,
+    "model_score": 1,
+    "hits": 5,
+    "expected": 5,
+    "reason": "All five requirements met: five sections, dsh-z-only lane, ≥1300px light/dark shots, tier-row cleanup with store-query verification, two mitigated risks.",
+    "items": [
+      {
+        "check": "five sections present",
+        "hit": true,
+        "evidence": "Outcome, Lanes, Evidence, Cleanup, Risks — five H2 sections"
+      },
+      {
+        "check": "lane z serves proof, dsh-x excluded",
+        "hit": true,
+        "evidence": "Proof runs on lane z only — dsh-z serves the shell; dsh-x excluded, do not open, deploy, or modify"
+      },
+      {
+        "check": "screenshots >=1300px wide, light and dark",
+        "hit": true,
+        "evidence": "Each screenshot must be ≥1300px wide; light theme and dark theme shots required"
+      },
+      {
+        "check": "cleanup names tier rows and verification",
+        "hit": true,
+        "evidence": "Delete throwaway test tier rows; verify by reload plus store query for zero prefix-matching rows, capture empty state"
+      },
+      {
+        "check": "two risks with mitigations",
+        "hit": true,
+        "evidence": "Risk 1 accidentally touching dsh-x, risk 2 throwaway data leaking — each with a mitigation"
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  },
+  "P3": {
+    "task": "P3",
+    "score": 1,
+    "model_score": 1,
+    "hits": 5,
+    "expected": 5,
+    "reason": "All five rubric requirements satisfied: sections, classification actions, data path, both tests, and two mitigated risks.",
+    "items": [
+      {
+        "check": "five sections present",
+        "hit": true,
+        "evidence": "Outcome, Failure classification, Data path, Tests, Risks — all five headed sections present"
+      },
+      {
+        "check": "classification covers all error types",
+        "hit": true,
+        "evidence": "429 w/ Retry-After, 429 w/o, 402/quota, 5xx retry-backoff, auth disable — each with an action"
+      },
+      {
+        "check": "data path named",
+        "hit": true,
+        "evidence": "Agent reports status/headers via run result's error message field; cooldown stored in server-side tier_cooldowns table"
+      },
+      {
+        "check": "fallback and expiry tests",
+        "hit": true,
+        "evidence": "TestTierFallbackOn429 asserts idx 1; TestTierReturnsAfterCooldown asserts return to idx 0"
+      },
+      {
+        "check": "two risks with mitigations",
+        "hit": true,
+        "evidence": "Clock skew → server receipt time; all tiers cooled → last-resort exempt tier and alert"
+      }
+    ],
+    "grader": "opencode-go/glm-5.3"
+  }
+}
