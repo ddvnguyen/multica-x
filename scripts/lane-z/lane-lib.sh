@@ -79,6 +79,58 @@ lane_multica_cli() { # prints the lane CLI path, if present
   printf '%s' "$LANE_ROOT/multica-be/current/bin/multica"
 }
 
+# Keep the right-sidebar fork available to the web profile after its package
+# manager reinstalls published dependencies. The dsh host is checked out at
+# $LANE_ROOT/current; the profile is the DSH_HOME used by dsh-z.service.
+ensure_sidebar_right_profile() {
+  local source="$LANE_ROOT/current/packages/client/ui-sidebar-right"
+  local profile="${DSH_Z_WEB_PROFILE:-$LANE_HOME/profiles/web}"
+  local target="$profile/node_modules/@deepseek-ai/dsh-client-ui-sidebar-right"
+  local backup="$LANE_ROOT/backups/m336-sidebar-right-20261121/dsh-client-ui-sidebar-right"
+  local part changed=0
+  SIDEBAR_RIGHT_PROFILE_CHANGED=0
+
+  [ -d "$source/lib" ] && [ -f "$source/package.json" ] || {
+    log "sidebar-right fork missing from $source"
+    return 1
+  }
+  [ -d "$profile/node_modules/@deepseek-ai" ] || {
+    log "web profile package directory missing: $profile/node_modules/@deepseek-ai"
+    return 1
+  }
+
+  if [ ! -d "$backup" ]; then
+    mkdir -p "$(dirname "$backup")"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      cp -a "$target" "$backup"
+      log "backed up published sidebar-right package to $backup"
+    else
+      log "no installed sidebar-right package to back up at $target"
+    fi
+  fi
+
+  mkdir -p "$target"
+  for part in lib locale src package.json; do
+    [ -e "$source/$part" ] || [ -L "$source/$part" ] || continue
+    if [ -d "$source/$part" ]; then
+      if ! diff -qr "$source/$part" "$target/$part" >/dev/null 2>&1; then
+        rm -rf "$target/$part"
+        cp -a "$source/$part" "$target/$part"
+        changed=1
+      fi
+    elif ! cmp -s "$source/$part" "$target/$part"; then
+      cp -a "$source/$part" "$target/$part"
+      changed=1
+    fi
+  done
+
+  [ "$changed" = 1 ] && log "reapplied sidebar-right fork from $source to $target" \
+    || log "sidebar-right profile already matches the fork"
+  SIDEBAR_RIGHT_PROFILE_CHANGED="$changed"
+  # Rollback: rm -rf "$target" && cp -a "$backup" "$target"
+  return 0
+}
+
 # daemon_health_json prints the lane daemon's /health JSON for profile z, or an
 # empty object on failure. Uses the lane CLI (which resolves the profile's
 # health port) so autodeploy does not guess the port.
