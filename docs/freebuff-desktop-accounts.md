@@ -83,20 +83,37 @@ wins on collision).
   the model itself, so the list is the single entry `freebuff-desktop`.
 - Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
   stdout, exit 0 on success.
-- **Task context (M-199):** the bridge prepends `CODEBUDDY.md` only when it
-  creates a thread, including after an expired or invalid resume. The bridge's
-  per-run shim keeps the task-scoped Multica identity available to the agent.
-- **Session rotation (M-199):** a known or resumed thread is reused only when
-  the desktop API reports its creation time as less than four hours ago. A
-  stale thread or one with an unknown creation time is abandoned. The bridge
-  does not scan project threads for idle conversations. It stores the thread
-  ID in account-local `state.json`; state writes are atomic (`renameSync`).
+- **Task context and isolation (M-215):** every bridge run creates a fresh
+  thread and prepends `CODEBUDDY.md`. It does not adopt a supplied resume ID,
+  scan existing threads, or stop an existing turn. Consequently a subsequent
+  run does not resume the previous conversation. The per-run shim keeps the
+  task-scoped Multica identity available to the agent.
 - **System instruction (M-199):** references `CODEBUDDY.md` only, never
   `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
   in it are the upstream sync that main was behind on, not bridge changes).
 
 ## UI
+
+The Freebuff web proxy offers an account selector behind its existing password.
+The account link displays the current selection; the default remains the web
+server's existing profile. Switching affects this browser session, not the
+account leased for Multica tasks. Existing sockets and event streams close when
+the user switches, and the UI reloads for the selected account.
+
+The daemon writes a mode-0600 registry under its profiles root, and the web
+service resolves that root the same way (`FREEBUFF_PROFILES_DIR` when set, else
+`~/.config/multica/freebuff`); set `FREEBUFF_WEB_REGISTRY` to an absolute path
+when the two disagree. The web service must run as the same OS user. Use one
+daemon per profiles directory: each replaces the directory's registry. Entries
+are a hint and can lag daemon state: the proxy asks the live orchestrator's
+`/healthz` for its launch ID and only routes when it matches, so a stale entry
+reads as offline instead of being guessed at. `/healthz` also reports PID and
+port, which are corroborated when present but not required — the launch ID is
+random per launch and already rules out reuse. A malformed entry is skipped
+rather than hiding the healthy ones. A missing registry leaves the default
+profile available, and `FREEBUFF_WEB_REGISTRY=off` restores the single-profile
+proxy. Never share the registry or its launch IDs.
 
 - Runtime page, for a freebuff-desktop runtime: an **Accounts** card lists the
   workspace's accounts (everyone) and lets owners/admins add, enable/disable
