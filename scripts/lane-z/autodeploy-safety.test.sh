@@ -29,6 +29,9 @@ DSH_Z_PLUGIN_BUNDLE="$TEST_LANE_ROOT/bundles/plugin"
 MULTICA_BE_Z_PORT=3180
 MULTICA_Z_DB_NAME=multica_z
 MULTICA_Z_DB_CONTAINER=multica-z-db
+MULTICA_Z_DB_HOST=127.0.0.1
+MULTICA_Z_DB_PORT=5432
+MULTICA_Z_DSN_TEMPLATE=postgres://multica_z:PASSWORD@127.0.0.1:5432/multica_z?sslmode=disable
 EOF
 
 cat > "$SANDBOX/mock-bin/gh" <<'EOF'
