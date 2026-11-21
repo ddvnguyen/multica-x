@@ -17,7 +17,7 @@ const TIERS: ModelTier[] = [
   {
     id: "tier-a", workspace_id: "ws", name: "fast", idx: 0,
     runtime_id: "rt-a", provider: "codebuddy", model: "model-a",
-    provider_slots: 1, enabled: true, roles: [], manual_only: false, quota_kind: "none", is_free: true, created_at: "", updated_at: "",
+    provider_slots: 1, enabled: true, roles: [], manual_only: false, auto_pick: true, quota_kind: "none", quota_kinds: [], is_free: true, ctx_max_tokens: 280000, compact_at_pct: 75, created_at: "", updated_at: "",
   },
 ];
 

@@ -98,6 +98,8 @@ import type {
   WorkspaceMcpServer,
   ModelTier,
   ModelTierInput,
+  ModelTierMember,
+  ModelTierMemberInput,
   AgentPreset,
   MemberWithUser,
   User,
@@ -637,7 +639,10 @@ import {
   WorkspaceMcpServerListSchema,
   WorkspaceMcpServerSchema,
   ModelTierListSchema,
+  ModelTierMemberListSchema,
+  ModelTierMemberSchema,
   ModelTierSchema,
+  EMPTY_MODEL_TIER_MEMBER,
   AgentPresetSchema,
   AgentPresetListSchema,
   EMPTY_MODEL_TIER,
@@ -4199,6 +4204,89 @@ export class ApiClient {
     });
     if (!parsed) throw new Error("Invalid tiers response");
     return parsed.tiers;
+  }
+
+  /**
+   * One tier's members in pick order (M-481). Member-visible, like the tier
+   * list itself.
+   */
+  async listModelTierMembers(
+    workspaceId: string,
+    tierId: string,
+  ): Promise<ModelTierMember[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}/members`,
+    );
+    const parsed = parseWithFallback<{ members: ModelTierMember[] } | null>(
+      raw,
+      z.object({ members: ModelTierMemberListSchema }),
+      null,
+      { endpoint: "GET /api/workspaces/{id}/tiers/{tierId}/members" },
+    );
+    if (!parsed) throw new Error("Invalid tier members response");
+    return parsed.members;
+  }
+
+  /** Appends or inserts one member (admin). */
+  async createModelTierMember(
+    workspaceId: string,
+    tierId: string,
+    input: ModelTierMemberInput,
+  ): Promise<ModelTierMember> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}/members`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, ModelTierMemberSchema, EMPTY_MODEL_TIER_MEMBER, {
+      endpoint: "POST /api/workspaces/{id}/tiers/{tierId}/members",
+    });
+  }
+
+  /** Edits one member (admin). Omitted fields keep their value. */
+  async updateModelTierMember(
+    workspaceId: string,
+    tierId: string,
+    memberId: string,
+    input: ModelTierMemberInput,
+  ): Promise<ModelTierMember> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}/members/${encodeURIComponent(memberId)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, ModelTierMemberSchema, EMPTY_MODEL_TIER_MEMBER, {
+      endpoint: "PUT /api/workspaces/{id}/tiers/{tierId}/members/{memberId}",
+    });
+  }
+
+  async deleteModelTierMember(
+    workspaceId: string,
+    tierId: string,
+    memberId: string,
+  ): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}/members/${encodeURIComponent(memberId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Replaces a tier's member order (admin). Position in ids is the new order. */
+  async reorderModelTierMembers(
+    workspaceId: string,
+    tierId: string,
+    ids: string[],
+  ): Promise<ModelTierMember[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/${encodeURIComponent(tierId)}/members/reorder`,
+      { method: "PUT", body: JSON.stringify({ ids }) },
+    );
+    const parsed = parseWithFallback<{ members: ModelTierMember[] } | null>(
+      raw,
+      z.object({ members: ModelTierMemberListSchema }),
+      null,
+      { endpoint: "PUT /api/workspaces/{id}/tiers/{tierId}/members/reorder" },
+    );
+    if (!parsed) throw new Error("Invalid tier members response");
+    return parsed.members;
   }
 
   /** The workspace MCP servers assigned to this agent, with their toggles. */

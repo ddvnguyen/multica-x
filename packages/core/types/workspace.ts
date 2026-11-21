@@ -71,9 +71,20 @@ export interface ModelTier {
   roles: string[];
   /** Never auto-resolves; explicit picks need a workspace owner. */
   manual_only: boolean;
+  /**
+   * M-481: true when scheduling may pick this tier by idx, quota and quality.
+   * False (legacy `manual_only`) only serves explicit `@agent#tier` picks.
+   */
+  auto_pick: boolean;
   /** Scheduling hint; the resolver ignores it. */
   quota_kind: string;
+  /** Multi-select quota kinds (M-481); `quota_kind` stays the legacy scalar. */
+  quota_kinds: string[];
   is_free: boolean;
+  /** Context ceiling in tokens (default 280000); advisory per harness. */
+  ctx_max_tokens: number;
+  /** Compaction trigger as a percentage of `ctx_max_tokens` (default 75). */
+  compact_at_pct: number;
   /**
    * Provider-refusal cooldown deadline (M-352). Present only while a 429/quota
    * failure has the tier out of the resolver's idx order; the Settings row
@@ -105,8 +116,43 @@ export interface ModelTierInput {
   enabled?: boolean;
   roles?: string[];
   manual_only?: boolean;
+  auto_pick?: boolean;
   quota_kind?: string;
+  quota_kinds?: string[];
   is_free?: boolean;
+  ctx_max_tokens?: number;
+  compact_at_pct?: number;
+}
+
+/**
+ * One (harness, model) mapping inside a tier profile (M-481). Position is the
+ * pick order: the resolver tries the first available member, so a 429 on one
+ * member only cools that member instead of the whole tier.
+ */
+export interface ModelTierMember {
+  id: string;
+  tier_id: string;
+  position: number;
+  provider: string;
+  model: string;
+  thinking_level?: string;
+  runtime_id?: string;
+  provider_slots: number;
+  cooldown_until?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelTierMemberInput {
+  position?: number;
+  provider?: string;
+  model?: string;
+  thinking_level?: string;
+  /** Empty string unbinds the runtime. */
+  runtime_id?: string;
+  provider_slots?: number;
+  enabled?: boolean;
 }
 
 /** A named agent+tier quick pick. */
