@@ -9,6 +9,7 @@ import {
 } from "@multica/views/navigation";
 import { workspaceSlugForPath } from "@multica/core/paths";
 import {
+  chatSessionIdForUrl,
   findTabForUrl,
   getActiveTab,
   sanitizeTabPath,
@@ -289,7 +290,12 @@ export function WebTabSync(props: WebTabSyncOptions): null {
  *   projects them onto the Next router with replace);
  * - cross-workspace push switches the workspace group (focus follows the
  *   user — a background tab in a non-visible group would give zero feedback);
- * - back/forward/canGoBack read the active session's virtual history;
+ * - back/forward/canGoBack walk the window's one history (the previous
+ *   location across tabs, focusing the tab that holds it), falling back to
+ *   the browser's own history for the page that was open before the shell;
+ * - a chat session is one tab: a navigation that names a session an open tab
+ *   already shows focuses that tab instead of pointing this one at a second
+ *   copy of the same conversation;
  * - `openInNewTab` writes through the store so modifier-clicks and
  *   "open in new tab" CTAs open product tabs; cross-workspace opens also
  *   switch workspace for the same focus reason;
@@ -320,16 +326,12 @@ export function WebTabNavigationProvider({
   });
 
   // The browser back button pops real history, which the sync only ever
-  // extends with replace — so a bare `router.back()` can trap the user
-  // inside one tab session. Prefer the session stack when it has somewhere
-  // to go; fall back to the browser (and its in-app guard) at index 0.
+  // extends with replace. Walk the window's history first — the previous
+  // location across tabs, focusing that tab — and fall back to the browser
+  // (and its in-app guard) when the shell's history has nothing behind it.
   const back = useMemo(
     () => () => {
-      const before = getActiveTab(useTabStore.getState());
-      if (before && before.history.index > 0) {
-        useTabStore.getState().goBack();
-        return;
-      }
+      if (useTabStore.getState().goBackInWindow()) return;
       if (canGoBackInApp()) router.back();
     },
     [router],
@@ -340,6 +342,7 @@ export function WebTabNavigationProvider({
     return {
       push: (path: string) => {
         const store = useTabStore.getState();
+        if (focusOpenChatSession(store, path)) return;
         if (tryRouteToPinnedNewTab(path)) return;
         const slug = workspaceSlugForPath(path);
         if (slug && slug !== store.activeWorkspaceSlug) {
@@ -352,6 +355,7 @@ export function WebTabNavigationProvider({
       },
       replace: (path: string) => {
         const store = useTabStore.getState();
+        if (focusOpenChatSession(store, path)) return;
         const slug = workspaceSlugForPath(path);
         if (slug && slug !== store.activeWorkspaceSlug) {
           markProjection(path);
@@ -363,13 +367,10 @@ export function WebTabNavigationProvider({
       },
       back,
       forward: () => {
-        useTabStore.getState().goForward();
+        useTabStore.getState().goForwardInWindow();
       },
-      canGoBack: () => {
-        const active = getActiveTab(useTabStore.getState());
-        if ((active?.history.index ?? 0) > 0) return true;
-        return canGoBackInApp();
-      },
+      canGoBack: () =>
+        useTabStore.getState().canGoBackInWindow() || canGoBackInApp(),
       pathname: location.pathname,
       searchParams: new URLSearchParams(location.search),
       hash: location.hash,
@@ -422,6 +423,31 @@ function splitLocation(url: string): {
     search: withoutHash.slice(searchIdx),
     hash,
   };
+}
+
+/**
+ * One session is one tab (M-413 round 4). A chat navigation that names a
+ * session an open tab already shows focuses that tab — the list row, the
+ * strip's history, a chip, a deep link — instead of pointing the current tab
+ * at a second copy of the same conversation.
+ *
+ * Returns false when no tab holds the session (the caller navigates normally)
+ * or when the tab that holds it is already the active one (nothing to do).
+ */
+function focusOpenChatSession(
+  store: ReturnType<typeof useTabStore.getState>,
+  path: string,
+): boolean {
+  const sessionId = chatSessionIdForUrl(path);
+  if (!sessionId) return false;
+  const slug = workspaceSlugForPath(path);
+  if (!slug || slug !== store.activeWorkspaceSlug) return false;
+  const group = store.byWorkspace[slug];
+  if (!group) return false;
+  const match = findTabForUrl(group, path);
+  if (!match) return false;
+  if (match.id !== group.activeTabId) store.setActiveTab(match.id);
+  return true;
 }
 
 /**

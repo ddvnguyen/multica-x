@@ -334,6 +334,64 @@ describe("WebTabNavigationProvider adapter", () => {
     expect(after.activeTabId).toBe(first.activeTabId);
   });
 
+  // M-413 round 4: Back/Forward are the window's, not the active tab's — the
+  // previous location across tabs, focusing the tab that holds it.
+  it("backs into the tab holding the previous location", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().openInNewTab?.("/acme/projects", "Projects", { activate: true });
+    });
+    const projectsTab = activeTab();
+    act(() => {
+      nav().push("/acme/projects/p1");
+    });
+
+    act(() => {
+      nav().back();
+    });
+    expect(activeTab()?.id).toBe(projectsTab?.id);
+    expect(activeTab()?.url).toBe("/acme/projects");
+
+    act(() => {
+      nav().back();
+    });
+    expect(activeTab()?.url).toBe("/acme/issues");
+    expect(nav().canGoBack?.()).toBe(false);
+
+    act(() => {
+      nav().forward?.();
+    });
+    expect(activeTab()?.id).toBe(projectsTab?.id);
+    expect(activeTab()?.url).toBe("/acme/projects");
+  });
+
+  // One session is one tab: a navigation that names a session an open tab
+  // already shows focuses it instead of pointing this tab at a second copy.
+  it("focuses the tab a chat session already has", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().openInNewTab?.("/acme/chat?session=a", "hi");
+    });
+    const chatTab = useTabStore.getState().byWorkspace["acme"]?.tabs[1];
+    expect(activeTab()?.url).toBe("/acme/issues");
+
+    act(() => {
+      nav().push("/acme/chat?session=a");
+    });
+
+    expect(activeTab()?.id).toBe(chatTab?.id);
+    expect(useTabStore.getState().byWorkspace["acme"]?.tabs).toHaveLength(2);
+    expect(
+      useTabStore.getState().byWorkspace["acme"]?.tabs[0]?.url,
+    ).toBe("/acme/issues");
+  });
+
   it("keeps a pinned tab parked and projects the tab an in-app push opens", () => {
     act(() => {
       sync();

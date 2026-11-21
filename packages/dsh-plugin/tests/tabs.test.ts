@@ -35,6 +35,21 @@ describe("tabs reuse", () => {
     expect(store.getState().tabs).toHaveLength(1);
   });
 
+  it("gives each chat session its own tab (M-413 round 4)", () => {
+    const storage = createIslandStorage(memoryBacking() as any);
+    const store = createTabsStore(storage, "demo");
+    const first = store.getState().openOrFocus("/demo/chat?session=a");
+    const second = store.getState().openOrFocus("/demo/chat?session=b");
+    expect(second).not.toBe(first);
+    expect(store.getState().tabs.map((tab) => tab.url)).toEqual([
+      "/demo/chat?session=a",
+      "/demo/chat?session=b",
+    ]);
+    // Re-opening a session focuses its own tab instead of a second copy.
+    expect(store.getState().openOrFocus("/demo/chat?session=a")).toBe(first);
+    expect(store.getState().activeId).toBe(first);
+  });
+
   it("creates separate tabs for two different issues", () => {
     const storage = createIslandStorage(memoryBacking() as any);
     const store = createTabsStore(storage, "demo");

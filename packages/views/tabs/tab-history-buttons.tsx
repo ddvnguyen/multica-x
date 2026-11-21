@@ -4,16 +4,17 @@
  * Back and Forward for the tab strip (M-413 round 2).
  *
  * The strip is the browser chrome of the SPA, so it carries the two buttons a
- * browser puts next to the tabs. They step the active tab's virtual history
- * through the navigation adapter — the same calls the keyboard chords and the
- * mouse side buttons make — so every entry point moves through one stack.
+ * browser puts next to the tabs. They walk the window's one history (M-413
+ * round 4) through the navigation adapter — the same calls the keyboard
+ * chords and the mouse side buttons make — so every entry point moves through
+ * one history: the previous location across tabs, focusing that tab if it is
+ * open, skipping entries of closed tabs.
  *
- * The dsh island's strip is the model: right-clicking either button opens the
- * tab's history, so a long session can jump straight to an older page instead
- * of pressing Back repeatedly.
+ * The dsh island's strip is the model (M-197): right-clicking either button
+ * opens the window's history, so a long path can jump straight to an older
+ * page instead of pressing Back repeatedly.
  */
 
-import { useMemo } from "react";
 import { ArrowLeft, ArrowRight } from "@multica/ui/icons";
 import {
   ContextMenu,
@@ -25,58 +26,36 @@ import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
 import { useNavigation } from "../navigation";
-import { useTabHistory } from "./use-tab-history";
+import { useWindowTabHistory } from "./use-tab-history";
 
 /** A 28px strip has 24px of room for a control once its padding is counted. */
 const NAV_BUTTON_CLASS =
   "flex size-6 shrink-0 items-center justify-center rounded-md text-faint-foreground transition-colors hover:bg-muted/50 hover:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-30 [&_svg]:size-3.5";
-
-/** A page with no resolved title still has to read as something. */
-function historyEntryLabel(
-  url: string,
-  titles: ReadonlyMap<string, string>,
-): string {
-  const titled = titles.get(url);
-  if (titled) return titled;
-  const path = url.replace(/[?#].*$/, "");
-  const segment = path.split("/").filter(Boolean).at(-1);
-  return segment && segment !== "issues" ? segment : path;
-}
 
 export function TabHistoryButtons() {
   const { t } = useT("layout");
   const navigation = useNavigation();
   const {
     canGoForward,
-    historyEntries,
+    history,
     historyIndex,
-    browsingHistory,
     goToHistoryIndex,
-  } = useTabHistory();
+  } = useWindowTabHistory();
 
-  // Either stack is somewhere to go back to: the tab's own, or — on web — the
-  // page that was open before the shell mounted (the adapter reads the
-  // browser's session history for that).
-  const canGoBack = historyIndex > 0 || (navigation.canGoBack?.() ?? false);
-  const titles = useMemo(
-    () =>
-      new Map(
-        browsingHistory.flatMap((entry) =>
-          entry.title ? [[entry.url, entry.title] as const] : [],
-        ),
-      ),
-    [browsingHistory],
-  );
+  // Either history is somewhere to go back to: the window's, or the page that
+  // was open before the shell mounted (the adapter reads the browser's own
+  // session history for that).
+  const canGoBack = navigation.canGoBack?.() ?? false;
 
   const historyMenu = (label: string) =>
-    historyEntries.length > 0 ? (
+    history.length > 0 ? (
       <ContextMenuContent
         aria-label={label}
         className="max-h-80 w-64 overflow-y-auto"
       >
-        {historyEntries.map((url, index) => (
+        {history.map((entry, index) => (
           <ContextMenuItem
-            key={`${index}:${url}`}
+            key={`${index}:${entry.url}`}
             aria-current={index === historyIndex ? "true" : undefined}
             data-history-index={index}
             onClick={() => goToHistoryIndex(index)}
@@ -92,9 +71,7 @@ export function TabHistoryButtons() {
                 index !== historyIndex && "opacity-0",
               )}
             />
-            <span className="min-w-0 flex-1 truncate">
-              {historyEntryLabel(url, titles)}
-            </span>
+            <span className="min-w-0 flex-1 truncate">{entry.label}</span>
           </ContextMenuItem>
         ))}
       </ContextMenuContent>

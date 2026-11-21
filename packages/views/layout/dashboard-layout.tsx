@@ -35,15 +35,16 @@ interface DashboardLayoutProps {
 /**
  * The content card: the space panel and the page share one surface on the
  * app shell, split by a single hairline. From `md` up the card is inset by a
- * gutter on every side, with the bottom bar below it; below `md` the card is
- * the whole window. The bottom gutter stays whether or not the bar renders —
- * the web shell can drop the bar entirely (M-413), and a card flush against
- * the window edge lost its ring and its rounded bottom corners. Desktop
- * builds the same card in its own layout, under the tab bar.
+ * gutter on the right and the bottom (4px, M-413 round 4: a wider gutter read
+ * as dead space around the page) and sits flush under the strip; below `md`
+ * the card is the whole window. The bottom gutter stays whether or not the
+ * bar renders — the web shell can drop the bar entirely (M-413), and a card
+ * flush against the window edge lost its ring and its rounded bottom corners.
+ * Desktop builds the same card in its own layout, under the tab bar.
  */
 export function AppShellCard({ children }: { children: ReactNode }) {
   return (
-    <main data-mc="page" className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-page-canvas md:my-2 md:mr-2 md:rounded-page md:shadow-[var(--page-shadow,var(--surface-shadow))] md:ring-1 md:ring-page-border">
+    <main data-mc="page" className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-page-canvas md:mr-1 md:mb-1 md:rounded-page md:shadow-[var(--page-shadow,var(--surface-shadow))] md:ring-1 md:ring-page-border">
       <SpacePanel />
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </main>

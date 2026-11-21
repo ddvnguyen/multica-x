@@ -289,14 +289,40 @@ export function familyOfUrl(url: string): string | null {
   return familyOfRoute(route);
 }
 
-/** Dedup identity of a tab URL: its pathname (search/hash are view state). */
+/**
+ * The chat session a URL opens (`?session=`), or null when it is not one.
+ *
+ * A conversation is a place, not view state: `/w/chat?session=<id>` is the tab
+ * for that session, so the id belongs in its identity. Query-blind identity
+ * made every conversation one tab, and a second session could not tell itself
+ * apart from the first (M-413 round 4).
+ */
+function chatSessionIdOfUrl(url: string): string | null {
+  const hash = url.indexOf("#");
+  const withoutHash = hash === -1 ? url : url.slice(0, hash);
+  const query = withoutHash.indexOf("?");
+  const pathname = query === -1 ? withoutHash : withoutHash.slice(0, query);
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length < 2 || segments.at(-1) !== "chat") return null;
+  const session = new URLSearchParams(
+    query === -1 ? "" : withoutHash.slice(query + 1),
+  ).get("session");
+  return session || null;
+}
+
+/**
+ * Dedup identity of a tab URL: its pathname (search/hash are view state),
+ * except a chat session, which names which conversation the tab is.
+ */
 export function resourceKeyForUrl(url: string): string {
   const hash = url.indexOf("#");
   const query = url.indexOf("?");
   let cut = -1;
   if (query !== -1 && (hash === -1 || query < hash)) cut = query;
   else if (hash !== -1) cut = hash;
-  return cut === -1 ? url : url.slice(0, cut);
+  const pathname = cut === -1 ? url : url.slice(0, cut);
+  const session = chatSessionIdOfUrl(url);
+  return session ? `${pathname}?session=${encodeURIComponent(session)}` : pathname;
 }
 
 export const resourceKeyOfUrl = resourceKeyForUrl;
