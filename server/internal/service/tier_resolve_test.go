@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -781,7 +780,11 @@ func TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry(t *testing.
 	if claimOutcome.err == nil && (claimOutcome.task.ID != task.ID || claimOutcome.task.Status != "dispatched") {
 		t.Fatalf("claimed task = %s/%s, want %s/dispatched", util.UUIDToString(claimOutcome.task.ID), claimOutcome.task.Status, util.UUIDToString(task.ID))
 	}
-	if !bytes.Contains(contextJSON, []byte(`"preset_fallback_reason":"tier_no_capacity"`)) {
-		t.Fatalf("restamped context lost fallback reason: %s", contextJSON)
+	var restampedMetadata map[string]any
+	if err := json.Unmarshal(contextJSON, &restampedMetadata); err != nil {
+		t.Fatalf("decode restamped context: %v", err)
+	}
+	if restampedMetadata["preset_fallback_reason"] != "tier_no_capacity" {
+		t.Fatalf("restamped fallback reason = %#v, want tier_no_capacity", restampedMetadata["preset_fallback_reason"])
 	}
 }
