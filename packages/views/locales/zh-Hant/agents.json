@@ -209,7 +209,18 @@
     "edit_description_title": "編輯描述",
     "description_placeholder": "這個 AI 代理做什麼？",
     "save": "儲存",
-    "cancel": "取消"
+    "cancel": "取消",
+    "presets_title": "預設",
+    "presets_loading": "正在載入預設…",
+    "presets_empty": "此 AI 代理沒有預設。",
+    "presets_name": "預設名稱",
+    "presets_tier": "層級",
+    "presets_edit": "編輯",
+    "presets_delete": "刪除",
+    "presets_add": "新增預設",
+    "presets_save": "儲存預設",
+    "presets_unavailable": "無法使用",
+    "presets_error": "無法載入或儲存預設。"
   },
   "overview": {
     "agent_context": "智慧體",

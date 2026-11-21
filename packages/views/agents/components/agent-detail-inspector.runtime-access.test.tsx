@@ -32,6 +32,8 @@ vi.mock("./inspector/runtime-picker", () => ({
 
 import { AgentDetailInspector } from "./agent-detail-inspector";
 
+vi.mock("./inspector/agent-preset-editor", () => ({ AgentPresetEditor: () => null }));
+
 const agent = {
   id: "agent-1",
   workspace_id: "workspace-1",

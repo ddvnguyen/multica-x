@@ -201,7 +201,18 @@
     "edit_description_title": "説明を編集",
     "description_placeholder": "このエージェントは何をしますか？",
     "save": "保存",
-    "cancel": "キャンセル"
+    "cancel": "キャンセル",
+    "presets_title": "プリセット",
+    "presets_loading": "プリセットを読み込み中…",
+    "presets_empty": "このエージェントにプリセットはありません。",
+    "presets_name": "プリセット名",
+    "presets_tier": "ティア",
+    "presets_edit": "編集",
+    "presets_delete": "削除",
+    "presets_add": "プリセットを追加",
+    "presets_save": "プリセットを保存",
+    "presets_unavailable": "利用不可",
+    "presets_error": "プリセットを読み込めないか、保存できませんでした。"
   },
   "overview": {
     "agent_context": "エージェント",

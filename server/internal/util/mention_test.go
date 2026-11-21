@@ -16,6 +16,11 @@ func TestParseMentions(t *testing.T) {
 			want:    []Mention{{Type: "agent", ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}},
 		},
 		{
+			name:    "preset mention",
+			content: "[@Claude Architect](mention://preset/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) please review",
+			want:    []Mention{{Type: "preset", ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}},
+		},
+		{
 			name:    "agent name with square brackets",
 			content: "[@David[TF]](mention://agent/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) please fix",
 			want:    []Mention{{Type: "agent", ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}},

@@ -209,7 +209,18 @@
     "qoder_execution_note": "El modelo, las herramientas y las skills se configuran en el agente desde Qoder Cloud Agents.",
     "section_skills": "Skills",
     "no_description_placeholder": "No description",
-    "save": "Guardar"
+    "save": "Guardar",
+    "presets_title": "Ajustes preestablecidos",
+    "presets_loading": "Cargando ajustes preestablecidos…",
+    "presets_empty": "Este agente no tiene ajustes preestablecidos.",
+    "presets_name": "Nombre del ajuste",
+    "presets_tier": "Nivel",
+    "presets_edit": "Editar",
+    "presets_delete": "Eliminar",
+    "presets_add": "Añadir ajuste",
+    "presets_save": "Guardar ajuste",
+    "presets_unavailable": "No disponible",
+    "presets_error": "No se pudieron cargar o guardar los ajustes."
   },
   "overview": {
     "attention_title": "Ejecuciones que requieren atención",

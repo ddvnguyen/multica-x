@@ -218,7 +218,18 @@
     "edit_description_title": "Modifier la description",
     "description_placeholder": "Que fait cet agent ?",
     "save": "Enregistrer",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "presets_title": "Préréglages",
+    "presets_loading": "Chargement des préréglages…",
+    "presets_empty": "Aucun préréglage pour cet agent.",
+    "presets_name": "Nom du préréglage",
+    "presets_tier": "Niveau",
+    "presets_edit": "Modifier",
+    "presets_delete": "Supprimer",
+    "presets_add": "Ajouter un préréglage",
+    "presets_save": "Enregistrer le préréglage",
+    "presets_unavailable": "Indisponible",
+    "presets_error": "Impossible de charger ou d’enregistrer les préréglages."
   },
   "overview": {
     "agent_context": "Agent",

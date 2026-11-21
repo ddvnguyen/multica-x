@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,4 +46,42 @@ func TestAgentPresetCRUDAndWorkspaceGate(t *testing.T) {
 	if !strings.Contains(listed, `"name":"Architect Sonnet"`) { t.Fatalf("list omitted preset: %s", listed) }
 	deleted := testutil.Call(t, testHandler.DeleteAgentPreset, withURLParams(newRequestAs(testUserID, http.MethodDelete, path+"/"+result.ID, nil), "id", testWorkspaceID, "presetId", result.ID))
 	deleted.Want(http.StatusNoContent)
+}
+
+func TestResolveLegacyAgentAssigneeRejectsAmbiguousMappings(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, _, _, tierID, _ := tierAgentFixture(t)
+	legacyID := parseUUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	cleanup := func() {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, `DELETE FROM agent_preset WHERE workspace_id=$1 AND legacy_agent_id=$2`, parseUUID(testWorkspaceID), legacyID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	insert := func(name string) {
+		t.Helper()
+		_, err := testPool.Exec(ctx, `
+			INSERT INTO agent_preset (workspace_id, name, agent_id, tier_id, legacy_agent_id)
+			VALUES ($1, $2, $3, $4, $5)`, parseUUID(testWorkspaceID), name, parseUUID(agentID), parseUUID(tierID), legacyID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	insert("Legacy Alias One")
+	canonicalID, presetID, aliased, err := testHandler.resolveLegacyAgentAssignee(ctx, parseUUID(testWorkspaceID), legacyID)
+	if err != nil || !aliased || uuidToString(canonicalID) != agentID || !presetID.Valid {
+		t.Fatalf("resolve unique alias = (%s, %s, %v, %v), want canonical agent and preset", uuidToString(canonicalID), uuidToString(presetID), aliased, err)
+	}
+
+	insert("Legacy Alias Two")
+	_, _, aliased, err = testHandler.resolveLegacyAgentAssignee(ctx, parseUUID(testWorkspaceID), legacyID)
+	if !errors.Is(err, errAmbiguousLegacyAgentAlias) || aliased {
+		t.Fatalf("resolve ambiguous aliases = (aliased %v, err %v), want ambiguity rejection", aliased, err)
+	}
 }

@@ -4280,6 +4280,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// the identical lineage was accepted on the create path.
 	_, touchedType := rawFields["assignee_type"]
 	_, touchedID := rawFields["assignee_id"]
+	if (touchedType || touchedID) && params.AssigneeType.Valid && params.AssigneeType.String == "agent" && params.AssigneeID.Valid {
+		canonicalID, presetID, aliased, err := h.resolveLegacyAgentAssignee(r.Context(), prevIssue.WorkspaceID, params.AssigneeID)
+		if err != nil {
+			if errors.Is(err, errAmbiguousLegacyAgentAlias) {
+				writeError(w, http.StatusBadRequest, "assignee_id does not resolve to one agent preset")
+				return
+			}
+			slog.Error("update issue: resolve legacy assignee", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve agent assignee")
+			return
+		}
+		if aliased {
+			params.AssigneeID = canonicalID
+			req.PresetID = uuidToString(presetID)
+		}
+	}
 
 	// Project workflow (MUL-7420): keep the status inside the project's
 	// workflow, and hand the issue off when it enters a step with a handler.
@@ -4600,6 +4616,31 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	default:
 		return http.StatusBadRequest, "assignee_type must be 'member', 'agent', or 'squad'"
 	}
+}
+
+// resolveLegacyAgentAssignee maps a retired agent id to its unique preset.
+// The caller stores the canonical agent id and carries the preset through the
+// existing explicit-tier path. Multiple presets for one legacy id are
+// ambiguous and are rejected instead of choosing a tier silently.
+var errAmbiguousLegacyAgentAlias = errors.New("legacy agent id maps to multiple presets")
+
+func (h *Handler) resolveLegacyAgentAssignee(ctx context.Context, workspaceID, legacyID pgtype.UUID) (pgtype.UUID, pgtype.UUID, bool, error) {
+	var agentID, presetID pgtype.UUID
+	var count int64
+	err := h.DB.QueryRow(ctx, `
+		SELECT count(*), min(p.agent_id::text)::uuid, min(p.id::text)::uuid
+		FROM agent_preset p
+		WHERE p.workspace_id = $1 AND p.legacy_agent_id = $2`, workspaceID, legacyID).Scan(&count, &agentID, &presetID)
+	if err != nil {
+		return pgtype.UUID{}, pgtype.UUID{}, false, err
+	}
+	if count == 0 {
+		return pgtype.UUID{}, pgtype.UUID{}, false, nil
+	}
+	if count != 1 {
+		return pgtype.UUID{}, pgtype.UUID{}, false, errAmbiguousLegacyAgentAlias
+	}
+	return agentID, presetID, true, nil
 }
 
 // shouldEnqueueAssigneeFallback returns true when comment routing can fall back

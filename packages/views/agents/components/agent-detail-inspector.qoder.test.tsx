@@ -29,6 +29,8 @@ vi.mock("./inspector/runtime-picker", () => ({
 
 import { AgentDetailInspector } from "./agent-detail-inspector";
 
+vi.mock("./inspector/agent-preset-editor", () => ({ AgentPresetEditor: () => null }));
+
 function runtime(id: string, provider: string): AgentRuntime {
   return {
     id,

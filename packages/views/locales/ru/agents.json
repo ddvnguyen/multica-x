@@ -216,7 +216,18 @@
     "edit_description_title": "Изменить описание",
     "description_placeholder": "Чем занимается этот агент?",
     "cancel": "Отмена",
-    "save": "Сохранить"
+    "save": "Сохранить",
+    "presets_title": "Пресеты",
+    "presets_loading": "Загрузка пресетов…",
+    "presets_empty": "У этого агента нет пресетов.",
+    "presets_name": "Название пресета",
+    "presets_tier": "Уровень",
+    "presets_edit": "Изменить",
+    "presets_delete": "Удалить",
+    "presets_add": "Добавить пресет",
+    "presets_save": "Сохранить пресет",
+    "presets_unavailable": "Недоступно",
+    "presets_error": "Не удалось загрузить или сохранить пресеты."
   },
   "overview": {
     "attention_title": "Запуски требуют внимания",
