@@ -310,6 +310,30 @@ describe("WebTabNavigationProvider adapter", () => {
     expect(router.replace).toHaveBeenCalledWith("/acme/issues");
   });
 
+  // M-480: the dashboard capability's New tab opener is this adapter's
+  // `openInNewTab`. Opening the same issue twice must focus the tab that
+  // already shows it —
+  // the capability's New tab opener relies on the store's `findTabForUrl`
+  // dedupe rather than adding a second tab per click.
+  it("reuses the tab already showing the issue on a second New tab open", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().openInNewTab?.("/acme/issues/MUL-1", "MUL-1", { activate: true });
+    });
+    const first = useTabStore.getState().byWorkspace["acme"]!;
+    expect(first.tabs).toHaveLength(2);
+
+    act(() => {
+      nav().openInNewTab?.("/acme/issues/MUL-1", "MUL-1", { activate: true });
+    });
+    const after = useTabStore.getState().byWorkspace["acme"]!;
+    expect(after.tabs).toHaveLength(2);
+    expect(after.activeTabId).toBe(first.activeTabId);
+  });
+
   it("keeps a pinned tab parked and projects the tab an in-app push opens", () => {
     act(() => {
       sync();

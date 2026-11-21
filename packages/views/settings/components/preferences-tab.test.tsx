@@ -478,6 +478,36 @@ describe("PreferencesTab — Scope", () => {
     expect(preview).toHaveAttribute("aria-pressed", "true");
   });
 
+  // The web dashboard (M-480) has both a tab strip and in-place routes, so all
+  // three open modes are on offer there and Full page stays the default.
+  it("offers all three modes on the web dashboard (M-480)", async () => {
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: false });
+    const user = userEvent.setup();
+    function WebWrapper({ children }: { children: ReactNode }) {
+      return (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <IssueOpeningCapabilityProvider supportsTabs supportsPage>
+            {children}
+          </IssueOpeningCapabilityProvider>
+        </I18nProvider>
+      );
+    }
+    render(<PreferencesTab />, { wrapper: WebWrapper });
+    const group = screen.getByRole("group", { name: "Clicking a card or row opens" });
+    expect(
+      within(group)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Full page", "Side preview", "New tab"]);
+    expect(within(group).getByRole("button", { name: "Full page" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(within(group).getByRole("button", { name: "New tab" }));
+    expect(useIssueOpeningStore.getState().openMode).toBe("tab");
+  });
+
   // MMX declares tabs and no peek while dsh cannot host the side view (M-330),
   // and a single open mode is what that has to look like: no in-place page and
   // no preview to pick.

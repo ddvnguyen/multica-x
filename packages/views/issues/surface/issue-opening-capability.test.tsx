@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { fireEvent } from "@testing-library/react";
@@ -42,6 +43,7 @@ function Probe() {
       data-open-mode={capability.openMode}
       data-supports-tabs={capability.supportsTabs ? "yes" : "no"}
       data-supports-peek={capability.supportsPeek ? "yes" : "no"}
+      data-supports-page={capability.supportsPage ? "yes" : "no"}
       data-side-preview={capability.openSidePreview === null ? "none" : "host"}
     />
   );
@@ -229,6 +231,125 @@ describe("default issue opening capability (web/desktop wiring)", () => {
     });
     renderDefaultProvider();
     expect(useIssueOpeningStore.getState().openMode).toBe("peek");
+  });
+});
+
+/**
+ * The web dashboard (M-480): a tab strip *and* an in-place full page, so New
+ * tab is a third choice beside Full page and Side preview. Full page stays the
+ * default for anyone who never chose, and nothing rewrites a stored choice.
+ */
+describe("web dashboard (tabs and an in-place page)", () => {
+  function renderWeb(children: ReactNode = <Probe />) {
+    return render(
+      <IssueOpeningCapabilityProvider supportsTabs supportsPage>
+        {children}
+      </IssueOpeningCapabilityProvider>,
+    );
+  }
+
+  it("offers all three modes, with Full page still the default", () => {
+    renderWeb();
+    const probe = screen.getByTestId("capability");
+    expect(probe).toHaveAttribute("data-supports-page", "yes");
+    expect(probe).toHaveAttribute("data-supports-peek", "yes");
+    expect(probe).toHaveAttribute("data-supports-tabs", "yes");
+    expect(probe).toHaveAttribute("data-open-mode", "page");
+  });
+
+  it("passes each stored choice through, New tab included", () => {
+    for (const mode of ["page", "peek", "tab"] as const) {
+      act(() => {
+        useIssueOpeningStore.setState({ openMode: mode, hasUserChoice: true });
+      });
+      const { unmount } = renderWeb();
+      expect(screen.getByTestId("capability")).toHaveAttribute(
+        "data-open-mode",
+        mode,
+      );
+      unmount();
+    }
+  });
+
+  it("leaves a stored Full page alone", () => {
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    });
+    renderWeb();
+    expect(useIssueOpeningStore.getState().openMode).toBe("page");
+  });
+
+  it("opens an activated header tab on a plain click in New tab mode", () => {
+    const openInNewTab = vi.fn(() => true);
+    nav.openInNewTab = openInNewTab;
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    });
+    try {
+      renderWeb(<IssueLink />);
+      expect(fireEvent.click(screen.getByTestId("issue-link"))).toBe(false);
+      expect(openInNewTab).toHaveBeenCalledWith(
+        "/acme/issues/issue-1",
+        "issue-1",
+        { activate: true },
+      );
+    } finally {
+      nav.openInNewTab = undefined;
+    }
+  });
+
+  it("opens a background tab on Cmd/Ctrl+Click in New tab mode", () => {
+    const openInNewTab = vi.fn(() => true);
+    nav.openInNewTab = openInNewTab;
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    });
+    try {
+      renderWeb(<IssueLink />);
+      const link = screen.getByTestId("issue-link");
+      fireEvent.click(link, { metaKey: true });
+      expect(openInNewTab).toHaveBeenLastCalledWith(
+        "/acme/issues/issue-1",
+        "issue-1",
+        { activate: false },
+      );
+    } finally {
+      nav.openInNewTab = undefined;
+    }
+  });
+
+  it("keeps the plain link in Full page mode", () => {
+    const openInNewTab = vi.fn(() => true);
+    nav.openInNewTab = openInNewTab;
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    });
+    try {
+      renderWeb(<IssueLink />);
+      // Not claimed: the card's own link navigates in place.
+      expect(fireEvent.click(screen.getByTestId("issue-link"))).toBe(true);
+      expect(openInNewTab).not.toHaveBeenCalled();
+    } finally {
+      nav.openInNewTab = undefined;
+    }
+  });
+
+  it("opens the side preview on Shift+Click from New tab", () => {
+    const toggle = vi.fn();
+    act(() => {
+      useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    });
+    render(
+      <IssuePeekActionsContext.Provider
+        value={{ open: vi.fn(), toggle, close: vi.fn(), publishColumns: vi.fn() }}
+      >
+        <IssueOpeningCapabilityProvider supportsTabs supportsPage>
+          <IssueLink />
+        </IssueOpeningCapabilityProvider>
+      </IssuePeekActionsContext.Provider>,
+    );
+    expect(fireEvent.click(screen.getByTestId("issue-link"), { shiftKey: true })).toBe(false);
+    expect(toggle).toHaveBeenCalledWith("issue-1");
   });
 });
 
