@@ -209,7 +209,18 @@
     "edit_description_title": "설명 수정",
     "description_placeholder": "이 에이전트는 무엇을 하나요?",
     "save": "저장",
-    "cancel": "취소"
+    "cancel": "취소",
+    "presets_title": "프리셋",
+    "presets_loading": "프리셋 불러오는 중…",
+    "presets_empty": "이 에이전트에 프리셋이 없습니다.",
+    "presets_name": "프리셋 이름",
+    "presets_tier": "티어",
+    "presets_edit": "편집",
+    "presets_delete": "삭제",
+    "presets_add": "프리셋 추가",
+    "presets_save": "프리셋 저장",
+    "presets_unavailable": "사용할 수 없음",
+    "presets_error": "프리셋을 불러오거나 저장하지 못했습니다."
   },
   "overview": {
     "agent_context": "에이전트",

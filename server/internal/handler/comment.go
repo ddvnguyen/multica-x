@@ -3505,6 +3505,33 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 			agentUUID = presetAgentID
+		} else {
+			// Legacy agent rows stay in place for existing task identity, but a
+			// new mention of their id routes through the reviewed preset alias.
+			// Resolve before the direct-agent lookup so the old row cannot shadow
+			// its canonical agent+tier mapping.
+			var aliasCount int64
+			var canonicalID pgtype.UUID
+			aliasErr := h.DB.QueryRow(ctx, `
+				SELECT count(*), min(p.agent_id::text)::uuid, COALESCE(min(t.name), '')
+				FROM agent_preset p
+				LEFT JOIN model_tier t ON t.id = p.tier_id AND t.workspace_id = p.workspace_id
+				WHERE p.workspace_id = $1 AND p.legacy_agent_id = $2`, issue.WorkspaceID, agentUUID).Scan(&aliasCount, &canonicalID, &presetTierName)
+			if aliasErr != nil {
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			if aliasCount > 1 {
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			if aliasCount == 1 {
+				if presetTierName == "" {
+					blockTarget("agent", m.ID, ReasonTierUnavailable)
+					continue
+				}
+				agentUUID = canonicalID
+			}
 		}
 		// Load the agent scoped to the current issue's workspace. Using the
 		// bare GetAgent here would let a mention resolve to an agent in a
@@ -3517,29 +3544,9 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			WorkspaceID: issue.WorkspaceID,
 		})
 		if err != nil {
-			// Old links may carry an agent id that now names a preset alias. Resolve
-			// only a single alias in this workspace; authorization below is always
-			// checked against the canonical agent before any state is inspected.
-			var canonicalID pgtype.UUID
-			aliasErr := h.DB.QueryRow(ctx, `
-				SELECT min(agent_id::text)::uuid
-				FROM agent_preset
-				WHERE workspace_id = $1 AND legacy_agent_id = $2
-				HAVING count(DISTINCT agent_id) = 1`, issue.WorkspaceID, agentUUID).Scan(&canonicalID)
-			if aliasErr != nil {
-				// Preserve the enumeration-safe result for missing, ambiguous, and
-				// cross-workspace ids.
-				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
-				continue
-			}
-			agent, err = h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
-				ID: canonicalID, WorkspaceID: issue.WorkspaceID,
-			})
-			if err != nil {
-				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
-				continue
-			}
-			agentUUID = canonicalID
+			// Do not reveal whether the id exists outside this workspace.
+			blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+			continue
 		}
 		// Private-agent gate first, before any archived/runtime state is read.
 		if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, wsID) {
@@ -3583,7 +3590,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		// here so both preview and submit surface tier_unavailable for a
 		// name that matches nothing usable — instead of silently running
 		// the plain resolver.
-		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier && m.Type == "agent" {
+		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier && m.Type == "agent" && !strings.EqualFold(strings.TrimSpace(m.Label), agent.Name) {
 			tierName = tier
 		}
 		if tierName != "" {
