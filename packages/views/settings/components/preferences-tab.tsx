@@ -330,7 +330,9 @@ function TimelineOrderRow() {
 /**
  * What a plain click on an issue card or row opens across the issue views.
  * The hint carries the one non-obvious part: Shift+Click opens the other one,
- * so both stay one click away whichever is chosen.
+ * so the alternative stays one click away whichever is chosen. Only the modes
+ * the host can actually show are offered — web and the tabbed island list all
+ * three, desktop keeps Full page and Side preview.
  */
 function IssueOpeningRow() {
   const { t } = useT("settings");
@@ -351,16 +353,24 @@ function IssueOpeningRow() {
           onChange={setValue}
           buttonClassName="px-3 py-1 text-label"
           options={[
-            // A host with tabs has no in-place full page: its full-page
-            // experience is a new header tab (M-313).
-            ...(!capability.supportsTabs
+            // The full-page gesture leads: the in-place page wherever the host
+            // has one, otherwise the header tab that stands in for it on the
+            // tabbed island (M-313).
+            ...(capability.supportsPage
               ? [["page", t(($) => $.issue.opening.page)] as const]
-              : [["tab", t(($) => $.issue.opening.tab)] as const]),
+              : capability.supportsTabs
+                ? [["tab", t(($) => $.issue.opening.tab)] as const]
+                : []),
             // Side preview wherever the host can preview: the column where
             // the shell publishes one (MMX, M-336), the floating peek
             // otherwise (M-330).
             ...(capability.supportsPeek
               ? [["peek", t(($) => $.issue.opening.peek)] as const]
+              : []),
+            // A host with a page *and* a strip lists New tab third, beside
+            // both (the web dashboard, M-480).
+            ...(capability.supportsPage && capability.supportsTabs
+              ? [["tab", t(($) => $.issue.opening.tab)] as const]
               : []),
           ]}
         />

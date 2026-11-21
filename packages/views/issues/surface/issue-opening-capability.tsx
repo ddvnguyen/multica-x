@@ -15,6 +15,15 @@ export type SidePreviewOpenTarget =
 interface IssueOpeningCapability {
   supportsTabs: boolean;
   supportsPeek: boolean;
+  /**
+   * Whether the host opens an issue in place, as a full page route change.
+   *
+   * The tabbed island has no in-place page: there the full-page experience is
+   * a new header tab (M-313), and only that host hides Full page. The web
+   * dashboard shows both — a page route inside the tab and a new tab beside it
+   * (M-480) — so it keeps every mode on offer.
+   */
+  supportsPage: boolean;
   openMode: IssueOpenMode;
   openIssueInTab: (issueId: string, activate?: boolean) => boolean;
   /**
@@ -35,6 +44,7 @@ interface IssueOpeningCapability {
 const DEFAULT_CAPABILITY: IssueOpeningCapability = {
   supportsTabs: false,
   supportsPeek: true,
+  supportsPage: true,
   openMode: "page",
   openIssueInTab: () => false,
   openSidePreview: null,
@@ -42,16 +52,45 @@ const DEFAULT_CAPABILITY: IssueOpeningCapability = {
 
 const IssueOpeningCapabilityContext = createContext(DEFAULT_CAPABILITY);
 
-/** Platform-owned issue opening behavior. Web and desktop keep the upstream modes. */
+/**
+ * The mode a click uses: the stored choice, narrowed to what the host can show.
+ *
+ * A host with an in-place page keeps whatever is stored, including the default
+ * Full page for anyone who never chose (M-480). A tab-only host has no page to
+ * fall back to, so a legacy Full page means New tab there (M-313) and the
+ * default is a tab.
+ */
+function resolveOpenMode(
+  mode: IssueOpenMode,
+  hasUserChoice: boolean,
+  supportsTabs: boolean,
+  supportsPeek: boolean,
+  supportsPage: boolean,
+): IssueOpenMode {
+  const inPlace: IssueOpenMode = supportsPage ? "page" : "tab";
+  if (!hasUserChoice) return inPlace;
+  if (mode === "tab") return supportsTabs ? "tab" : inPlace;
+  if (mode === "peek") return supportsPeek ? "peek" : inPlace;
+  return inPlace;
+}
+
+/** Platform-owned issue opening behavior: which modes this host offers. */
 export function IssueOpeningCapabilityProvider({
   children,
   supportsTabs = false,
   supportsPeek = true,
+  supportsPage = !supportsTabs,
   openSidePreview = null,
 }: {
   children: ReactNode;
   supportsTabs?: boolean;
   supportsPeek?: boolean;
+  /**
+   * Defaults to `!supportsTabs`: a host that never declared tabs keeps its
+   * in-place full page, and the tabbed island keeps treating a full page as
+   * a new tab. A host with both — the web dashboard (M-480) — opts in.
+   */
+  supportsPage?: boolean;
   /** A host-owned side column; see `IssueOpeningCapability.openSidePreview`. */
   openSidePreview?: ((target: SidePreviewOpenTarget) => boolean) | null;
 }) {
@@ -63,7 +102,10 @@ export function IssueOpeningCapabilityProvider({
   const paths = useWorkspacePaths();
 
   useEffect(() => {
-    if (!supportsTabs) return;
+    // Only a host with no in-place page migrates. A host that keeps the page
+    // (web, desktop) must leave the stored choice exactly as it is: rewriting
+    // it would move every existing user off Full page (M-480).
+    if (!supportsTabs || supportsPage) return;
     // The tabbed island (MMX) has no in-place full page: the full-page
     // experience is a new header tab (M-313), so a stored "Full page" becomes
     // "New tab". A stored peek choice stays one — the island always has a
@@ -76,7 +118,7 @@ export function IssueOpeningCapabilityProvider({
     }
     if (mode === "peek") setOpenMode("tab");
     else if (!hasUserChoice) setDefaultOpenMode("tab");
-  }, [supportsTabs, supportsPeek, mode, hasUserChoice, setOpenMode, setDefaultOpenMode]);
+  }, [supportsTabs, supportsPage, supportsPeek, mode, hasUserChoice, setOpenMode, setDefaultOpenMode]);
 
   const openIssueInTab = useCallback((issueId: string, activate = true) => {
     if (!supportsTabs || !navigation.openInNewTab) return false;
@@ -87,21 +129,11 @@ export function IssueOpeningCapabilityProvider({
   const value = useMemo<IssueOpeningCapability>(() => ({
     supportsTabs,
     supportsPeek,
+    supportsPage,
     openSidePreview,
-    openMode: supportsTabs
-      ? (!hasUserChoice || mode === "page"
-        // No stored choice yet, or a legacy in-place full page: the island's
-        // full-page experience is a new header tab (M-313).
-        ? "tab"
-        // A peek-only host (no side panel) still migrates the peek to a tab.
-        : mode === "peek" && !supportsPeek
-          ? "tab"
-          : mode)
-      : mode === "tab"
-        ? "page"
-        : mode,
+    openMode: resolveOpenMode(mode, hasUserChoice, supportsTabs, supportsPeek, supportsPage),
     openIssueInTab,
-  }), [supportsTabs, supportsPeek, openSidePreview, hasUserChoice, mode, openIssueInTab]);
+  }), [supportsTabs, supportsPeek, supportsPage, openSidePreview, hasUserChoice, mode, openIssueInTab]);
 
   return (
     <IssueOpeningCapabilityContext.Provider value={value}>

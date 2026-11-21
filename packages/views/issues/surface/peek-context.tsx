@@ -110,21 +110,26 @@ export function resolveIssueClick(
   openMode: IssueOpenMode = "page",
   supportsPeek = true,
   supportsTabs = false,
+  supportsPage = !supportsTabs,
 ): IssueOpenMode | null {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return null;
-  // The tabbed island (MMX) offers New tab beside Side preview: the full-page
+  // A tab-only host (the MMX island) has no in-place full page: the full-page
   // experience is a new header tab, so Shift toggles between the two and a
   // legacy in-place page plain-click opens a tab (M-313).
-  if (supportsPeek && supportsTabs) {
+  if (!supportsPage) {
     if (!event.shiftKey) return openMode === "page" ? "tab" : openMode;
-    if (openMode === "tab") return "peek";
+    if (openMode === "tab") return supportsPeek ? "peek" : "page";
     return "tab";
   }
   if (!event.shiftKey) return openMode;
+  // A host with an in-place page (web, desktop) pairs it with the preview:
+  // Shift goes back and forth between the two, and a New tab choice — a new
+  // mode beside both on web (M-480) — falls back to the preview, which shares
+  // the view the tab would leave.
   if (openMode === "peek") return "page";
-  if (openMode === "tab") return "page";
   if (supportsPeek) return "peek";
-  return supportsTabs ? "tab" : "page";
+  if (openMode === "page" && supportsTabs) return "tab";
+  return "page";
 }
 
 export const IssuePeekActionsContext = createContext<IssuePeekActions | null>(null);
@@ -175,7 +180,13 @@ export function useIssuePeekClick() {
       return capability.openIssueInTab(tabIssueId, event.shiftKey);
     }
     const target = event
-      ? resolveIssueClick(event, capability.openMode, capability.supportsPeek, capability.supportsTabs)
+      ? resolveIssueClick(
+          event,
+          capability.openMode,
+          capability.supportsPeek,
+          capability.supportsTabs,
+          capability.supportsPage,
+        )
       : capability.openMode;
     if (target === "tab") {
       if (event) event.preventDefault();

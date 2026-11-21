@@ -99,7 +99,7 @@ const issue = {
   updated_at: "2026-09-27T00:00:00Z",
 } as unknown as Issue;
 
-function renderCard({ withPeek = true, peekedId = null as string | null, supportsTabs = false, supportsPeek }: { withPeek?: boolean; peekedId?: string | null; supportsTabs?: boolean; supportsPeek?: boolean } = {}) {
+function renderCard({ withPeek = true, peekedId = null as string | null, supportsTabs = false, supportsPeek, supportsPage }: { withPeek?: boolean; peekedId?: string | null; supportsTabs?: boolean; supportsPeek?: boolean; supportsPage?: boolean } = {}) {
   const peekEnabled = supportsPeek ?? !supportsTabs;
   const card = (
     <DndContext>
@@ -110,7 +110,7 @@ function renderCard({ withPeek = true, peekedId = null as string | null, support
   );
   return render(
     <NavigationProvider value={navigation}>
-      <IssueOpeningCapabilityProvider supportsTabs={supportsTabs} supportsPeek={peekEnabled}>
+      <IssueOpeningCapabilityProvider supportsTabs={supportsTabs} supportsPeek={peekEnabled} supportsPage={supportsPage}>
       {withPeek ? (
         <IssuePeekActionsContext.Provider value={peek}>
           <IssuePeekIdContext.Provider value={peekedId}>{card}</IssuePeekIdContext.Provider>
@@ -285,6 +285,90 @@ describe("DraggableBoardCard side peek", () => {
     renderCard({ withPeek: false });
     // No handler claims the gesture: AppLink leaves it to the browser.
     fireEvent.click(link(), { shiftKey: true });
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The web dashboard (M-480): New tab is a third choice beside Full page and
+ * Side preview, because the page has both a tab strip and in-place routes.
+ */
+describe("DraggableBoardCard on the web dashboard", () => {
+  const web = { supportsTabs: true, supportsPeek: true, supportsPage: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete navigation.openInNewTab;
+    useIssueOpeningStore.persist.clearStorage();
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: false });
+  });
+
+  it("still navigates in place on a plain click in Full page mode", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    renderCard(web);
+    fireEvent.click(link());
+    expect(navigation.push).toHaveBeenCalledWith("/acme/issues/issue-1");
+    expect(navigation.openInNewTab).not.toHaveBeenCalled();
+  });
+
+  it("leaves Full page the default for a user who never chose", () => {
+    navigation.openInNewTab = vi.fn();
+    renderCard(web);
+    expect(useIssueOpeningStore.getState().openMode).toBe("page");
+    fireEvent.click(link());
+    expect(navigation.push).toHaveBeenCalledWith("/acme/issues/issue-1");
+    expect(navigation.openInNewTab).not.toHaveBeenCalled();
+  });
+
+  it("opens an activated header tab on a plain click in New tab mode", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    renderCard(web);
+    expect(fireEvent.click(link())).toBe(false);
+    expect(navigation.openInNewTab).toHaveBeenCalledWith(
+      "/acme/issues/MUL-1",
+      "MUL-1",
+      { activate: true },
+    );
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+
+  it("opens a background tab on Cmd/Ctrl+Click in New tab mode", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    renderCard(web);
+    fireEvent.click(link(), { metaKey: true });
+    fireEvent.click(link(), { ctrlKey: true });
+    expect(navigation.openInNewTab).toHaveBeenNthCalledWith(
+      1,
+      "/acme/issues/MUL-1",
+      "MUL-1",
+      { activate: false },
+    );
+    expect(navigation.openInNewTab).toHaveBeenNthCalledWith(
+      2,
+      "/acme/issues/MUL-1",
+      "MUL-1",
+      { activate: false },
+    );
+  });
+
+  it("opens the side preview on Shift+Click from New tab", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    renderCard(web);
+    expect(fireEvent.click(link(), { shiftKey: true })).toBe(false);
+    expect(peek.toggle).toHaveBeenCalledWith("issue-1");
+    expect(navigation.openInNewTab).not.toHaveBeenCalled();
+  });
+
+  it("opens the side preview on Shift+Click in Full page mode", () => {
+    navigation.openInNewTab = vi.fn();
+    useIssueOpeningStore.setState({ openMode: "page", hasUserChoice: true });
+    renderCard(web);
+    expect(fireEvent.click(link(), { shiftKey: true })).toBe(false);
+    expect(peek.toggle).toHaveBeenCalledWith("issue-1");
     expect(navigation.push).not.toHaveBeenCalled();
   });
 });
