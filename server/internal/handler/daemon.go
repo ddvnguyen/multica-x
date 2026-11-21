@@ -6986,7 +6986,9 @@ func (h *Handler) hydrateDshSessionURLs(ctx context.Context, rows []db.AgentTask
 // one provider lookup and the config gate, so the rule itself is unit-testable
 // without a database.
 func stampDshSessionURLs(rows []db.AgentTaskQueue, resp []AgentTaskResponse, dshRuntime map[string]bool, base string) {
-	base = strings.TrimRight(base, "/")
+	// The operator's base is kept verbatim: its trailing slash and its path
+	// prefix are part of the deployed app's address, so trimming either would
+	// point at a different route.
 	for i, t := range rows {
 		if i >= len(resp) || !dshRuntime[uuidToString(t.RuntimeID)] {
 			continue
