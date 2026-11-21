@@ -2241,6 +2241,21 @@
     "advisory_badge": "advisory",
     "advisory_hint": "Stored and shown for scheduling and review. No harness proves it passes a compaction threshold to the provider yet, so treat it as advisory.",
     "compact_tokens_hint": "Compacts at about {{tokens}} tokens.",
-    "editor_description": "Profile settings apply to the whole tier; each member is one harness and model it may run on."
+    "editor_description": "Profile settings apply to the whole tier; each member is one harness and model it may run on.",
+    "presets_title": "Presets",
+    "presets_loading": "Loading presets…",
+    "presets_empty": "No presets for this agent.",
+    "presets_name": "Preset name",
+    "presets_tier": "Tier",
+    "presets_edit": "Edit",
+    "presets_delete": "Delete",
+    "presets_add": "Add preset",
+    "presets_save": "Save preset",
+    "presets_unavailable": "Unavailable",
+    "presets_error": "Could not load or save presets.",
+    "presets_agent": "Agent",
+    "presets_empty_all": "No presets yet.",
+    "presets_using_label": "Presets using this agent",
+    "presets_manage_link": "Manage in Settings → Tiers"
   }
 }

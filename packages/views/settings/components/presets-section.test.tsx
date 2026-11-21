@@ -3,21 +3,31 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderWithI18n } from "../../../test/i18n";
+import { renderWithI18n } from "../../test/i18n";
 
 const mocks = vi.hoisted(() => ({
   getWorkspace: vi.fn(),
   listAgentPresets: vi.fn(),
   listModelTiers: vi.fn(),
+  listAgents: vi.fn(),
   createAgentPreset: vi.fn(),
   updateAgentPreset: vi.fn(),
   deleteAgentPreset: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({ api: mocks }));
-vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/workspace/queries", () => ({
+  modelTiersOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "tiers"],
+    queryFn: mocks.listModelTiers,
+  }),
+  agentListOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "agents"],
+    queryFn: mocks.listAgents,
+  }),
+}));
 
-import { AgentPresetEditor } from "./agent-preset-editor";
+import { PresetsSection } from "./presets-section";
 
 const preset = {
   id: "preset-1",
@@ -30,23 +40,31 @@ const preset = {
   tier_enabled: true,
 };
 
-function renderEditor() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderSection(canManage = true) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderWithI18n(
     <QueryClientProvider client={queryClient}>
-      <AgentPresetEditor agentId="agent-1" canEdit />
+      <PresetsSection wsId="ws-1" canManage={canManage} />
     </QueryClientProvider>,
   );
 }
 
-describe("AgentPresetEditor", () => {
+describe("PresetsSection", () => {
   beforeEach(() => {
-    mocks.getWorkspace.mockReset().mockResolvedValue({ settings: { agent_presets_enabled: true } });
+    mocks.getWorkspace.mockReset().mockResolvedValue({
+      settings: { agent_presets_enabled: true },
+    });
     mocks.listAgentPresets.mockReset().mockResolvedValue([]);
     mocks.listModelTiers.mockReset().mockResolvedValue([
       { id: "tier-1", name: "Sonnet High", enabled: true },
       { id: "tier-2", name: "Fast", enabled: true },
       { id: "tier-off", name: "Disabled", enabled: false },
+    ]);
+    mocks.listAgents.mockReset().mockResolvedValue([
+      { id: "agent-1", name: "Architect", archived_at: null },
+      { id: "agent-2", name: "Engineer", archived_at: null },
     ]);
     mocks.createAgentPreset.mockReset().mockResolvedValue(preset);
     mocks.updateAgentPreset.mockReset().mockResolvedValue(preset);
@@ -55,12 +73,22 @@ describe("AgentPresetEditor", () => {
 
   afterEach(() => cleanup());
 
-  it("creates a named agent and tier preset", async () => {
+  it("creates a preset with a chosen agent and tier", async () => {
     const user = userEvent.setup();
-    renderEditor();
+    renderSection();
 
-    await user.type(await screen.findByRole("textbox", { name: "Preset name" }), "Claude Architect");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Tier" }), "tier-1");
+    await user.type(
+      await screen.findByRole("textbox", { name: "Preset name" }),
+      "Claude Architect",
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Agent" }),
+      "agent-1",
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Tier" }),
+      "tier-1",
+    );
     await user.click(screen.getByRole("button", { name: "Add preset" }));
 
     expect(mocks.createAgentPreset).toHaveBeenCalledWith("ws-1", {
@@ -70,27 +98,43 @@ describe("AgentPresetEditor", () => {
     });
   });
 
-  it("edits an existing preset and filters out other agents", async () => {
+  it("lists every workspace preset and re-points one to another agent and tier", async () => {
     const user = userEvent.setup();
     mocks.listAgentPresets.mockResolvedValue([
       preset,
-      { ...preset, id: "other-preset", agent_id: "agent-2", name: "Other agent" },
+      { ...preset, id: "other-preset", name: "Engineer Fast", agent_id: "agent-2", agent_name: "Engineer" },
     ]);
-    renderEditor();
+    renderSection();
 
     expect(await screen.findByText("Architect Sonnet")).toBeInTheDocument();
-    expect(screen.queryByText("Other agent")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByText("Engineer Fast")).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
     const nameInput = screen.getByRole("textbox", { name: "Preset name" });
     await user.clear(nameInput);
     await user.type(nameInput, "Architect Fast");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Tier" }), "tier-2");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Agent" }),
+      "agent-2",
+    );
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Tier" }),
+      "tier-2",
+    );
     await user.click(screen.getByRole("button", { name: "Save preset" }));
 
     expect(mocks.updateAgentPreset).toHaveBeenCalledWith("ws-1", "preset-1", {
       name: "Architect Fast",
-      agent_id: "agent-1",
+      agent_id: "agent-2",
       tier_id: "tier-2",
     });
+  });
+
+  it("hides the editor for non-admin members", async () => {
+    renderSection(false);
+
+    expect(await screen.findByText("No presets yet.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add preset" }),
+    ).toBeNull();
   });
 });

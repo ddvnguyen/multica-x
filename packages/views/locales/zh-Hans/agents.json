@@ -209,18 +209,7 @@
     "edit_description_title": "编辑描述",
     "description_placeholder": "这个智能体做什么？",
     "save": "保存",
-    "cancel": "取消",
-    "presets_title": "预设",
-    "presets_loading": "正在加载预设…",
-    "presets_empty": "此智能体没有预设。",
-    "presets_name": "预设名称",
-    "presets_tier": "层级",
-    "presets_edit": "编辑",
-    "presets_delete": "删除",
-    "presets_add": "添加预设",
-    "presets_save": "保存预设",
-    "presets_unavailable": "不可用",
-    "presets_error": "无法加载或保存预设。"
+    "cancel": "取消"
   },
   "overview": {
     "agent_context": "智能体",

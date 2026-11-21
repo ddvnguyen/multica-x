@@ -61,6 +61,7 @@ import type {
   ModelTierMemberInput,
 } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { PresetsSection } from "./presets-section";
 import {
   SettingsCard,
   SettingsReadOnlyNotice,
@@ -400,6 +401,8 @@ export function TiersTab() {
           )}
         </SettingsCard>
       </SettingsSection>
+
+      <PresetsSection wsId={wsId} canManage={canManage} />
 
       {editorOpen && (
         <TierEditorDialog

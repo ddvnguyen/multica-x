@@ -50,7 +50,7 @@ import {
 } from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./inspector/runtime-picker";
 import { TierPicker } from "./inspector/tier-picker";
-import { AgentPresetEditor } from "./inspector/agent-preset-editor";
+import { AgentPresetLink } from "./inspector/agent-preset-link";
 import { RolePicker } from "./inspector/role-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
@@ -448,7 +448,7 @@ export function AgentDetailInspector({
               )}
                 </>
               )}
-              <AgentPresetEditor agentId={agent.id} canEdit={canEdit} />
+              <AgentPresetLink agentId={agent.id} />
               <SettingsRow
                 label={t(($) => $.inspector.prop_concurrency)}
                 size="select-wide"
