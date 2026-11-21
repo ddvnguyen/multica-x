@@ -45,6 +45,14 @@ ENV_FILE="$SCRIPT_DIR/dsh-z.env"
 [ -f "$ENV_FILE" ] || ENV_FILE="$SCRIPT_DIR/../../deploy/dsh-z/dsh-z.env"
 # shellcheck source=/dev/null
 . "$ENV_FILE"
+# Persistent switch override (M-335/M-482): deploy/dsh-z/deploy.sh sources
+# $LANE_ROOT/data/mmx-switch.env to repoint lane z at multica_mmx @ 55434.
+# autodeploy.sh must use the same environment, or it backs up and migrates
+# multica_z @ 5432 while the lane serves multica_mmx — the M-469 rollback.
+if [ -f "$LANE_ROOT/data/mmx-switch.env" ]; then
+  # shellcheck source=/dev/null
+  . "$LANE_ROOT/data/mmx-switch.env"
+fi
 # shellcheck source=./lane-lib.sh
 . "$SCRIPT_DIR/lane-lib.sh"
 
@@ -645,6 +653,12 @@ if [ "$DRY_RUN" = 1 ]; then
   log "dry-run: would install mmx-pwa-$SHA to mmx-pwa/releases/${SHA:0:9}, flip mmx-pwa/current, restart ${MMX_PWA_Z_UNIT:-mmx-pwa-z.service}, and assert the MMX brand + sw.js stamp,"
   log "dry-run: would sync the plugin bundle and restart $DSH_Z_WEB_UNIT only if its content changed, then assert health and comment on $(resolve_card "$SHA" || printf 'no card')"
   log "dry-run: disk ${DF_BEFORE}G free (refuse below ${AUTODEPLOY_MIN_FREE_GB}G), keeping $AUTODEPLOY_KEEP_RELEASES releases"
+  # M-482: the dry run fails when the migrate target differs from the serving
+  # DB, so a missing mmx-switch.env surfaces here instead of in production.
+  # The template carries a PASSWORD placeholder; the guard compares endpoints
+  # only, so no secret is needed.
+  assert_migrate_target_matches_serving_db "${MULTICA_Z_DSN_TEMPLATE:-}" \
+    || { log "dry-run: migrate target does not match the serving DB"; exit 1; }
   prune_backups
   exit 0
 fi
@@ -703,6 +717,9 @@ if [ -z "$FORCE_SHA" ]; then
 fi
 
 step "backup"
+# M-482: fail before touching anything when the backup/migrate target is not
+# the DB the lane serves (wrong side of the MMX switch).
+assert_migrate_target_matches_serving_db "${MULTICA_Z_DSN_TEMPLATE:-}" || fail "backup target is not the serving DB"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP="$AUTODEPLOY_BACKUP_DIR/multica_z-pre-${SHA:0:9}-$TS.dump"
 MIG_LIST_PRE="$AUTODEPLOY_BACKUP_DIR/multica_z-pre-${SHA:0:9}-migrations-$TS.txt"
@@ -741,7 +758,11 @@ step "migrate"
 if [ -f "$LANE_RUNTIME_ENV" ]; then . "$LANE_RUNTIME_ENV"; fi
 [ -n "${MULTICA_Z_DB_PASSWORD:-}" ] || fail "no MULTICA_Z_DB_PASSWORD in $LANE_RUNTIME_ENV"
 [ -n "${MULTICA_Z_DEV_CODE:-}" ] || fail "no MULTICA_Z_DEV_CODE in $LANE_RUNTIME_ENV"
-DSN="${MULTICA_Z_DSN_TEMPLATE/PASSWORD/$MULTICA_Z_DB_PASSWORD}"
+DSN="${MULTICA_Z_DSN_TEMPLATE:?MULTICA_Z_DSN_TEMPLATE is not set}"
+DSN="${DSN/PASSWORD/$MULTICA_Z_DB_PASSWORD}"
+# M-482: refuse to migrate when the target is not the DB the lane serves
+# (e.g. multica_z @ 5432 while the switched lane serves multica_mmx @ 55434).
+assert_migrate_target_matches_serving_db "$DSN" || fail "migrate target is not the serving DB"
 ( cd "$REL.tmp.$$" && DATABASE_URL="$DSN" "$REL.tmp.$$/bin/migrate" up )
 podman exec "$MULTICA_Z_DB_CONTAINER" psql -U hydra -d "$MULTICA_Z_DB_NAME" -tAc \
   'select version from schema_migrations order by version' | sed '/^$/d' | sort > "$LANE_ROOT/data/autodeploy-migrations.post"

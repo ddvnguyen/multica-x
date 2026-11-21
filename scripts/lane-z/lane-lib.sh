@@ -220,3 +220,42 @@ wait_http() { # $1=url $2=timeout $3=expected substring (empty = any 2xx body)
     sleep 2
   done
 }
+
+# M-482: the migrate target must be the DB the lane actually serves.
+# deploy.sh sources $LANE_ROOT/data/mmx-switch.env (M-335) to repoint lane z
+# at multica_mmx @ 55434; autodeploy.sh sources the same file, and this guard
+# fails the tick when the two disagree instead of migrating the wrong DB.
+db_url_endpoint() { # $1 = postgres URL; prints host:port/db (no credentials)
+  local url="${1:-}" rest hostport db
+  [ -n "$url" ] || return 1
+  rest="${url#*@}"           # strip scheme + userinfo (also covers the
+                             # PASSWORD placeholder in the DSN template)
+  rest="${rest%%\?*}"        # strip query string
+  hostport="${rest%%/*}"
+  db="${rest#*/}"
+  [ -n "$hostport" ] && [ -n "$db" ] && [ "$db" != "$rest" ] || return 1
+  printf '%s/%s' "$hostport" "$db"
+}
+
+serving_db_endpoint() { # prints host:port/db from multica-be/env, or fails
+  local env_file="$LANE_ROOT/multica-be/env" url
+  [ -f "$env_file" ] || return 1
+  url="$(sed -n 's/^DATABASE_URL=//p' "$env_file" | head -1)"
+  [ -n "$url" ] || return 1
+  db_url_endpoint "$url"
+}
+
+assert_migrate_target_matches_serving_db() { # $1 = migrate DSN (or template)
+  # Compares endpoints only (host:port/db), never secrets. A lane with no
+  # serving env yet (first provision) has nothing to disagree with: pass.
+  local target serving
+  target="$(db_url_endpoint "${1:?migrate DSN required}")" \
+    || { log "cannot parse migrate target endpoint"; return 1; }
+  serving="$(serving_db_endpoint)" \
+    || { log "no serving DATABASE_URL yet; skipping migrate-target check (target $target)"; return 0; }
+  if [ "$target" != "$serving" ]; then
+    log "migrate target $target != serving DB $serving; refusing (mmx-switch.env not sourced?)"
+    return 1
+  fi
+  log "migrate target matches serving DB: $target"
+}
