@@ -213,8 +213,8 @@ func TestResolve423_FallbackHighestKnown(t *testing.T) {
 	_ = q55
 	s.selectTiers(t, eng, q60, q55)
 	// requiredTierQuality unit checks: band edges interpolate.
-	if r := requiredTierQuality("leader", 5, 5); r != 70 {
-		t.Errorf("leader max = %d, want 70", r)
+	if r := requiredTierQuality("management", 5, 5); r != 72 {
+		t.Errorf("management max = %d, want 72", r)
 	}
 	if r := requiredTierQuality("architect", 1, 1); r != 72 {
 		t.Errorf("architect min = %d, want 72", r)
