@@ -109,6 +109,18 @@ export interface ModelTierInput {
   is_free?: boolean;
 }
 
+/** A named agent+tier quick pick. */
+export interface AgentPreset {
+  id: string;
+  workspace_id: string;
+  name: string;
+  agent_id: string;
+  agent_name: string;
+  tier_id: string;
+  tier_name: string;
+  tier_enabled: boolean;
+}
+
 export interface Member {
   id: string;
   workspace_id: string;

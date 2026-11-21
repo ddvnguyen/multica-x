@@ -1888,6 +1888,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is available to pick in M-351. Writes stay
 					// admin-only below.
 					r.Get("/tiers", h.ListModelTiers)
+					r.Get("/presets", h.ListAgentPresets)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1955,6 +1956,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Model tiers (M-350). Curating the tier list is an admin
 					// action; agents pick from it in M-351.
 					r.Post("/tiers", h.CreateModelTier)
+					r.Post("/presets", h.CreateAgentPreset)
+					r.Put("/presets/{presetId}", h.UpdateAgentPreset)
+					r.Delete("/presets/{presetId}", h.DeleteAgentPreset)
 					r.Put("/tiers/reorder", h.ReorderModelTiers)
 					r.Put("/tiers/{tierId}", h.UpdateModelTier)
 					r.Delete("/tiers/{tierId}", h.DeleteModelTier)

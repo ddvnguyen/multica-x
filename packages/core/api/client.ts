@@ -98,6 +98,7 @@ import type {
   WorkspaceMcpServer,
   ModelTier,
   ModelTierInput,
+  AgentPreset,
   MemberWithUser,
   User,
   Skill,
@@ -637,6 +638,8 @@ import {
   WorkspaceMcpServerSchema,
   ModelTierListSchema,
   ModelTierSchema,
+  AgentPresetSchema,
+  AgentPresetListSchema,
   EMPTY_MODEL_TIER,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
@@ -4121,6 +4124,34 @@ export class ApiClient {
     });
     if (!parsed) throw new Error("Invalid tiers response");
     return parsed.tiers;
+  }
+
+  /** Presets are workspace-scoped and return an empty list while the workspace flag is off. */
+  async listAgentPresets(workspaceId: string): Promise<AgentPreset[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/presets`);
+    const parsed = parseWithFallback<{ presets: AgentPreset[] } | null>(raw, z.object({ presets: AgentPresetListSchema }), null, {
+      endpoint: "GET /api/workspaces/{id}/presets",
+    });
+    if (!parsed) throw new Error("Invalid presets response");
+    return parsed.presets;
+  }
+
+  async createAgentPreset(workspaceId: string, input: { name: string; agent_id: string; tier_id: string }): Promise<AgentPreset> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/presets`, { method: "POST", body: JSON.stringify(input) });
+    return parseWithFallback(raw, AgentPresetSchema, { id: "", workspace_id: workspaceId, name: "", agent_id: "", agent_name: "", tier_id: "", tier_name: "", tier_enabled: false }, {
+      endpoint: "POST /api/workspaces/{id}/presets",
+    });
+  }
+
+  async updateAgentPreset(workspaceId: string, presetId: string, input: { name: string; agent_id: string; tier_id: string }): Promise<AgentPreset> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/presets/${encodeURIComponent(presetId)}`, { method: "PUT", body: JSON.stringify(input) });
+    return parseWithFallback(raw, AgentPresetSchema, { id: presetId, workspace_id: workspaceId, name: "", agent_id: "", agent_name: "", tier_id: "", tier_name: "", tier_enabled: false }, {
+      endpoint: "PUT /api/workspaces/{id}/presets/{presetId}",
+    });
+  }
+
+  async deleteAgentPreset(workspaceId: string, presetId: string): Promise<void> {
+    await this.fetch<unknown>(`/api/workspaces/${workspaceId}/presets/${encodeURIComponent(presetId)}`, { method: "DELETE" });
   }
 
   /** Adds a tier (admin). */
