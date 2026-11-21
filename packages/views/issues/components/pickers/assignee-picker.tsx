@@ -362,7 +362,7 @@ function AssigneeOptions({
                 tooltip={!preset.tier_enabled ? undefined : decision?.message}
                 onClick={() => {
                   if (!allowed) return;
-                  onPick({ assignee_type: "agent", assignee_id: preset.agent_id, tier_id: preset.tier_id });
+                  onPick({ assignee_type: "agent", assignee_id: preset.agent_id, preset_id: preset.id });
                 }}
               >
                 <ActorAvatar actorType="agent" actorId={preset.agent_id} size="sm" showStatusDot />

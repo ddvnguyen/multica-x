@@ -29,8 +29,9 @@ type tierResolution struct {
 	hasCapacity   bool
 	// M-423: floor missed (fallback stamp) / stamped tier has no measured
 	// quality (unknown). Both ride the task row for the run badge.
-	qualityFallback   bool
-	qualityUnverified bool
+	qualityFallback      bool
+	qualityUnverified    bool
+	presetFallbackReason string
 }
 
 // errNoTierCapacity signals "agent uses tiers but no selected tier has a free
