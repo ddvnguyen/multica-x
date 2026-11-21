@@ -1150,7 +1150,13 @@
     },
     "tier": {
       "tier_group": "이 실행의 티어",
-      "tier_auto": "자동 (리졸버 선택)"
+      "tier_auto": "자동 (리졸버 선택)",
+      "pick_model": "모델",
+      "pick_harness": "하네스",
+      "pick_runtime": "런타임",
+      "pick_model_count": "매핑 {{count}}개",
+      "back_to_models": "← 모델",
+      "tier_none_hint": "사용 가능한 티어가 없습니다"
     }
   },
   "labels_panel": {

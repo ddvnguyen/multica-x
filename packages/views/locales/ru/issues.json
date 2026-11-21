@@ -1278,7 +1278,13 @@
     },
     "tier": {
       "tier_group": "Тир для этого запуска",
-      "tier_auto": "Авто (выбирает резолвер)"
+      "tier_auto": "Авто (выбирает резолвер)",
+      "pick_model": "Модель",
+      "pick_harness": "Харнесс",
+      "pick_runtime": "Среда выполнения",
+      "pick_model_count": "Сопоставлений: {{count}}",
+      "back_to_models": "← Модели",
+      "tier_none_hint": "Нет доступных уровней"
     }
   },
   "labels_panel": {

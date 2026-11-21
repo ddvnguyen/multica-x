@@ -1150,7 +1150,13 @@
     },
     "tier": {
       "tier_group": "本次執行的層級",
-      "tier_auto": "自動（由解析器選擇）"
+      "tier_auto": "自動（由解析器選擇）",
+      "pick_model": "模型",
+      "pick_harness": "執行框架",
+      "pick_runtime": "執行環境",
+      "pick_model_count": "{{count}} 個對應",
+      "back_to_models": "← 模型",
+      "tier_none_hint": "沒有可用的層級"
     }
   },
   "labels_panel": {

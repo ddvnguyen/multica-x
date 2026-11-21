@@ -67,6 +67,7 @@ import { useComposerVoice, VoiceDialogFooter, VoiceMicButton } from "../voice";
 import { ProjectPicker } from "../projects/components/project-picker";
 import { DueDatePicker, PriorityIcon, PriorityPicker } from "../issues/components";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
+import { TierPickFlow } from "../issues/components/pickers/tier-pick-flow";
 import { isAgentRuntimeBound } from "@multica/core/agents";
 import {
   PropertyPicker,
@@ -752,7 +753,7 @@ export function AgentCreatePanel({
         {/* M-359 tier for this run — Auto (resolver) by default, or one
             pinned tier. Squad picks route to the leader; the pin applies
             to the leader's run. */}
-        <TierPickRow tierId={tierId} onPick={setTierId} />
+        <TierPickRow tierId={tierId} supportedTierIds={selectedAgent?.tier_ids} onPick={setTierId} />
 
         {selectedAgent && versionBlocked && (
           <div className="mx-5 mb-2 shrink-0 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-caption text-amber-700 dark:text-amber-300">
@@ -1131,16 +1132,23 @@ function ActorPicker({
 /** M-359 single-tier pick for the quick-created run (null = Auto). */
 function TierPickRow({
   tierId,
+  supportedTierIds,
   onPick,
 }: {
   tierId: string | null;
+  supportedTierIds?: string[];
   onPick: (tierId: string | null) => void;
 }) {
   const { t } = useT("modals");
   const wsId = useWorkspaceId();
   const [open, setOpen] = useState(false);
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
-  const enabled = tiers.filter((tier) => tier.enabled);
+  const enabled = useMemo(() => {
+    const rows = tiers.filter((tier) => tier.enabled);
+    if (!supportedTierIds?.length) return rows;
+    const allowed = new Set(supportedTierIds);
+    return rows.filter((tier) => allowed.has(tier.id));
+  }, [tiers, supportedTierIds]);
   if (enabled.length === 0) return null;
   const pick = (next: string | null) => {
     onPick(next);
@@ -1160,17 +1168,12 @@ function TierPickRow({
           </span>
         }
       >
-        <PickerItem selected={tierId === null} onClick={() => pick(null)}>
-          <span className="truncate">{t(($) => $.create_issue.tier.tier_auto)}</span>
-        </PickerItem>
-        {enabled.map((tier) => (
-          <PickerItem key={tier.id} selected={tierId === tier.id} onClick={() => pick(tier.id)}>
-            <span className="truncate">
-              #{tier.name}
-              {tier.model ? <span className="text-muted-foreground"> · {tier.model}</span> : null}
-            </span>
-          </PickerItem>
-        ))}
+        <TierPickFlow
+          tiers={enabled}
+          selectedTierId={tierId}
+          onPick={pick}
+          onAuto={() => pick(null)}
+        />
       </PropertyPicker>
     </div>
   );

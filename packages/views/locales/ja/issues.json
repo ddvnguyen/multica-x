@@ -1150,7 +1150,13 @@
     },
     "tier": {
       "tier_group": "この実行のtier",
-      "tier_auto": "自動（リゾルバーが選択）"
+      "tier_auto": "自動（リゾルバーが選択）",
+      "pick_model": "モデル",
+      "pick_harness": "ハーネス",
+      "pick_runtime": "ランタイム",
+      "pick_model_count": "{{count}} 件のマッピング",
+      "back_to_models": "← モデル",
+      "tier_none_hint": "利用可能な tier がありません"
     }
   },
   "labels_panel": {

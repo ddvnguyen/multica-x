@@ -1207,7 +1207,13 @@
     },
     "tier": {
       "tier_group": "Tier pour cette exécution",
-      "tier_auto": "Auto (le résolveur choisit)"
+      "tier_auto": "Auto (le résolveur choisit)",
+      "pick_model": "Modèle",
+      "pick_harness": "Harness",
+      "pick_runtime": "Runtime",
+      "pick_model_count": "{{count}} correspondance(s)",
+      "back_to_models": "← Modèles",
+      "tier_none_hint": "Aucun tier disponible"
     }
   },
   "labels_panel": {

@@ -164,6 +164,9 @@ function TierRow({
   const coolingUntil = cooldownClock(tier.cooldown_until);
   // Older backends omit auto_pick; `manual_only` is its complement.
   const autoPick = tier.auto_pick ?? !tier.manual_only;
+  // M-493: show which models share this tier profile next to its metadata,
+  // so the list no longer looks like one model per tier.
+  const modelSummary = [...new Set(members.map((member) => member.model).filter(Boolean))].join(", ");
   return (
     <li
       data-testid={`tier-row-${tier.id}`}
@@ -215,6 +218,7 @@ function TierRow({
           {tier.quota_kinds.length > 0
             ? ` · ${tier.quota_kinds.length}× quota`
             : ""}
+          {modelSummary ? ` · ${modelSummary}` : ""}
         </span>
         <div
           data-testid={`tier-members-${tier.id}`}

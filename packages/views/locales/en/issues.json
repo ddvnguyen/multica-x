@@ -1209,7 +1209,13 @@
     },
     "tier": {
       "tier_group": "Tier for this run",
-      "tier_auto": "Auto (resolver picks)"
+      "tier_auto": "Auto (resolver picks)",
+      "pick_model": "Model",
+      "pick_harness": "Harness",
+      "pick_runtime": "Runtime",
+      "pick_model_count": "{{count}} mapping(s)",
+      "back_to_models": "← Models",
+      "tier_none_hint": "No tiers available"
     }
   },
   "labels_panel": {
