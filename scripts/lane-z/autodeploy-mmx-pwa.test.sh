@@ -58,7 +58,10 @@ mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/systemctl" <<'EOF'
 #!/usr/bin/env bash
 # Only the PWA unit restart is exercised here; anything else is a test bug.
+# A restart stamps the mock PWA's dead window (M-459): a real restarted Next
+# server refuses connections for a moment before it serves.
 if [[ "$*" == "--user restart mmx-pwa-z.service" ]]; then
+  [ -z "${PWA_RESTART_STAMP:-}" ] || date +%s > "$PWA_RESTART_STAMP"
   exit 0
 fi
 printf 'unexpected systemctl call: %s\n' "$*" >&2
@@ -67,13 +70,20 @@ EOF
 chmod +x "$BIN_DIR/systemctl"
 
 # curl serves the PWA health endpoints from the CURRENT release under test.
+# While $PWA_DOWN_SECONDS have not passed since the unit restart, every
+# request is refused with curl's connection-refused exit (7).
 cat > "$BIN_DIR/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 url="${*: -1}"
+if [ -n "${PWA_RESTART_STAMP:-}" ] && [ -f "$PWA_RESTART_STAMP" ] \
+  && [ "$(( $(date +%s) - $(cat "$PWA_RESTART_STAMP") ))" -lt "${PWA_DOWN_SECONDS:-0}" ]; then
+  printf 'curl: (7) Failed to connect to 127.0.0.1 port 3190\n' >&2
+  exit 7
+fi
 case "$url" in
   http://127.0.0.1:3190/manifest.webmanifest)
-    printf '{"id":"/?mmx-install","name":"MMX","short_name":"MMX"}\n' ;;
+    if [ "${FAIL_BRAND:-0}" = 1 ]; then printf '{"id":"/","name":"Multica"}\n'; else printf '{"id":"/?mmx-install","name":"MMX","short_name":"MMX"}\n'; fi ;;
   http://127.0.0.1:3190/sw.js)
     # FAIL_SW=1 simulates a unit that restarted but serves the wrong
     # content — the post-switch health gate must catch it and restore.
@@ -159,6 +169,58 @@ run_switch_mmx_pwa
 test "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$LANE_ROOT/mmx-pwa/releases/$SHA"
 grep -qx "NEXT_PUBLIC_APP_VERSION=$SHA" "$LANE_ROOT/mmx-pwa/env"
 grep -qx "REMOTE_API_URL=http://127.0.0.1:4390" "$LANE_ROOT/mmx-pwa/env"
+
+# --- M-459: the gate rides out the restarted PWA's dead window ---
+# A tick restarts mmx-pwa-z and the gate curls it immediately, while a fresh
+# server still refuses connections (measured at t=0s down, t=1s serving). The
+# pre-restart single-shot gate lost that race on the live lane; the
+# post-restart callers' wait must not. Both halves run against the same
+# stamped restart below.
+export PWA_RESTART_STAMP="$SANDBOX/pwa-restarted.at"
+export PWA_DOWN_SECONDS=3
+systemctl --user restart "$MMX_PWA_Z_UNIT"
+start="$(date +%s)"
+if assert_mmx_health "$SHA"; then
+  echo "a single-shot gate must fail inside the restarted PWA's dead window" >&2; exit 1
+fi
+test "$(( $(date +%s) - start ))" -lt 5
+assert_mmx_health "$SHA" 60 || { echo "the waiting gate must pass once the PWA answers" >&2; exit 1; }
+test "$(( $(date +%s) - start ))" -lt 20
+
+# --- M-459: a PWA that never comes up fails at the wait bound, loudly ---
+export PWA_DOWN_SECONDS=600
+systemctl --user restart "$MMX_PWA_Z_UNIT"
+gate_log=""
+log() { gate_log+="$*"$'\n'; }
+start="$(date +%s)"
+if assert_mmx_health "$SHA" 4; then
+  echo "a PWA that never answers must fail the health gate" >&2; exit 1
+fi
+test "$(( $(date +%s) - start ))" -lt 20
+printf '%s' "$gate_log" | grep -q 'manifest did not answer (waited 4s)'
+# A live PWA with the wrong brand keeps its own message: the failure names the
+# brand, not a dead server.
+unset PWA_DOWN_SECONDS PWA_RESTART_STAMP
+export FAIL_BRAND=1
+gate_log=""
+if assert_mmx_health "$SHA"; then echo "a non-MMX manifest must fail the gate" >&2; exit 1; fi
+printf '%s' "$gate_log" | grep -q 'manifest is not the MMX brand'
+! printf '%s' "$gate_log" | grep -q 'did not answer'
+unset FAIL_BRAND
+
+# --- M-459: the pre-switch precheck must not stall while the PWA is down ---
+# `already on this SHA?` is the default call shape; a 60s wait there would
+# cost a tick a full minute whenever the PWA is down.
+export PWA_RESTART_STAMP="$SANDBOX/pwa-restarted.at" PWA_DOWN_SECONDS=600
+systemctl --user restart "$MMX_PWA_Z_UNIT"
+start="$(date +%s)"
+if assert_mmx_health "$SHA" 2>/dev/null; then
+  echo "the precheck must report a down PWA as not current" >&2; exit 1
+fi
+test "$(( $(date +%s) - start ))" -lt 5
+unset PWA_DOWN_SECONDS PWA_RESTART_STAMP
+log() { :; }
+
 # --- health failure is loud: wrong stamp fails the gate ---
 printf 'const VERSION = "dev";\n' > "$LANE_ROOT/mmx-pwa/releases/$SHA/apps/web/public/sw.js"
 if assert_mmx_health "$SHA"; then echo "stale sw.js must fail the PWA health gate" >&2; exit 1; fi
