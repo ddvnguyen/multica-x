@@ -42,22 +42,30 @@ CREATE TEMP TABLE m471_profile_map (
     legacy_name TEXT NOT NULL,
     position_agent_id UUID NOT NULL,
     position_name TEXT NOT NULL,
-    position_role TEXT NOT NULL
+    position_role TEXT NOT NULL,
+    tier_name TEXT NOT NULL
 ) ON COMMIT DROP;
 
 INSERT INTO m471_profile_map VALUES
-    ('96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect'),
-    ('bd7b7aae-88e9-4260-a7b5-301993757e59', 'Claude Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect'),
-    ('7895c8ca-aed6-461e-9fea-a115b2681872', 'Opus Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect'),
-    ('88908ce5-231a-450c-a2a1-5212e028a1eb', 'Codex | Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect'),
-    ('2bd96ccd-0e7a-48cb-96d4-4e90f334b6fe', 'Lead', '2bd96ccd-0e7a-48cb-96d4-4e90f334b6fe', 'Lead', 'management'),
-    ('9ecc1dde-1bc4-4f58-a9ef-1fcf59fb8545', 'Lead (Muse Spark)', '2bd96ccd-0e7a-48cb-96d4-4e90f334b6fe', 'Lead', 'management'),
-    ('0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', '0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', 'management'),
-    ('c0fb4a93-0990-482e-8871-ead35d7c6bbb', 'Orchestrator (Backup)', '0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', 'management'),
-    ('d5c380b6-590a-498f-8591-557c05f462ec', 'Software Engineer', 'd5c380b6-590a-498f-8591-557c05f462ec', 'Software Engineer', 'engineer'),
-    ('1f23308e-83e4-4923-9ff6-2fc7ce80d841', '[Go Free] Engineer', 'd5c380b6-590a-498f-8591-557c05f462ec', 'Software Engineer', 'engineer'),
-    ('a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'engineer'),
-    ('02cd4c29-7693-4d5f-a2dd-7260f4aa08dc', 'Codebuddy Senior Engineer', 'a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'engineer');
+    ('96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect', 'arch-glm-flash'),
+    ('bd7b7aae-88e9-4260-a7b5-301993757e59', 'Claude Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect', 'arch-sonnet-5-5'),
+    ('7895c8ca-aed6-461e-9fea-a115b2681872', 'Opus Architect', '96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect', 'arch-opus-5-5'),
+    ('0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', '0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', 'management', 'orch-beam'),
+    ('1f23308e-83e4-4923-9ff6-2fc7ce80d841', '[Go Free] Engineer', 'd5c380b6-590a-498f-8591-557c05f462ec', 'Software Engineer', 'engineer', 'eng-beam'),
+    ('a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'engineer', 'eng-cb-deepseek');
+
+CREATE TEMP TABLE m471_positions (
+    position_agent_id UUID PRIMARY KEY,
+    position_name TEXT NOT NULL,
+    position_role TEXT NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO m471_positions VALUES
+    ('96a1cd5e-2a6e-4ced-a8b3-c28d413e956e', 'Architect', 'architect'),
+    ('2bd96ccd-0e7a-48cb-96d4-4e90f334b6fe', 'Lead', 'management'),
+    ('0e86b49e-1c6a-4a86-93a6-b602b9a86eae', 'Orchestrator', 'management'),
+    ('d5c380b6-590a-498f-8591-557c05f462ec', 'Software Engineer', 'engineer'),
+    ('a62593fd-09b4-4fe6-aae9-5351829e8a7d', '[Free] Codebuddy Engineer', 'engineer');
 
 CREATE TEMP TABLE m471_seed_rows ON COMMIT DROP AS
 SELECT
@@ -74,6 +82,13 @@ SELECT
     position_agent.role AS observed_position_role,
     tier_match.tier_id,
     tier_match.tier_name,
+    tier_match.tier_members,
+    CASE
+        WHEN tier_match.has_exact_member
+            THEN 'exact'
+        WHEN tier_match.has_model_match THEN 'model-only'
+        ELSE 'differs'
+    END AS fidelity,
     tier_match.match_count
 FROM m471_profile_map m
 LEFT JOIN agent legacy
@@ -86,14 +101,24 @@ LEFT JOIN LATERAL (
     SELECT
         (array_agg(t.id ORDER BY t.idx, t.created_at, t.id))[1] AS tier_id,
         (array_agg(t.name ORDER BY t.idx, t.created_at, t.id))[1] AS tier_name,
-        count(DISTINCT t.id)::integer AS match_count
+        jsonb_agg(jsonb_build_object(
+            'position', tm.position,
+            'runtime_id', tm.runtime_id,
+            'model', tm.model,
+            'thinking_level', tm.thinking_level,
+            'enabled', tm.enabled
+        ) ORDER BY tm.position) AS tier_members,
+        bool_or(legacy.runtime_id = tm.runtime_id
+            AND legacy.model = tm.model
+            AND legacy.thinking_level IS NOT DISTINCT FROM tm.thinking_level)
+            FILTER (WHERE tm.enabled) AS has_exact_member,
+        bool_or(legacy.model = tm.model) FILTER (WHERE tm.enabled) AS has_model_match,
+        (count(DISTINCT t.id) FILTER (WHERE tm.enabled))::integer AS match_count
     FROM model_tier t
     JOIN model_tier_member tm ON tm.tier_id = t.id
     WHERE t.workspace_id = :'workspace_id'::uuid
       AND m.position_role = ANY(t.roles)
-      AND tm.runtime_id = legacy.runtime_id
-      AND tm.model = legacy.model
-      AND tm.thinking_level IS NOT DISTINCT FROM legacy.thinking_level
+      AND t.name = m.tier_name
 ) tier_match ON TRUE;
 
 DO $$
@@ -101,10 +126,10 @@ DECLARE
     invalid_rows TEXT;
 BEGIN
     SELECT string_agg(
-        format('%s (%s): legacy=%s, position=%s/%s, role=%s, tier_matches=%s',
+        format('%s (%s): legacy=%s, position=%s/%s, role=%s, tier=%s, tier_matches=%s',
             legacy_name, legacy_agent_id, COALESCE(observed_legacy_name, '<missing>'),
             COALESCE(observed_position_name, '<missing>'), COALESCE(observed_position_role, '<null>'),
-            position_role, COALESCE(match_count::text, '0')),
+            position_role, tier_name, COALESCE(match_count::text, '0')),
         E'\n' ORDER BY legacy_name)
     INTO invalid_rows
     FROM m471_seed_rows
@@ -115,6 +140,28 @@ BEGIN
 
     IF invalid_rows IS NOT NULL THEN
         RAISE EXCEPTION 'M-471 preflight failed; review live agent/tier mapping before seeding:%', E'\n' || invalid_rows;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM m471_positions p
+        LEFT JOIN agent a ON a.id = p.position_agent_id
+                         AND a.workspace_id = current_setting('m471.workspace_id')::uuid
+        WHERE a.name IS DISTINCT FROM p.position_name
+           OR a.role IS DISTINCT FROM p.position_role
+    ) THEN
+        SELECT string_agg(
+            format('%s (%s): observed=%s/%s, expected role=%s',
+                p.position_name, p.position_agent_id, COALESCE(a.name, '<missing>'),
+                COALESCE(a.role, '<null>'), p.position_role),
+            E'\n' ORDER BY p.position_name)
+        INTO invalid_rows
+        FROM m471_positions p
+        LEFT JOIN agent a ON a.id = p.position_agent_id
+                         AND a.workspace_id = current_setting('m471.workspace_id')::uuid
+        WHERE a.name IS DISTINCT FROM p.position_name
+           OR a.role IS DISTINCT FROM p.position_role;
+        RAISE EXCEPTION 'M-471 canonical position preflight failed:%', E'\n' || invalid_rows;
     END IF;
 
     IF EXISTS (
@@ -147,7 +194,7 @@ BEGIN
 
     IF EXISTS (
         SELECT 1
-        FROM (SELECT DISTINCT position_agent_id, position_role FROM m471_profile_map) p
+        FROM m471_positions p
         LEFT JOIN agent a ON a.id = p.position_agent_id AND a.workspace_id = current_setting('m471.workspace_id')::uuid
         LEFT JOIN model_tier t ON t.workspace_id = current_setting('m471.workspace_id')::uuid AND p.position_role = ANY(t.roles)
         GROUP BY p.position_agent_id
@@ -160,7 +207,8 @@ END $$;
 -- This result is the required pre-seed snapshot. Save and review it before the
 -- second invocation with apply=true. No mutation occurs in the default mode.
 SELECT legacy_agent_id, legacy_name, position_agent_id, position_name, position_role,
-       legacy_runtime_id, legacy_model, legacy_thinking_level, tier_id, tier_name
+       legacy_runtime_id, legacy_model, legacy_thinking_level,
+       tier_id, tier_name, tier_members, fidelity
 FROM m471_seed_rows
 ORDER BY position_name, legacy_name;
 
@@ -170,7 +218,7 @@ SELECT DISTINCT p.position_agent_id, p.position_name, p.position_role,
            SELECT 1 FROM agent_tier at
            WHERE at.agent_id = p.position_agent_id AND at.tier_id = t.id
        ) AS already_assigned
-FROM m471_profile_map p
+FROM m471_positions p
 JOIN model_tier t ON t.workspace_id = :'workspace_id'::uuid
                  AND p.position_role = ANY(t.roles)
 ORDER BY p.position_name, t.idx, t.name;
@@ -183,14 +231,14 @@ ORDER BY p.position_name, t.idx, t.name;
 
     INSERT INTO agent_tier (agent_id, tier_id)
     SELECT DISTINCT p.position_agent_id, t.id
-    FROM m471_profile_map p
+    FROM m471_positions p
     JOIN model_tier t ON t.workspace_id = :'workspace_id'::uuid
                      AND p.position_role = ANY(t.roles)
     ON CONFLICT DO NOTHING;
 
     UPDATE agent a
     SET use_tiers = TRUE, updated_at = now()
-    FROM (SELECT DISTINCT position_agent_id FROM m471_profile_map) p
+    FROM m471_positions p
     WHERE a.id = p.position_agent_id
       AND a.workspace_id = :'workspace_id'::uuid
       AND a.use_tiers IS DISTINCT FROM TRUE;
