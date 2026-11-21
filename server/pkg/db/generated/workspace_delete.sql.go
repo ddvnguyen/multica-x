@@ -461,6 +461,11 @@ deleted_agent_tiers AS (
     DELETE FROM agent_tier
     WHERE agent_id IN (SELECT id FROM ws_agents)
 ),
+deleted_model_tier_members AS (
+    -- M-481: tier members belong to model_tier (no FKs). Delete before tiers.
+    DELETE FROM model_tier_member
+    WHERE tier_id IN (SELECT id FROM model_tier WHERE workspace_id = $1)
+),
 deleted_model_tiers AS (
     -- M-350 follow-up: workspace-owned tiers. Deleted after the join so no
     -- concurrent reader sees a tier vanish under its selection mid-teardown.
