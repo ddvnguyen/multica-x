@@ -40,6 +40,7 @@ function mountBody(params: unknown, signal = new AbortController().signal): HTML
 
 afterEach(() => {
   store.resetSidePreviewTargets();
+  localStorage.clear();
 });
 
 describe("side preview body", () => {
@@ -51,7 +52,17 @@ describe("side preview body", () => {
     expect(target?.target).toEqual({ view: "issue", id: "iss-1" });
   });
 
-  it("publishes no target for a tab dsh restored without params", async () => {
+  it("restores the last target when dsh restores the tab without params", async () => {
+    localStorage.setItem(
+      "multica.dsh.side-preview-target",
+      JSON.stringify({ view: "issue", id: "iss-saved" }),
+    );
+    mountBody(undefined);
+    await flush();
+    expect(store.getSidePreviewTargets()[0]?.target).toEqual({ view: "issue", id: "iss-saved" });
+  });
+
+  it("publishes no target when dsh restores without params and no saved target", async () => {
     mountBody(undefined);
     await flush();
     expect(store.getSidePreviewTargets()[0]?.target).toBeNull();

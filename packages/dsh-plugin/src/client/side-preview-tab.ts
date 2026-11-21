@@ -1,5 +1,5 @@
 import type { HostCreateElement } from "./seat";
-import { sidePreviewTargetFromParams } from "./side-preview";
+import { sidePreviewTargetFromParamsOrLast } from "./side-preview";
 import { publishSidePreview } from "./side-preview-store";
 
 /**
@@ -31,7 +31,7 @@ interface TabInfoProps {
 export function createIssuePreviewBody(createElement: HostCreateElement) {
   return function MulticaIssuePreviewBody(props: TabInfoProps) {
     const info = props.useTabInfo?.();
-    const target = sidePreviewTargetFromParams(info?.tab.navigation.params);
+    const target = sidePreviewTargetFromParamsOrLast(info?.tab.navigation.params);
     // A ref identity that changes per render is deliberate: React calls the
     // outgoing ref with `null` and the incoming one with the same node, so
     // every render republishes the container (the node is stable, the target may
