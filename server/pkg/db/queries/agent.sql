@@ -405,7 +405,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    model_override, thinking_level_override, service_tier_override, tier_id,
+    model_override, thinking_level_override, service_tier_override, tier_id, tier_member_id,
     tier_parked, tier_explicit,
     tier_quality_fallback, tier_quality_unverified,
     workflow_step, fire_at, id
@@ -456,6 +456,7 @@ SELECT
     sqlc.narg('thinking_level_override')::text,
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
+    sqlc.narg('tier_member_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
@@ -609,7 +610,7 @@ INSERT INTO agent_task_queue (
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
     trigger_evidence_kind, trigger_evidence_ref_id, fire_at,
-    model_override, thinking_level_override, service_tier_override, tier_id,
+    model_override, thinking_level_override, service_tier_override, tier_id, tier_member_id,
     tier_parked, tier_explicit,
     tier_quality_fallback, tier_quality_unverified,
     workflow_step, id
@@ -641,6 +642,7 @@ SELECT
     sqlc.narg('thinking_level_override')::text,
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
+    sqlc.narg('tier_member_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
@@ -694,7 +696,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    model_override, thinking_level_override, service_tier_override, tier_id,
+    model_override, thinking_level_override, service_tier_override, tier_id, tier_member_id,
     tier_parked, tier_explicit,
     tier_quality_fallback, tier_quality_unverified,
     id
@@ -712,6 +714,7 @@ SELECT
     sqlc.narg('thinking_level_override')::text,
     sqlc.narg('service_tier_override')::text,
     sqlc.narg('tier_id')::uuid,
+    sqlc.narg('tier_member_id')::uuid,
     COALESCE(sqlc.narg('tier_parked')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_explicit')::boolean, FALSE),
     COALESCE(sqlc.narg('tier_quality_fallback')::boolean, FALSE),
@@ -771,7 +774,7 @@ INSERT INTO agent_task_queue (
     trigger_evidence_kind, trigger_evidence_ref_id, retry_of_task_id,
     chat_input_task_id, fire_at,
     channel_context_revision, handoff_note, workflow_step,
-    model_override, thinking_level_override, service_tier_override, tier_id,
+    model_override, thinking_level_override, service_tier_override, tier_id, tier_member_id,
     tier_parked, tier_explicit,
     tier_quality_fallback, tier_quality_unverified, id
 )
@@ -3270,6 +3273,7 @@ SET runtime_id = @runtime_id,
     thinking_level_override = @thinking_level_override,
     service_tier_override = @service_tier_override,
     tier_id = @tier_id,
+    tier_member_id = @tier_member_id,
     tier_quality_fallback = @tier_quality_fallback,
     tier_quality_unverified = @tier_quality_unverified,
     context = CASE

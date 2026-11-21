@@ -299,6 +299,7 @@ type AgentTaskQueue struct {
 	TierExplicit              bool        `json:"tier_explicit"`
 	TierQualityFallback       bool        `json:"tier_quality_fallback"`
 	TierQualityUnverified     bool        `json:"tier_quality_unverified"`
+	TierMemberID              pgtype.UUID `json:"tier_member_id"`
 }
 
 type AgentTier struct {
@@ -1661,6 +1662,25 @@ type ModelTier struct {
 	ManualOnly    bool               `json:"manual_only"`
 	QuotaKind     string             `json:"quota_kind"`
 	IsFree        bool               `json:"is_free"`
+	AutoPick      bool               `json:"auto_pick"`
+	QuotaKinds    []string           `json:"quota_kinds"`
+	CtxMaxTokens  int32              `json:"ctx_max_tokens"`
+	CompactAtPct  int32              `json:"compact_at_pct"`
+}
+
+type ModelTierMember struct {
+	ID            pgtype.UUID        `json:"id"`
+	TierID        pgtype.UUID        `json:"tier_id"`
+	Position      int32              `json:"position"`
+	Provider      string             `json:"provider"`
+	Model         string             `json:"model"`
+	ThinkingLevel pgtype.Text        `json:"thinking_level"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	ProviderSlots int32              `json:"provider_slots"`
+	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
+	Enabled       bool               `json:"enabled"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type NativeQuestionAnswer struct {

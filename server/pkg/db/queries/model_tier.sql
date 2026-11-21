@@ -1,23 +1,28 @@
 -- Workspace model tiers (M-350). No FKs per repo rule: related rows are
 -- validated and cleaned up in application code.
 
--- M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
--- rows land with roles '{}', manual_only false, quota_kind 'none'.
+-- M-481: profile columns auto_pick/quota_kinds/ctx_max_tokens/compact_at_pct.
+-- Legacy columns manual_only/quota_kind/is_free/provider/runtime/model/
+-- thinking/service_tier/provider_slots/cooldown_until are kept in sync for
+-- pre-481 binaries and legacy tasks.
 -- name: CreateModelTier :one
--- M-423: COALESCE guards so pre-423 callers passing zero values land on the
--- column DEFAULTs instead of NULLs (roles/manual_only/quota_kind/is_free
--- are NOT NULL with defaults since 735).
 INSERT INTO model_tier (
     workspace_id, name, idx, runtime_id, provider, model,
     thinking_level, service_tier, cost, quality, provider_slots, enabled,
-    roles, manual_only, quota_kind, is_free
+    roles, manual_only, quota_kind, is_free,
+    auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     COALESCE(sqlc.narg('roles')::text[], '{}'::text[]),
     COALESCE(sqlc.narg('manual_only')::boolean, FALSE),
     COALESCE(sqlc.narg('quota_kind')::text, 'none'),
-    COALESCE(sqlc.narg('is_free')::boolean, TRUE)
+    COALESCE(sqlc.narg('is_free')::boolean, TRUE),
+    COALESCE(sqlc.narg('auto_pick')::boolean, NOT COALESCE(sqlc.narg('manual_only')::boolean, FALSE)),
+    COALESCE(sqlc.narg('quota_kinds')::text[], '{}'::text[]),
+    COALESCE(sqlc.narg('ctx_max_tokens')::int, 280000),
+    COALESCE(sqlc.narg('compact_at_pct')::int, 75)
 ) RETURNING *;
+
 -- name: GetModelTierInWorkspace :one
 SELECT * FROM model_tier
 WHERE id = $1 AND workspace_id = $2;
@@ -50,6 +55,10 @@ SET name = $2,
     manual_only = COALESCE(sqlc.narg('manual_only')::boolean, manual_only),
     quota_kind = COALESCE(sqlc.narg('quota_kind')::text, quota_kind),
     is_free = COALESCE(sqlc.narg('is_free')::boolean, is_free),
+    auto_pick = COALESCE(sqlc.narg('auto_pick')::boolean, auto_pick),
+    quota_kinds = COALESCE(sqlc.narg('quota_kinds')::text[], quota_kinds),
+    ctx_max_tokens = COALESCE(sqlc.narg('ctx_max_tokens')::int, ctx_max_tokens),
+    compact_at_pct = COALESCE(sqlc.narg('compact_at_pct')::int, compact_at_pct),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -118,21 +127,44 @@ DELETE FROM agent_tier WHERE tier_id = $1;
 -- name: SetModelTierCooldown :exec
 UPDATE model_tier SET cooldown_until = $2 WHERE id = $1;
 
+-- M-481: arms a member's cooldown. Cooldown is per member (a 429 on one
+-- provider must not block another member of the same tier).
+-- name: SetModelTierMemberCooldown :exec
+UPDATE model_tier_member SET cooldown_until = $2, updated_at = now() WHERE id = $1;
+
 -- M-351: claim-time provider_slots enforcement. A tier-stamped task claimed
 -- inside the runtime capacity lock asks whether its tier is over capacity:
 -- more active rows on the tier's runtime than provider_slots. TRUE means the
 -- claim must requeue, not dispatch — two enqueues resolved the same tier
 -- before either inserted. Enqueue already avoids full tiers; this closes the
 -- race at the serialization point.
+-- Legacy (no member_id): keep the old tier-level check.
 -- name: TierTaskOverCapacity :one
 SELECT EXISTS (
     SELECT 1 FROM model_tier t
     WHERE t.id = (SELECT atq.tier_id FROM agent_task_queue atq WHERE atq.id = $1)
       AND t.enabled
+      AND (SELECT atq.tier_member_id FROM agent_task_queue atq WHERE atq.id = $1) IS NULL
       AND (
             SELECT count(*) FROM agent_task_queue active
             WHERE active.runtime_id = t.runtime_id
               AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
               AND active.id <> $1
           ) >= t.provider_slots
+) AS over_capacity;
+
+-- M-481: member-aware claim-time capacity. Enforces member slots AND shared
+-- runtime/account cap, counting legacy tasks. Legacy tasks (no member_id) on
+-- the same runtime count toward the shared cap.
+-- name: TierMemberTaskOverCapacity :one
+SELECT EXISTS (
+    SELECT 1 FROM model_tier_member m
+    WHERE m.id = (SELECT atq.tier_member_id FROM agent_task_queue atq WHERE atq.id = $1)
+      AND m.enabled
+      AND (
+            SELECT count(*) FROM agent_task_queue active
+            WHERE active.runtime_id = m.runtime_id
+              AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+              AND active.id <> $1
+          ) >= m.provider_slots
 ) AS over_capacity;

@@ -1517,6 +1517,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 		ThinkingLevelOverride: tierRes.thinkingLevel,
 		ServiceTierOverride:   tierRes.serviceTier,
 		TierID:                tierRes.tierID,
+		TierMemberID:          tierRes.memberID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
 		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
@@ -1750,6 +1751,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 		ThinkingLevelOverride: tierRes.thinkingLevel,
 		ServiceTierOverride:   tierRes.serviceTier,
 		TierID:                tierRes.tierID,
+		TierMemberID:          tierRes.memberID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
 		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
@@ -1986,6 +1988,7 @@ func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, wo
 		ThinkingLevelOverride: tierRes.thinkingLevel,
 		ServiceTierOverride:   tierRes.serviceTier,
 		TierID:                tierRes.tierID,
+		TierMemberID:          tierRes.memberID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
 		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
@@ -2463,6 +2466,7 @@ func (s *TaskService) enqueueChatTaskTxWithOverride(
 		ThinkingLevelOverride: tierRes.thinkingLevel,
 		ServiceTierOverride:   tierRes.serviceTier,
 		TierID:                tierRes.tierID,
+		TierMemberID:          tierRes.memberID,
 		TierParked:            tierParked,
 		TierExplicit:          tierExplicit,
 		TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
@@ -2885,6 +2889,7 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 				ThinkingLevelOverride: tierRes.thinkingLevel,
 				ServiceTierOverride:   tierRes.serviceTier,
 				TierID:                tierRes.tierID,
+				TierMemberID:          tierRes.memberID,
 				TierParked:            tierParked,
 				TierExplicit:          tierExplicit,
 				TierQualityFallback:   pgtype.Bool{Bool: tierRes.qualityFallback, Valid: tierRes.qualityFallback},
@@ -4279,13 +4284,27 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
-		// M-351: enforce provider_slots at claim as well as enqueue. Two
-		// enqueues can resolve the same tier before either inserts; the loser
-		// would otherwise oversubscribe the tier. The claim runs under the
-		// runtime capacity lock inside this tx, so this recheck is the
-		// serialization point: a tier-stamped task whose tier filled up since
-		// enqueue is requeued (not failed) for the next capacity change.
-		if task.TierID.Valid {
+		// M-481: enforce member slots AND shared runtime/account cap at claim.
+		// Legacy tasks (no member_id) fall back to tier-level capacity check.
+		if task.TierMemberID.Valid {
+			over, overErr := qtx.TierMemberTaskOverCapacity(ctx, task.ID)
+			if overErr != nil {
+				outcome = "error_tier_capacity"
+				return fmt.Errorf("check member capacity: %w", overErr)
+			}
+			if over {
+				if _, rqErr := qtx.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
+					TaskID:       task.ID,
+					RuntimeID:    task.RuntimeID,
+					DispatchedAt: task.DispatchedAt,
+				}); rqErr != nil {
+					outcome = "error_tier_requeue"
+					return fmt.Errorf("requeue over-capacity member task: %w", rqErr)
+				}
+				outcome = "tier_no_capacity"
+				return nil
+			}
+		} else if task.TierID.Valid {
 			over, overErr := qtx.TierTaskOverCapacity(ctx, task.ID)
 			if overErr != nil {
 				outcome = "error_tier_capacity"
@@ -5118,6 +5137,7 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 		ThinkingLevelOverride: res.thinkingLevel,
 		ServiceTierOverride:   res.serviceTier,
 		TierID:                res.tierID,
+		TierMemberID:          res.memberID,
 		TierQualityFallback:   res.qualityFallback,
 		TierQualityUnverified: res.qualityUnverified,
 		PresetFallbackReason:  res.presetFallbackReason,
@@ -5990,18 +6010,25 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 		}
 		task = t
 
-		// M-352: a tier-stamped task that just lost its provider to a
-		// capacity/rate-limit or quota failure arms that tier's cooldown, in
-		// the SAME transaction as the fail, so the resolver can never observe
-		// the failed row without its tier learning to skip. A row with no
-		// tier_id (legacy agent, or a future explicit runtime/model run) has
-		// nothing to cool.
-		if t.TierID.Valid && tierCooldownReasons[failureReason] {
-			if err := qtx.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{
-				ID:            t.TierID,
-				CooldownUntil: pgtype.Timestamptz{Time: time.Now().Add(DefaultTierCooldown), Valid: true},
-			}); err != nil {
-				return fmt.Errorf("arm tier cooldown: %w", err)
+		// M-481: cooldown is per member. A 429 on one provider must not block
+		// another member of the same tier. Legacy tasks (no member_id) keep the
+		// old tier-level cooldown.
+		if tierCooldownReasons[failureReason] {
+			until := pgtype.Timestamptz{Time: time.Now().Add(DefaultTierCooldown), Valid: true}
+			if t.TierMemberID.Valid {
+				if err := qtx.SetModelTierMemberCooldown(ctx, db.SetModelTierMemberCooldownParams{
+					ID:            t.TierMemberID,
+					CooldownUntil: until,
+				}); err != nil {
+					return fmt.Errorf("arm member cooldown: %w", err)
+				}
+			} else if t.TierID.Valid {
+				if err := qtx.SetModelTierCooldown(ctx, db.SetModelTierCooldownParams{
+					ID:            t.TierID,
+					CooldownUntil: until,
+				}); err != nil {
+					return fmt.Errorf("arm tier cooldown: %w", err)
+				}
 			}
 		}
 
@@ -7852,6 +7879,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ThinkingLevelOverride: recRes.thinkingLevel,
 			ServiceTierOverride:   recRes.serviceTier,
 			TierID:                recRes.tierID,
+			TierMemberID:          recRes.memberID,
 			TierParked:            recParked,
 			TierExplicit:          recExplicit,
 			TierQualityFallback:   pgtype.Bool{Bool: recRes.qualityFallback, Valid: recRes.qualityFallback},

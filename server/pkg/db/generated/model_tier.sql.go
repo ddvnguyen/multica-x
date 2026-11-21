@@ -44,14 +44,19 @@ const createModelTier = `-- name: CreateModelTier :one
 INSERT INTO model_tier (
     workspace_id, name, idx, runtime_id, provider, model,
     thinking_level, service_tier, cost, quality, provider_slots, enabled,
-    roles, manual_only, quota_kind, is_free
+    roles, manual_only, quota_kind, is_free,
+    auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     COALESCE($13::text[], '{}'::text[]),
     COALESCE($14::boolean, FALSE),
     COALESCE($15::text, 'none'),
-    COALESCE($16::boolean, TRUE)
-) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
+    COALESCE($16::boolean, TRUE),
+    COALESCE($17::boolean, NOT COALESCE($14::boolean, FALSE)),
+    COALESCE($18::text[], '{}'::text[]),
+    COALESCE($19::int, 280000),
+    COALESCE($20::int, 75)
+) RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free, auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct
 `
 
 type CreateModelTierParams struct {
@@ -71,15 +76,18 @@ type CreateModelTierParams struct {
 	ManualOnly    pgtype.Bool    `json:"manual_only"`
 	QuotaKind     pgtype.Text    `json:"quota_kind"`
 	IsFree        pgtype.Bool    `json:"is_free"`
+	AutoPick      pgtype.Bool    `json:"auto_pick"`
+	QuotaKinds    []string       `json:"quota_kinds"`
+	CtxMaxTokens  pgtype.Int4    `json:"ctx_max_tokens"`
+	CompactAtPct  pgtype.Int4    `json:"compact_at_pct"`
 }
 
 // Workspace model tiers (M-350). No FKs per repo rule: related rows are
 // validated and cleaned up in application code.
-// M-423: roles/manual_only/quota_kind/is_free ride the create path; legacy
-// rows land with roles '{}', manual_only false, quota_kind 'none'.
-// M-423: COALESCE guards so pre-423 callers passing zero values land on the
-// column DEFAULTs instead of NULLs (roles/manual_only/quota_kind/is_free
-// are NOT NULL with defaults since 735).
+// M-481: profile columns auto_pick/quota_kinds/ctx_max_tokens/compact_at_pct.
+// Legacy columns manual_only/quota_kind/is_free/provider/runtime/model/
+// thinking/service_tier/provider_slots/cooldown_until are kept in sync for
+// pre-481 binaries and legacy tasks.
 func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams) (ModelTier, error) {
 	row := q.db.QueryRow(ctx, createModelTier,
 		arg.WorkspaceID,
@@ -98,6 +106,10 @@ func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams
 		arg.ManualOnly,
 		arg.QuotaKind,
 		arg.IsFree,
+		arg.AutoPick,
+		arg.QuotaKinds,
+		arg.CtxMaxTokens,
+		arg.CompactAtPct,
 	)
 	var i ModelTier
 	err := row.Scan(
@@ -121,6 +133,10 @@ func (q *Queries) CreateModelTier(ctx context.Context, arg CreateModelTierParams
 		&i.ManualOnly,
 		&i.QuotaKind,
 		&i.IsFree,
+		&i.AutoPick,
+		&i.QuotaKinds,
+		&i.CtxMaxTokens,
+		&i.CompactAtPct,
 	)
 	return i, err
 }
@@ -144,7 +160,7 @@ func (q *Queries) DeleteTierAgentSelections(ctx context.Context, tierID pgtype.U
 }
 
 const getModelTierByNameInWorkspace = `-- name: GetModelTierByNameInWorkspace :one
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free, auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct FROM model_tier
 WHERE workspace_id = $1 AND lower(name) = lower($2)
 `
 
@@ -179,12 +195,16 @@ func (q *Queries) GetModelTierByNameInWorkspace(ctx context.Context, arg GetMode
 		&i.ManualOnly,
 		&i.QuotaKind,
 		&i.IsFree,
+		&i.AutoPick,
+		&i.QuotaKinds,
+		&i.CtxMaxTokens,
+		&i.CompactAtPct,
 	)
 	return i, err
 }
 
 const getModelTierInWorkspace = `-- name: GetModelTierInWorkspace :one
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free, auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct FROM model_tier
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -217,6 +237,10 @@ func (q *Queries) GetModelTierInWorkspace(ctx context.Context, arg GetModelTierI
 		&i.ManualOnly,
 		&i.QuotaKind,
 		&i.IsFree,
+		&i.AutoPick,
+		&i.QuotaKinds,
+		&i.CtxMaxTokens,
+		&i.CompactAtPct,
 	)
 	return i, err
 }
@@ -248,7 +272,7 @@ func (q *Queries) ListAgentTierIDs(ctx context.Context, agentID pgtype.UUID) ([]
 
 const listAgentTiers = `-- name: ListAgentTiers :many
 
-SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free FROM model_tier t
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free, t.auto_pick, t.quota_kinds, t.ctx_max_tokens, t.compact_at_pct FROM model_tier t
 JOIN agent_tier at ON at.tier_id = t.id
 WHERE at.agent_id = $1
 ORDER BY t.idx ASC, t.created_at ASC
@@ -291,6 +315,10 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 			&i.ManualOnly,
 			&i.QuotaKind,
 			&i.IsFree,
+			&i.AutoPick,
+			&i.QuotaKinds,
+			&i.CtxMaxTokens,
+			&i.CompactAtPct,
 		); err != nil {
 			return nil, err
 		}
@@ -303,7 +331,7 @@ func (q *Queries) ListAgentTiers(ctx context.Context, agentID pgtype.UUID) ([]Mo
 }
 
 const listAgentTiersForRole = `-- name: ListAgentTiersForRole :many
-SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free FROM model_tier t
+SELECT t.id, t.workspace_id, t.name, t.idx, t.runtime_id, t.provider, t.model, t.thinking_level, t.service_tier, t.cost, t.quality, t.provider_slots, t.enabled, t.created_at, t.updated_at, t.cooldown_until, t.roles, t.manual_only, t.quota_kind, t.is_free, t.auto_pick, t.quota_kinds, t.ctx_max_tokens, t.compact_at_pct FROM model_tier t
 JOIN agent_tier at ON at.tier_id = t.id
 WHERE at.agent_id = $1::uuid
   AND ($2::text IS NULL OR $2::text = ''
@@ -351,6 +379,10 @@ func (q *Queries) ListAgentTiersForRole(ctx context.Context, arg ListAgentTiersF
 			&i.ManualOnly,
 			&i.QuotaKind,
 			&i.IsFree,
+			&i.AutoPick,
+			&i.QuotaKinds,
+			&i.CtxMaxTokens,
+			&i.CompactAtPct,
 		); err != nil {
 			return nil, err
 		}
@@ -363,7 +395,7 @@ func (q *Queries) ListAgentTiersForRole(ctx context.Context, arg ListAgentTiersF
 }
 
 const listModelTiers = `-- name: ListModelTiers :many
-SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free FROM model_tier
+SELECT id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free, auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct FROM model_tier
 WHERE workspace_id = $1
 ORDER BY idx ASC, created_at ASC
 `
@@ -398,6 +430,10 @@ func (q *Queries) ListModelTiers(ctx context.Context, workspaceID pgtype.UUID) (
 			&i.ManualOnly,
 			&i.QuotaKind,
 			&i.IsFree,
+			&i.AutoPick,
+			&i.QuotaKinds,
+			&i.CtxMaxTokens,
+			&i.CompactAtPct,
 		); err != nil {
 			return nil, err
 		}
@@ -459,11 +495,52 @@ func (q *Queries) SetModelTierCooldown(ctx context.Context, arg SetModelTierCool
 	return err
 }
 
+const setModelTierMemberCooldown = `-- name: SetModelTierMemberCooldown :exec
+UPDATE model_tier_member SET cooldown_until = $2, updated_at = now() WHERE id = $1
+`
+
+type SetModelTierMemberCooldownParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
+}
+
+// M-481: arms a member's cooldown. Cooldown is per member (a 429 on one
+// provider must not block another member of the same tier).
+func (q *Queries) SetModelTierMemberCooldown(ctx context.Context, arg SetModelTierMemberCooldownParams) error {
+	_, err := q.db.Exec(ctx, setModelTierMemberCooldown, arg.ID, arg.CooldownUntil)
+	return err
+}
+
+const tierMemberTaskOverCapacity = `-- name: TierMemberTaskOverCapacity :one
+SELECT EXISTS (
+    SELECT 1 FROM model_tier_member m
+    WHERE m.id = (SELECT atq.tier_member_id FROM agent_task_queue atq WHERE atq.id = $1)
+      AND m.enabled
+      AND (
+            SELECT count(*) FROM agent_task_queue active
+            WHERE active.runtime_id = m.runtime_id
+              AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+              AND active.id <> $1
+          ) >= m.provider_slots
+) AS over_capacity
+`
+
+// M-481: member-aware claim-time capacity. Enforces member slots AND shared
+// runtime/account cap, counting legacy tasks. Legacy tasks (no member_id) on
+// the same runtime count toward the shared cap.
+func (q *Queries) TierMemberTaskOverCapacity(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, tierMemberTaskOverCapacity, id)
+	var over_capacity bool
+	err := row.Scan(&over_capacity)
+	return over_capacity, err
+}
+
 const tierTaskOverCapacity = `-- name: TierTaskOverCapacity :one
 SELECT EXISTS (
     SELECT 1 FROM model_tier t
     WHERE t.id = (SELECT atq.tier_id FROM agent_task_queue atq WHERE atq.id = $1)
       AND t.enabled
+      AND (SELECT atq.tier_member_id FROM agent_task_queue atq WHERE atq.id = $1) IS NULL
       AND (
             SELECT count(*) FROM agent_task_queue active
             WHERE active.runtime_id = t.runtime_id
@@ -479,6 +556,7 @@ SELECT EXISTS (
 // claim must requeue, not dispatch — two enqueues resolved the same tier
 // before either inserted. Enqueue already avoids full tiers; this closes the
 // race at the serialization point.
+// Legacy (no member_id): keep the old tier-level check.
 func (q *Queries) TierTaskOverCapacity(ctx context.Context, id pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, tierTaskOverCapacity, id)
 	var over_capacity bool
@@ -503,9 +581,13 @@ SET name = $2,
     manual_only = COALESCE($14::boolean, manual_only),
     quota_kind = COALESCE($15::text, quota_kind),
     is_free = COALESCE($16::boolean, is_free),
+    auto_pick = COALESCE($17::boolean, auto_pick),
+    quota_kinds = COALESCE($18::text[], quota_kinds),
+    ctx_max_tokens = COALESCE($19::int, ctx_max_tokens),
+    compact_at_pct = COALESCE($20::int, compact_at_pct),
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free
+RETURNING id, workspace_id, name, idx, runtime_id, provider, model, thinking_level, service_tier, cost, quality, provider_slots, enabled, created_at, updated_at, cooldown_until, roles, manual_only, quota_kind, is_free, auto_pick, quota_kinds, ctx_max_tokens, compact_at_pct
 `
 
 type UpdateModelTierParams struct {
@@ -525,6 +607,10 @@ type UpdateModelTierParams struct {
 	ManualOnly    pgtype.Bool    `json:"manual_only"`
 	QuotaKind     pgtype.Text    `json:"quota_kind"`
 	IsFree        pgtype.Bool    `json:"is_free"`
+	AutoPick      pgtype.Bool    `json:"auto_pick"`
+	QuotaKinds    []string       `json:"quota_kinds"`
+	CtxMaxTokens  pgtype.Int4    `json:"ctx_max_tokens"`
+	CompactAtPct  pgtype.Int4    `json:"compact_at_pct"`
 }
 
 func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams) (ModelTier, error) {
@@ -545,6 +631,10 @@ func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams
 		arg.ManualOnly,
 		arg.QuotaKind,
 		arg.IsFree,
+		arg.AutoPick,
+		arg.QuotaKinds,
+		arg.CtxMaxTokens,
+		arg.CompactAtPct,
 	)
 	var i ModelTier
 	err := row.Scan(
@@ -568,6 +658,10 @@ func (q *Queries) UpdateModelTier(ctx context.Context, arg UpdateModelTierParams
 		&i.ManualOnly,
 		&i.QuotaKind,
 		&i.IsFree,
+		&i.AutoPick,
+		&i.QuotaKinds,
+		&i.CtxMaxTokens,
+		&i.CompactAtPct,
 	)
 	return i, err
 }
