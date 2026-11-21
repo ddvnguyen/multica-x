@@ -3618,7 +3618,7 @@ SELECT
     p.workflow_step,
     -- M-359: a retry inherits its parent's tier stamp (same slot, unparked —
     -- the inherited runtime is stamped, so no capacity wait applies).
-    p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id,
+    p.model_override, p.thinking_level_override, p.service_tier_override, p.tier_id, p.tier_member_id,
     FALSE, COALESCE(p.tier_explicit, FALSE),
     COALESCE(p.tier_quality_fallback, FALSE), COALESCE(p.tier_quality_unverified, FALSE),
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
