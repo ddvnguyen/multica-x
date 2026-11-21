@@ -1150,7 +1150,13 @@
     },
     "tier": {
       "tier_group": "本次运行的层级",
-      "tier_auto": "自动（由解析器选择）"
+      "tier_auto": "自动（由解析器选择）",
+      "pick_model": "模型",
+      "pick_harness": "运行时框架",
+      "pick_runtime": "运行时",
+      "pick_model_count": "{{count}} 个映射",
+      "back_to_models": "← 模型",
+      "tier_none_hint": "没有可用的层级"
     }
   },
   "labels_panel": {

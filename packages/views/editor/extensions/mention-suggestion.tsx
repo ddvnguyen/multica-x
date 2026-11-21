@@ -1055,6 +1055,8 @@ export function createMentionSuggestion(
 export interface TierPickItem {
   id: string;
   name: string;
+  /** Harness/provider (M-493): the same model can be served by several. */
+  provider?: string;
   model?: string;
   disabled: boolean;
 }
@@ -1067,13 +1069,20 @@ export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem
   const tiers = (qc.getQueryData(workspaceKeys.tiers(wsId)) ?? []) as Array<{
     id: string;
     name: string;
+    provider?: string;
     model?: string;
     enabled: boolean;
   }>;
   return tiers
     .filter((t) => !q || t.name.toLowerCase().includes(q))
     .slice(0, 20)
-    .map((t) => ({ id: t.id, name: t.name, model: t.model, disabled: !t.enabled }));
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      provider: t.provider,
+      model: t.model,
+      disabled: !t.enabled,
+    }));
 }
 
 const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>(
@@ -1118,7 +1127,12 @@ const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command
             onMouseEnter={() => setSelected(i)}
           >
             <span className="font-medium">#{item.name}</span>
-            {item.model ? <span className="truncate text-muted-foreground">{item.model}</span> : null}
+            {item.model ? (
+              <span className="truncate text-muted-foreground">
+                {item.provider ? `${item.provider}/` : ""}
+                {item.model}
+              </span>
+            ) : null}
             {item.disabled ? (
               <span className="ml-auto text-muted-foreground">{t(($) => $.mention.tier_disabled)}</span>
             ) : null}

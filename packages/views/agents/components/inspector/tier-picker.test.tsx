@@ -38,6 +38,23 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryKey: ["model-tiers", wsId],
     queryFn: () => tiersResult(),
   }),
+  modelTierMembersOptions: (_wsId: string, tierId: string) => ({
+    enabled: true,
+    queryKey: ["tier-members", tierId],
+    queryFn: async () => [],
+  }),
+}));
+
+vi.mock("@multica/core/runtimes/queries", () => ({
+  runtimeListOptions: (wsId: string) => ({
+    enabled: wsId !== "",
+    queryKey: ["runtimes", wsId],
+    queryFn: async () => [],
+  }),
+}));
+
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws",
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -86,6 +103,16 @@ describe("TierPicker", () => {
       await screen.findByText(/unavailable/i, {}, { timeout: 2000 }),
     ).toBeTruthy();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("groups tier configs by model and harness", async () => {
+    renderPicker(["tier-a"]);
+    fireEvent.click(await screen.findByText("fast", {}, { timeout: 2000 }));
+    // Model group headers, the harness label, and the tier config at the leaf.
+    expect(await screen.findByText("model-a", {}, { timeout: 2000 })).toBeTruthy();
+    expect(await screen.findByText("model-b", {}, { timeout: 2000 })).toBeTruthy();
+    expect(await screen.findAllByText("Codebuddy", {}, { timeout: 2000 })).toHaveLength(2);
+    expect(await screen.findByText(/rt-a · codebuddy\/model-a/i, {}, { timeout: 2000 })).toBeTruthy();
   });
 
   it("renders a deleted tier id as a short id, not dropped", async () => {

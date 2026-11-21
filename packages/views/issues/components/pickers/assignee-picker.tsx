@@ -10,7 +10,13 @@ import { isAgentRuntimeBound } from "@multica/core/agents";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { memberListOptions, agentListOptions, squadListOptions, assigneeFrequencyOptions, modelTiersOptions } from "@multica/core/workspace/queries";
+import {
+  memberListOptions,
+  agentListOptions,
+  squadListOptions,
+  assigneeFrequencyOptions,
+  modelTiersOptions,
+} from "@multica/core/workspace/queries";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
@@ -23,6 +29,7 @@ import {
 } from "./property-picker";
 import { useT } from "../../../i18n";
 import { matchesPinyin } from "../../../editor/extensions/pinyin-match";
+import { TierPickFlow } from "./tier-pick-flow";
 
 /**
  * Legacy boolean shape kept around for callers (e.g. `use-issue-actions.ts`)
@@ -294,9 +301,14 @@ function AssigneeOptions({
     assigneeType === type && assigneeId === id;
 
   if (tierAgent) {
+    // M-493: the tier step only offers tiers the chosen agent supports
+    // (`agent_tier`, exposed as `Agent.tier_ids`). An agent with no selection
+    // keeps the legacy behaviour of offering every enabled tier.
+    const supportedTierIds = agents.find((agent) => agent.id === tierAgent.id)?.tier_ids;
     return (
       <TierStep
         agentName={tierAgent.name}
+        supportedTierIds={supportedTierIds}
         onBack={() => setTierAgent(null)}
         onPick={(tierId) =>
           onPick({
@@ -463,24 +475,37 @@ function AssigneeOptions({
 }
 
 /**
- * TierStep is the M-359 second step of the assignee picker: after an agent
- * is chosen, the sender optionally pins one tier for this run (Auto default
- * = the idx-ranked resolver). Disabled tiers are hidden — picking one would
- * only 409 at send.
+ * TierStep is the second step of the assignee picker: after an agent is
+ * chosen, the sender optionally pins one tier for this run (Auto default =
+ * the idx-ranked resolver). M-493 narrows the list to the tiers that agent
+ * supports and walks model → harness → runtime through the tier's members;
+ * the leaf shows the tier config (`#name`, harness/model, runtime) before the
+ * pick is written back as one `tier_id` update. Disabled tiers stay hidden —
+ * picking one would only 409 at send.
  */
 function TierStep({
   agentName,
+  supportedTierIds,
   onBack,
   onPick,
 }: {
   agentName: string;
+  supportedTierIds?: string[];
   onBack: () => void;
   onPick: (tierId: string | null) => void;
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
-  const enabled = tiers.filter((tier) => tier.enabled);
+
+  // An agent with an explicit tier selection only sees those tiers; an agent
+  // without one keeps the legacy behaviour of every enabled tier.
+  const eligible = useMemo(() => {
+    const enabled = tiers.filter((tier) => tier.enabled);
+    if (!supportedTierIds || supportedTierIds.length === 0) return enabled;
+    const allowed = new Set(supportedTierIds);
+    return enabled.filter((tier) => allowed.has(tier.id));
+  }, [tiers, supportedTierIds]);
 
   return (
     <>
@@ -488,17 +513,11 @@ function TierStep({
         <span className="text-muted-foreground">← {agentName}</span>
       </PickerItem>
       <PickerSection label={t(($) => $.pickers.tier.tier_group)}>
-        <PickerItem selected={false} onClick={() => onPick(null)}>
-          <span className="truncate">{t(($) => $.pickers.tier.tier_auto)}</span>
-        </PickerItem>
-        {enabled.map((tier) => (
-          <PickerItem key={tier.id} selected={false} onClick={() => onPick(tier.id)}>
-            <span className="truncate">
-              #{tier.name}
-              {tier.model ? <span className="text-muted-foreground"> · {tier.model}</span> : null}
-            </span>
-          </PickerItem>
-        ))}
+        <TierPickFlow
+          tiers={eligible}
+          onPick={onPick}
+          onAuto={() => onPick(null)}
+        />
       </PickerSection>
     </>
   );

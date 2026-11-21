@@ -9,15 +9,19 @@ import { modelTiersOptions } from "@multica/core/workspace/queries";
 import {
   PickerItem,
   PropertyPicker,
+  buildTierPickTree,
+  useTierPickData,
 } from "../../../issues/components/pickers";
 import { useT } from "../../../i18n";
 
 /**
  * Tier multi-select for the agent inspector (M-351). Replaces the model
  * picker when `use_tiers` is on: the selected tier ids are stored on the
- * agent and resolved per task at enqueue (first enabled tier with a free
- * provider slot wins). A tier deleted or disabled after selection renders
- * as "unavailable" — never silently dropped.
+ * agent and resolved per task at enqueue. M-493 groups the list by model →
+ * harness → runtime (a tier is a profile with ordered members), so the
+ * harness behind each model is visible and the tier config is rendered at
+ * the leaf. A tier deleted or disabled after selection still renders as
+ * "unavailable" — never silently dropped.
  */
 export function TierPicker({
   value,
@@ -46,6 +50,13 @@ export function TierPicker({
   const tiers = useMemo<ModelTier[]>(
     () => (tiersQuery.isSuccess ? (tiersQuery.data ?? []) : []),
     [tiersQuery.data, tiersQuery.isSuccess],
+  );
+  const { membersByTier, runtimeLabel } = useTierPickData(tiers);
+  // Admin surface: disabled tiers/members stay visible and badged, matching
+  // the M-351 behaviour of never dropping a selection made earlier.
+  const tree = useMemo(
+    () => buildTierPickTree(tiers, membersByTier, { runtimeLabel, includeDisabled: true }),
+    [tiers, membersByTier, runtimeLabel],
   );
   const byId = useMemo(() => new Map(tiers.map((tier) => [tier.id, tier])), [tiers]);
 
@@ -88,48 +99,61 @@ export function TierPicker({
         )
       }
     >
-      {tiers.length === 0 ? (
+      {tree.length === 0 ? (
         <div className="px-3 py-4 text-center text-caption text-muted-foreground">
           {t(($) => $.inspector.tiers_none_hint)}
         </div>
       ) : (
-        tiers.map((tier) => {
-          const selected = value.includes(tier.id);
-          return (
-            <PickerItem
-              key={tier.id}
-              selected={selected}
-              onClick={() => toggle(tier.id)}
-              tooltip={`${tier.provider} · ${tier.model}`}
-            >
-              <span className="block min-w-0 flex-1 text-left">
-                <span className="block truncate text-label font-medium">
-                  {tier.name}
-                  {!tier.enabled && (
-                    <span className="ml-1.5 text-micro text-muted-foreground">
-                      {t(($) => $.inspector.tiers_disabled_badge)}
-                    </span>
-                  )}
-                  {agentRole !== "" &&
-                    !(tier.roles ?? []).includes(agentRole) && (
-                      <span className="ml-1.5 text-micro text-amber-600 dark:text-amber-400">
-                        {t(($) => $.inspector.tiers_role_mismatch_badge)}
+        tree.map((model) => (
+          <div key={model.key}>
+            <div className="px-2 pt-2 pb-0.5 text-caption font-medium text-muted-foreground uppercase tracking-wider">
+              {model.label}
+            </div>
+            {model.harnesses.map((harness) => (
+              <div key={harness.key}>
+                <div className="px-2 pt-1 text-micro text-muted-foreground">{harness.label}</div>
+                {harness.entries.map((entry) => {
+                  const tier = entry.tier;
+                  const selected = value.includes(tier.id);
+                  return (
+                    <PickerItem
+                      key={entry.key}
+                      selected={selected}
+                      onClick={() => toggle(tier.id)}
+                      tooltip={`${entry.provider} · ${entry.model} · ${entry.runtimeLabel}`}
+                    >
+                      <span className="block min-w-0 flex-1 text-left">
+                        <span className="block truncate text-label font-medium">
+                          {tier.name}
+                          {!tier.enabled && (
+                            <span className="ml-1.5 text-micro text-muted-foreground">
+                              {t(($) => $.inspector.tiers_disabled_badge)}
+                            </span>
+                          )}
+                          {agentRole !== "" &&
+                            !(tier.roles ?? []).includes(agentRole) && (
+                              <span className="ml-1.5 text-micro text-amber-600 dark:text-amber-400">
+                                {t(($) => $.inspector.tiers_role_mismatch_badge)}
+                              </span>
+                            )}
+                          {tier.manual_only && (
+                            <span className="ml-1.5 text-micro text-muted-foreground">
+                              {t(($) => $.inspector.tiers_manual_badge)}
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block truncate font-mono text-micro leading-snug text-muted-foreground">
+                          {entry.runtimeLabel} · {entry.provider}/{entry.model}
+                        </span>
                       </span>
-                    )}
-                  {tier.manual_only && (
-                    <span className="ml-1.5 text-micro text-muted-foreground">
-                      {t(($) => $.inspector.tiers_manual_badge)}
-                    </span>
-                  )}
-                </span>
-                <span className="mt-0.5 block truncate font-mono text-micro leading-snug text-muted-foreground">
-                  {tier.provider} · {tier.model}
-                </span>
-              </span>
-              {selected && <Check className="size-4 shrink-0" aria-hidden />}
-            </PickerItem>
-          );
-        })
+                      {selected && <Check className="size-4 shrink-0" aria-hidden />}
+                    </PickerItem>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        ))
       )}
       {hasUnavailable && (
         <div className="px-3 py-2 text-caption text-amber-600 dark:text-amber-400">

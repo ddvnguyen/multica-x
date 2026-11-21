@@ -1115,7 +1115,13 @@
     },
     "tier": {
       "tier_group": "Tier para esta ejecución",
-      "tier_auto": "Auto (el resolvedor elige)"
+      "tier_auto": "Auto (el resolvedor elige)",
+      "pick_model": "Modelo",
+      "pick_harness": "Harness",
+      "pick_runtime": "Runtime",
+      "pick_model_count": "{{count}} asignación(es)",
+      "back_to_models": "← Modelos",
+      "tier_none_hint": "No hay tiers disponibles"
     }
   },
   "labels_panel": {

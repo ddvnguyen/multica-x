@@ -5,22 +5,34 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enIssues from "../../../locales/en/issues.json";
 import { AssigneePicker } from "./assignee-picker";
 
-const AGENTS = [{ id: "agent-1", name: "Helper", archived_at: null, visibility: "workspace" }];
+const AGENTS = [
+  { id: "agent-1", name: "Helper", archived_at: null, visibility: "workspace", tier_ids: [] },
+  {
+    id: "agent-2",
+    name: "Picky",
+    archived_at: null,
+    visibility: "workspace",
+    tier_ids: ["tier-a"],
+  },
+];
+
+const TIERS = [
+  { id: "tier-a", name: "fast", enabled: true, model: "model-a", provider: "codebuddy" },
+  { id: "tier-b", name: "slow", enabled: false, model: "model-b", provider: "freebuff" },
+];
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: string[] }) => {
     if (queryKey[0] === "members") return { data: [] };
     if (queryKey[0] === "agents") return { data: AGENTS };
     if (queryKey[0] === "workspaces" || (queryKey as string[]).includes("tiers")) {
-      return {
-        data: [
-          { id: "tier-a", name: "fast", enabled: true, model: "model-a" },
-          { id: "tier-b", name: "slow", enabled: false, model: "model-b" },
-        ],
-      };
+      return { data: TIERS };
     }
     return { data: [] };
   },
+  // M-493: one member query per eligible tier. The fixtures have no members,
+  // so the tree falls back to each tier's legacy provider/model columns.
+  useQueries: ({ queries }: { queries: unknown[] }) => queries.map(() => ({ data: [] })),
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
@@ -38,14 +50,20 @@ vi.mock("@multica/core/workspace/queries", () => ({
   squadListOptions: () => ({ queryKey: ["squads"] }),
   assigneeFrequencyOptions: () => ({ queryKey: ["frequency"] }),
   modelTiersOptions: () => ({ queryKey: ["workspaces", "ws", "tiers"] }),
+  modelTierMembersOptions: (_ws: string, tierId: string) => ({
+    queryKey: ["workspaces", "ws", "tiers", tierId, "members"],
+  }),
+}));
+vi.mock("@multica/core/runtimes/queries", () => ({
+  runtimeListOptions: () => ({ queryKey: ["runtimes"] }),
 }));
 vi.mock("../../../common/actor-avatar", () => ({
   ActorAvatar: () => <span data-testid="actor-avatar" />,
 }));
 
-// M-359: with `tierPick`, picking an agent advances to a tier step (Auto or
-// one enabled tier) and confirms agent+tier in one update. Disabled tiers
-// are hidden; plain picks (member/unassigned) bypass the step.
+// M-493: with `tierPick`, picking an agent advances to the model → harness →
+// runtime tier step (Auto default) and confirms agent+tier in one update.
+// Disabled tiers are hidden and the list is narrowed to the agent's tiers.
 describe("AssigneePicker tier step", () => {
   function renderTierPicker(onUpdate: (u: unknown) => void) {
     return render(
@@ -62,12 +80,16 @@ describe("AssigneePicker tier step", () => {
     );
   }
 
+  async function openTierStep(user: ReturnType<typeof userEvent.setup>, agent = "Helper") {
+    await user.click(await screen.findByText(agent));
+  }
+
   it("confirms agent+Auto without a tier id", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     renderTierPicker(onUpdate);
 
-    await user.click(await screen.findByText("Helper"));
+    await openTierStep(user);
     await user.click(await screen.findByText("Auto (resolver picks)"));
 
     expect(onUpdate).toHaveBeenCalledWith({
@@ -76,12 +98,16 @@ describe("AssigneePicker tier step", () => {
     });
   });
 
-  it("confirms agent+tier for an enabled tier and hides disabled ones", async () => {
+  it("walks model → harness → runtime and writes the tier id once", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     renderTierPicker(onUpdate);
 
-    await user.click(await screen.findByText("Helper"));
+    await openTierStep(user);
+    await user.click(await screen.findByText("model-a"));
+    expect(await screen.findByText("Harness")).toBeTruthy();
+    await user.click(await screen.findByText("Codebuddy"));
+    expect(await screen.findByText("Runtime")).toBeTruthy();
     await user.click(await screen.findByText(/#fast/));
 
     expect(onUpdate).toHaveBeenCalledWith({
@@ -90,6 +116,16 @@ describe("AssigneePicker tier step", () => {
       tier_id: "tier-a",
     });
     expect(screen.queryByText(/#slow/)).toBeNull();
+  });
+
+  it("shows only the tiers the agent supports", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    renderTierPicker(onUpdate);
+
+    await openTierStep(user, "Picky");
+    expect(await screen.findByText("model-a")).toBeTruthy();
+    expect(screen.queryByText("model-b")).toBeNull();
   });
 
   it("unassigned picks bypass the tier step", async () => {
@@ -107,12 +143,12 @@ describe("AssigneePicker tier step", () => {
         />
       </I18nProvider>,
     );
-    // No members mocked — the empty-value row (first Unassigned text in
-    // the popover, past the trigger) confirms immediately with no tier step.
-    const matches = await screen.findAllByText("Unassigned");
-    const row = matches[matches.length - 1];
+
+    const unassigned = await screen.findAllByText("Unassigned");
+    const row = unassigned[unassigned.length - 1];
     if (!row) throw new Error("unassigned row missing");
     await user.click(row);
+
     expect(onUpdate).toHaveBeenCalledWith({ assignee_type: null, assignee_id: null });
   });
 });
