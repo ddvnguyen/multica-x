@@ -1076,7 +1076,7 @@ export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem
     .map((t) => ({ id: t.id, name: t.name, model: t.model, disabled: !t.enabled }));
 }
 
-const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>(
+export const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command: (item: TierPickItem) => void }>(
   function TierPickList({ items, command }, ref) {
     const { t } = useT("editor");
     const [selected, setSelected] = useState(0);
@@ -1102,7 +1102,18 @@ const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command
     }));
     if (items.length === 0) return null;
     return (
-      <div role="listbox" aria-label={t(($) => $.mention.tier_list_label)}>
+      // M-492: share the floating-menu chrome with MentionList and the slash /
+      // block menus. Without an opaque `bg-popover` surface, border and shadow
+      // the rows were transparent and the issue activity behind the composer
+      // bled through, making the picker look stacked and duplicated. The single
+      // clamped scroll container also keeps long tier lists inside the viewport.
+      <div
+        data-mc="editor-menu"
+        data-kind="tier"
+        role="listbox"
+        aria-label={t(($) => $.mention.tier_list_label)}
+        className="w-72 max-h-[min(300px,var(--suggestion-available-height,300px))] overflow-y-auto overscroll-contain rounded-md border bg-popover py-1 shadow-md"
+      >
         {items.map((item, i) => (
           <button
             key={item.id}
@@ -1110,7 +1121,7 @@ const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; command
             role="option"
             aria-selected={i === selected}
             disabled={item.disabled}
-            className={cn("flex w-full items-center gap-2 px-2 py-1.5 text-left", i === selected && "bg-accent")}
+            className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left", i === selected && "bg-accent")}
             onMouseDown={(e) => {
               e.preventDefault();
               if (!item.disabled) command(item);
