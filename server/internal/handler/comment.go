@@ -3473,7 +3473,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			addTarget(commentMentionTarget{TargetType: "squad", TargetID: m.ID, ExecAgentID: uuidToString(leaderID)})
 			continue
 		}
-		if m.Type != "agent" {
+		if m.Type != "agent" && m.Type != "preset" {
 			continue
 		}
 		agentUUID, err := util.ParseUUID(m.ID)
@@ -3488,6 +3488,24 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonTargetUnavailable)
 			continue
 		}
+		presetTierName := ""
+		if m.Type == "preset" {
+			var enabled bool
+			if err := h.DB.QueryRow(ctx, `SELECT settings @> '{"agent_presets_enabled":true}'::jsonb FROM workspace WHERE id = $1`, issue.WorkspaceID).Scan(&enabled); err != nil || !enabled {
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			var presetAgentID pgtype.UUID
+			if err := h.DB.QueryRow(ctx, `
+				SELECT p.agent_id, COALESCE(t.name, '')
+				FROM agent_preset p
+				JOIN model_tier t ON t.id = p.tier_id AND t.workspace_id = p.workspace_id
+				WHERE p.id = $1 AND p.workspace_id = $2`, agentUUID, issue.WorkspaceID).Scan(&presetAgentID, &presetTierName); err != nil || presetTierName == "" {
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			agentUUID = presetAgentID
+		}
 		// Load the agent scoped to the current issue's workspace. Using the
 		// bare GetAgent here would let a mention resolve to an agent in a
 		// different workspace, and the visibility check below would then be
@@ -3499,10 +3517,29 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			WorkspaceID: issue.WorkspaceID,
 		})
 		if err != nil {
-			// Do not reveal whether the id exists (it may be a private agent in
-			// another workspace): the generic invocation_not_allowed is returned.
-			blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
-			continue
+			// Old links may carry an agent id that now names a preset alias. Resolve
+			// only a single alias in this workspace; authorization below is always
+			// checked against the canonical agent before any state is inspected.
+			var canonicalID pgtype.UUID
+			aliasErr := h.DB.QueryRow(ctx, `
+				SELECT min(agent_id::text)::uuid
+				FROM agent_preset
+				WHERE workspace_id = $1 AND legacy_agent_id = $2
+				HAVING count(DISTINCT agent_id) = 1`, issue.WorkspaceID, agentUUID).Scan(&canonicalID)
+			if aliasErr != nil {
+				// Preserve the enumeration-safe result for missing, ambiguous, and
+				// cross-workspace ids.
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			agent, err = h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+				ID: canonicalID, WorkspaceID: issue.WorkspaceID,
+			})
+			if err != nil {
+				blockTarget("agent", m.ID, ReasonInvocationNotAllowed)
+				continue
+			}
+			agentUUID = canonicalID
 		}
 		// Private-agent gate first, before any archived/runtime state is read.
 		if !h.canInvokeAgent(ctx, agent, authorType, authorID, opts.OriginatorUserID, wsID) {
@@ -3539,15 +3576,17 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 		}
-		tierName := ""
+		tierName := presetTierName
 		tierID := pgtype.UUID{}
 		// M-359: the `@agent#tier` suffix rides the mention label (the wire
 		// stays `mention://agent/<uuid>`). Split at the last `#` and validate
 		// here so both preview and submit surface tier_unavailable for a
 		// name that matches nothing usable — instead of silently running
 		// the plain resolver.
-		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier {
+		if _, tier, hasTier := util.SplitTierSuffix(m.Label); hasTier && m.Type == "agent" {
 			tierName = tier
+		}
+		if tierName != "" {
 			tid, verr := h.resolveExplicitTierID(ctx, issue, agent, tierName, triggerRequesterFor(authorType, authorID, opts.OriginatorUserID))
 			if verr != nil {
 				blockTarget("agent", m.ID, ReasonTierUnavailable)

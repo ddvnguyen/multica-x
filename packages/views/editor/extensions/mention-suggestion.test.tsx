@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef, type ReactNode } from "react";
+import { createRef, useState, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import { issueKeys, PAGINATED_CATEGORIES } from "@multica/core/issues/queries";
@@ -10,7 +10,7 @@ import { DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import { statusCategoryOfKey } from "@multica/core/issues";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { IssueStatusCategory, ListIssuesCache } from "@multica/core/types";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import enCommon from "../../locales/en/common.json";
 import enAuth from "../../locales/en/auth.json";
 import enSettings from "../../locales/en/settings.json";
@@ -40,18 +40,20 @@ const TEST_RESOURCES = {
 };
 
 function I18nWrapper({ children }: { children: ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   return (
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      {children}
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>{children}</I18nProvider>
+    </QueryClientProvider>
   );
 }
 
 function ZhI18nWrapper({ children }: { children: ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   return (
-    <I18nProvider locale="zh-Hans" resources={TEST_RESOURCES}>
-      {children}
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider locale="zh-Hans" resources={TEST_RESOURCES}>{children}</I18nProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -71,6 +73,7 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
 // Mock the API so we control search responses + observe calls.
 const searchIssuesMock = vi.fn();
 const searchProjectsMock = vi.fn();
+const { listAgentPresetsMock } = vi.hoisted(() => ({ listAgentPresetsMock: vi.fn() }));
 vi.mock("@multica/core/api", () => ({
   api: {
     get searchIssues() {
@@ -79,6 +82,7 @@ vi.mock("@multica/core/api", () => ({
     get searchProjects() {
       return searchProjectsMock;
     },
+    listAgentPresets: listAgentPresetsMock,
   },
 }));
 
@@ -216,6 +220,7 @@ describe("createMentionSuggestion", () => {
   beforeEach(() => {
     searchIssuesMock.mockReset();
     searchProjectsMock.mockReset();
+    listAgentPresetsMock.mockReset().mockResolvedValue([]);
     searchProjectsMock.mockResolvedValue({ projects: [], total: 0 });
     Element.prototype.scrollIntoView = vi.fn();
     configStore.getState().setFeatureFlags({ [DOCS_V1_FLAG]: true });
@@ -987,6 +992,19 @@ describe("createMentionSuggestion", () => {
     expect(screen.queryByText("Squad")).not.toBeInTheDocument();
   });
 
+  it("offers workspace presets with their agent and tier context", async () => {
+    listAgentPresetsMock.mockResolvedValueOnce([{
+      id: "preset-1",
+      name: "Claude Architect",
+      agent_name: "Architect",
+      tier_name: "Sonnet High",
+    }]);
+    render(<I18nWrapper><MentionList items={[]} query="Claude" command={vi.fn()} /></I18nWrapper>);
+
+    expect(await screen.findByText("Claude Architect")).toBeInTheDocument();
+    expect(screen.getByText("Architect · Sonnet High")).toBeInTheDocument();
+  });
+
   it("includes squads with a runnable leader in the mention list", () => {
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
@@ -1190,6 +1208,7 @@ describe("MentionList cancelled demotion", () => {
   beforeEach(() => {
     searchIssuesMock.mockReset();
     searchProjectsMock.mockReset();
+    listAgentPresetsMock.mockReset().mockResolvedValue([]);
     searchIssuesMock.mockResolvedValue({ issues: [], total: 0 });
     searchProjectsMock.mockResolvedValue({ projects: [], total: 0 });
   });

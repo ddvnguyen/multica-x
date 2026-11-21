@@ -10,7 +10,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { api } from "@multica/core/api";
 import { getCurrentWsId } from "@multica/core/platform";
 import { flattenIssueBuckets, issueKeys } from "@multica/core/issues/queries";
 import { issueStatusCategory } from "@multica/core/issues";
@@ -80,7 +81,7 @@ import { blockedReasonLabel } from "../../issues/blocked-trigger-copy";
 export interface MentionItem {
   id: string;
   label: string;
-  type: "member" | "agent" | "squad" | "issue" | "project" | "doc" | "all";
+  type: "member" | "agent" | "preset" | "squad" | "issue" | "project" | "doc" | "all";
   /** Optional grouping hint for injected context items. */
   group?: "current" | "recent" | "search";
   /** Secondary text shown beside the label (e.g. issue title) */
@@ -331,6 +332,23 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
     const [searchedQuery, setSearchedQuery] = useState("");
     const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
     const normalizedQuery = query.trim();
+    const wsId = getCurrentWsId() ?? "";
+    const presetsQuery = useQuery({
+      queryKey: ["agent-presets", wsId],
+      queryFn: () => api.listAgentPresets(wsId),
+      enabled: wsId !== "",
+      staleTime: 60_000,
+    });
+    const presetItems: MentionItem[] = (presetsQuery.data ?? [])
+      .filter((preset) => !normalizedQuery ||
+        preset.name.toLowerCase().includes(normalizedQuery.toLowerCase()) ||
+        preset.agent_name.toLowerCase().includes(normalizedQuery.toLowerCase()))
+      .map((preset) => ({
+        id: preset.id,
+        label: preset.name,
+        description: `${preset.agent_name} · ${preset.tier_name}`,
+        type: "preset",
+      }));
 
     useEffect(() => {
       const q = normalizedQuery;
@@ -405,13 +423,13 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
       const currentServerItems = searchedQuery === normalizedQuery ? serverItems : [];
       return truncateMentionItems(
         demoteCancelledItems(
-          mergeMentionItems(items, currentServerItems),
+          mergeMentionItems(items, presetItems, currentServerItems),
           normalizedQuery,
         ),
         normalizedQuery,
         selectedKey,
       );
-    }, [items, normalizedQuery, searchedQuery, selectedKey, serverItems]);
+    }, [items, normalizedQuery, presetItems, searchedQuery, selectedKey, serverItems]);
 
     // The single index space for selection. groupItems() re-buckets displayItems
     // (current → recent → search → users → issues); orderedItems is exactly what
@@ -715,13 +733,20 @@ function MentionRow({
       onClick={onSelect}
     >
       <ActorAvatar
-        actorType={item.type === "all" ? "member" : item.type}
+        actorType={item.type === "all" || item.type === "preset" ? "agent" : item.type}
         actorId={item.id}
         size="sm"
         showStatusDot
       />
-      <span className="truncate font-medium">
-        {item.type === "all" ? t(($) => $.mention.all_members) : item.label}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">
+          {item.type === "all" ? t(($) => $.mention.all_members) : item.label}
+        </span>
+        {item.description && (
+          <span className="block truncate text-micro text-muted-foreground">
+            {item.description}
+          </span>
+        )}
       </span>
       {item.type === "agent" && (
         <Badge variant="outline" className="ml-auto text-micro h-4 px-1.5">
