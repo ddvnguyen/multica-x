@@ -9,8 +9,10 @@ export {
   useActiveBrowsingHistoryTitles,
   splitTabUrl,
   resourceKeyForUrl,
+  chatSessionIdForUrl,
   findTabForUrl,
   browsingHistoryKeyForUrl,
+  useWindowHistory,
   sanitizeTabPath,
   scrollMementoKey,
   emptyMemento,
@@ -26,6 +28,8 @@ export type {
   TabMemento,
   ScrollMementoEntry,
   WorkspaceTabGroup,
+  WindowHistory,
+  WindowHistoryEntry,
 } from "./store";
 export { createWindowTabStorage, mergeTabGroups } from "./storage";
 export type { WindowTabStorage } from "./storage";

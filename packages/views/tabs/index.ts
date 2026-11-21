@@ -39,7 +39,11 @@ export {
   type TabSelectionShortcutKey,
   type TabSelectionShortcutHost,
 } from "./use-tab-selection-shortcut";
-export { useTabHistory, type BrowsingHistoryEntry } from "./use-tab-history";
+export {
+  useTabHistory,
+  useWindowTabHistory,
+  type BrowsingHistoryEntry,
+} from "./use-tab-history";
 export { useNavigationInputBindings } from "./use-navigation-input-bindings";
 export {
   DesktopTabNavigationProvider,

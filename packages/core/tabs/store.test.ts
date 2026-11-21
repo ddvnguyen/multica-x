@@ -2037,3 +2037,77 @@ describe("tabs shared with other windows", () => {
     ).toEqual(["/acme/issues", "/acme/projects"]);
   });
 });
+
+describe("chat session identity (M-413 round 4)", () => {
+  it("keys a chat tab by its session, not the bare chat page", () => {
+    expect(resourceKeyForUrl("/acme/chat?session=abc")).toBe("/acme/chat?session=abc");
+    expect(resourceKeyForUrl("/acme/chat?session=abc&draft=1")).toBe("/acme/chat?session=abc");
+    expect(resourceKeyForUrl("/acme/chat")).toBe("/acme/chat");
+  });
+
+  it("opens one tab per session and focuses the existing one", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    const a = tabId(store.openTab("/acme/chat?session=a", "hi"));
+    const b = tabId(store.openTab("/acme/chat?session=b", "there"));
+
+    expect(a).not.toBe(b);
+    expect(store.openTab("/acme/chat?session=a", "hi")).toBe(a);
+    expect(useTabStore.getState().byWorkspace.acme?.tabs).toHaveLength(3);
+  });
+});
+
+describe("window history (M-413 round 4)", () => {
+  function activeLocation(): { tabId: string | null; url: string | null } {
+    const state = useTabStore.getState();
+    return { tabId: getActiveTab(state)?.id ?? null, url: getActiveTab(state)?.url ?? null };
+  }
+
+  it("walks back across tabs, landing in each tab's previous location", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.navigateActiveSession("/acme/issues/one");
+
+    const b = tabId(store.openTab("/acme/projects", "Projects", { activate: true }));
+    store.navigateActiveSession("/acme/projects/p1");
+
+    expect(store.goBackInWindow()).toBe(true);
+    expect(activeLocation()).toEqual({ tabId: b, url: "/acme/projects" });
+    expect(store.goBackInWindow()).toBe(true);
+    expect(activeLocation().url).toBe("/acme/issues/one");
+    expect(store.goForwardInWindow()).toBe(true);
+    expect(activeLocation()).toEqual({ tabId: b, url: "/acme/projects" });
+  });
+
+  it("skips the entries of a closed tab and disables at either end", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.navigateActiveSession("/acme/issues/one");
+    const b = tabId(store.openTab("/acme/projects", "Projects", { activate: true }));
+    store.navigateActiveSession("/acme/projects/p1");
+
+    // Back to /acme/issues/one, then close the tab that entry belongs to.
+    store.goBackInWindow();
+    store.goBackInWindow();
+    expect(activeLocation().url).toBe("/acme/issues/one");
+    expect(useTabStore.getState().canGoBackInWindow()).toBe(true);
+    store.closeTab(b);
+    expect(store.canGoBackInWindow()).toBe(true);
+    expect(store.goBackInWindow()).toBe(true);
+    expect(useTabStore.getState().windowHistory.index).toBe(0);
+    expect(store.canGoBackInWindow()).toBe(false);
+    expect(store.goBackInWindow()).toBe(false);
+  });
+
+  it("records a tab switch as one visit", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    const b = tabId(store.openTab("/acme/projects", "Projects", { activate: true }));
+    const a = tabId(store.addTab("/acme/skills", "Skills"));
+    store.setActiveTab(a);
+    store.setActiveTab(b);
+    expect(
+      useTabStore.getState().windowHistory.entries.map((entry) => entry.url),
+    ).toEqual(["/acme/issues", "/acme/projects", "/acme/skills", "/acme/projects"]);
+  });
+});

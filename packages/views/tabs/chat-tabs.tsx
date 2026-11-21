@@ -26,6 +26,7 @@ import {
 } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { chatSessionIdForUrl, useActiveGroup, useTabStore } from "@multica/core/tabs";
 import type { ChatSession } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -109,6 +110,20 @@ function useHeaderChatSessions() {
     [pending],
   );
 
+  const group = useActiveGroup();
+  // One session is one tab (M-413 round 4): a conversation that is already a
+  // page tab of the strip does not also get a chip for the same session — that
+  // is the duplicate `hi` pair the Owner saw. The page tab is the tab; the
+  // chips stay for the sessions with no tab of their own.
+  const sessionsWithTab = useMemo(() => {
+    const ids = new Set<string>();
+    for (const tab of group?.tabs ?? []) {
+      const sessionId = chatSessionIdForUrl(tab.url);
+      if (sessionId) ids.add(sessionId);
+    }
+    return ids;
+  }, [group]);
+
   const { visible } = useMemo(
     () =>
       selectChatBarSessions({
@@ -123,8 +138,26 @@ function useHeaderChatSessions() {
       }),
     [sessions, runningSessionIds, isOpen, activeSessionId, kept, dismissed],
   );
+  const stripVisible = useMemo(
+    () => visible.filter((item) => !sessionsWithTab.has(item.session.id)),
+    [visible, sessionsWithTab],
+  );
 
   const chatHref = paths.chat();
+
+  /** Focus the tab that already shows `sessionId`, if one does. */
+  const focusSessionTab = (sessionId: string): boolean => {
+    const store = useTabStore.getState();
+    const activeGroup = store.activeWorkspaceSlug
+      ? store.byWorkspace[store.activeWorkspaceSlug]
+      : undefined;
+    const match = activeGroup?.tabs.find(
+      (tab) => chatSessionIdForUrl(tab.url) === sessionId,
+    );
+    if (!match) return false;
+    if (match.id !== activeGroup?.activeTabId) store.setActiveTab(match.id);
+    return true;
+  };
 
   const openSession = (session: ChatSession) => {
     if (session.agent_id !== selectedAgentId) setSelectedAgentId(session.agent_id);
@@ -133,13 +166,16 @@ function useHeaderChatSessions() {
     // The conversation is about to be the page, so a floating window over it
     // would be a second copy of what the strip just navigated to.
     if (isOpen) setOpen(false);
+    // The session already has a tab: focus it rather than pointing the current
+    // tab at a second copy of the same conversation.
+    if (focusSessionTab(session.id)) return;
     navigation.push(`${chatHref}?session=${encodeURIComponent(session.id)}`);
   };
 
   return {
     sessions,
     runningSessionIds,
-    visible,
+    visible: stripVisible,
     chatHref,
     isOpen,
     openSession,

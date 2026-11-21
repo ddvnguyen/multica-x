@@ -5,16 +5,15 @@ import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
 import { TabHistoryButtons } from "./tab-history-buttons";
 
-// Same contract the web adapter implements: Back and Forward step the active
-// session's virtual stack, and `canGoBack` adds the page behind the shell.
+// Same contract the web adapter implements (M-413 round 4): Back and Forward
+// walk the window's one history, and `canGoBack` adds the page behind the
+// shell (the browser's own history) as a fallback.
 const adapter = {
   push: vi.fn(),
   replace: vi.fn(),
-  back: vi.fn(() => useTabStore.getState().goBack()),
-  // The session stack is what the buttons read; the adapter's own answer is
-  // only the fallback for the page behind the shell.
-  canGoBack: vi.fn(() => false),
-  forward: vi.fn(() => useTabStore.getState().goForward()),
+  back: vi.fn(() => useTabStore.getState().goBackInWindow()),
+  canGoBack: vi.fn(() => useTabStore.getState().canGoBackInWindow()),
+  forward: vi.fn(() => useTabStore.getState().goForwardInWindow()),
 };
 
 function nav(): NavigationAdapter {
@@ -48,7 +47,11 @@ function activeUrl(): string | undefined {
 }
 
 beforeEach(() => {
-  useTabStore.setState({ activeWorkspaceSlug: null, byWorkspace: {} });
+  useTabStore.setState({
+    activeWorkspaceSlug: null,
+    byWorkspace: {},
+    windowHistory: { entries: [], index: -1 },
+  });
   localStorage.clear();
   adapter.back.mockClear();
   adapter.forward.mockClear();
@@ -64,7 +67,7 @@ describe("TabHistoryButtons", () => {
     expect(screen.getByRole("button", { name: "Go forward" })).toBeDisabled();
   });
 
-  it("steps the active tab's own history in both directions", () => {
+  it("steps the window's history in both directions", () => {
     act(() => {
       useTabStore.getState().navigateActiveSession("/acme/projects");
     });

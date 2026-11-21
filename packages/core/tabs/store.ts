@@ -154,6 +154,98 @@ export interface WorkspaceTabGroup {
   issueAliases?: Record<string, string>;
 }
 
+/**
+ * One visited location of the window (M-413 round 4): the tab it belonged to,
+ * and where that tab stood.
+ *
+ * The web strip's Back/Forward walk this, not a tab's own stack: Back returns
+ * to the previous location across tabs, focusing the tab that holds it. The
+ * model is the dsh island's window history (M-197), mirrored here so both
+ * shells answer the browser's two buttons the same way. Desktop keeps its
+ * per-tab stacks (`TabSession.history`); every visitor appends to both.
+ */
+export interface WindowHistoryEntry {
+  readonly tabId: string;
+  readonly url: string;
+}
+
+/** The window's one history: entries plus the index it is standing on. */
+export interface WindowHistory {
+  entries: WindowHistoryEntry[];
+  index: number;
+}
+
+/** Owner's cap, same as the dsh island (M-197). */
+const WINDOW_HISTORY_CAP = 100;
+
+const EMPTY_WINDOW_HISTORY: WindowHistory = { entries: [], index: -1 };
+
+/**
+ * Append a visit, dropping anything the reader had gone Back from and the
+ * oldest entries past the cap. A repeat of the location already current
+ * (focusing the active tab again, re-opening the same page) is not a second
+ * visit: it keeps one entry.
+ */
+function pushWindowEntry(
+  history: WindowHistory,
+  tabId: string,
+  url: string,
+): WindowHistory {
+  const current = history.index >= 0 ? history.entries[history.index] : undefined;
+  if (current && current.tabId === tabId && current.url === url) return history;
+  const kept = history.entries.slice(0, history.index + 1);
+  const next = [...kept, { tabId, url }];
+  const overflow = Math.max(0, next.length - WINDOW_HISTORY_CAP);
+  const entries = overflow === 0 ? next : next.slice(overflow);
+  return { entries, index: entries.length - 1 };
+}
+
+/**
+ * A replace stands for the entry the window is on, not a new visit: the same
+ * page under a canonical URL (an issue's identifier for its UUID) keeps one
+ * entry.
+ */
+function replaceWindowEntry(
+  history: WindowHistory,
+  tabId: string,
+  url: string,
+): WindowHistory {
+  const current = history.index >= 0 ? history.entries[history.index] : undefined;
+  if (!current || current.tabId !== tabId || current.url === url) return history;
+  const entries = history.entries.map((entry, at) =>
+    at === history.index ? { ...entry, url } : entry,
+  );
+  return { entries, index: history.index };
+}
+
+/** Every tab id in the store, across workspace groups. */
+function liveTabIds(byWorkspace: Record<string, WorkspaceTabGroup>): Set<string> {
+  const live = new Set<string>();
+  for (const group of Object.values(byWorkspace)) {
+    for (const tab of group.tabs) live.add(tab.id);
+  }
+  return live;
+}
+
+/**
+ * The nearest entry in `step`'s direction whose tab is still open, or -1.
+ *
+ * Closed tabs are skipped rather than pruned: the index of the entry the
+ * window stands on must not move when some other tab closes.
+ */
+function nearestLiveWindowEntry(
+  history: WindowHistory,
+  live: Set<string>,
+  from: number,
+  step: 1 | -1,
+): number {
+  for (let at = from; at >= 0 && at < history.entries.length; at += step) {
+    const entry = history.entries[at];
+    if (entry && live.has(entry.tabId)) return at;
+  }
+  return -1;
+}
+
 interface TabStore {
   /**
    * The workspace currently visible in the TabBar / TabContent. Null in three
@@ -180,6 +272,11 @@ interface TabStore {
    * Deliberately NOT persisted.
    */
   mountGeneration: number;
+  /**
+   * The window's one history (M-413 round 4). Runtime state, never persisted:
+   * a restart is a fresh window, and the strip's Back starts empty.
+   */
+  windowHistory: WindowHistory;
   /**
    * Bumped when a background open (Cmd/middle-click) lands on a tab that
    * already shows the resource. The open must not move the user, so instead
@@ -249,6 +346,17 @@ interface TabStore {
   goForward: () => void;
   /** Jump directly to one entry in the active session's virtual history. */
   goToHistoryIndex: (historyIndex: number) => void;
+  /**
+   * Window-wide Back/Forward: the previous location across tabs, focusing the
+   * tab that holds it and skipping entries of closed tabs. Returns false when
+   * there is nowhere to go, so a caller can fall back to the browser.
+   */
+  goBackInWindow: () => boolean;
+  goForwardInWindow: () => boolean;
+  canGoBackInWindow: () => boolean;
+  canGoForwardInWindow: () => boolean;
+  /** Jump to one entry of the window history (the strip's history menu). */
+  goToWindowHistoryIndex: (windowIndex: number) => boolean;
   /**
    * Update captured containers for one route of a tab, preserving entries for
    * unmounted views. A plain container captured at zero on both axes clears
@@ -340,14 +448,33 @@ export function splitTabUrl(url: string): { pathname: string; suffix: string } {
 }
 
 /**
+ * The chat session a URL opens (`?session=`), or null when it is not one.
+ *
+ * A conversation is a place, not view state: `/{ws}/chat?session=<id>` is the
+ * tab for that session, so the id belongs in its identity — two sessions are
+ * two tabs, and the same session is one (M-413 round 4).
+ */
+export function chatSessionIdForUrl(url: string): string | null {
+  const { pathname, suffix } = splitTabUrl(url);
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length !== 2 || segments[1] !== "chat") return null;
+  return searchParamsOfSuffix(suffix).get("session") || null;
+}
+
+/**
  * Dedup identity of a tab URL: its pathname (search/hash are view state),
  * plus the list it opens — `?view=` names a saved view and `?scope=` a
  * built-in one (My agents' work), so cmd+clicking list B from a tab showing
  * list A must open B, not focus A. A saved view carries its own scope.
+ *
+ * A chat session is the exception to "search is view state": it names which
+ * conversation the tab is, so it is part of the identity.
  */
 export function resourceKeyForUrl(url: string): string {
   const { pathname, suffix } = splitTabUrl(url);
   const params = searchParamsOfSuffix(suffix);
+  const session = chatSessionIdForUrl(url);
+  if (session) return `${pathname}?session=${encodeURIComponent(session)}`;
   const view = params.get("view");
   if (view) return `${pathname}?view=${encodeURIComponent(view)}`;
   const scope = params.get("scope");
@@ -769,6 +896,11 @@ function reconcileGroup(
   };
 }
 
+/** The url of a group's active tab, or undefined when it is missing. */
+function activeTabUrl(group: WorkspaceTabGroup): string | undefined {
+  return group.tabs.find((tab) => tab.id === group.activeTabId)?.url;
+}
+
 /**
  * Which tab to activate when the active tab closes: the most recently
  * visited surviving tab. Falls back to the positional neighbour when the MRU
@@ -837,6 +969,7 @@ export const useTabStore = create<TabStore>()(
       activeWorkspaceSlug: null,
       byWorkspace: {},
       mountGeneration: 0,
+      windowHistory: EMPTY_WINDOW_HISTORY,
       tabAttention: null,
 
       switchWorkspace(slug, openPath) {
@@ -876,7 +1009,13 @@ export const useTabStore = create<TabStore>()(
               ...byWorkspace,
               [slug]: nextGroup,
             },
+            windowHistory: pushWindowEntry(
+              current.windowHistory,
+              nextGroup.activeTabId,
+              seedPath,
+            ),
           });
+
           return;
         }
 
@@ -899,6 +1038,11 @@ export const useTabStore = create<TabStore>()(
                   ...byWorkspace,
                   [slug]: nextGroup,
                 },
+                windowHistory: pushWindowEntry(
+                  current.windowHistory,
+                  match.id,
+                  match.url,
+                ),
               });
               return;
             }
@@ -919,16 +1063,35 @@ export const useTabStore = create<TabStore>()(
                 ...byWorkspace,
                 [slug]: nextGroup,
               },
+              windowHistory: pushWindowEntry(
+                current.windowHistory,
+                tab.id,
+                clean,
+              ),
             });
             return;
           }
         }
 
         // No openPath (or openPath was rejected) — just restore the group.
+        const restored = byWorkspace[slug];
+        const restoredUrl = restored ? activeTabUrl(restored) : undefined;
+        const nextHistory =
+          restored && restoredUrl
+            ? pushWindowEntry(
+                current.windowHistory,
+                restored.activeTabId,
+                restoredUrl,
+              )
+            : current.windowHistory;
         set(
           refreshed
-            ? { activeWorkspaceSlug: slug, byWorkspace }
-            : { activeWorkspaceSlug: slug },
+            ? {
+                activeWorkspaceSlug: slug,
+                byWorkspace,
+                windowHistory: nextHistory,
+              }
+            : { activeWorkspaceSlug: slug, windowHistory: nextHistory },
         );
       },
 
@@ -969,6 +1132,11 @@ export const useTabStore = create<TabStore>()(
               ...byWorkspace,
               [activeWorkspaceSlug]: nextGroup,
             },
+            windowHistory: pushWindowEntry(
+              get().windowHistory,
+              existing.id,
+              existing.url,
+            ),
           });
           return existing.id;
         }
@@ -1010,6 +1178,10 @@ export const useTabStore = create<TabStore>()(
             ...byWorkspace,
             [activeWorkspaceSlug]: nextGroup,
           },
+          windowHistory:
+            opts?.activate === true
+              ? pushWindowEntry(get().windowHistory, tab.id, clean)
+              : get().windowHistory,
         });
         return tab.id;
       },
@@ -1105,12 +1277,16 @@ export const useTabStore = create<TabStore>()(
         if (!hit) return;
         const { slug, group } = hit;
         if (slug === activeWorkspaceSlug && group.activeTabId === tabId) return;
+        const tab = group.tabs.find((t) => t.id === tabId);
         set({
           activeWorkspaceSlug: slug,
           byWorkspace: {
             ...byWorkspace,
             [slug]: reconcileGroup(group, group.tabs, tabId),
           },
+          windowHistory: tab
+            ? pushWindowEntry(get().windowHistory, tabId, tab.url)
+            : get().windowHistory,
         });
       },
 
@@ -1211,6 +1387,9 @@ export const useTabStore = create<TabStore>()(
             ...byWorkspace,
             [activeWorkspaceSlug]: nextGroup,
           },
+          windowHistory: replace
+            ? replaceWindowEntry(get().windowHistory, current.id, clean)
+            : pushWindowEntry(get().windowHistory, current.id, clean),
         });
       },
 
@@ -1224,6 +1403,50 @@ export const useTabStore = create<TabStore>()(
 
       goToHistoryIndex(historyIndex) {
         setHistoryIndex(get, set, historyIndex);
+      },
+
+      goBackInWindow() {
+        return stepWindowHistory(get, set, -1);
+      },
+
+      goForwardInWindow() {
+        return stepWindowHistory(get, set, +1);
+      },
+
+      canGoBackInWindow() {
+        const state = get();
+        return (
+          nearestLiveWindowEntry(
+            state.windowHistory,
+            liveTabIds(state.byWorkspace),
+            state.windowHistory.index - 1,
+            -1,
+          ) !== -1
+        );
+      },
+
+      canGoForwardInWindow() {
+        const state = get();
+        return (
+          nearestLiveWindowEntry(
+            state.windowHistory,
+            liveTabIds(state.byWorkspace),
+            state.windowHistory.index + 1,
+            1,
+          ) !== -1
+        );
+      },
+
+      goToWindowHistoryIndex(windowIndex) {
+        if (!Number.isInteger(windowIndex)) return false;
+        const state = get();
+        const entry = state.windowHistory.entries[windowIndex];
+        if (!entry || !findTabLocation(state.byWorkspace, entry.tabId)) {
+          return false;
+        }
+        if (windowIndex === state.windowHistory.index) return true;
+        applyWindowEntry(get, set, windowIndex);
+        return true;
       },
 
       commitScrollMemento(tabId, routeKey, entries) {
@@ -1434,6 +1657,7 @@ export const useTabStore = create<TabStore>()(
           if (nextActive) changed = true;
         }
 
+        let seeded: TabSession | null = null;
         if (!nextActive) {
           const fallbackSlug = validSlugs.values().next().value;
           if (fallbackSlug) {
@@ -1445,12 +1669,22 @@ export const useTabStore = create<TabStore>()(
               { title: fresh.title },
             );
             nextActive = fallbackSlug;
+            seeded = fresh;
             changed = true;
           }
         }
 
         if (!changed) return;
-        set({ byWorkspace: nextByWorkspace, activeWorkspaceSlug: nextActive });
+        set({
+          byWorkspace: nextByWorkspace,
+          activeWorkspaceSlug: nextActive,
+          // The seed is the window's first location: Back stays disabled on
+          // it, and a later navigation has somewhere to return to (M-413
+          // round 4).
+          windowHistory: seeded
+            ? pushWindowEntry(get().windowHistory, seeded.id, seeded.url)
+            : get().windowHistory,
+        });
       },
 
       reset() {
@@ -1458,6 +1692,7 @@ export const useTabStore = create<TabStore>()(
           activeWorkspaceSlug: null,
           byWorkspace: {},
           mountGeneration: 0,
+          windowHistory: EMPTY_WINDOW_HISTORY,
           tabAttention: null,
         });
       },
@@ -1726,6 +1961,67 @@ function setHistoryIndex(
       [activeWorkspaceSlug]: nextGroup,
     },
   });
+}
+
+/**
+ * Point the window at one entry of its history: focus the tab the entry
+ * belongs to and put it back on the entry's URL.
+ *
+ * The tab's own stack is deliberately untouched: this is the window's history
+ * (web), not a tab's (desktop), and a tab that the window moved still owns
+ * the stack its own Back would walk.
+ */
+function applyWindowEntry(
+  get: () => TabStore,
+  set: (partial: Partial<TabStore>) => void,
+  at: number,
+): boolean {
+  const state = get();
+  const entry = state.windowHistory.entries[at];
+  if (!entry) return false;
+  const hit = findTabLocation(state.byWorkspace, entry.tabId);
+  if (!hit) return false;
+  const { slug, group, index } = hit;
+  const current = group.tabs[index];
+  if (!current) return false;
+  const next: TabSession = {
+    ...current,
+    url: entry.url,
+    resourceKey: resourceKeyForUrl(entry.url),
+  };
+  const nextTabs = [...group.tabs];
+  nextTabs[index] = next;
+  const nextGroup = withBrowsingVisit(
+    reconcileGroup(group, nextTabs, entry.tabId),
+    slug,
+    entry.url,
+    { title: current.title },
+  );
+  set({
+    activeWorkspaceSlug: slug,
+    byWorkspace: { ...state.byWorkspace, [slug]: nextGroup },
+    windowHistory: { entries: state.windowHistory.entries, index: at },
+  });
+  return true;
+}
+
+/**
+ * Step the window's history one entry in `delta`'s direction, skipping entries
+ * of tabs that have since been closed. False when there is nowhere to go.
+ */
+function stepWindowHistory(
+  get: () => TabStore,
+  set: (partial: Partial<TabStore>) => void,
+  delta: -1 | 1,
+): boolean {
+  const state = get();
+  const at = nearestLiveWindowEntry(
+    state.windowHistory,
+    liveTabIds(state.byWorkspace),
+    state.windowHistory.index + delta,
+    delta,
+  );
+  return at === -1 ? false : applyWindowEntry(get, set, at);
 }
 
 // Persisted shapes (for migration)
@@ -2024,6 +2320,30 @@ export function useActiveBrowsingHistory(): string[] {
       EMPTY_HISTORY_ENTRIES
     );
   });
+}
+
+/**
+ * The window's one history, as state (M-413 round 4).
+ *
+ * The strip's Back/Forward read this: `canGoBack`/`canGoForward` skip entries
+ * of tabs that have since been closed, exactly like the actions do, so a
+ * disabled button means pressing it would do nothing.
+ */
+export function useWindowHistory(): {
+  entries: WindowHistoryEntry[];
+  index: number;
+  canGoBack: boolean;
+  canGoForward: boolean;
+} {
+  const history = useTabStore((s) => s.windowHistory);
+  const byWorkspace = useTabStore((s) => s.byWorkspace);
+  const live = liveTabIds(byWorkspace);
+  return {
+    entries: history.entries,
+    index: history.index,
+    canGoBack: nearestLiveWindowEntry(history, live, history.index - 1, -1) !== -1,
+    canGoForward: nearestLiveWindowEntry(history, live, history.index + 1, 1) !== -1,
+  };
 }
 
 /** Persisted display-title fallbacks keyed by browsing-history resource. */

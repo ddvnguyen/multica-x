@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatSessionsOptions, pendingChatTasksOptions } from "@multica/core/chat/queries";
+import { useTabStore } from "@multica/core/tabs";
 import type { ChatSession } from "@multica/core/types";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
@@ -39,6 +40,7 @@ vi.mock("@multica/core/chat", () => ({
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-test" }));
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
+  workspaceSlugForPath: (path: string) => path.split("/").filter(Boolean)[0] ?? null,
 }));
 vi.mock("@multica/core/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/api")>()),
@@ -95,6 +97,11 @@ beforeEach(() => {
   h.chat.isOpen = false;
   h.chat.activeSessionId = null;
   vi.mocked(adapter.push).mockClear();
+  useTabStore.setState({
+    activeWorkspaceSlug: null,
+    byWorkspace: {},
+    windowHistory: { entries: [], index: -1 },
+  });
 });
 
 describe("header chat tabs (M-413)", () => {
@@ -114,6 +121,32 @@ describe("header chat tabs (M-413)", () => {
     fireEvent.click(open!);
     expect(adapter.push).toHaveBeenCalledWith("/acme/chat?session=Weekly%20report");
     expect(h.chat.setActiveSession).toHaveBeenCalledWith("Weekly report");
+  });
+
+  // M-413 round 4: opening a chat from the list showed two `hi` tabs — the
+  // page tab and the chip for the same session. One session is one tab.
+  it("leaves the session to its page tab instead of adding a chip", () => {
+    // Both sessions would otherwise be chips: kept chats always are.
+    h.chat.chatBarKept = ["Weekly report", "Read and done"];
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    store.openTab("/acme/chat?session=Weekly%20report", "Weekly report", {
+      activate: true,
+    });
+
+    renderIn(
+      <ChatTabsInHeaderProvider>
+        <HeaderChatTabs />
+      </ChatTabsInHeaderProvider>,
+    );
+
+    expect(
+      document.querySelector('[data-chat-tab="Weekly report"]'),
+    ).toBeNull();
+    // A session with no tab of its own still gets its chip.
+    expect(
+      document.querySelector('[data-chat-tab="Read and done"]'),
+    ).not.toBeNull();
   });
 
   it("closes a chat tab with its hover control", () => {
