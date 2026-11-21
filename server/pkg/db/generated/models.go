@@ -157,6 +157,17 @@ type AgentPlanSectionVersion struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AgentPreset struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Name          string             `json:"name"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	TierID        pgtype.UUID        `json:"tier_id"`
+	LegacyAgentID pgtype.UUID        `json:"legacy_agent_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AgentQuestionCard struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

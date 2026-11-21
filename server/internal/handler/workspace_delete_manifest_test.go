@@ -177,6 +177,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"weixin_account_state":               workspaceDelete,
 	"workspace_composio_connection":      workspaceDelete,
 	"agent_app":                          workspaceDelete,
+	"agent_preset":                       workspaceDelete,
 	"app_action_rule":                    workspaceDelete,
 	"app_action_request":                 workspaceDelete,
 	"app_tool_call":                      workspaceDelete,
