@@ -154,11 +154,21 @@ run_for_sha() { # $1 = sha; run id of the successful push run for that sha
 }
 
 assert_mmx_health() { # $1 = sha the PWA must serve (full sha; sw.js carries it)
-  local sha="$1" manifest port="${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
-  manifest="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/manifest.webmanifest")" \
-    || { log "mmx-pwa z manifest did not answer"; return 1; }
-  printf '%s' "$manifest" | grep -q '"name":"MMX"' \
-    || { log "mmx-pwa z manifest is not the MMX brand"; return 1; }
+  # $2 = seconds to wait for the manifest, default 0 = one attempt.
+  # A restarted PWA refuses connections for about a second before it serves,
+  # so every post-restart caller passes a wait (M-459). The "is it already on
+  # this SHA?" precheck keeps the single attempt: a tick must not stall for the
+  # whole wait just because the PWA is down.
+  local sha="$1" wait="${2:-0}" bound="single attempt" manifest port="${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
+  [ "$wait" = 0 ] || bound="waited ${wait}s"
+  if ! wait_http "http://127.0.0.1:$port/manifest.webmanifest" "$wait" '"name":"MMX"'; then
+    # Distinguish a dead PWA from a live one serving the wrong brand: the
+    # second request only runs on failure and only to name the cause.
+    manifest="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/manifest.webmanifest" 2>/dev/null || true)"
+    [ -n "$manifest" ] \
+      || { log "mmx-pwa z manifest did not answer ($bound)"; return 1; }
+    log "mmx-pwa z manifest is not the MMX brand"; return 1
+  fi
   curl -fsS --max-time 10 "http://127.0.0.1:$port/sw.js" | grep -q "$sha" \
     || { log "mmx-pwa z sw.js is not stamped with $sha"; return 1; }
   log "mmx-pwa health ok: brand MMX, sw.js stamped $sha"
@@ -228,7 +238,7 @@ converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-curr
     converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
     return 1
   fi
-  if ! assert_mmx_health "$sha"; then
+  if ! assert_mmx_health "$sha" 60; then
     converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
     return 1
   fi
@@ -265,7 +275,7 @@ converge_restore_pwa() { # $1 = prior current target, $2 = prior marker, $3 = pr
     prior_sha="$(grep -oE '[0-9a-f]{40}' "$prior_rel/apps/web/public/sw.js" | head -1 || true)"
   fi
   if [ -n "${prior_sha:-}" ]; then
-    assert_mmx_health "$prior_sha" \
+    assert_mmx_health "$prior_sha" 60 \
       && log "converge: prior mmx-pwa state restored and healthy (${prior_sha:0:9})" \
       || log "converge RESTORE FAILED: prior mmx-pwa state did not come back healthy"
   else
@@ -751,7 +761,7 @@ ln -sfn "$MMX_REL" "$LANE_ROOT/mmx-pwa/current"
 [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$MMX_REL" ] || fail "mmx-pwa current does not resolve to $MMX_REL"
 write_mmx_pwa_env "$SHA" || fail "could not write mmx-pwa env"
 systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"
-assert_mmx_health "$SHA" || fail "mmx-pwa health check failed after the switch"
+assert_mmx_health "$SHA" 60 || fail "mmx-pwa health check failed after the switch"
 printf 'updated (mmx-pwa-z restarted to %s)\n' "${SHA:0:9}" > "$LANE_ROOT/data/autodeploy-mmx-pwa.note"
 log "mmx-pwa z -> releases/${SHA:0:9}; restarted and healthy"
 

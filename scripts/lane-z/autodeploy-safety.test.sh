@@ -169,6 +169,9 @@ set -euo pipefail
 case "$*" in
   *"show --property=MainPID"*) printf '1\n' ;;
   *"cat multica-be-z.service"*) printf 'ExecStart=%s/bin/server\n' "$TEST_LANE_ROOT/multica-be/current" ;;
+  # A PWA restart stamps the mock's dead window (M-459); the curl mock below
+  # refuses connections until it closes, as a restarted Next server does.
+  *"restart mmx-pwa-z.service"*) [ -z "${PWA_RESTART_STAMP:-}" ] || date +%s > "$PWA_RESTART_STAMP"; exit 0 ;;
   *) exit 0 ;;
 esac
 MOCKEOF
@@ -180,6 +183,11 @@ cat > "$SANDBOX/mock-full/curl" <<'MOCKEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 url="${*: -1}"
+if [ -n "${PWA_RESTART_STAMP:-}" ] && [ -f "$PWA_RESTART_STAMP" ] \
+  && [ "$(( $(date +%s) - $(cat "$PWA_RESTART_STAMP") ))" -lt "${PWA_DOWN_SECONDS:-0}" ]; then
+  printf 'curl: (7) Failed to connect to 127.0.0.1 port 3190\n' >&2
+  exit 7
+fi
 case "$url" in
   *"/multica/healthz"*) printf '{"status":"ok"}\n' ;;
   *"/multica/health"*) printf '{"commit":"%s","status":"ok"}\n' "$(jq -r '.sha' "$TEST_LANE_ROOT/multica-be/current/release.json")" ;;
@@ -217,6 +225,20 @@ grep -q 'mmx-pwa:' "$TEST_LANE_ROOT/reports/latest.md"
 grep -q "lane z is on \`${TARGET_SHA:0:9}\`" "$TEST_LANE_ROOT/reports/latest.md"
 # The evidence must not claim a /moct/status that was never probed.
 ! grep -q 'moct/status' "$TEST_LANE_ROOT/reports/latest.md"
+
+# M-459: the same switch against a PWA that refuses connections for a moment
+# after its restart. The post-switch gate must wait it out; the single-shot
+# gate this replaces failed the live tick for ab4f636b at exactly this point.
+new_lane pwa-race
+export PWA_RESTART_STAMP="$TEST_LANE_ROOT/pwa-restarted.at" PWA_DOWN_SECONDS=1
+start="$(date +%s)"
+"$SANDBOX/bin/autodeploy.sh" > "$SANDBOX/pwa-race.log" 2>&1
+grep -q 'step: switch-mmx-pwa' "$SANDBOX/pwa-race.log"
+grep -q 'mmx-pwa health ok: brand MMX' "$SANDBOX/pwa-race.log"
+test "$(readlink -f "$TEST_LANE_ROOT/mmx-pwa/current")" = "$TEST_LANE_ROOT/mmx-pwa/releases/$TARGET_SHA"
+test "$(( $(date +%s) - start ))" -lt 120
+! grep -q 'manifest did not answer' "$SANDBOX/pwa-race.log"
+unset PWA_RESTART_STAMP PWA_DOWN_SECONDS
 export PATH="$SANDBOX/mock-bin:$PATH"
 
 # M-458 regression: the post-switch gate passes with the lane web answering

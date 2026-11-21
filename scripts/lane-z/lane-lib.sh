@@ -206,14 +206,17 @@ resolve_lane_web_url() {
   printf 'http://%s:%s' "$host" "$port"
 }
 
-wait_http() { # $1=url $2=timeout $3=expected substring
+wait_http() { # $1=url $2=timeout $3=expected substring (empty = any 2xx body)
+  # Always attempts once, so a 0 timeout means "single shot" for callers that
+  # must not stall (M-459's pre-switch PWA check) while any positive value
+  # keeps retrying until the deadline.
   local deadline=$((SECONDS + $2)) body
-  while [ "$SECONDS" -lt "$deadline" ]; do
+  while :; do
     body="$(curl -fsS --max-time 3 "$1" 2>/dev/null || true)"
     if [ -n "$body" ] && { [ -z "${3:-}" ] || printf '%s' "$body" | grep -q "$3"; }; then
       return 0
     fi
+    [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 2
   done
-  return 1
 }
