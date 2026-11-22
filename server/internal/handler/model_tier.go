@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,8 +65,11 @@ type ModelTierResponse struct {
 	ProviderSlots int     `json:"provider_slots"`
 	Enabled       bool    `json:"enabled"`
 	// Roles served by this tier (M-423). Empty = legacy/unconfigured: matches
-	// only agents with no role set.
+	// only agents with no role set. M-497: derived from model_tier_role rows.
 	Roles []string `json:"roles"`
+	// RoleIdx is this tier's position inside the requested role's list
+	// (M-497). Present only when the list was filtered with ?role=.
+	RoleIdx *int `json:"role_idx,omitempty"`
 	// ManualOnly is legacy compat (M-481: auto_pick = NOT manual_only).
 	ManualOnly bool `json:"manual_only"`
 	// AutoPick: when true the system may pick this tier by idx/quota/quality.
@@ -171,9 +175,10 @@ type modelTierInput struct {
 	QuotaKind     *string  `json:"quota_kind"`
 	QuotaKinds    []string `json:"quota_kinds"`
 	QuotaKindsSet bool     `json:"-"`
-	IsFree        *bool    `json:"is_free"`
 	CtxMaxTokens  *int     `json:"ctx_max_tokens"`
 	CompactAtPct  *int     `json:"compact_at_pct"`
+	// M-497: is_free is no longer an input. It is derived from quota_kinds
+	// (free or free_daily selected) and kept on the column for the old binary.
 }
 
 func (in *modelTierInput) UnmarshalJSON(data []byte) error {
@@ -194,7 +199,6 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 		AutoPick      *bool    `json:"auto_pick"`
 		QuotaKind     *string  `json:"quota_kind"`
 		QuotaKinds    []string `json:"quota_kinds"`
-		IsFree        *bool    `json:"is_free"`
 		CtxMaxTokens  *int     `json:"ctx_max_tokens"`
 		CompactAtPct  *int     `json:"compact_at_pct"`
 	}
@@ -206,7 +210,7 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	in.Provider, in.Model = a.Provider, a.Model
 	in.ThinkingLevel, in.ServiceTier = a.ThinkingLevel, a.ServiceTier
 	in.Quality, in.ProviderSlots, in.Enabled = a.Quality, a.ProviderSlots, a.Enabled
-	in.ManualOnly, in.AutoPick, in.QuotaKind, in.IsFree = a.ManualOnly, a.AutoPick, a.QuotaKind, a.IsFree
+	in.ManualOnly, in.AutoPick, in.QuotaKind = a.ManualOnly, a.AutoPick, a.QuotaKind
 	in.CtxMaxTokens, in.CompactAtPct = a.CtxMaxTokens, a.CompactAtPct
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
@@ -415,13 +419,16 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 				return params, nil, errors.New("roles must be a subset of architect, management, engineer, leader, reviewer, orchestrator, planning")
 			}
 		}
-		params.Roles = append([]string{}, in.Roles...)
+		// M-497: store the canonical set (legacy mapped, deduped, sorted) so
+		// model_tier.roles stays derived from the per-role rows.
+		params.Roles = canonicalTierRoles(in.Roles)
 	} else if forCreate {
 		params.Roles = []string{}
 	}
-	// ManualOnly/QuotaKind/IsFree ride sqlc.narg NULLABLE params: present →
+	// ManualOnly/QuotaKind ride sqlc.narg NULLABLE params: present →
 	// explicit (even false), omitted → invalid → COALESCE keeps the column
-	// default (create) or the row value (update).
+	// default (create) or the row value (update). IsFree is always derived
+	// from quota kinds below (M-497).
 	if in.ManualOnly != nil {
 		params.ManualOnly = pgtype.Bool{Bool: *in.ManualOnly, Valid: true}
 	}
@@ -469,9 +476,9 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	} else if forCreate && params.QuotaKinds == nil {
 		params.QuotaKinds = []string{}
 	}
-	if in.IsFree != nil {
-		params.IsFree = pgtype.Bool{Bool: *in.IsFree, Valid: true}
-	}
+	// M-497: is_free is derived from the resulting quota kinds (free or
+	// free_daily selected) and kept on the column for the old binary.
+	params.IsFree = pgtype.Bool{Bool: tierIsFreeFromKinds(params.QuotaKinds), Valid: true}
 	if in.CtxMaxTokens != nil {
 		if *in.CtxMaxTokens < 1024 || *in.CtxMaxTokens > 2000000 {
 			return params, nil, errors.New("ctx_max_tokens must be between 1024 and 2000000")
@@ -500,6 +507,61 @@ func validTierRoleName(r string) bool {
 		// Legacy roles accepted during transition (M-481).
 		"leader", "reviewer", "orchestrator", "planning":
 		return true
+	}
+	return false
+}
+
+// canonicalTierRole maps a role name onto the 3-role system (M-497). Legacy
+// names fold the same way migration 740 folded stored rows.
+func canonicalTierRole(r string) string {
+	switch r {
+	case "leader", "reviewer", "orchestrator":
+		return "management"
+	case "planning":
+		return "architect"
+	default:
+		return r
+	}
+}
+
+// validCanonicalTierRole reports whether r names one of the 3 roles that own
+// a per-role list (M-497). ?role= and role reorder accept only these.
+func validCanonicalTierRole(r string) bool {
+	switch r {
+	case "architect", "management", "engineer":
+		return true
+	}
+	return false
+}
+
+// canonicalTierRoles normalizes a roles set onto the 3-role system: legacy
+// names mapped, blank/unknown dropped, deduped, sorted. The result is what
+// model_tier.roles stores and what model_tier_role rows are kept for.
+func canonicalTierRoles(roles []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, r := range roles {
+		c := canonicalTierRole(strings.TrimSpace(r))
+		if !validCanonicalTierRole(c) {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// tierIsFreeFromKinds derives the legacy is_free flag from quota kinds
+// (M-497): a tier counts as free when a free kind is selected.
+func tierIsFreeFromKinds(kinds []string) bool {
+	for _, k := range kinds {
+		if k == "free" || k == "free_daily" {
+			return true
+		}
 	}
 	return false
 }
@@ -564,8 +626,75 @@ func (h *Handler) modelTierRuntimeInWorkspace(r *http.Request, wsUUID pgtype.UUI
 	return err == nil && count == 1
 }
 
+// syncTierRoleRows reconciles a tier's model_tier_role rows with its
+// canonical roles (M-497): rows for dropped roles are removed, rows for kept
+// roles are left at their position, and rows for newly added roles are
+// appended at the end of that role's list. Returns the tier's role→idx map.
+func (h *Handler) syncTierRoleRows(r *http.Request, wsUUID pgtype.UUID, tierID pgtype.UUID, roles []string) map[string]int32 {
+	roleIdx := map[string]int32{}
+	// Drop rows for removed roles (empty roles drop every row: the tier
+	// leaves every role list but keeps matching legacy role-less agents).
+	_ = h.Queries.DeleteModelTierRolesNotIn(r.Context(), db.DeleteModelTierRolesNotInParams{
+		TierID: tierID, Roles: roles,
+	})
+	for _, role := range roles {
+		rows, err := h.Queries.ListModelTierRoleIdxForTiers(r.Context(), db.ListModelTierRoleIdxForTiersParams{
+			Ids: []pgtype.UUID{tierID}, Role: role,
+		})
+		if err == nil && len(rows) > 0 {
+			roleIdx[role] = rows[0].Idx
+			continue
+		}
+		maxIdx, err := h.Queries.MaxModelTierRoleIdx(r.Context(), db.MaxModelTierRoleIdxParams{
+			WorkspaceID: wsUUID, Role: role,
+		})
+		if err != nil {
+			continue
+		}
+		row, err := h.Queries.UpsertModelTierRole(r.Context(), db.UpsertModelTierRoleParams{
+			WorkspaceID: wsUUID, TierID: tierID, Role: role, Idx: maxIdx + 1,
+		})
+		if err != nil {
+			continue
+		}
+		roleIdx[role] = row.Idx
+	}
+	return roleIdx
+}
+
+// tierRoleIdxMap loads every (tier → idx) in this workspace for one role.
+func (h *Handler) tierRoleIdxMap(r *http.Request, wsUUID pgtype.UUID, role string) map[string]int32 {
+	out := map[string]int32{}
+	rows, err := h.Queries.ListModelTierRolesByWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		return out
+	}
+	for _, row := range rows {
+		if row.Role != role {
+			continue
+		}
+		out[uuidToString(row.TierID)] = row.Idx
+	}
+	return out
+}
+
+// withRoleIdx stamps role_idx onto tier responses for a role-filtered list.
+func withRoleIdx(tiers []ModelTierResponse, roleIdx map[string]int32) []ModelTierResponse {
+	for i := range tiers {
+		if idx, ok := roleIdx[tiers[i].ID]; ok {
+			v := int(idx)
+			tiers[i].RoleIdx = &v
+		}
+	}
+	return tiers
+}
+
 // ListModelTiers returns the workspace's tiers ordered by idx. Member-visible:
 // the payload names runtimes and models only, and M-351 agent pickers need it.
+// With ?role=<architect|management|engineer> (M-497) only tiers in that
+// role's list are returned, ordered by the role-specific idx, each carrying
+// its role_idx. A tier appears in a role's list only if it has a row for
+// that role; legacy tiers with no rows match only the unfiltered list.
 func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
@@ -573,6 +702,11 @@ func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
+		return
+	}
+	roleFilter := strings.TrimSpace(r.URL.Query().Get("role"))
+	if roleFilter != "" && !validCanonicalTierRole(roleFilter) {
+		writeError(w, http.StatusBadRequest, "role must be architect, management or engineer")
 		return
 	}
 	tiers, err := h.Queries.ListModelTiers(r.Context(), wsUUID)
@@ -583,6 +717,25 @@ func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 	out := make([]ModelTierResponse, 0, len(tiers))
 	for _, t := range tiers {
 		out = append(out, modelTierToResponse(t))
+	}
+	if roleFilter != "" {
+		roleIdx := h.tierRoleIdxMap(r, wsUUID, roleFilter)
+		filtered := out[:0]
+		for _, t := range out {
+			if _, ok := roleIdx[t.ID]; ok {
+				filtered = append(filtered, t)
+			}
+		}
+		out = filtered
+		// Role-specific order (then creation order for stability).
+		sort.SliceStable(out, func(i, j int) bool {
+			ii, jj := roleIdx[out[i].ID], roleIdx[out[j].ID]
+			if ii != jj {
+				return ii < jj
+			}
+			return out[i].CreatedAt < out[j].CreatedAt
+		})
+		out = withRoleIdx(out, roleIdx)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tiers": out})
 }
@@ -633,6 +786,8 @@ func (h *Handler) CreateModelTier(w http.ResponseWriter, r *http.Request) {
 		ProviderSlots: created.ProviderSlots,
 		Enabled:       created.Enabled,
 	})
+	// M-497: new role rows go at the end of each role's list.
+	h.syncTierRoleRows(r, wsUUID, created.ID, created.Roles)
 	writeJSON(w, http.StatusCreated, modelTierToResponse(created))
 }
 
@@ -735,6 +890,13 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 			h.syncTierLegacyFromMembers(r, updated)
 		}
 	}
+	// M-497: keep the per-role rows in sync when roles change. Kept roles
+	// hold their position; added roles append at the end of their list.
+	if in.RolesSet {
+		h.syncTierRoleRows(r, wsUUID, tierUUID, updated.Roles)
+		// New rows have no position yet for other roles — reload not needed:
+		// role_idx is only stamped on role-filtered reads.
+	}
 	writeJSON(w, http.StatusOK, modelTierToResponse(updated))
 }
 
@@ -782,6 +944,11 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete tier")
 		return
 	}
+	// M-497: drop the per-role order rows with the tier.
+	if err := h.Queries.DeleteModelTierRolesByTier(r.Context(), tierUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete tier")
+		return
+	}
 	if err := h.Queries.DeleteModelTier(r.Context(), tierUUID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete tier")
 		return
@@ -792,6 +959,11 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 // ReorderModelTiers replaces the tier order (owner/admin). The body is the
 // full ordered id list; position becomes the new idx. Ids outside this
 // workspace are rejected before anything is written.
+//
+// With {"role", "ids"} (M-497) only that role's list is rewritten —
+// reordering Engineer never moves Architect — and the response carries
+// role_idx for the reordered role. Without "role" the legacy global idx
+// order is rewritten (old binary compat).
 func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
@@ -802,7 +974,8 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs  []string `json:"ids"`
+		Role string   `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -810,6 +983,11 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.IDs) == 0 || len(req.IDs) > 100 {
 		writeError(w, http.StatusBadRequest, "ids must list 1 to 100 tiers")
+		return
+	}
+	role := strings.TrimSpace(req.Role)
+	if role != "" && !validCanonicalTierRole(role) {
+		writeError(w, http.StatusBadRequest, "role must be architect, management or engineer")
 		return
 	}
 	seen := make(map[string]struct{}, len(req.IDs))
@@ -841,6 +1019,38 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "tier not found")
 			return
 		}
+	}
+	if role != "" {
+		for pos, id := range uuids {
+			if _, err := h.Queries.UpsertModelTierRole(r.Context(), db.UpsertModelTierRoleParams{
+				WorkspaceID: wsUUID, TierID: id, Role: role, Idx: int32(pos),
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to reorder tiers")
+				return
+			}
+		}
+		tiers, err := h.Queries.ListModelTiers(r.Context(), wsUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list tiers")
+			return
+		}
+		roleIdx := h.tierRoleIdxMap(r, wsUUID, role)
+		out := make([]ModelTierResponse, 0, len(tiers))
+		for _, t := range tiers {
+			if _, ok := roleIdx[uuidToString(t.ID)]; !ok {
+				continue
+			}
+			out = append(out, modelTierToResponse(t))
+		}
+		sort.SliceStable(out, func(i, j int) bool {
+			ii, jj := roleIdx[out[i].ID], roleIdx[out[j].ID]
+			if ii != jj {
+				return ii < jj
+			}
+			return out[i].CreatedAt < out[j].CreatedAt
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"tiers": withRoleIdx(out, roleIdx)})
+		return
 	}
 	if err := h.Queries.ReorderModelTiers(r.Context(), db.ReorderModelTiersParams{
 		Ids:         uuids,

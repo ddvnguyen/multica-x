@@ -452,6 +452,11 @@ deleted_model_tier_members AS (
     DELETE FROM model_tier_member
     WHERE tier_id IN (SELECT id FROM model_tier WHERE workspace_id = $1)
 ),
+deleted_model_tier_roles AS (
+    -- M-497: per-role tier order rows (no FKs). Delete before tiers.
+    DELETE FROM model_tier_role
+    WHERE workspace_id = $1
+),
 deleted_model_tiers AS (
     -- M-350 follow-up: workspace-owned tiers. Deleted after the join so no
     -- concurrent reader sees a tier vanish under its selection mid-teardown.

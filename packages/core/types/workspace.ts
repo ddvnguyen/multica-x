@@ -69,6 +69,11 @@ export interface ModelTier {
   enabled: boolean;
   /** Roles served (M-423). Empty = legacy/unconfigured. */
   roles: string[];
+  /**
+   * Position inside the requested role's list (M-497). Present only on
+   * role-filtered (?role=) reads and role reorder responses.
+   */
+  role_idx?: number;
   /** Never auto-resolves; explicit picks need a workspace owner. */
   manual_only: boolean;
   /**

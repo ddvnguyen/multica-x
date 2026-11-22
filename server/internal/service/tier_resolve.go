@@ -263,6 +263,19 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	if len(enabled) == 0 {
 		return none, errNoTierCapacity
 	}
+	// M-497: order candidates by the role-specific idx for the agent's
+	// role (then creation order). Tiers without a row for the role keep
+	// their global idx — legacy tiers with no role match only legacy
+	// agents, for whom no rows exist.
+	roleIdx := s.tierRoleIdx(ctx, enabled, role)
+	idxOf := func(t db.ModelTier) int32 { return effectiveTierIdx(t, roleIdx) }
+	sort.SliceStable(enabled, func(i, j int) bool {
+		ii, jj := idxOf(enabled[i]), idxOf(enabled[j])
+		if ii != jj {
+			return ii < jj
+		}
+		return enabled[i].CreatedAt.Time.Before(enabled[j].CreatedAt.Time)
+	})
 	important, complex := 1, 1
 	if issueID.Valid {
 		important, complex = s.difficultyFromProperties(ctx, agent.WorkspaceID, properties)
@@ -273,10 +286,44 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	if res, ok := firstTierMemberWithCapacity(ctx, s.Queries, qualifyingTiers(enabled, required), membersByTier, runtimes, now); ok {
 		return tierResolutionForMember(res, false, !res.tier.Quality.Valid), nil
 	}
-	if res, ok := fallbackTierMember(ctx, s.Queries, enabled, membersByTier, runtimes, required, now); ok {
+	if res, ok := fallbackTierMember(ctx, s.Queries, enabled, membersByTier, runtimes, required, now, idxOf); ok {
 		return tierResolutionForMember(res, true, false), nil
 	}
 	return none, errNoTierCapacity
+}
+
+// tierRoleIdx loads the role-specific order for candidate tiers (M-497):
+// tier id → idx for the agent's normalized role. Empty when the agent has
+// no role or no rows exist (legacy): callers fall back to the global idx.
+func (s *TaskService) tierRoleIdx(ctx context.Context, tiers []db.ModelTier, role string) map[string]int32 {
+	out := map[string]int32{}
+	canonical := normalizeTierRole(role)
+	if !validTierRoles[canonical] || s == nil || s.Queries == nil {
+		return out
+	}
+	ids := make([]pgtype.UUID, 0, len(tiers))
+	for _, t := range tiers {
+		ids = append(ids, t.ID)
+	}
+	rows, err := s.Queries.ListModelTierRoleIdxForTiers(ctx, db.ListModelTierRoleIdxForTiersParams{
+		Ids: ids, Role: canonical,
+	})
+	if err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out[util.UUIDToString(r.TierID)] = r.Idx
+	}
+	return out
+}
+
+// effectiveTierIdx is the candidate order key: the role-specific idx when
+// the tier has a row for the agent's role, else the global tier idx.
+func effectiveTierIdx(t db.ModelTier, roleIdx map[string]int32) int32 {
+	if idx, ok := roleIdx[util.UUIDToString(t.ID)]; ok {
+		return idx
+	}
+	return t.Idx
 }
 
 // tierMemberAvailability is one role-matched candidate tier+member with its
@@ -494,13 +541,13 @@ func firstTierWithCapacity(ctx context.Context, q *db.Queries, tiers []db.ModelT
 	return tierAvailability{}, false
 }
 
-func fallbackTierMember(ctx context.Context, q *db.Queries, tiers []db.ModelTier, membersByTier map[string][]db.ModelTierMember, runtimes map[string]db.AgentRuntime, required int, now time.Time) (tierMemberAvailability, bool) {
+func fallbackTierMember(ctx context.Context, q *db.Queries, tiers []db.ModelTier, membersByTier map[string][]db.ModelTierMember, runtimes map[string]db.AgentRuntime, required int, now time.Time, idxOf func(db.ModelTier) int32) (tierMemberAvailability, bool) {
 	_, _, below := splitTiersByFloor(tiers, required)
 	if len(below) == 0 {
 		return tierMemberAvailability{}, false
 	}
 	ordered := append([]db.ModelTier(nil), below...)
-	sortTiersByQualityDesc(ordered)
+	sortTiersByQualityDescWithIdx(ordered, idxOf)
 	for _, t := range ordered {
 		if av, ok := tierMemberCapacity(ctx, q, t, membersByTier, runtimes, now); ok {
 			return av, true
@@ -527,13 +574,21 @@ func fallbackTier(ctx context.Context, q *db.Queries, tiers []db.ModelTier, runt
 // sortTiersByQualityDesc orders measured tiers quality-desc, idx-asc,
 // created_at-asc. Callers only pass measured tiers (no NULL quality).
 func sortTiersByQualityDesc(tiers []db.ModelTier) {
+	sortTiersByQualityDescWithIdx(tiers, func(t db.ModelTier) int32 { return t.Idx })
+}
+
+// sortTiersByQualityDescWithIdx is sortTiersByQualityDesc with a pluggable
+// order key (M-497): the resolver passes the role-specific idx so the
+// fallback tie-break follows the agent's role list, not the global order.
+func sortTiersByQualityDescWithIdx(tiers []db.ModelTier, idxOf func(db.ModelTier) int32) {
 	sort.SliceStable(tiers, func(i, j int) bool {
 		qi, qj := tiers[i].Quality.Int32, tiers[j].Quality.Int32
 		if qi != qj {
 			return qi > qj
 		}
-		if tiers[i].Idx != tiers[j].Idx {
-			return tiers[i].Idx < tiers[j].Idx
+		ii, jj := idxOf(tiers[i]), idxOf(tiers[j])
+		if ii != jj {
+			return ii < jj
 		}
 		return tiers[i].CreatedAt.Time.Before(tiers[j].CreatedAt.Time)
 	})

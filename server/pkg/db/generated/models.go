@@ -1683,6 +1683,15 @@ type ModelTierMember struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ModelTierRole struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TierID      pgtype.UUID        `json:"tier_id"`
+	Role        string             `json:"role"`
+	Idx         int32              `json:"idx"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type NativeQuestionAnswer struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

@@ -140,6 +140,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"743_model_tier_role_lookup_index":                          "idx_model_tier_role_lookup",
+	"742_model_tier_role_unique_index":                          "idx_model_tier_role_tier_role",
 	"738_agent_task_requested_tier_unique":                      "idx_one_pending_task_per_issue_agent_requested_tier",
 	"737_agent_preset_workspace_name_index":                     "idx_agent_preset_workspace_name",
 	"721_question_group_index":                                  "question_group_idx",
