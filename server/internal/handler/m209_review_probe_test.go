@@ -80,6 +80,9 @@ func TestM209PublishesAfterCommitOnce(t *testing.T) {
 		t.Fatalf("retry = %d: %s", w.Code, w.Body.String())
 	}
 	assertM209Rows(t, issue, "in_progress", 1, 1, 1)
+	if count := dbfx.Count(t, `SELECT count(*) FROM issue_decision_record WHERE issue_id=$1 AND source_kind='ask_answer'`, issue); count != 1 {
+		t.Fatalf("human answer decision records = %d, want one despite retry", count)
+	}
 	var requestedAt time.Time
 	dbfx.QueryRow(t, `SELECT requested_at FROM issue_decision_response WHERE issue_id=$1`, issue).Scan(&requestedAt)
 	if !requestedAt.Equal(waitingAt) {

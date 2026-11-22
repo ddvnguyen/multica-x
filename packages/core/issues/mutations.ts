@@ -958,6 +958,8 @@ export function useCreateComment(issueId: string) {
       attachmentIds,
       suppressAgentIds,
       steerTaskIds,
+      recordAsDecision,
+      supersedesRecordId,
     }: {
       content: string;
       type?: string;
@@ -966,13 +968,16 @@ export function useCreateComment(issueId: string) {
       suppressAgentIds?: string[];
       /** Running turns this comment goes into instead of a follow-up run. */
       steerTaskIds?: string[];
-    }) => api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds),
+      recordAsDecision?: boolean;
+      supersedesRecordId?: string;
+    }) => api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds, recordAsDecision, supersedesRecordId),
     onSuccess: (comment) => {
       applyCreatedComment(qc, wsId, issueId, comment);
       // Posting a comment changes the trigger answer itself (the enqueued
       // task now dedupes follow-up triggers), so cached previews for this
       // issue are stale the moment the create lands.
       qc.invalidateQueries({ queryKey: issueKeys.commentTriggerPreview(issueId) });
+      if (comment && comment.id) qc.invalidateQueries({ queryKey: issueKeys.decisionRecords(wsId, issueId) });
     },
     // No onSettled invalidate. The `comment:created` WS broadcast keeps
     // the timeline cache fresh after a successful create, and reconnect

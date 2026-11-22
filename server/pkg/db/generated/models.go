@@ -1209,6 +1209,19 @@ type IssueChildEvent struct {
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
 }
 
+type IssueDecisionRecord struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	CommentID    pgtype.UUID        `json:"comment_id"`
+	Decided      string             `json:"decided"`
+	Rationale    string             `json:"rationale"`
+	SupersedesID pgtype.UUID        `json:"supersedes_id"`
+	SourceKind   string             `json:"source_kind"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueDecisionResponse struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

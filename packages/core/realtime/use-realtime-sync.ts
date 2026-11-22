@@ -1471,6 +1471,7 @@ export function useRealtimeSync(
       // updated_at, so the other comment events below deliberately do not.
       const wsId = getCurrentWsId();
       if (wsId) {
+        void qc.invalidateQueries({ queryKey: issueKeys.decisionRecords(wsId, comment.issue_id) });
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
         scheduleProjectActivityRefresh(wsId);

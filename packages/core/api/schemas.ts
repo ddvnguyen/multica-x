@@ -1520,6 +1520,14 @@ export const CommentSchema = z.object({
 
 export const CommentsListSchema = z.array(CommentSchema);
 
+export const IssueDecisionRecordSchema = z.object({
+  id: z.string(), issue_id: z.string(), comment_id: z.string(),
+  decided: z.string(), rationale: z.string(),
+  supersedes_id: z.string().nullable(), superseded_by_id: z.string().nullable(),
+  source_kind: z.string(), actor_id: z.string(), created_at: z.string(),
+}).loose();
+export const IssueDecisionRecordsSchema = z.array(IssueDecisionRecordSchema);
+
 // Degraded placeholder for a comment response that failed schema validation.
 // The empty id is the caller's signal that nothing usable came back — the run
 // UI treats it as "could not read the result" rather than a successful run.
