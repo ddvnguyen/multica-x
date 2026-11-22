@@ -3,14 +3,16 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatSessionsOptions, pendingChatTasksOptions } from "@multica/core/chat/queries";
 import { useTabStore } from "@multica/core/tabs";
-import type { ChatSession } from "@multica/core/types";
+import type { ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
 import { ChatBar } from "../chat/components/chat-bar";
 import {
+  ChatTabLeading,
   ChatTabsInHeaderProvider,
   HeaderChatControls,
-  HeaderChatTabs,
+  openChatSessionTab,
+  useChatTabState,
 } from "./chat-tabs";
 
 const WS = "ws-test";
@@ -40,6 +42,7 @@ vi.mock("@multica/core/chat", () => ({
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-test" }));
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
+  useCurrentWorkspace: () => ({ id: WS, slug: "acme" }),
   workspaceSlugForPath: (path: string) => path.split("/").filter(Boolean)[0] ?? null,
 }));
 vi.mock("@multica/core/api", async (importOriginal) => ({
@@ -73,7 +76,9 @@ function session(id: string, minute: number, overrides: Partial<ChatSession> = {
   };
 }
 
-function renderIn(node: React.ReactNode) {
+const NO_PENDING_TASKS: PendingChatTasksResponse = { tasks: [] };
+
+function renderIn(node: React.ReactNode, pending: PendingChatTasksResponse = NO_PENDING_TASKS) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
@@ -81,7 +86,7 @@ function renderIn(node: React.ReactNode) {
     chatSessionsOptions(WS).queryKey,
     [session("Read and done", 1), session("Weekly report", 3, { has_unread: true })],
   );
-  qc.setQueryData(pendingChatTasksOptions(WS).queryKey, { tasks: [] });
+  qc.setQueryData(pendingChatTasksOptions(WS).queryKey, pending);
   return renderWithI18n(
     <QueryClientProvider client={qc}>
       <NavigationProvider value={adapter}>
@@ -91,80 +96,98 @@ function renderIn(node: React.ReactNode) {
   );
 }
 
+/** The active workspace's tab group (the real store backs these tests). */
+function group() {
+  const state = useTabStore.getState();
+  return state.byWorkspace[state.activeWorkspaceSlug ?? ""];
+}
+
+function chatTabs() {
+  return (group()?.tabs ?? []).filter((tab) => tab.url.startsWith("/acme/chat"));
+}
+
 beforeEach(() => {
   h.chat.chatBarKept = [];
   h.chat.chatBarDismissed = {};
   h.chat.isOpen = false;
   h.chat.activeSessionId = null;
   vi.mocked(adapter.push).mockClear();
+  h.chat.setOpen.mockClear();
   useTabStore.setState({
     activeWorkspaceSlug: null,
     byWorkspace: {},
     windowHistory: { entries: [], index: -1 },
   });
+  useTabStore.getState().switchWorkspace("acme");
 });
 
-describe("header chat tabs (M-413)", () => {
-  it("renders one tab per open chat, and a click opens that conversation", () => {
+describe("chat tabs (M-413 round 5)", () => {
+  // One session is one tab: the Chat list, a history row and a deep link all go
+  // through the store's dedupe, so a conversation cannot gain a second tab.
+  it("opens one tab per conversation and focuses it on the next open", () => {
+    const first = openChatSessionTab("/acme/chat", { id: "Read and done", title: "Read and done" });
+    expect(chatTabs()).toHaveLength(1);
+    expect(chatTabs()[0]?.url).toBe("/acme/chat?session=Read%20and%20done");
+    expect(group()?.activeTabId).toBe(first);
+
+    const second = openChatSessionTab("/acme/chat", { id: "Read and done", title: "Read and done" });
+    expect(second).toBe(first);
+    expect(chatTabs()).toHaveLength(1);
+  });
+
+  // The strip's history used to add a chip beside the page; now it opens the
+  // conversation's tab and leaves the page the reader was on alone.
+  it("opens a conversation's tab from the strip's history without retargeting the page", () => {
+    const pageTabId = group()?.activeTabId;
     renderIn(
       <ChatTabsInHeaderProvider>
-        <HeaderChatTabs />
+        <HeaderChatControls />
       </ChatTabsInHeaderProvider>,
     );
 
-    const tab = document.querySelector<HTMLElement>('[data-chat-tab="Weekly report"]');
-    expect(tab).not.toBeNull();
-    // The unread state rides in the accessible name, not a second badge.
-    const open = tab?.querySelector("button");
-    expect(open?.getAttribute("aria-label")).toMatch(/^Weekly report, .+/);
+    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+    fireEvent.click(screen.getByRole("button", { name: /Read and done/ }));
 
-    fireEvent.click(open!);
-    expect(adapter.push).toHaveBeenCalledWith("/acme/chat?session=Weekly%20report");
-    expect(h.chat.setActiveSession).toHaveBeenCalledWith("Weekly report");
+    expect(group()?.tabs.map((tab) => tab.url)).toEqual([
+      "/acme/issues",
+      "/acme/chat?session=Read%20and%20done",
+    ]);
+    expect(group()?.tabs.find((tab) => tab.id === pageTabId)?.url).toBe("/acme/issues");
+    expect(adapter.push).not.toHaveBeenCalled();
   });
 
-  // M-413 round 4: opening a chat from the list showed two `hi` tabs — the
-  // page tab and the chip for the same session. One session is one tab.
-  it("leaves the session to its page tab instead of adding a chip", () => {
-    // Both sessions would otherwise be chips: kept chats always are.
-    h.chat.chatBarKept = ["Weekly report", "Read and done"];
-    const store = useTabStore.getState();
-    store.switchWorkspace("acme");
-    store.openTab("/acme/chat?session=Weekly%20report", "Weekly report", {
-      activate: true,
+  it("focuses the tab the Chat list already opened for the same session", () => {
+    const chatTabId = openChatSessionTab("/acme/chat", {
+      id: "Read and done",
+      title: "Read and done",
     });
+    // Opening from the list activates the conversation; go back to the page so
+    // the history click has something to focus.
+    useTabStore.getState().setActiveTab(group()?.tabs[0]?.id ?? "");
 
     renderIn(
       <ChatTabsInHeaderProvider>
-        <HeaderChatTabs />
+        <HeaderChatControls />
       </ChatTabsInHeaderProvider>,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+    fireEvent.click(screen.getByRole("button", { name: /Read and done/ }));
 
-    expect(
-      document.querySelector('[data-chat-tab="Weekly report"]'),
-    ).toBeNull();
-    // A session with no tab of its own still gets its chip.
-    expect(
-      document.querySelector('[data-chat-tab="Read and done"]'),
-    ).not.toBeNull();
+    expect(chatTabs()).toHaveLength(1);
+    expect(group()?.activeTabId).toBe(chatTabId);
   });
 
-  it("closes a chat tab with its hover control", () => {
+  it("closes the floating window when a conversation becomes the page", () => {
+    h.chat.isOpen = true;
     renderIn(
       <ChatTabsInHeaderProvider>
-        <HeaderChatTabs />
+        <HeaderChatControls />
       </ChatTabsInHeaderProvider>,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
+    fireEvent.click(screen.getByRole("button", { name: /Read and done/ }));
 
-    const tab = document.querySelector<HTMLElement>('[data-chat-tab="Weekly report"]');
-    const close = tab?.querySelectorAll("button")[1];
-    fireEvent.click(close!);
-    expect(h.chat.dismissChatFromBar).toHaveBeenCalled();
-  });
-
-  it("renders nothing in a shell that keeps its chats in the bottom bar", () => {
-    renderIn(<HeaderChatTabs />);
-    expect(screen.queryByRole("button", { name: /Weekly report/ })).toBeNull();
+    expect(h.chat.setOpen).toHaveBeenCalledWith(false);
   });
 
   // M-413 round 2: the footer is gone in this shell, so starting a chat and
@@ -183,21 +206,6 @@ describe("header chat tabs (M-413)", () => {
     expect(start).toHaveAttribute("data-chat-anchor", "new");
   });
 
-  it("opens an old chat as the page from the strip's history", async () => {
-    renderIn(
-      <ChatTabsInHeaderProvider>
-        <HeaderChatControls />
-      </ChatTabsInHeaderProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Chat history" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Read and done/ }));
-
-    expect(adapter.push).toHaveBeenCalledWith("/acme/chat?session=Read%20and%20done");
-    expect(h.chat.setActiveSession).toHaveBeenCalledWith("Read and done");
-    expect(h.chat.setOpen).not.toHaveBeenCalledWith(true);
-  });
-
   it("renders no chat controls in a shell without the header placement", () => {
     renderIn(<HeaderChatControls />);
     expect(screen.queryByRole("button", { name: "New chat" })).toBeNull();
@@ -214,5 +222,39 @@ describe("header chat tabs (M-413)", () => {
     expect(bar?.textContent ?? "").not.toContain("Weekly report");
     // Ask Multica and the history stay: they start and find chats.
     expect(within(bar as HTMLElement).getByRole("button", { name: /bar\.ask|Ask/i })).toBeTruthy();
+  });
+});
+
+describe("ChatTabLeading (M-413 round 5)", () => {
+  function Probe({ url }: { url: string }) {
+    const state = useChatTabState(url);
+    return (
+      <ChatTabLeading state={state}>
+        <span data-testid="tab-visual" />
+      </ChatTabLeading>
+    );
+  }
+
+  it("shows the unread dot on a conversation's tab", () => {
+    const { container } = renderIn(<Probe url="/acme/chat?session=Weekly%20report" />);
+    expect(container.querySelector("[data-chat-tab-unread]")).not.toBeNull();
+    expect(container.querySelector("[data-chat-tab-running]")).toBeNull();
+    expect(screen.getByTestId("tab-visual")).toBeTruthy();
+  });
+
+  it("replaces the icon with a spinner while a task runs", () => {
+    const { container } = renderIn(<Probe url="/acme/chat?session=Weekly%20report" />, {
+      tasks: [{ chat_session_id: "Weekly report" } as PendingChatTasksResponse["tasks"][number]],
+    });
+    expect(container.querySelector("[data-chat-tab-running]")).not.toBeNull();
+    // The spinner takes the leading slot's place; the icon does not also show.
+    expect(screen.queryByTestId("tab-visual")).toBeNull();
+  });
+
+  it("leaves a page tab's own visual alone", () => {
+    const { container } = renderIn(<Probe url="/acme/issues" />);
+    expect(container.querySelector("[data-chat-tab-running]")).toBeNull();
+    expect(container.querySelector("[data-chat-tab-unread]")).toBeNull();
+    expect(screen.getByTestId("tab-visual")).toBeTruthy();
   });
 });

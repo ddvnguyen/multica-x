@@ -44,9 +44,9 @@ import { useTabStore, useActiveGroup, type Tab } from "@multica/core/tabs";
 import { paths, parseTabSubject } from "@multica/core/paths";
 import { useT } from "../i18n";
 import {
+  ChatTabLeading,
   HeaderChatControls,
-  HeaderChatTabs,
-  useChatTabsInHeader,
+  useChatTabState,
 } from "./chat-tabs";
 import {
   useTabPresentation,
@@ -178,6 +178,7 @@ function SortableTabItem({
   host: TabBarHostCapabilities;
 }) {
   const { t } = useT("settings");
+  const { t: chatT } = useT("chat");
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const closeTab = useTabStore((s) => s.closeTab);
   const closeOtherTabs = useTabStore((s) => s.closeOtherTabs);
@@ -194,6 +195,10 @@ function SortableTabItem({
   // updated as the cache updates. `tab.title` is only a persisted first-frame
   // fallback. See @multica/views useTabPresentation.
   const { visual, title, titleResolved, issueIdentity } = useTabPresentation(tab.url, tab.title, { fetch: true });
+  // A conversation's tab carries the state the chips used to hold: a spinner
+  // while its task runs, a dot for an unread reply. Read from the chat caches
+  // here, so the tab and the Chat surfaces cannot disagree (M-413 round 5).
+  const chatState = useChatTabState(tab.url);
   const pinLabel = tab.pinned
     ? t(($) => $.desktop.tab_bar.unpin)
     : t(($) => $.desktop.tab_bar.pin);
@@ -203,6 +208,11 @@ function SortableTabItem({
   const tabName = tab.pinned
     ? t(($) => $.desktop.tab_bar.pinned_name, { title })
     : title;
+  const chatStateLabel = chatState?.running
+    ? chatT(($) => $.window.running)
+    : chatState?.unread
+      ? chatT(($) => $.window.unread)
+      : null;
 
   // A compact strip switches places, so it names the place: an issue's
   // identifier (`M-413`) with the full title in the tooltip, instead of a
@@ -322,7 +332,7 @@ function SortableTabItem({
         e.preventDefault();
         handleClose(e);
       }}
-      aria-label={tabName}
+      aria-label={chatStateLabel ? `${tabName}, ${chatStateLabel}` : tabName}
       data-tab-active={isActive ? "true" : undefined}
       data-tab-entering={isEntering ? "true" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -336,7 +346,9 @@ function SortableTabItem({
         isDragging && "opacity-60",
       )}
     >
-      <ResourceLeadingVisual visual={visual} />
+      <ChatTabLeading state={chatState}>
+        <ResourceLeadingVisual visual={visual} />
+      </ChatTabLeading>
       <span
         className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
         style={{
@@ -383,6 +395,9 @@ function SortableTabItem({
       data-mc="tab"
       data-active={isActive ? "true" : "false"}
       data-pinned={tab.pinned ? "true" : "false"}
+      data-chat-tab-state={
+        chatState ? (chatState.running ? "running" : chatState.unread ? "unread" : "idle") : undefined
+      }
       className={cn("h-full min-w-0", compact ? "w-40 min-w-24" : "w-56 min-w-32", isActive && "z-10")}
     >
       <motion.div
@@ -593,7 +608,6 @@ export function TabBar({
    */
   compact?: boolean;
 } = {}) {
-  const chatTabsInHeader = useChatTabsInHeader();
   const group = useActiveGroup();
   const moveTab = useTabStore((s) => s.moveTab);
   const activeWorkspaceSlug = useTabStore((s) => s.activeWorkspaceSlug);
@@ -737,18 +751,6 @@ export function TabBar({
                 </Fragment>
               ))}
             </SortableContext>
-            {/* A chat is the same kind of place as a page, so it belongs in the
-                same strip: the sessions the bottom bar used to chip are tabs
-                here (M-413). The rule keeps "page" and "conversation" apart
-                without a second row. */}
-            {chatTabsInHeader && tabs.length > 0 && (
-              <div
-                aria-hidden
-                data-tab-zone-divider=""
-                className="h-4 w-px shrink-0 bg-surface-border"
-              />
-            )}
-            <HeaderChatTabs />
           </div>
         </DndContext>
         <NewTabEdgeFeedback

@@ -392,6 +392,52 @@ describe("WebTabNavigationProvider adapter", () => {
     ).toBe("/acme/issues");
   });
 
+  // M-413 round 5: a conversation is a tab of its own. Opening one from a page
+  // leaves that page where it is instead of pointing its tab at the chat.
+  it("opens a conversation in its own tab instead of retargeting the page", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    const pageTabId = activeTab()?.id;
+
+    act(() => {
+      nav().push("/acme/chat?session=a");
+    });
+
+    const tabs = useTabStore.getState().byWorkspace["acme"]?.tabs ?? [];
+    expect(tabs.map((tab) => tab.url)).toEqual([
+      "/acme/issues",
+      "/acme/chat?session=a",
+    ]);
+    expect(activeTab()?.url).toBe("/acme/chat?session=a");
+    expect(tabs.find((tab) => tab.id === pageTabId)?.url).toBe("/acme/issues");
+  });
+
+  // The Chat page is a container: switching conversations inside it switches
+  // the tab's conversation, the way the Inbox rewrites its selection in place.
+  it("switches conversations inside the Chat page's own tab", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().push("/acme/chat?session=a");
+    });
+    const chatTabId = activeTab()?.id;
+
+    act(() => {
+      nav().push("/acme/chat?session=b");
+    });
+
+    const chatTabs = (useTabStore.getState().byWorkspace["acme"]?.tabs ?? []).filter(
+      (tab) => tab.url.startsWith("/acme/chat"),
+    );
+    expect(chatTabs).toHaveLength(1);
+    expect(activeTab()?.id).toBe(chatTabId);
+    expect(activeTab()?.url).toBe("/acme/chat?session=b");
+  });
+
   it("keeps a pinned tab parked and projects the tab an in-app push opens", () => {
     act(() => {
       sync();

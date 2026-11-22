@@ -27,9 +27,12 @@ export {
 } from "@multica/core/tabs";
 export { TabBar, type TabBarHostCapabilities } from "./tab-bar";
 export {
+  ChatTabLeading,
   ChatTabsInHeaderProvider,
   HeaderChatControls,
-  HeaderChatTabs,
+  chatSessionHref,
+  openChatSessionTab,
+  useChatTabState,
   useChatTabsInHeader,
 } from "./chat-tabs";
 export { TabHistoryButtons } from "./tab-history-buttons";
