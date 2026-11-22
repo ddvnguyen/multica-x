@@ -74,7 +74,9 @@ export function useCreateAgentSubmit(options: {
   } = options;
 
   const create = async () => {
-    if (!runtimeId || creating) return;
+    // A Role has no runtime; readiness is Tier Role selection (see
+    // draftReady). The request builder omits every runtime-bound field.
+    if ((!runtimeId && draft.subtype !== "role") || creating) return;
     setCreating(true);
     setNameError(null);
     setFormError(null);
@@ -82,7 +84,7 @@ export function useCreateAgentSubmit(options: {
       const agent = await api.createAgent(
         buildCreateAgentRequest({
           draft,
-          runtimeId,
+          runtimeId: runtimeId ?? "",
           runtimeProvider,
           template,
           duplicateSource,

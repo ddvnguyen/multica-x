@@ -39,6 +39,17 @@ export interface AgentDraft {
   /** Runtime-native execution tier (Codex Speed), scoped to `model`. */
   serviceTier: string;
   skillIds: Set<string>;
+  /**
+   * Additive subtype for the create (M-499): "role" creates a model-free
+   * Role; ""/undefined is an ordinary Agent. Only the manual create form
+   * sets this — duplicates and the AI builder stay Agent-only.
+   */
+  subtype?: string;
+  /**
+   * A Role's tier-role selection from the workspace registry. Required
+   * when subtype is "role"; ignored otherwise.
+   */
+  tierRole?: string;
   permissionScope: AgentPermissionScope;
   memberIds: Set<string>;
   /** Team grants are not editable in this form yet, but duplicates must preserve them. */
@@ -239,6 +250,34 @@ export function buildCreateAgentRequest(options: {
     : runtimeProvider
       ? { ...options.draft, qoderAgentId: "" }
       : options.draft;
+  // A model-free Role (M-499): no runtime/model/account fields — the backend
+  // rejects every one of roleForbiddenCreateFields with a 400. The tier
+  // stamps model and runtime onto each task at enqueue, and skills are
+  // inherited from an implementing Agent later (also rejected on create).
+  if (draft.subtype === "role") {
+    const roleRequest: CreateAgentRequest = {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      instructions: draft.instructions.trim() || undefined,
+      ...(draft.conversationStarters.length > 0
+        ? {
+            conversation_starters: draft.conversationStarters.map((item) => ({
+              label: item.label.trim(),
+              prompt: item.prompt.trim(),
+            })),
+          }
+        : {}),
+      avatar_url: draft.avatarUrl ?? undefined,
+      runtime_id: "",
+      subtype: "role",
+      ...(draft.tierRole?.trim() ? { tier_role: draft.tierRole.trim() } : {}),
+      permission_mode:
+        draft.permissionScope === "private" ? "private" : "public_to",
+      invocation_targets: buildInvocationTargets(draft),
+      template,
+    };
+    return roleRequest;
+  }
   const request: CreateAgentRequest = {
     name: draft.name.trim(),
     description: draft.description.trim(),

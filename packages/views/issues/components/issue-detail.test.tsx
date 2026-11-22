@@ -99,6 +99,10 @@ vi.mock("@multica/core/workspace/hooks", () => ({
 
 // Mock workspace queries
 vi.mock("@multica/core/workspace/queries", () => ({
+  workspaceKeys: {
+    tiers: (wsId: string) => ["workspaces", wsId, "tiers"] as const,
+    tierRoles: (wsId: string) => ["workspaces", wsId, "tiers", "roles"] as const,
+  },
   memberListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "members"],
     queryFn: () => Promise.resolve([{ user_id: "user-1", name: "Test User", email: "test@test.com", role: "admin" }]),

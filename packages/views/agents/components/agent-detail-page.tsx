@@ -24,6 +24,8 @@ import type { Agent, UpdateAgentRequest } from "@multica/core/types";
 import {
   type AgentPresenceDetail,
   isAgentRuntimeBound,
+  isRoleAgent,
+  useAgentRoleTypeEnabled,
   useWorkspacePresenceMap,
 } from "@multica/core/agents";
 import { api, ApiError } from "@multica/core/api";
@@ -122,6 +124,9 @@ interface AgentDetailPageProps {
 export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
+  // Role runtime exemption (M-499 slice 4): hoisted with the other hooks —
+  // anything below the `if (!agent)` early return would break hook order.
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
@@ -440,7 +445,10 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
   }
 
   const isArchived = !!agent.archived_at;
-  const runtimeBound = isAgentRuntimeBound(agent);
+  // Roles are model-free: no runtime binding is their normal shape (backend
+  // M-510 exemption). Flag off = byte-identical to today.
+  const roleExempt = roleTypeEnabled && isRoleAgent(agent) && !isArchived;
+  const runtimeBound = roleExempt || isAgentRuntimeBound(agent);
   const runtime = runtimeBound
     ? runtimes.find((r) => r.id === agent.runtime_id) ?? null
     : null;

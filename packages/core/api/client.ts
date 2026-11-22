@@ -101,6 +101,7 @@ import type {
   ModelTierMember,
   ModelTierMemberInput,
   TierRole,
+  RoleCompositionPreview,
   AgentPreset,
   MemberWithUser,
   User,
@@ -645,6 +646,8 @@ import {
   ModelTierMemberSchema,
   ModelTierSchema,
   TierRoleListSchema,
+  RoleCompositionPreviewSchema,
+  EMPTY_ROLE_COMPOSITION_PREVIEW,
   EMPTY_MODEL_TIER_MEMBER,
   AgentPresetSchema,
   AgentPresetListSchema,
@@ -4148,14 +4151,35 @@ export class ApiClient {
     return parsed.tiers;
   }
 
-  /** The workspace's role registry in tab order (M-497). Member-visible. */
-  async listTierRoles(workspaceId: string): Promise<TierRole[]> {
+  /**
+   * The workspace's role registry in tab order (M-497). Member-visible.
+   * Also carries the workspace-scoped `agent_role_type` boolean (M-517):
+   * the UI gates its Role surfaces on that value, evaluated with the
+   * workspace attached. Older backends omit it — treat undefined as false.
+   */
+  async listTierRoles(workspaceId: string): Promise<{ roles: TierRole[]; agentRoleType: boolean }> {
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/roles`);
-    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(raw, z.object({ roles: TierRoleListSchema }), null, {
-      endpoint: "GET /api/workspaces/{id}/tiers/roles",
-    });
+    const parsed = parseWithFallback<{ roles: TierRole[]; agent_role_type?: boolean } | null>(
+      raw,
+      z.object({ roles: TierRoleListSchema, agent_role_type: z.boolean().optional() }),
+      null,
+      { endpoint: "GET /api/workspaces/{id}/tiers/roles" },
+    );
     if (!parsed) throw new Error("Invalid tier roles response");
-    return parsed.roles;
+    return { roles: parsed.roles, agentRoleType: parsed.agent_role_type === true };
+  }
+
+  /**
+   * Read-only inherited view for an Agent implementing a Role (M-499 slice 4):
+   * Role instructions first, the Agent's own additions after, and the union
+   * of both agents' enabled skills. Human-actor only; 403 when the flag is
+   * off or the caller cannot see the Role.
+   */
+  async previewRoleComposition(agentId: string): Promise<RoleCompositionPreview> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/role-preview`);
+    return parseWithFallback(raw, RoleCompositionPreviewSchema, EMPTY_ROLE_COMPOSITION_PREVIEW, {
+      endpoint: "GET /api/agents/{id}/role-preview",
+    });
   }
 
   /** Presets are workspace-scoped and return an empty list while the workspace flag is off. */

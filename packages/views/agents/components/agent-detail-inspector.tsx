@@ -7,12 +7,18 @@ import type {
   AgentConversationStarter,
   AgentRuntime,
   MemberWithUser,
+  RoleCompositionPreview,
 } from "@multica/core/types";
 import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  isRoleAgent,
+  useAgentRoleTypeEnabled,
+  useRolePreview,
 } from "@multica/core/agents";
+import { useCurrentWorkspace } from "@multica/core/paths";
+import { agentListOptions, tierRolesOptions } from "@multica/core/workspace/queries";
 import {
   accountModelScope,
   accountRequestFields,
@@ -111,7 +117,20 @@ export function AgentDetailInspector({
     (data: Record<string, unknown>) => onUpdate(agent.id, data),
     [agent.id, onUpdate],
   );
-
+  // Role edit (M-499 slice 4). Flag off = both hooks stay inert and the
+  // form renders exactly as today. Nullable workspace: the inspector also
+  // renders in tests and hosts without a workspace route — empty fails closed.
+  const wsId = useCurrentWorkspace()?.id ?? "";
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const showingRole = roleTypeEnabled && isRoleAgent(agent);
+  const { data: tierRoles = [] } = useQuery({
+    ...tierRolesOptions(wsId),
+    enabled: showingRole,
+  });
+  const rolePreview = useRolePreview(
+    agent.id,
+    roleTypeEnabled && !isRoleAgent(agent) && !!agent.implements_role_id,
+  );
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? "");
   const [starters, setStarters] = useState<AgentConversationStarter[]>(
@@ -308,10 +327,38 @@ export function AgentDetailInspector({
           <SettingsSection
             title={t(($) => $.inspector.section_execution)}
             description={
-              qoderRuntime ? t(($) => $.inspector.qoder_execution_note) : undefined
+              showingRole
+                ? t(($) => $.inspector.role_execution_note)
+                : qoderRuntime ? t(($) => $.inspector.qoder_execution_note) : undefined
             }
           >
             <SettingsCard>
+              {showingRole ? (
+              <SettingsRow
+                label={t(($) => $.inspector.prop_tier_role)}
+                description={t(($) => $.inspector.tier_role_hint)}
+              >
+                <select
+                  aria-label={t(($) => $.inspector.prop_tier_role)}
+                  value={agent.tier_role ?? ""}
+                  disabled={!canEdit}
+                  onChange={(event) => {
+                    void update({ tier_role: event.target.value || null });
+                  }}
+                  className="max-w-44 truncate rounded-md border bg-background px-2 py-1 text-sm"
+                >
+                  <option value="">
+                    {t(($) => $.inspector.tier_role_none)}
+                  </option>
+                  {tierRoles.map((entry) => (
+                    <option key={entry.key} value={entry.key}>
+                      {entry.key}
+                    </option>
+                  ))}
+                </select>
+              </SettingsRow>
+              ) : (
+              <>
               <SettingsRow
                 label={t(($) => $.inspector.prop_use_tiers)}
                 description={t(($) => $.inspector.use_tiers_hint)}
@@ -320,8 +367,6 @@ export function AgentDetailInspector({
                   checked={agent.use_tiers ?? false}
                   disabled={!canEdit}
                   onCheckedChange={(checked) => {
-                    // Toggling off keeps the last single runtime/model as
-                    // the fallback (M-351) — the columns are never cleared.
                     void update({ use_tiers: checked });
                   }}
                   aria-label={t(($) => $.inspector.prop_use_tiers)}
@@ -337,6 +382,16 @@ export function AgentDetailInspector({
                   onChange={(role) => update({ role })}
                 />
               </SettingsRow>
+              {roleTypeEnabled ? (
+              <ImplementsRoleRow
+                agent={agent}
+                canEdit={canEdit}
+                onUpdate={update}
+              />
+              ) : null}
+              {roleTypeEnabled && agent.implements_role_id ? (
+              <RolePreviewRow preview={rolePreview} />
+              ) : null}
               {agent.use_tiers ? (
                 <SettingsRow
                   label={t(($) => $.inspector.prop_tiers)}
@@ -363,12 +418,6 @@ export function AgentDetailInspector({
                   members={members}
                   currentUserId={currentUserId}
                   canEdit={canEdit && !qoderRuntime}
-                  // Model, thinking level, and service tier are runtime/model
-                  // native. Clear them together so the new runtime resolves its
-                  // own defaults instead of inheriting incompatible tokens.
-                  // Accounts only exist on freebuff-desktop runtimes, and the
-                  // server rejects an account on any other one, so moving to a
-                  // runtime that cannot run accounts drops the selection.
                   onChange={(id) =>
                     update({
                       runtime_id: id,
@@ -448,6 +497,10 @@ export function AgentDetailInspector({
               )}
                 </>
               )}
+              </>
+              )}
+              {showingRole ? null : (
+              <>
               <AgentPresetEditor agentId={agent.id} canEdit={canEdit} />
               <SettingsRow
                 label={t(($) => $.inspector.prop_concurrency)}
@@ -459,6 +512,8 @@ export function AgentDetailInspector({
                   onSave={(next) => update({ max_concurrent_tasks: next })}
                 />
               </SettingsRow>
+              </>
+              )}
             </SettingsCard>
           </SettingsSection>
         </div>
@@ -627,5 +682,112 @@ function ConcurrencyField({
         })}
       </p>
     </div>
+  );
+}
+
+/**
+ * Optional "Implements Role" link for an Agent (M-499 slice 4). Options are
+ * the workspace's unarchived Roles; null clears the link. Setting a link
+ * needs owner/admin (requireRoleManager gates the write); clearing is the
+ * editor's own right.
+ */
+function ImplementsRoleRow({
+  agent,
+  canEdit,
+  onUpdate,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  onUpdate: (data: Record<string, unknown>) => Promise<void> | void;
+}) {
+  const { t } = useT("agents");
+  const wsId = useCurrentWorkspace()?.id ?? "";
+  const { data: agents = [] } = useQuery({
+    ...agentListOptions(wsId),
+    enabled: wsId !== "",
+  });
+  const roles = agents.filter(
+    (candidate) => isRoleAgent(candidate) && !candidate.archived_at,
+  );
+  return (
+    <SettingsRow
+      label={t(($) => $.inspector.prop_implements_role)}
+      description={t(($) => $.inspector.implements_role_hint)}
+    >
+      <select
+        aria-label={t(($) => $.inspector.prop_implements_role)}
+        value={agent.implements_role_id ?? ""}
+        disabled={!canEdit}
+        onChange={(event) => {
+          const next = event.target.value;
+          void onUpdate({ implements_role_id: next || null });
+        }}
+        className="max-w-44 truncate rounded-md border bg-background px-2 py-1 text-sm"
+      >
+        <option value="">{t(($) => $.inspector.implements_role_none)}</option>
+        {roles.map((entry) => (
+          <option key={entry.id} value={entry.id}>
+            {entry.name}
+          </option>
+        ))}
+      </select>
+    </SettingsRow>
+  );
+}
+
+/**
+ * Read-only inherited preview for an implementing Agent: Role instructions
+ * first, the Agent's additions after, and the union of both agents' skills.
+ * A 403 (caller lost Role access) renders as hidden, never partial content.
+ */
+function RolePreviewRow({
+  preview,
+}: {
+  preview: {
+    data: RoleCompositionPreview | undefined;
+    isLoading: boolean;
+    isError: boolean;
+  };
+}) {
+  const { t } = useT("agents");
+  const { data, isLoading, isError } = preview;
+  if (isLoading || isError || !data) return null;
+  return (
+    <SettingsRow
+      label={t(($) => $.inspector.role_preview_label)}
+      description={
+        data.role_name
+          ? t(($) => $.inspector.role_preview_hint, { name: data.role_name })
+          : undefined
+      }
+    >
+      <div className="space-y-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+        {data.role_instructions ? (
+          <p className="whitespace-pre-wrap text-muted-foreground">
+            {data.role_instructions}
+          </p>
+        ) : null}
+        {data.agent_instructions ? (
+          <p className="whitespace-pre-wrap">{data.agent_instructions}</p>
+        ) : null}
+        {data.skills.length > 0 ? (
+          <ul className="space-y-0.5">
+            {data.skills.map((skill) => (
+              <li
+                key={skill.id}
+                className="flex items-center gap-1.5 text-caption"
+              >
+                <span className="rounded-md bg-muted px-1.5 py-0.5">
+                  {skill.source === "role"
+                    ? t(($) => $.inspector.role_preview_skill_role)
+                    : t(($) => $.inspector.role_preview_skill_agent)}
+                </span>
+                <span className="truncate">{skill.name}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </SettingsRow>
   );
 }

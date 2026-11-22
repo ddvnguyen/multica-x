@@ -755,6 +755,22 @@ export interface Agent {
    */
   role?: string;
   /**
+   * Additive agent|role discriminator (M-501). Empty/undefined = legacy
+   * `agent`; the backend defaults it on read. Never sent on update —
+   * subtype is immutable (create a new Role instead of converting).
+   */
+  subtype?: string;
+  /**
+   * The Role an Agent implements (M-499). Null/undefined = no Role link.
+   * Roles never carry this field. Older backends omit it.
+   */
+  implements_role_id?: string | null;
+  /**
+   * A Role's Owner-managed tier-role selection from the workspace registry
+   * (M-497/M-498). Agents omit it. Older backends omit it.
+   */
+  tier_role?: string;
+  /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
    * `none|minimal|low|medium|high|xhigh|max|ultra`). Empty string means "no
@@ -830,6 +846,20 @@ export interface CreateAgentRequest {
   conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id: string;
+  /**
+   * Additive subtype (M-501): "role" creates a model-free Role; omit for an
+   * ordinary Agent. Gated by the agent_role_type workspace flag (403 off).
+   * A Role create must omit runtime/model/account fields (backend 400s).
+   */
+  subtype?: string;
+  /**
+   * The Role an Agent implements (M-499). Omit for no link. Roles omit it.
+   */
+  implements_role_id?: string;
+  /**
+   * A Role's tier-role selection from the workspace registry. Agents omit it.
+   */
+  tier_role?: string;
   runtime_config?: Record<string, unknown>;
   custom_env?: Record<string, string>;
   custom_args?: string[];
@@ -984,6 +1014,19 @@ export interface UpdateAgentRequest {
   tier_ids?: string[];
   /** M-423: omitted = keep, empty = clear, non-empty = set. */
   role?: string;
+  /**
+   * The Role an Agent implements (M-499). Tri-state like tier_role below:
+   * omitted = keep, Role id = link, null = clear. A Role cannot implement
+   * another Role (backend 400). NOTE: setting a link requires owner/admin
+   * (requireRoleManager); clearing is the editor's own right.
+   */
+  implements_role_id?: string | null;
+  /**
+   * A Role's tier-role selection (M-499). Tri-state: omitted = keep,
+   * non-empty = set (registry slug), null = clear. Role-only (backend 400
+   * on Agents). Subtype itself is intentionally absent: it is immutable.
+   */
+  tier_role?: string | null;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change

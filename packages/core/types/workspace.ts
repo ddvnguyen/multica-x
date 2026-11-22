@@ -169,6 +169,34 @@ export interface TierRole {
   position: number;
 }
 
+/**
+ * One skill in the role composition preview. Source is "role" for a skill
+ * the Agent inherits from its Role, "agent" for one it owns itself; an ID
+ * present on both is reported once with source "role".
+ */
+export interface RolePreviewSkill {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+}
+
+/**
+ * Read-only inherited view for an Agent implementing a Role (M-499 slice 4,
+ * `GET /api/agents/{id}/role-preview`). Role instructions first, the
+ * Agent's own additions after, and the union of both agents' enabled
+ * skills. Field names match the backend JSON tags exactly.
+ */
+export interface RoleCompositionPreview {
+  agent_id: string;
+  role_id?: string | null;
+  role_name?: string;
+  instructions: string;
+  role_instructions?: string;
+  agent_instructions: string;
+  skills: RolePreviewSkill[];
+}
+
 /** A named agent+tier quick pick. */
 export interface AgentPreset {
   id: string;

@@ -22,6 +22,7 @@ import {
   AutopilotRunSchema,
   FALLBACK_AUTOPILOT_RUN,
   CommentTriggerPreviewSchema,
+  RoleCompositionPreviewSchema,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardFailureByAgentListSchema,
@@ -2587,5 +2588,26 @@ describe("Issue requester compatibility", () => {
     expect(IssueSchema.parse({ ...baseIssue, requester_id: null }).requester_id).toBeNull();
     expect(IssueSchema.parse({ ...baseIssue, requester_id: "member" }).requester_id).toBe("member");
     expect(IssueSchema.parse({ ...baseIssue, requester_id: 42 }).requester_id).toBeUndefined();
+  });
+});
+
+describe("RoleCompositionPreviewSchema", () => {
+  it("parses the Role-first composition shape and defaults the skill union", () => {
+    const parsed = RoleCompositionPreviewSchema.parse({
+      agent_id: "agent-1",
+      role_id: "role-1",
+      role_name: "Reviewer",
+      instructions: "Role line.\nAgent line.",
+      role_instructions: "Role line.",
+      agent_instructions: "Agent line.",
+      skills: [
+        { id: "s1", name: "review", description: "d", source: "role" },
+        { id: "s2", name: "ship", description: "d2", source: "agent" },
+      ],
+    });
+    expect(parsed.role_id).toBe("role-1");
+    expect(parsed.skills).toHaveLength(2);
+    expect(RoleCompositionPreviewSchema.parse({}).skills).toEqual([]);
+    expect(RoleCompositionPreviewSchema.parse({}).agent_id).toBe("");
   });
 });

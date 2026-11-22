@@ -13,6 +13,7 @@ import {
   memberListOptions,
   skillListOptions,
   squadListOptions,
+  workspaceKeys,
   workspaceListOptions,
 } from "@multica/core/workspace/queries";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
@@ -226,6 +227,33 @@ describe("TeamPanel agent menu", () => {
     expect(
       Array.from(menu.querySelectorAll('[role="menuitem"]'), (el) => el.textContent?.trim()),
     ).toEqual(["Open in new tab", "Settings", "Duplicate"]);
+  });
+});
+
+describe("TeamPanel tier config (M-499, M-517 verdict)", () => {
+  // The probe resolves the workspace-scoped boolean from the endpoint;
+  // seed it explicitly so the test covers the real gate, not an
+  // unresolved query.
+  function seedProbe(agentRoleType: boolean) {
+    qc.setQueryData([...workspaceKeys.tierRoles(WS), "probe"], agentRoleType);
+  }
+
+  it("hides the Tier config section while the flag is off", () => {
+    seedAgents(1);
+    seedProbe(false);
+    renderPanel([runtime()]);
+
+    expect(screen.queryByText("Tier config")).not.toBeInTheDocument();
+    expect(screen.queryByText("Per-role tier config")).not.toBeInTheDocument();
+  });
+
+  it("shows the Tier config section while the flag is on", () => {
+    seedAgents(1);
+    seedProbe(true);
+    renderPanel([runtime()]);
+
+    expect(screen.getByText("Tier config")).toBeInTheDocument();
+    expect(screen.getByText("Per-role tier config")).toBeInTheDocument();
   });
 });
 

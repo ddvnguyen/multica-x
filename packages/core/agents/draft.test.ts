@@ -347,3 +347,30 @@ it("drops settings a Qoder runtime cannot run from a draft started elsewhere", (
   expect(local).not.toHaveProperty("runtime_config");
   expect(local.skill_ids).toEqual(["skill-1"]);
 });
+
+describe("role create (M-499)", () => {
+  it("sends subtype role with tier_role and no runtime/model/account fields", () => {
+    const request = buildCreateAgentRequest({
+      draft: {
+        ...draft(),
+        subtype: "role",
+        tierRole: "engineer",
+        runtimeId: "",
+        model: "gpt-5",
+        skillIds: new Set(["skill-1"]),
+      },
+      runtimeId: "",
+    });
+
+    expect(request).toMatchObject({
+      subtype: "role",
+      tier_role: "engineer",
+      runtime_id: "",
+    });
+    expect(request.model).toBeUndefined();
+    expect(request).not.toHaveProperty("thinking_level");
+    expect(request).not.toHaveProperty("service_tier");
+    expect(request).not.toHaveProperty("skill_ids");
+    expect(request).not.toHaveProperty("runtime_config");
+  });
+});

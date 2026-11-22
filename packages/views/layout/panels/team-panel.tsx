@@ -7,7 +7,7 @@ import { DropdownMenuItem } from "@multica/ui/components/ui/dropdown-menu";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { IconButton } from "@multica/ui/components/common/icon-button";
-import { agentTaskSnapshotOptions, type AgentPresenceDetail } from "@multica/core/agents";
+import { agentTaskSnapshotOptions, useAgentRoleTypeEnabled, type AgentPresenceDetail } from "@multica/core/agents";
 import { useAgentsViewStore } from "@multica/core/agents/stores";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
@@ -288,6 +288,10 @@ export function TeamPanel() {
   const canChatWith = (agent: Agent) =>
     !agent.archived_at && canAssignAgentToIssue(agent, { userId: userId ?? null, role: myRole ?? null }).allowed;
   const onAgents = pathname === p.agents();
+  // Tier config (M-499 slice 4): Roles link to the per-role tier config.
+  // Flag off = no section, no count, no link — the panel is byte-identical.
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const tiersHref = `${p.settings()}?tab=tiers`;
   // Member pages live under /members/:id; the list itself is a Settings tab.
   const membersRoot = p.memberDetail("").replace(/\/$/, "");
 
@@ -416,6 +420,18 @@ export function TeamPanel() {
             />
           </PanelList>
         </PanelSection>
+        {roleTypeEnabled ? (
+        <PanelSection label={t(($) => $.panels.team.tier_config)}>
+          <PanelList>
+            <PanelLink
+              href={tiersHref}
+              icon={<BarChart3 />}
+              label={t(($) => $.panels.team.tier_config_link)}
+              active={pathname === tiersHref}
+            />
+          </PanelList>
+        </PanelSection>
+        ) : null}
 
         <PanelSection label={t(($) => $.panels.team.resources)}>
           <PanelList>

@@ -167,11 +167,17 @@ export function useCreateAgentForm(options?: {
     workspaceSkills,
     currentUserId,
     draftReady:
-      selectedRuntime != null &&
-      isRuntimeUsableForUser(selectedRuntime, currentUserId) &&
-      (selectedRuntime.provider !== "qoder_cloud" || !!draft.qoderAgentId) &&
-      isDraftDescriptionWithinLimit(draft.description) &&
-      !accessInvalid &&
-      !conversationStartersInvalid,
+      draft.subtype === "role"
+        ? draft.tierRole?.trim() != null &&
+          draft.tierRole.trim().length > 0 &&
+          isDraftDescriptionWithinLimit(draft.description) &&
+          !accessInvalid &&
+          !conversationStartersInvalid
+        : selectedRuntime != null &&
+          isRuntimeUsableForUser(selectedRuntime, currentUserId) &&
+          (selectedRuntime.provider !== "qoder_cloud" || !!draft.qoderAgentId) &&
+          isDraftDescriptionWithinLimit(draft.description) &&
+          !accessInvalid &&
+          !conversationStartersInvalid,
   };
 }

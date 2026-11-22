@@ -147,6 +147,8 @@ vi.mock("@multica/core/hooks", () => ({
 vi.mock("@multica/core/agents", () => ({
   isAgentRuntimeBound: (agent: { runtime_id: string; runtime_bound?: boolean }) =>
     agent.runtime_bound !== false && agent.runtime_id.length > 0,
+  isRoleAgent: (agent: { subtype?: string } | null | undefined) => agent?.subtype === "role",
+  useAgentRoleTypeEnabled: () => false,
   useWorkspacePresenceMap: () => ({ byAgent: presenceRef.current }),
 }));
 vi.mock("@multica/core/workspace/queries", () => ({

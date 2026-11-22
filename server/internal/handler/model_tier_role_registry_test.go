@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -188,4 +190,48 @@ func TestReorderRejectsTiersOutsideTheRole(t *testing.T) {
 		newRequest(http.MethodPut, "/api/workspaces/"+testWorkspaceID+"/tiers/reorder",
 			map[string]any{"ids": []string{inside.ID}, "role": "engineer"}), "id", testWorkspaceID)).
 		Want(http.StatusOK)
+}
+
+// M-517 fix: ListTierRoles carries a workspace-scoped agent_role_type
+// boolean so the UI gates its Role surfaces per workspace. The roles list
+// itself stays member-visible; only the boolean follows the flag.
+func TestListTierRolesReportsWorkspaceScopedRoleFlag(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	listRolesAs := func(userID string) map[string]any {
+		t.Helper()
+		var out map[string]any
+		testutil.Call(t, testHandler.ListTierRoles, withURLParam(
+			newRequestAs(userID, http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/tiers/roles", nil), "id", testWorkspaceID)).
+			Want(http.StatusOK).JSON(&out)
+		return out
+	}
+
+	withFeatureFlag(t, testHandler, featureflags.AgentRoleType, false)
+	if got := listRolesAs(testUserID)["agent_role_type"]; got != false {
+		t.Fatalf("flag off must report agent_role_type=false, got %v", got)
+	}
+
+	// allow_by: workspace_id targets only the test workspace.
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.AgentRoleType, featureflag.Rule{
+		Default: false,
+		AllowBy: "workspace_id",
+		Allow:   []string{testWorkspaceID},
+	})
+	orig := testHandler.FeatureFlags
+	testHandler.FeatureFlags = featureflag.NewService(provider)
+	t.Cleanup(func() { testHandler.FeatureFlags = orig })
+	if got := listRolesAs(testUserID)["agent_role_type"]; got != true {
+		t.Fatalf("targeted workspace must report agent_role_type=true, got %v", got)
+	}
+
+	// Roles still list with the flag off: Settings Tiers and tier pickers
+	// must keep working.
+	withFeatureFlag(t, testHandler, featureflags.AgentRoleType, false)
+	if roles, ok := listRolesAs(testUserID)["roles"].([]any); !ok || roles == nil {
+		t.Fatalf("roles list must stay present with the flag off, got %v", listRolesAs(testUserID)["roles"])
+	}
 }
