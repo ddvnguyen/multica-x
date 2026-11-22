@@ -16,6 +16,10 @@ const router = vi.hoisted(() => ({
   prefetch: vi.fn(),
 }));
 
+const projectState = vi.hoisted(() => ({
+  project: null as ((url: string) => void) | null,
+}));
+
 const navState = vi.hoisted(() => ({
   pathname: "/acme/issues",
   search: "",
@@ -32,6 +36,7 @@ import { useNavigation } from "@multica/views/navigation";
 import {
   WebTabNavigationProvider,
   useWebTabSync,
+  useWebTabProjector,
   routeWebContentLinkPath,
   resetPendingProjectionForTests,
 } from "./web-tab-navigation";
@@ -54,9 +59,20 @@ function renderAdapter(): void {
   );
 }
 
+function renderProjector(): (url: string) => void {
+  function Probe() {
+    projectState.project = useWebTabProjector();
+    return null;
+  }
+  render(<Probe />);
+  if (!projectState.project) throw new Error("projector not rendered");
+  return projectState.project;
+}
+
 interface TestNav {
   push: (p: string) => void;
   replace: (p: string) => void;
+  prefetch?: (p: string) => void;
   back: () => void;
   forward?: () => void;
   canGoBack?: () => boolean;
@@ -90,6 +106,8 @@ beforeEach(() => {
   router.push.mockReset();
   router.replace.mockReset();
   router.back.mockReset();
+  router.prefetch.mockReset();
+  projectState.project = null;
   navState.pathname = "/acme/issues";
   navState.search = "";
   window.history.replaceState(null, "", "/acme/issues");
@@ -136,6 +154,35 @@ describe("web tab router sync", () => {
       useTabStore.getState().navigateActiveSession("/acme/inbox");
     });
     expect(router.replace).toHaveBeenCalledWith("/acme/inbox");
+  });
+
+  // M-519: a tab click writes the store and projects the URL in the same
+  // transition. The sync effect must not project the same URL a second time,
+  // and must stay quiet when Next commits the address bar.
+  it("projects a tab click once even after the route catches up", () => {
+    act(() => {
+      sync();
+    });
+    act(() => {
+      useTabStore.getState().openTab("/acme/projects", "Projects");
+    });
+    const project = renderProjector();
+    router.replace.mockClear();
+
+    act(() => {
+      project("/acme/projects");
+      const group = useTabStore.getState().byWorkspace["acme"]!;
+      useTabStore.getState().setActiveTab(group.tabs[1]!.id);
+    });
+
+    expect(router.replace).toHaveBeenCalledTimes(1);
+    expect(router.replace).toHaveBeenCalledWith("/acme/projects");
+
+    navState.pathname = "/acme/projects";
+    act(() => {
+      sync();
+    });
+    expect(router.replace).toHaveBeenCalledTimes(1);
   });
 
   // M-413 round 2: the rail's workspace entry, a content link into another
@@ -255,6 +302,19 @@ describe("WebTabNavigationProvider adapter", () => {
       nav().replace("/acme/agents/agent-1?view=general");
     });
     expect(router.replace).toHaveBeenCalledWith("/acme/agents/agent-1?view=general");
+  });
+
+  // M-519: warm the route payload for every open tab; AppLink already does
+  // this on hover for in-page links, the strip needs it for its own tabs.
+  it("prefetches a path through the web router", () => {
+    act(() => {
+      sync();
+    });
+    renderAdapter();
+    act(() => {
+      nav().prefetch?.("/acme/agents");
+    });
+    expect(router.prefetch).toHaveBeenCalledWith("/acme/agents");
   });
 
   it("openInNewTab opens a background tab by default", () => {
