@@ -172,7 +172,7 @@ func TestM209SquadLeadHandoffAndAgentToken(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `UPDATE issue_workflow SET steps=$1 WHERE id=$2`, original, workflow)
 	})
 	dbfx.Exec(t, `UPDATE issue_workflow SET steps=(SELECT jsonb_agg(CASE WHEN step->>'status_key'='in_progress' THEN jsonb_set(step, '{handler}', jsonb_build_object('type','squad','id',$2::text)) ELSE step END ORDER BY n) FROM jsonb_array_elements(steps) WITH ORDINALITY AS s(step,n)) WHERE id=$1`, workflow, squad)
-	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "issueId", issue)
+	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "id", issue)
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", agent)
 	w := httptest.NewRecorder()
@@ -221,7 +221,7 @@ func TestM209NoHandlerAndChangedActor(t *testing.T) {
 	assertM209Rows(t, issue, "in_review", 1, 1, 0)
 	other := dbfx.User(t, "another responder", "m209-responder-"+workflowTestSuffix()+"@example.invalid")
 	dbfx.Member(t, testWorkspaceID, other, "member")
-	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "issueId", issue)
+	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "id", issue)
 	req.Header.Set("X-User-ID", other)
 	w = httptest.NewRecorder()
 	testHandler.DecisionResponse(w, req)
@@ -455,7 +455,7 @@ func TestM209StaleAndInvalidStatus(t *testing.T) {
 
 func m209ReviewCall(h *Handler, issue string, body map[string]any) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "issueId", issue)
+	req := withURLParam(workflowRequest("POST", "/api/issues/"+issue+"/decision-response", body), "id", issue)
 	h.DecisionResponse(w, req)
 	return w
 }

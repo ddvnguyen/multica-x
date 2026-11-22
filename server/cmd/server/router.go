@@ -1923,8 +1923,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// plan read: the old text is already the member's to see.
 					r.Get("/plans/{planId}/revisions/{revision}", h.GetPlanRevision)
 					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
-					r.Get("/issues/{issueId}/decision-records", h.ListIssueDecisionRecords)
-					r.With(handler.RequireHumanActor).Post("/issues/{issueId}/decision-response", h.DecisionResponse)
 					r.Get("/decisions", h.ListDecisions)
 					r.Get("/decisions/{kind}/{sourceId}", h.GetDecisionDetail)
 					// S2-C (M-123) settings the dsh panel's MOCT group reads: the
@@ -2352,6 +2350,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/pr-auto-complete", h.SetIssuePRAutoComplete)
 					// Structured agent questions raised by a run on this issue.
 					r.Get("/questions", h.ListIssueQuestions)
+					// The owner decisions panel reads and records decisions about
+					// ONE issue, so these live here with every other issue
+					// sub-resource; the web client calls them at this shape.
+					r.Get("/decision-records", h.ListIssueDecisionRecords)
+					r.With(handler.RequireHumanActor).Post("/decision-response", h.DecisionResponse)
 				})
 			})
 

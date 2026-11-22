@@ -21,7 +21,7 @@ func TestCurrentIssueDecisionRecordsMatchEndpointAndClaim(t *testing.T) {
 	ids := seedIssueDecisionRecordsForCurrentRead(t, issueID)
 	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
 
-	readRequest := withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/decision-records?current=true", nil), "issueId", issueID)
+	readRequest := withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/decision-records?current=true", nil), "id", issueID)
 	readResponse := httptest.NewRecorder()
 	testHandler.ListIssueDecisionRecords(readResponse, readRequest)
 	if readResponse.Code != http.StatusOK {

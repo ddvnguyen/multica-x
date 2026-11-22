@@ -172,9 +172,9 @@ type privateRouteRequest struct {
 }
 
 var privateProjectRouteRequests = map[string]privateRouteRequest{
-	"PUT /api/projects/{id}/interactions":                          {body: func(*privateRouteFixture, string) string { return `{"timeout_seconds":60}` }},
-	"GET /api/workspaces/{id}/issues/{issueId}/ask-plan":           {},
-	"POST /api/workspaces/{id}/issues/{issueId}/decision-response": {body: func(*privateRouteFixture, string) string { return `{}` }},
+	"PUT /api/projects/{id}/interactions":                {body: func(*privateRouteFixture, string) string { return `{"timeout_seconds":60}` }},
+	"GET /api/workspaces/{id}/issues/{issueId}/ask-plan": {},
+	"POST /api/issues/{id}/decision-response":            {body: func(*privateRouteFixture, string) string { return `{}` }},
 	"POST /api/issues/{id}/labels": {body: func(f *privateRouteFixture, _ string) string {
 		return fmt.Sprintf(`{"label_id":%q}`, f.shared.labelID)
 	}},
