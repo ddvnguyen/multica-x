@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   NavigationProvider,
   type LinkClickIntent,
   type NavigationAdapter,
 } from "@multica/views/navigation";
+import {
+  markTabSwitchCommit,
+  markTabSwitchReplace,
+  resetTabSwitchPerfForTests,
+} from "@multica/views/tabs";
 import { workspaceSlugForPath } from "@multica/core/paths";
 import {
   chatSessionIdForUrl,
@@ -97,27 +102,57 @@ const pendingProjection: {
   current: string | null;
   /** Address-bar URL the projection was made against (stale while in flight). */
   from: string | null;
-} = { current: null, from: null };
+  /** True once `router.replace` has actually been called for `current`. */
+  replaced: boolean;
+} = { current: null, from: null, replaced: false };
 
-function projectUrl(url: string, from: string): void {
+/**
+ * Claim a projection and ask the router to commit it. `replaced` is what
+ * keeps the store → router effect from issuing a second `router.replace`:
+ * an adapter write only claims the URL (the effect projects it), while a tab
+ * click projects it here and must not be projected again (M-519).
+ */
+function projectUrl(url: string, from: string, router: ReturnType<typeof useRouter>): void {
   pendingProjection.current = url;
   pendingProjection.from = from;
+  pendingProjection.replaced = true;
+  markTabSwitchReplace();
+  router.replace(url);
 }
 
 function clearProjection(): void {
   pendingProjection.current = null;
   pendingProjection.from = null;
+  pendingProjection.replaced = false;
 }
 
-/** Adapter write: claim `target` as the in-flight projection. */
+/** Adapter write: claim `target` as the in-flight projection (not yet sent). */
 function markProjection(target: string): void {
   pendingProjection.current = target;
   pendingProjection.from = lastRenderedUrl;
+  pendingProjection.replaced = false;
+}
+
+/**
+ * Project a tab click's URL immediately, in the same transition as the store
+ * write. The sync effect sees the claimed projection and does not replace a
+ * second time.
+ */
+export function useWebTabProjector(): (url: string) => void {
+  const router = useRouter();
+  return useCallback(
+    (url: string) => {
+      if (pendingProjection.current === url && pendingProjection.replaced) return;
+      projectUrl(url, lastRenderedUrl ?? url, router);
+    },
+    [router],
+  );
 }
 
 /** Test-only: reset the in-flight projection between cases. */
 export function resetPendingProjectionForTests(): void {
   clearProjection();
+  resetTabSwitchPerfForTests();
 }
 
 /**
@@ -232,12 +267,22 @@ function useWebTabSyncInner(options: WebTabSyncOptions): void {
     // exactly those clicks leave the page on the old workspace (M-413 round 2).
     // A slug the user cannot access is not a destination: the seed effect
     // drops such groups.
+    // A click (or any write that already called router.replace) claims the
+    // projection. Re-issuing it here would start a second App Router
+    // navigation for the same URL and move the page after it had settled.
+    if (projectedRef.current === activeUrl && projectedRef.replaced) return;
     const targetSlug = workspaceSlugForPath(activeUrl);
     if (!targetSlug) return;
     if (validSlugs.length > 0 && !validSlugs.includes(targetSlug)) return;
-    projectUrl(activeUrl, url);
-    router.replace(activeUrl);
+    projectUrl(activeUrl, url, router);
   }, [activeUrl, pathname, url, router, validSlugs]);
+
+  // The App Router commit is the URL this hook renders with. The perf helper
+  // closes the measurement two frames later (at module scope, so an unrelated
+  // re-render cannot cancel the paint frames).
+  useEffect(() => {
+    markTabSwitchCommit(url);
+  }, [url]);
 
   // router → store: record navigations the sync did not start. Skipped while
   // a projection is in flight — unless the address bar shows a third URL,

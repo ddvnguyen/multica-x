@@ -41,6 +41,7 @@ const state = vi.hoisted(() => ({
   addTab: vi.fn<(path: string, title: string) => string>(),
   updateTab: vi.fn<(tabId: string, patch: { title?: string }) => void>(),
   openIssueWindow: vi.fn(),
+  prefetch: vi.fn<(path: string) => void>(),
 }));
 
 // The chat tab's identity rule is part of the strip's contract (one session,
@@ -96,7 +97,10 @@ vi.mock("@multica/core/chat/queries", () => ({
 }));
 
 vi.mock("@multica/views/navigation", () => ({
-  useNavigation: () => ({ getShareableUrl: (path: string) => `https://app.example${path}` }),
+  useNavigation: () => ({
+    getShareableUrl: (path: string) => `https://app.example${path}`,
+    prefetch: state.prefetch,
+  }),
 }));
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
@@ -229,6 +233,7 @@ function reset() {
   state.addTab.mockReset();
   state.updateTab.mockReset();
   state.openIssueWindow.mockReset();
+  state.prefetch.mockReset();
   pres.title = null;
   pres.titleResolved = true;
   chatData.sessions = [];
@@ -611,6 +616,41 @@ describe("TabBar overflow", () => {
 });
 
 describe("TabBar click activation", () => {
+  // M-519: the strip projects the URL in the same transition as the store
+  // write instead of waiting for the router sync effect to notice the change.
+  it("projects the activated tab URL through the host callback", async () => {
+    const onTabActivate = vi.fn<(url: string) => void>();
+    const { getByRole } = render(
+      <TabBar host={{ ...testHost, onTabActivate }} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Projects" }));
+
+    expect(state.setActiveTab).toHaveBeenCalledWith("tB");
+    await waitFor(() => {
+      expect(onTabActivate).toHaveBeenCalledWith("/acme/projects");
+    });
+  });
+
+  // M-519: every open tab's route is warmed on mount/order change, and a
+  // pointer press or hover warms it before the click lands.
+  it("prefetches open tabs on mount and on pointer intent", () => {
+    state.prefetch.mockClear();
+    const { getByRole } = render(<TabBar />);
+
+    expect(state.prefetch).toHaveBeenCalledWith("/acme/issues");
+    expect(state.prefetch).toHaveBeenCalledWith("/acme/projects");
+
+    state.prefetch.mockClear();
+    const project = getByRole("button", { name: "Projects" });
+    fireEvent.pointerEnter(project);
+    expect(state.prefetch).toHaveBeenCalledWith("/acme/projects");
+
+    state.prefetch.mockClear();
+    fireEvent.pointerDown(project, { button: 0, isPrimary: true });
+    expect(state.prefetch).toHaveBeenCalledWith("/acme/projects");
+  });
+
   // electron/electron#55100: in macOS native full screen on a secondary
   // display, a press near the top of the window is followed by one pointermove
   // offset by that display's position, without the pointer moving.

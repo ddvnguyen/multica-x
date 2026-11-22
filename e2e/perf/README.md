@@ -27,6 +27,35 @@ CHAT_LIST_BASELINE=1 PLAYWRIGHT_BASE_URL=http://localhost:3001 pnpm exec playwri
 its report format and comparisons are unchanged. Session data is still fetched
 in full: these checks measure rendering, not API pagination or network savings.
 
+## Web tab switches
+
+`web-tab-switch.spec.ts` measures the M-413 round-5 complaint: switching
+tabs in the web strip was slow because the click only wrote the store and the
+router followed a render + effect later (M-519). It runs on the real
+production UI with synthetic HTTP/WebSocket boundaries, seeds a four-tab
+layout (Issues, Chat, Agents, issue detail) and clicks a full lap through the
+strip. The first lap is labelled cold, later laps warm.
+
+The product emits User Timing marks around each switch:
+`tab-switch:click`, `:store`, `:replace`, `:commit`, `:paint`, and the
+measures `tab-switch:click-to-store`, `:store-to-replace`,
+`:replace-to-commit`, `:commit-to-paint`, `:total`. The report groups them by
+phase and route pair with p50/p95/max; each switch must produce a measurement,
+so a page that never paints fails instead of reading as fast.
+
+```bash
+NEXT_PUBLIC_API_URL='' NEXT_PUBLIC_WS_URL='' pnpm --filter @multica/web build
+(cd apps/web && pnpm exec next start --port 3000) &
+PLAYWRIGHT_BASE_URL=http://localhost:3000 PERF_REPEATS=5 \
+  PERF_REPORT_PATH=$PWD/perf/web-tab-switch.json \
+  pnpm exec playwright test --config=playwright.perf.config.ts web-tab-switch.spec.ts
+```
+
+To compare two refs, serve each production build on its own port and run the
+spec from this checkout against both, then paste the two report tables into
+the PR. Keep the machine otherwise idle: these are observed samples, not
+thresholds.
+
 ## Agent recent work
 
 `agent-recent-work.spec.ts` opens the real agent detail page, reveals 1,000

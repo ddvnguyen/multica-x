@@ -1,5 +1,7 @@
 import {
   Fragment,
+  startTransition,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -52,6 +54,10 @@ import {
   useTabPresentation,
   ResourceLeadingVisual,
 } from "../layout";
+import {
+  beginTabSwitch,
+  markTabSwitchStore,
+} from "./tab-switch-perf";
 
 const TAB_SCROLL_FADE_SIZE = 24;
 const TAB_ENTRY_EASE = [0.22, 1, 0.36, 1] as const;
@@ -139,6 +145,13 @@ function keepTabVisible(
 
 export interface TabBarHostCapabilities {
   /**
+   * Project the activated tab's URL onto the host router in the same
+   * transition as the store write. Web passes this so the highlight and the
+   * page do not wait a render + effect round-trip for `router.replace`
+   * (M-519); desktop omits it because its router follows the store directly.
+   */
+  onTabActivate?: (url: string) => void;
+  /**
    * Desktop only: validate an issue-detail URL for a dedicated window and
    * return its canonical path. Undefined on hosts without detached windows
    * (web) — the "open as window" context-menu entry hides.
@@ -160,6 +173,7 @@ function SortableTabItem({
   shouldReduceMotion,
   compact,
   host,
+  prefetch,
 }: {
   tab: Tab;
   isActive: boolean;
@@ -176,6 +190,7 @@ function SortableTabItem({
   /** Narrower tabs whose issue tabs read as their identifier (M-413). */
   compact: boolean;
   host: TabBarHostCapabilities;
+  prefetch?: (url: string) => void;
 }) {
   const { t } = useT("settings");
   const { t: chatT } = useT("chat");
@@ -276,7 +291,15 @@ function SortableTabItem({
 
   const handleClick = () => {
     if (isActive) return;
-    setActiveTab(tab.id);
+    beginTabSwitch(tab.url);
+    // Store write and router projection share one transition: the strip can
+    // highlight the target and the router can start fetching its payload in
+    // the same frame instead of after the sync effect runs (M-519).
+    startTransition(() => {
+      setActiveTab(tab.id);
+      markTabSwitchStore();
+      host.onTabActivate?.(tab.url);
+    });
   };
 
   const handleClose = (e: React.MouseEvent) => {
@@ -325,6 +348,8 @@ function SortableTabItem({
       {...attributes}
       {...listeners}
       onClick={handleClick}
+      onPointerEnter={() => prefetch?.(tab.url)}
+      onPointerDown={() => prefetch?.(tab.url)}
       // Browser convention: middle click closes the tab. Pinned (and sole)
       // tabs suppress the close affordance, so middle click follows suit.
       onAuxClick={(e) => {
@@ -609,6 +634,7 @@ export function TabBar({
   compact?: boolean;
 } = {}) {
   const group = useActiveGroup();
+  const { prefetch } = useNavigation();
   const moveTab = useTabStore((s) => s.moveTab);
   const activeWorkspaceSlug = useTabStore((s) => s.activeWorkspaceSlug);
   const shouldReduceMotion = useReducedMotion();
@@ -634,6 +660,20 @@ export function TabBar({
   const tabs = group?.tabs ?? [];
   const activeTabId = group?.activeTabId ?? "";
   const tabIds = tabs.map((t) => t.id);
+  const tabUrlsKey = tabs.map((t) => t.url).join("\0");
+  // The adapter is rebuilt whenever the active tab changes, but warmup only
+  // needs to run when the set of open URLs changes. A ref keeps the effect's
+  // identity stable so a tab switch does not re-prefetch every tab.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const prefetchRef = useRef(prefetch);
+  prefetchRef.current = prefetch;
+  const handlePrefetch = useCallback((url: string) => {
+    prefetchRef.current?.(url);
+  }, []);
+  useEffect(() => {
+    for (const tab of tabsRef.current) handlePrefetch(tab.url);
+  }, [tabUrlsKey, handlePrefetch]);
   const tabOrder = tabIds.join("\0");
   const tabLayoutKey = tabs
     .map((tab) => `${tab.id}:${tab.pinned ? "pinned" : "unpinned"}`)
@@ -728,6 +768,7 @@ export function TabBar({
                   <SortableTabItem
                     tab={tab}
                     host={host}
+                    prefetch={handlePrefetch}
                     compact={compact}
                     isActive={tab.id === activeTabId}
                     isOnly={tabs.length === 1}

@@ -27,6 +27,14 @@ export {
 } from "@multica/core/tabs";
 export { TabBar, type TabBarHostCapabilities } from "./tab-bar";
 export {
+  beginTabSwitch,
+  markTabSwitchStore,
+  markTabSwitchReplace,
+  markTabSwitchCommit,
+  finishTabSwitchPaint,
+  resetTabSwitchPerfForTests,
+} from "./tab-switch-perf";
+export {
   ChatTabLeading,
   ChatTabsInHeaderProvider,
   HeaderChatControls,
