@@ -484,7 +484,7 @@ function AssigneeOptions({
               >
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
                 <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
-                <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                <span className="ml-auto shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
                   {t(($) => $.pickers.assignee.role_badge)}
                 </span>
                 {a.visibility === "private" && (

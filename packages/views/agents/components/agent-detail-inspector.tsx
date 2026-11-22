@@ -777,7 +777,7 @@ function RolePreviewRow({
                 key={skill.id}
                 className="flex items-center gap-1.5 text-caption"
               >
-                <span className="rounded bg-muted px-1.5 py-0.5">
+                <span className="rounded-md bg-muted px-1.5 py-0.5">
                   {skill.source === "role"
                     ? t(($) => $.inspector.role_preview_skill_role)
                     : t(($) => $.inspector.role_preview_skill_agent)}
