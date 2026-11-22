@@ -150,13 +150,13 @@ propose_role() {
   if [ "$archived" = "t" ] || [ "$archived" = "true" ]; then echo "unassigned (archived)"; return; fi
   if [ "$kind" = "system" ]; then echo "system (never converted)"; return; fi
   if [ "$subtype" = "role" ]; then echo "already a Role"; return; fi
+  # Role display names (tier_role slugs are unchanged). Accepted M-521 decisions:
+  # Lead (Muse Spark) -> Management; Opencode2, Freebuff Agent, [Go Free] Engineer,
+  # Codex | Luna | Engineer and Codex | Terra | Engineer -> Engineer.
   case "$name" in
-    "Architect"|"Claude Architect"|"Opus Architect"|"Codex | Architect") echo "Architect" ;;
-    "Lead"|"Orchestrator"|"Codex - Terra | Reviewer"|"Codex | Terra | Engineer") echo "Management" ;;
-    "Software Engineer"|"[Free] Codebuddy Engineer"|"Opencode2"|"Codebuddy Senior Engineer"|"Freebuff Engineer"|"Codex - Luna | Engineer"|"Codex | Luna | Engineer") echo "Engineer" ;;
-    "[Go Free] Engineer") echo "Engineer (draft name drift; verify)" ;;
-    "Lead (Muse Spark)") echo "Management (provisional; verify)" ;;
-    "Freebuff Agent") echo "Engineer (provisional; verify purpose)" ;;
+    "Architect"|"Claude Architect"|"Opus Architect"|"Codex | Architect") echo "Architect Role" ;;
+    "Lead"|"Orchestrator"|"Lead (Muse Spark)") echo "Management Role" ;;
+    "Software Engineer"|"[Free] Codebuddy Engineer"|"Opencode2"|"Codebuddy Senior Engineer"|"Freebuff Engineer"|"Freebuff Agent"|"[Go Free] Engineer"|"Codex - Luna | Engineer"|"Codex | Luna | Engineer"|"Codex - Terra | Reviewer"|"Codex | Terra | Engineer") echo "Engineer Role" ;;
     "Mika") echo "unassigned / system (never converted)" ;;
     TierDemo|"m510-lanez-agent"|"m515-lanez-agent"|m510-*|m515-*) echo "unassigned (test/verification agent)" ;;
     *) echo "unassigned" ;;
@@ -182,12 +182,12 @@ done < "$MEMCOUNT"
   echo
   echo "## Proposed Role mapping (draft identities -> live lane-z inventory)"
   echo
-  echo "| Draft identity | Proposed Role | Lane-z status |"
+  echo "| Draft identity (accepted M-521 decisions) | Proposed Role | Lane-z status |"
   echo "| --- | --- | --- |"
-  echo "| Architect, Claude Architect, Opus Architect, Codex \\| Architect | Architect | 4 present |"
-  echo "| Lead, Orchestrator, Codex - Terra \\| Reviewer | Management | Lead + Orchestrator present; draft name appears as \`Codex \\| Terra \\| Engineer\` (name drift) |"
-  echo "| Software Engineer, [Free] Codebuddy Engineer, Opencode2, Codebuddy Senior Engineer, Freebuff Engineer, Codex - Luna \\| Engineer | Engineer | all present except draft name appears as \`Codex \\| Luna \\| Engineer\` (name drift) |"
-  echo "| Freebuff Agent | Engineer (provisional) | present; purpose not yet verified |"
+  echo "| Architect, Claude Architect, Opus Architect, Codex \\| Architect | Architect Role | 4 present |"
+  echo "| Lead, Orchestrator, Lead (Muse Spark) | Management Role | 3 present |"
+  echo "| Software Engineer, [Free] Codebuddy Engineer, Opencode2, Codebuddy Senior Engineer, Freebuff Engineer, [Go Free] Engineer | Engineer Role | 6 present |"
+  echo "| Codex \\| Luna \\| Engineer (draft: Codex - Luna \\| Engineer), Codex \\| Terra \\| Engineer (draft: Codex - Terra \\| Reviewer) | Engineer Role | name drift; both map to Engineer Role per accepted decision |"
   echo "| Mika | unassigned / system | present; never converted |"
   echo
   echo "## Full agent inventory (every agent on lane z)"
@@ -237,8 +237,8 @@ done < "$MEMCOUNT"
   echo
   echo "## Notes / unverified"
   echo
-  echo "- Proposed Roles are a starting draft, not an approval or a conversion. Names marked *name drift* differ between the draft and live lane z."
-  echo "- **Freebuff Agent** has no enabled skills in this inventory; its purpose must be checked before mapping to Engineer."
+  echo "- Proposed Roles use display names; \`tier_role\` slugs are unchanged. These are accepted M-521 decisions, not an applied conversion."
+  echo "- Names marked *name drift* differ between the draft and live lane z; the Architect accepted the live names as Engineer Role. **Freebuff Agent** has no enabled skills but maps to Engineer Role by accepted decision."
   echo "- **Mika** and all \`kind=system\` agents (\`.multica-agent-builder-*\`) are never converted."
   echo "- \`m510-*\`, \`m515-*\` and \`TierDemo\` are lane verification agents, not part of the 15 production identities."
   echo "- Prefix hashes are sha256 (first 16 hex chars) of current \`instructions\` text; full rows are in \`$SNAPSHOT\`."

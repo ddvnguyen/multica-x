@@ -223,12 +223,14 @@ JOIN model_tier t ON t.workspace_id = :'workspace_id'::uuid
                  AND p.position_role = ANY(t.roles)
 ORDER BY p.position_name, t.idx, t.name;
 
--- M-520: preset seeding is FROZEN. The M-471 rollout already ran on lane z;
+-- M-520: preset SEEDING is FROZEN. The M-471 rollout already ran on lane z;
 -- the resolver, legacy read aliases and existing preset rows stay untouched,
--- but no code path may add new preset rows. The apply branch is therefore a
+-- but no seeding path may add new preset rows. The apply branch is therefore a
 -- documented no-op: the snapshot result sets above are the entire output.
--- Any future preset <-> Role conversion needs a separate, Architect-approved
--- and reviewed script (see docs/moct-x/agent-presets-seed.md).
+-- The CreateAgentPreset API is the one intentional write path and is kept for
+-- two-way preset <-> Role conversion; any future conversion seed needs a
+-- separate, Architect-approved and reviewed script (see
+-- docs/moct-x/agent-presets-seed.md).
 \if :apply
     \echo 'M-520: preset seeding is FROZEN. No changes applied (no preset rows, agent_tier, use_tiers or workspace settings written). The snapshot above is a read-only view of the current lane state.'
 \else
