@@ -32,6 +32,29 @@ func TestBuildPromptSkipsEmptyWorkflowBrief(t *testing.T) {
 	}
 }
 
+func TestBuildPromptIncludesCurrentIssueDecisionsNewestLast(t *testing.T) {
+	task := Task{
+		IssueID: "issue-1",
+		DecisionRecords: []DecisionRecordData{
+			{ID: "record-1", Decided: "Use the existing route", Rationale: "  Keeps   compatibility.\n"},
+			{ID: "record-2", Decided: "Prefer the shared query"},
+		},
+	}
+	out := BuildPrompt(task, "claude")
+	first := strings.Index(out, "- [record-1] Use the existing route — Keeps compatibility.")
+	second := strings.Index(out, "- [record-2] Prefer the shared query")
+	if first < 0 || second <= first {
+		t.Fatalf("decision records should render in supplied order with ids and one-line text:\n%s", out)
+	}
+}
+
+func TestBuildPromptSkipsDecisionsOutsideIssueTasks(t *testing.T) {
+	task := Task{DecisionRecords: []DecisionRecordData{{ID: "record-1", Decided: "Keep this private"}}}
+	if out := BuildPrompt(task, "claude"); strings.Contains(out, "Owner Decision Records") {
+		t.Fatalf("decision records rendered without an issue task:\n%s", out)
+	}
+}
+
 // A handoff note is the caller's own instruction now; the workflow brief
 // arrives through the claim, so a handoff run gets both.
 func TestBuildPromptKeepsWorkflowBlockBesideHandoffNote(t *testing.T) {
