@@ -32,7 +32,7 @@ vi.mock("./inspector/runtime-picker", () => ({
 
 import { AgentDetailInspector } from "./agent-detail-inspector";
 
-vi.mock("./inspector/agent-preset-editor", () => ({ AgentPresetEditor: () => null }));
+vi.mock("./inspector/agent-preset-link", () => ({ AgentPresetLink: () => null }));
 
 const agent = {
   id: "agent-1",

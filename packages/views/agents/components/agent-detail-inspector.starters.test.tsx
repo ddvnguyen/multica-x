@@ -8,7 +8,7 @@ import type { Agent, AgentRuntime } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { AgentDetailInspector } from "./agent-detail-inspector";
 
-vi.mock("./inspector/agent-preset-editor", () => ({ AgentPresetEditor: () => null }));
+vi.mock("./inspector/agent-preset-link", () => ({ AgentPresetLink: () => null }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),

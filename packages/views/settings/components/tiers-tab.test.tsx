@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -52,6 +53,9 @@ const member = (over: Record<string, unknown>) => ({
 const data = vi.hoisted(() => ({
   tiers: [] as Array<Record<string, unknown>>,
   members: {} as Record<string, Array<Record<string, unknown>>>,
+  presets: [] as Array<Record<string, unknown>>,
+  agents: [] as Array<Record<string, unknown>>,
+  presetsEnabled: true,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
 }));
@@ -63,6 +67,36 @@ const data = vi.hoisted(() => ({
  */
 function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
   const key = options.queryKey ?? [];
+  if (key[0] === "agent-presets") {
+    return {
+      data: data.presets,
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      isPending: false,
+      refetch: vi.fn(),
+    };
+  }
+  if (key[0] === "workspaces" && key.length === 2) {
+    return {
+      data: { settings: { agent_presets_enabled: data.presetsEnabled } },
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      isPending: false,
+      refetch: vi.fn(),
+    };
+  }
+  if (key.includes("agents")) {
+    return {
+      data: data.agents,
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      isPending: false,
+      refetch: vi.fn(),
+    };
+  }
   if (key.includes("members")) {
     const tierId = String(key[3] ?? "");
     return {
@@ -90,12 +124,21 @@ function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
   };
 }
 
-vi.mock("@tanstack/react-query", () => ({
-  queryOptions: <T,>(options: T) => options,
-  useQuery: (options: { queryKey?: ReadonlyArray<unknown> }) => queryResult(options),
-  useQueries: ({ queries }: { queries: Array<{ queryKey?: ReadonlyArray<unknown> }> }) =>
-    queries.map((query) => queryResult(query)),
-}));
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    queryOptions: <T,>(options: T) => options,
+    useQuery: (options: { queryKey?: ReadonlyArray<unknown> }) =>
+      queryResult(options),
+    useQueries: ({
+      queries,
+    }: {
+      queries: Array<{ queryKey?: ReadonlyArray<unknown> }>;
+    }) => queries.map((query) => queryResult(query)),
+  };
+});
 
 vi.mock("@multica/core/workspace/queries", () => ({
   modelTiersOptions: () => ({ queryKey: ["workspaces", "workspace-1", "tiers"] }),
@@ -103,6 +146,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryKey: ["workspaces", "workspace-1", "tiers", tierId, "members"],
   }),
   memberListOptions: () => ({ queryKey: ["workspaces", "workspace-1", "members"] }),
+  agentListOptions: () => ({ queryKey: ["workspaces", "workspace-1", "agents"] }),
 }));
 
 vi.mock("@multica/core/workspace/mutations", () => ({
@@ -145,11 +189,15 @@ const TEST_RESOURCES = {
   en: { settings: enSettings },
 };
 
+const queryClient = new QueryClient();
+
 function Wrapper({ children }: { children: ReactNode }) {
   return (
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      {children}
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        {children}
+      </I18nProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -177,6 +225,9 @@ describe("TiersTab", () => {
     mockUpdateMember.mockResolvedValue({});
     mockCreateMember.mockResolvedValue({ id: "member-new" });
     mockDeleteMember.mockResolvedValue(undefined);
+    data.presetsEnabled = true;
+    data.presets = [];
+    data.agents = [];
   });
 
   it("lists tiers ordered with the disabled badge", () => {
@@ -533,5 +584,32 @@ describe("TiersTab", () => {
       await screen.findByText(/Each member needs a harness and a model/i),
     ).toBeInTheDocument();
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("lists workspace presets with their agent and tier in the presets section", async () => {
+    data.presets = [
+      {
+        id: "preset-1",
+        workspace_id: "workspace-1",
+        name: "Architect Sonnet",
+        agent_id: "agent-1",
+        agent_name: "Architect",
+        tier_id: "tier-1",
+        tier_name: "fast",
+        tier_enabled: true,
+      },
+    ];
+    render(<TiersTab />, { wrapper: Wrapper });
+    const row = await screen.findByTestId("preset-row-preset-1");
+    expect(within(row).getByText("Architect Sonnet")).toBeInTheDocument();
+    expect(row).toHaveTextContent("Architect");
+    expect(row).toHaveTextContent("fast");
+  });
+
+  it("hides the presets section when the workspace flag is off", () => {
+    data.presetsEnabled = false;
+    render(<TiersTab />, { wrapper: Wrapper });
+    expect(screen.queryByTestId("preset-row-preset-1")).toBeNull();
+    expect(screen.queryByText("Presets")).toBeNull();
   });
 });
