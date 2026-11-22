@@ -69,6 +69,74 @@ func (q *Queries) IssueDecisionRecordExists(ctx context.Context, arg IssueDecisi
 	return exists, err
 }
 
+const listCurrentIssueDecisionRecords = `-- name: ListCurrentIssueDecisionRecords :many
+WITH current_records AS (
+    SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at
+    FROM issue_decision_record r
+    WHERE r.workspace_id = $1 AND r.issue_id = $2
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_decision_record replacement
+          WHERE replacement.supersedes_id = r.id
+      )
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT 10
+)
+SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at, NULL::uuid AS superseded_by_id
+FROM current_records r
+ORDER BY r.created_at ASC, r.id ASC
+`
+
+type ListCurrentIssueDecisionRecordsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+type ListCurrentIssueDecisionRecordsRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	CommentID      pgtype.UUID        `json:"comment_id"`
+	Decided        string             `json:"decided"`
+	Rationale      string             `json:"rationale"`
+	SupersedesID   pgtype.UUID        `json:"supersedes_id"`
+	SourceKind     string             `json:"source_kind"`
+	ActorID        pgtype.UUID        `json:"actor_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	SupersededByID pgtype.UUID        `json:"superseded_by_id"`
+}
+
+func (q *Queries) ListCurrentIssueDecisionRecords(ctx context.Context, arg ListCurrentIssueDecisionRecordsParams) ([]ListCurrentIssueDecisionRecordsRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentIssueDecisionRecords, arg.WorkspaceID, arg.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentIssueDecisionRecordsRow{}
+	for rows.Next() {
+		var i ListCurrentIssueDecisionRecordsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.CommentID,
+			&i.Decided,
+			&i.Rationale,
+			&i.SupersedesID,
+			&i.SourceKind,
+			&i.ActorID,
+			&i.CreatedAt,
+			&i.SupersededByID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueDecisionRecords = `-- name: ListIssueDecisionRecords :many
 SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at, replacement.id AS superseded_by_id
 FROM issue_decision_record r

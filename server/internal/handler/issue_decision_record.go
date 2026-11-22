@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -26,6 +27,26 @@ func (h *Handler) ListIssueDecisionRecords(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	currentOnly := r.URL.Query().Get("current") == "true"
+	var response []issueDecisionRecordResponse
+	if currentOnly {
+		rows, err := h.Queries.ListCurrentIssueDecisionRecords(r.Context(), db.ListCurrentIssueDecisionRecordsParams{
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list current issue decision records")
+			return
+		}
+		response = make([]issueDecisionRecordResponse, 0, len(rows))
+		for _, row := range rows {
+			response = append(response, decisionRecordResponse(
+				row.ID, row.IssueID, row.CommentID, row.Decided, row.Rationale,
+				row.SupersedesID, row.SupersededByID, row.SourceKind, row.ActorID, row.CreatedAt,
+			))
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
 	rows, err := h.Queries.ListIssueDecisionRecords(r.Context(), db.ListIssueDecisionRecordsParams{
 		WorkspaceID: issue.WorkspaceID,
 		IssueID:     issue.ID,
@@ -34,23 +55,37 @@ func (h *Handler) ListIssueDecisionRecords(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to list issue decision records")
 		return
 	}
-	response := make([]issueDecisionRecordResponse, 0, len(rows))
+	response = make([]issueDecisionRecordResponse, 0, len(rows))
 	for _, row := range rows {
-		item := issueDecisionRecordResponse{
-			ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID),
-			CommentID: uuidToString(row.CommentID), Decided: row.Decided,
-			Rationale: row.Rationale, SourceKind: row.SourceKind,
-			ActorID: uuidToString(row.ActorID), CreatedAt: row.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
-		}
-		if row.SupersedesID.Valid {
-			value := uuidToString(row.SupersedesID)
-			item.SupersedesID = &value
-		}
-		if row.SupersededByID.Valid {
-			value := uuidToString(row.SupersededByID)
-			item.SupersededByID = &value
-		}
-		response = append(response, item)
+		response = append(response, decisionRecordResponse(
+			row.ID, row.IssueID, row.CommentID, row.Decided, row.Rationale,
+			row.SupersedesID, row.SupersededByID, row.SourceKind, row.ActorID, row.CreatedAt,
+		))
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func decisionRecordResponse(
+	id, issueID, commentID pgtype.UUID,
+	decided, rationale string,
+	supersedesID, supersededByID pgtype.UUID,
+	sourceKind string,
+	actorID pgtype.UUID,
+	createdAt pgtype.Timestamptz,
+) issueDecisionRecordResponse {
+	item := issueDecisionRecordResponse{
+		ID: uuidToString(id), IssueID: uuidToString(issueID),
+		CommentID: uuidToString(commentID), Decided: decided,
+		Rationale: rationale, SourceKind: sourceKind,
+		ActorID: uuidToString(actorID), CreatedAt: createdAt.Time.UTC().Format(time.RFC3339Nano),
+	}
+	if supersedesID.Valid {
+		value := uuidToString(supersedesID)
+		item.SupersedesID = &value
+	}
+	if supersededByID.Valid {
+		value := uuidToString(supersededByID)
+		item.SupersededByID = &value
+	}
+	return item
 }
