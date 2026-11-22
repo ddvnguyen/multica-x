@@ -450,6 +450,20 @@ func buildPromptBodyWithOptions(task Task, provider string, opts promptOpts) str
 	if task.ChatSessionID != "" {
 		return buildChatPromptWithOptions(task, opts)
 	}
+	// S1-A1 (M-118): a run resumed from a parked ask/plan carries the human's
+	// answer or verdict in the handoff note. Render it as the answer/verdict
+	// block (mirroring the [WAKEUP] pattern) so the agent reads it as the
+	// human's reply to its own parked question/plan, not as a scoping note.
+	//
+	// M-500: this check precedes the comment branch on purpose. A resume
+	// inherits the parked task's trigger_comment_id (M-327, for reply
+	// threading), and the claim fills its body — but the body is the trigger
+	// the parked run ALREADY read, not a new instruction. Rendering the
+	// comment branch first drowned the answer: the run re-read the old trigger
+	// as [NEW COMMENT] and never saw [ANSWER].
+	if task.TriggerEvidenceKind == "question_answer" || task.TriggerEvidenceKind == "plan_verdict" {
+		return buildAskPlanResumePrompt(task)
+	}
 	if task.TriggerCommentID != "" {
 		return buildCommentPromptWithOptions(task, provider, opts)
 	}
@@ -458,13 +472,6 @@ func buildPromptBodyWithOptions(task Task, provider string, opts promptOpts) str
 	}
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task, isDesktop)
-	}
-	// S1-A1 (M-118): a run resumed from a parked ask/plan carries the human's
-	// answer or verdict in the handoff note. Render it as the answer/verdict
-	// block (mirroring the [WAKEUP] pattern) so the agent reads it as the
-	// human's reply to its own parked question/plan, not as a scoping note.
-	if task.TriggerEvidenceKind == "question_answer" || task.TriggerEvidenceKind == "plan_verdict" {
-		return buildAskPlanResumePrompt(task)
 	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
@@ -505,6 +512,13 @@ func buildAskPlanResumePrompt(task Task) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString("This run resumes the session that asked the question or proposed the plan; continue the task with the human's reply above. Start by running `multica issue get " + task.IssueID + " --output json` to confirm the current state, then proceed.\n")
+	// M-327 threading survives the M-500 reorder: the inherited trigger
+	// comment is only the reply routing, never a new instruction — the parked
+	// run already read its body. Say so, so the run posts into the asking
+	// thread without re-executing the old trigger.
+	if task.TriggerCommentID != "" {
+		fmt.Fprintf(&b, "Post your result using `multica issue comment add %s --parent %s --content-file ./reply.md --output table && rm ./reply.md`. This is the original delivery thread, not a new comment trigger: the comment that triggered the parked run was already addressed before it asked the question.\n", task.IssueID, task.TriggerCommentID)
+	}
 	return b.String()
 }
 

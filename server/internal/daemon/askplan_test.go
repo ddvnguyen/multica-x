@@ -77,3 +77,30 @@ func TestBuildAskPlanResumePrompt(t *testing.T) {
 		}
 	}
 }
+
+// M-500: the resume inherits the parked task's trigger_comment_id (M-327) and
+// the claim fills its body — but that body is the trigger the parked run
+// ALREADY read, not a new instruction. The answer block must win over the
+// comment branch even when both are present; otherwise the run re-executes
+// the old trigger and never sees [ANSWER].
+func TestBuildPromptPrefersAnswerOverInheritedTriggerComment(t *testing.T) {
+	task := Task{
+		IssueID:               "42",
+		TriggerEvidenceKind:   "question_answer",
+		HandoffNote:           "Q1: Which day?\n  - Thursday",
+		TriggerCommentID:      "comment-1",
+		TriggerCommentContent: "please decide the release day",
+	}
+	got := BuildPrompt(task, "claude")
+	for _, want := range []string{"[ANSWER]", "Thursday", "comment-1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resume prompt missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[NEW COMMENT]") {
+		t.Errorf("resume prompt must not re-send the already-delivered trigger as [NEW COMMENT]:\n%s", got)
+	}
+	if strings.Contains(got, "please decide the release day") {
+		t.Errorf("resume prompt must not embed the old trigger body as a new instruction:\n%s", got)
+	}
+}

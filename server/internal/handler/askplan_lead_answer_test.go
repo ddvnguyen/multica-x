@@ -187,7 +187,8 @@ func TestLeadAnswerQuestionCardLosesToAnOwnerAnswer(t *testing.T) {
 	}
 }
 
-// The lead can read the card it was escalated to, and a non-lead cannot.
+// The lead can read the card it was escalated to, and so can the asking
+// agent (M-500: it reads its own answer back). An unrelated agent cannot.
 func TestGetQuestionCardForLead(t *testing.T) {
 	f := newLeadAnswerFixture(t)
 	var card cardResponse
@@ -198,8 +199,29 @@ func TestGetQuestionCardForLead(t *testing.T) {
 		t.Fatalf("card = %#v, want the open card %s", card, f.cardID)
 	}
 
-	req := leadCardRequest(t, f, http.MethodGet, nil)
-	req.Header.Set("X-Task-ID", f.taskID)
-	req.Header.Set("X-Agent-ID", f.agentID)
-	testutil.Call(t, testHandler.GetQuestionCardForLead, req).Want(http.StatusForbidden)
+	// The asking agent reads its own card (M-500).
+	askerReq := leadCardRequest(t, f, http.MethodGet, nil)
+	askerReq.Header.Set("X-Task-ID", f.taskID)
+	askerReq.Header.Set("X-Agent-ID", f.agentID)
+	var askerCard cardResponse
+	testutil.Call(t, testHandler.GetQuestionCardForLead, askerReq).Want(http.StatusOK).JSON(&askerCard)
+	if askerCard.ID != f.cardID {
+		t.Fatalf("asker card = %#v, want the open card %s", askerCard, f.cardID)
+	}
+
+	// A third agent, neither asker nor lead, is refused.
+	otherAgentID := dbfx.Agent(t, "M-500 Bystander Agent", f.runtimeID)
+	otherTaskID := dbfx.Task(t, otherAgentID, testutil.Cols{
+		"issue_id":   f.issueID,
+		"runtime_id": f.runtimeID,
+		"status":     "running",
+	})
+	otherReq := newRequest(http.MethodGet, "/api/question-cards/"+f.cardID, nil)
+	otherReq.Header.Set("X-Task-ID", otherTaskID)
+	otherReq.Header.Set("X-Agent-ID", otherAgentID)
+	otherReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	otherReq.Header.Set("X-Actor-Source", "task_token")
+	testutil.Call(t, testHandler.GetQuestionCardForLead,
+		withURLParams(otherReq, "cardId", f.cardID),
+	).Want(http.StatusForbidden)
 }

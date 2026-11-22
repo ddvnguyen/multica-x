@@ -375,7 +375,7 @@ func (s *TaskService) escalateAskPlanToLead(ctx context.Context, task db.AgentTa
 		// platform-authored comment uses (migration 107; runtime_unusable_notice).
 		AuthorType: "system",
 		AuthorID:   pgtype.UUID{Valid: true},
-		Content:    renderAskPlanEscalationComment(task, timeoutSeconds, timeoutSource, leadType, leadName, leadLoaded),
+		Content:    renderAskPlanEscalationComment(task, timeoutSeconds, timeoutSource, leadType, leadName, leadLoaded, s.askPlanEscalationDecision(ctx, task)),
 		Type:       "system",
 		ParentID:   pgtype.UUID{Valid: false},
 	})
@@ -476,11 +476,44 @@ func (s *TaskService) askPlanLeadName(ctx context.Context, leadType string, lead
 	return ""
 }
 
+// askPlanEscalationDecision names the decision the lead is escalated to
+// (M-500): the card's questions, or the plan's title. Best-effort — an
+// unreadable row leaves it empty and the comment still says what waited.
+func (s *TaskService) askPlanEscalationDecision(ctx context.Context, task db.AgentTaskQueue) string {
+	if !task.TriggerEvidenceKind.Valid || !task.TriggerEvidenceRefID.Valid {
+		return ""
+	}
+	switch task.TriggerEvidenceKind.String {
+	case EvidenceQuestionAnswer:
+		card, err := s.Queries.GetAgentQuestionCard(ctx, task.TriggerEvidenceRefID)
+		if err != nil {
+			return ""
+		}
+		var qs []askPlanQuestion
+		if err := json.Unmarshal(card.Questions, &qs); err != nil || len(qs) == 0 {
+			return ""
+		}
+		parts := make([]string, 0, len(qs))
+		for i, q := range qs {
+			parts = append(parts, fmt.Sprintf("Q%d: %s", i+1, strings.TrimSpace(q.Prompt)))
+		}
+		return strings.Join(parts, " | ")
+	case EvidencePlanVerdict:
+		plan, err := s.Queries.GetAgentPlan(ctx, task.TriggerEvidenceRefID)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("plan %q", plan.Title)
+	default:
+		return ""
+	}
+}
+
 // renderAskPlanEscalationComment is the durable record and the lead's brief:
 // what waited, how long, which setting governed it, that nothing was cancelled,
 // the exact rule for answering on the Owner's behalf, and who it escalated to.
 // Plain text only — no mention links (see escalateAskPlanToLead).
-func renderAskPlanEscalationComment(task db.AgentTaskQueue, timeoutSeconds int, timeoutSource, leadType, leadName string, leadLoaded bool) string {
+func renderAskPlanEscalationComment(task db.AgentTaskQueue, timeoutSeconds int, timeoutSource, leadType, leadName string, leadLoaded bool, decision string) string {
 	var b strings.Builder
 	isPlan := task.TriggerEvidenceKind.Valid && task.TriggerEvidenceKind.String == EvidencePlanVerdict
 	if isPlan {
@@ -488,7 +521,10 @@ func renderAskPlanEscalationComment(task db.AgentTaskQueue, timeoutSeconds int, 
 		b.WriteString("Project lead: a plan verdict stays the Owner's alone — there is no lead verdict path, so this plan waits.\n")
 	} else {
 		fmt.Fprintf(&b, "**Ask/plan escalation:** the question card on this run has waited %ds for an answer — the full effective timeout (%s). Nothing was withdrawn or cancelled: the card stays open, the run stays parked, and the first answer resumes it.\n", timeoutSeconds, timeoutSource)
-		b.WriteString("Project lead: answer it on the Owner's behalf **only** if the decision is covered by the approved plan or the Owner's recorded decisions, or if it is reversible — with `multica question-card answer <card-id> --option \"<label>\"` (or `--text` for a free-text answer). Otherwise do not answer: say why in one reply and leave the card for the Owner.\n")
+		b.WriteString("Project lead: answer it on the Owner's behalf **only** if the decision is covered by the approved plan or the Owner's recorded decisions, or if it is reversible — with `multica question-card answer <card-id> --option \"<label>\"` (or `--text` for a free-text answer). Otherwise do not answer: leaving the card for the Owner is a valid outcome — say why in one reply and move on.\n")
+	}
+	if decision != "" {
+		fmt.Fprintf(&b, "Decision waiting: %s\n", decision)
 	}
 	switch {
 	case !leadLoaded:

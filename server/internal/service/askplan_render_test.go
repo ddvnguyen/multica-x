@@ -197,6 +197,59 @@ func questionCardForTest(questions json.RawMessage) db.AgentQuestionCard {
 	return db.AgentQuestionCard{Questions: questions}
 }
 
+// M-500: the thread mirror names who decided and the chosen labels (or free
+// text) per question, in question order — the record other agents read.
+func TestRenderAnswerThreadSummary(t *testing.T) {
+	cardJSON, _ := json.Marshal([]map[string]any{
+		{"prompt": "Which release day?", "options": []map[string]string{{"label": "Thursday"}, {"label": "Friday"}}},
+		{"prompt": "Anything else?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}}},
+	})
+	card := questionCardForTest(cardJSON)
+	card.AnsweredByType = AnsweredByMember
+	answersJSON, _ := json.Marshal([]map[string]any{
+		{"selected": []int{0}},
+		{"text": "ship it Friday"},
+	})
+	got := renderAnswerThreadSummary(card, answersJSON)
+	for _, want := range []string{
+		"The Owner answered",
+		"Q1 Which release day? = Thursday",
+		"Q2 Anything else? = \"ship it Friday\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("thread summary missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Friday") && !strings.Contains(got, "ship it Friday") {
+		t.Errorf("thread summary leaked an unselected option:\n%s", got)
+	}
+
+	lead := questionCardForTest(cardJSON)
+	lead.AnsweredByType = AnsweredByAgent
+	leadGot := renderAnswerThreadSummary(lead, answersJSON)
+	if !strings.Contains(leadGot, "The project lead, on the Owner's behalf") {
+		t.Errorf("lead thread summary must name the lead's behalf:\n%s", leadGot)
+	}
+}
+
+// M-500: the escalation comment names the waiting decision and says leaving
+// the card for the Owner is valid.
+func TestRenderAskPlanEscalationCommentNamesDecision(t *testing.T) {
+	var task db.AgentTaskQueue
+	task.TriggerEvidenceKind = pgtype.Text{String: EvidenceQuestionAnswer, Valid: true}
+	got := renderAskPlanEscalationComment(task, 300, "built-in default", "agent", "Claude Architect", true, "Q1: Which release day?")
+	for _, want := range []string{
+		"waited 300s",
+		"Q1: Which release day?",
+		"leaving the card for the Owner is a valid outcome",
+		"Claude Architect",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("escalation comment missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // planForTest builds a plan row with a title and sections.
 func planForTest() db.AgentPlan {
 	return db.AgentPlan{Title: "Release plan", Sections: json.RawMessage(`[]`)}

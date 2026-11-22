@@ -40,6 +40,15 @@ run that owns the token.
    re-queues a run resuming the same session, rendering `[ANSWER]` /
    `[PLAN VERDICT]` in its prompt.
 
+M-500 hardening: the answer CAS commits before the resume enqueue, so an
+answer that arrives while a comment trigger (or the escalation lead run) holds
+the pending slot is never lost — the pending run carries the answer's handoff
+and evidence instead, and its prompt still renders the answer block first
+(the resume's inherited trigger comment is reply routing only, never a new
+instruction). The answer is also mirrored as a system comment on the issue
+thread, and `multica question-card show` prints the chosen answers with
+who/when for the asking agent and the project lead.
+
 The member's surface is the island's ask/plan panel —
 `packages/views/issues/components/ask-plan-panel.tsx` (M-120), mounted on the
 issue page, which is also what the Inbox detail pane renders. It reads the one
