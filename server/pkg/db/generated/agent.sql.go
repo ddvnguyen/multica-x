@@ -7651,7 +7651,9 @@ WHERE atq.status = 'queued'
   AND atq.tier_parked
   -- M-359: use_tiers=false agents can hold a parked EXPLICIT row (the pick
   -- overrides the single runtime for that run); sweep those too.
-  AND (a.use_tiers OR atq.tier_explicit OR atq.context->>'requested_preset_id' IS NOT NULL)
+  -- M-499 slice 2: a Role is model-free (use_tiers=false) but its tiers come
+  -- from the role-keyed index, so its parked auto rows need restamping too.
+  AND (a.use_tiers OR atq.tier_explicit OR a.subtype = 'role' OR atq.context->>'requested_preset_id' IS NOT NULL)
 ORDER BY atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `
 
@@ -7756,7 +7758,7 @@ FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
   AND atq.tier_parked
-  AND (a.use_tiers OR atq.tier_explicit OR atq.context->>'requested_preset_id' IS NOT NULL)
+  AND (a.use_tiers OR atq.tier_explicit OR a.subtype = 'role' OR atq.context->>'requested_preset_id' IS NOT NULL)
   AND a.workspace_id = $1
 ORDER BY atq.agent_id, COALESCE((atq.context->>'requested_tier_id')::uuid, CASE WHEN atq.tier_explicit THEN atq.tier_id END, '00000000-0000-0000-0000-000000000000'::uuid), atq.priority DESC, atq.created_at ASC, atq.id ASC
 `

@@ -10,6 +10,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // RuntimeLookup is how production code reads agent_runtime rows by id
@@ -43,6 +44,10 @@ type RuntimeLookup struct {
 	Queries *db.Queries
 	Metrics *obsmetrics.BusinessMetrics
 	Source  string
+	// FeatureFlags lets the shared readiness predicate recognize a Role whose
+	// runtime is intentionally NULL (its route comes from the tier resolver).
+	// Nil fails closed: without the flag a runtime-less agent stays blocked.
+	FeatureFlags *featureflag.Service
 }
 
 // Get reads one agent_runtime row and counts it against the lookup's source.
@@ -104,13 +109,17 @@ func runtimeLookupResult(err error) string {
 // runtimeLookup returns the issue-sourced lookup, bound to the caller's
 // connection so a read inside the create transaction stays inside it.
 func (s *IssueService) runtimeLookup(q *db.Queries) RuntimeLookup {
-	return RuntimeLookup{Queries: q, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceIssue}
+	var flags *featureflag.Service
+	if s.TaskService != nil {
+		flags = s.TaskService.FeatureFlags
+	}
+	return RuntimeLookup{Queries: q, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceIssue, FeatureFlags: flags}
 }
 
 // runtimeLookup returns the task-sourced lookup for analytics context and the
 // usage provider backfill.
 func (s *TaskService) runtimeLookup() RuntimeLookup {
-	return RuntimeLookup{Queries: s.Queries, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceTask}
+	return RuntimeLookup{Queries: s.Queries, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceTask, FeatureFlags: s.FeatureFlags}
 }
 
 // runtimeLookup returns the autopilot-sourced lookup. AutopilotService holds no
@@ -118,8 +127,10 @@ func (s *TaskService) runtimeLookup() RuntimeLookup {
 // wires from the same registry.
 func (s *AutopilotService) runtimeLookup() RuntimeLookup {
 	var m *obsmetrics.BusinessMetrics
+	var flags *featureflag.Service
 	if s.TaskSvc != nil {
 		m = s.TaskSvc.Metrics
+		flags = s.TaskSvc.FeatureFlags
 	}
-	return RuntimeLookup{Queries: s.Queries, Metrics: m, Source: obsmetrics.RuntimeLookupSourceAutopilot}
+	return RuntimeLookup{Queries: s.Queries, Metrics: m, Source: obsmetrics.RuntimeLookupSourceAutopilot, FeatureFlags: flags}
 }
