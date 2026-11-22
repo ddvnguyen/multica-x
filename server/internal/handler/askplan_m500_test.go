@@ -48,12 +48,16 @@ func TestAnswerWhileCommentTriggerPendingAttachesHandoff(t *testing.T) {
 	).Want(http.StatusAccepted).JSON(&ask)
 
 	// A comment trigger lands while the park waits and takes the pending slot.
-	pendingThread := dbfx.Comment(t, f.issueID, "any update on the release day?")
+	// It shares the parked run's thread: the pending slot is per
+	// (issue, agent, tier, thread), so only a same-thread pending run
+	// collides with the resume enqueue (a different thread correctly
+	// coexists as its own run). This is also the M-500 bug #4 shape — the
+	// same trigger comment re-delivered as a new run after the answer.
 	pendingTaskID := dbfx.Task(t, f.agentID, testutil.Cols{
 		"issue_id":           f.issueID,
 		"runtime_id":         f.runtimeID,
 		"status":             "queued",
-		"trigger_comment_id": pendingThread,
+		"trigger_comment_id": askThread,
 	})
 
 	resp := answerAsHuman(t, ask.CardID, map[string]any{"answers": []map[string]any{{"selected": []int{0}}}})
