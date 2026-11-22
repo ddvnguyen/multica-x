@@ -114,7 +114,27 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
+	b.WriteString(buildIssueDecisionRecordsBlock(task))
 	b.WriteString(buildParentIssueBlock(task))
+	return b.String()
+}
+
+func buildIssueDecisionRecordsBlock(task Task) string {
+	if task.IssueID == "" || task.ChatSessionID != "" || len(task.DecisionRecords) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n## Owner Decision Records\n")
+	b.WriteString("Follow these current Owner decisions for this issue. Newer decisions appear later and supersede earlier guidance when they conflict.\n")
+	for _, record := range task.DecisionRecords {
+		decided := strings.Join(strings.Fields(record.Decided), " ")
+		rationale := strings.Join(strings.Fields(record.Rationale), " ")
+		fmt.Fprintf(&b, "- [%s] %s", record.ID, decided)
+		if rationale != "" {
+			fmt.Fprintf(&b, " — %s", rationale)
+		}
+		b.WriteByte('\n')
+	}
 	return b.String()
 }
 
