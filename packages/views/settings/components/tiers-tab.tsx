@@ -1205,17 +1205,21 @@ function MemberRowEditor({
   return (
     <li
       data-testid={`tier-member-row-${index}`}
-      className="space-y-1 rounded-md border bg-surface-raised/40 px-2 py-2"
+      // M-496: the row is its own container, so the one-line layout keys off
+      // the dialog's real width instead of the viewport's. Below 46rem of row
+      // the fields stack two-up and the order badge shares a line with the
+      // move/remove buttons; at or above it every field owns one column.
+      className="@container space-y-1 rounded-md border bg-surface-raised/40 px-2 py-2"
     >
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-[auto_1fr_1fr_7rem_9rem_5rem_auto] md:items-start">
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 @[46rem]:grid-cols-[1.25rem_minmax(0,1.35fr)_minmax(0,1.1fr)_6.5rem_minmax(0,8.5rem)_4.5rem_auto]">
         <span
           aria-hidden
-          className="flex h-8 items-center text-caption text-muted-foreground md:w-6"
+          className="col-start-1 row-start-1 flex h-8 w-5 items-center text-caption text-muted-foreground"
           title={t(($) => $.tiers.member_position, { position: index + 1 })}
         >
           {index + 1}
         </span>
-        <div className="space-y-1">
+        <div className="col-start-1 row-start-2 min-w-0 space-y-1 @[46rem]:col-start-2 @[46rem]:row-start-1">
           <Label htmlFor={`member-provider-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_provider_label)}
           </Label>
@@ -1226,7 +1230,7 @@ function MemberRowEditor({
             placeholder={t(($) => $.tiers.member_provider_placeholder)}
           />
         </div>
-        <div className="space-y-1">
+        <div className="col-start-2 row-start-2 min-w-0 space-y-1 @[46rem]:col-start-3 @[46rem]:row-start-1">
           <Label htmlFor={`member-model-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_model_label)}
           </Label>
@@ -1249,8 +1253,12 @@ function MemberRowEditor({
                 onChange({ model: value });
               }}
             >
-              <SelectTrigger id={`member-model-${row.key}`}>
+              <SelectTrigger
+                id={`member-model-${row.key}`}
+                className="w-full min-w-0"
+              >
                 <SelectValue
+                  className="truncate"
                   placeholder={t(($) => $.tiers.model_placeholder)}
                 />
               </SelectTrigger>
@@ -1274,7 +1282,7 @@ function MemberRowEditor({
             />
           )}
         </div>
-        <div className="space-y-1">
+        <div className="col-start-1 row-start-3 min-w-0 space-y-1 @[46rem]:col-start-4 @[46rem]:row-start-1">
           <Label htmlFor={`member-thinking-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_thinking_label)}
           </Label>
@@ -1285,7 +1293,7 @@ function MemberRowEditor({
             placeholder={t(($) => $.tiers.member_thinking_placeholder)}
           />
         </div>
-        <div className="space-y-1">
+        <div className="col-start-2 row-start-3 min-w-0 space-y-1 @[46rem]:col-start-5 @[46rem]:row-start-1">
           <Label htmlFor={`member-runtime-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_runtime_label)}
           </Label>
@@ -1314,8 +1322,15 @@ function MemberRowEditor({
               });
             }}
           >
-            <SelectTrigger id={`member-runtime-${row.key}`}>
+            {/* M-496: the trigger is `w-fit` by default, so a long runtime
+                label grew past its column and covered Slots. Fill the column
+                and let the label clamp. */}
+            <SelectTrigger
+              id={`member-runtime-${row.key}`}
+              className="w-full min-w-0"
+            >
               <SelectValue
+                className="truncate"
                 placeholder={t(($) => $.tiers.runtime_placeholder)}
               />
             </SelectTrigger>
@@ -1334,18 +1349,22 @@ function MemberRowEditor({
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1">
+        <div className="col-start-1 row-start-4 min-w-0 space-y-1 @[46rem]:col-start-6 @[46rem]:row-start-1">
           <Label htmlFor={`member-slots-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_slots_label)}
           </Label>
           <Input
             id={`member-slots-${row.key}`}
+            type="text"
             inputMode="numeric"
+            pattern="[0-9]*"
+            maxLength={3}
+            className="max-w-24 text-center tabular-nums"
             value={row.providerSlots}
             onChange={(e) => onChange({ providerSlots: e.target.value })}
           />
         </div>
-        <div className="flex items-start gap-1 pt-5">
+        <div className="col-start-2 row-start-1 flex items-start justify-end gap-1 @[46rem]:col-start-7 @[46rem]:justify-start @[46rem]:pt-5">
           <Button
             variant="ghost"
             size="sm"

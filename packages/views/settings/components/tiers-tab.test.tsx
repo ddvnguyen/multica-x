@@ -482,6 +482,31 @@ describe("TiersTab", () => {
     expect(mockUpdate.mock.calls[1]![0]).toHaveProperty("quality", null);
   });
 
+  it("gives each member field its own column and keeps Slots numeric", async () => {
+    data.members = { "tier-1": [member({ id: "member-1" })] };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const row = await screen.findByTestId("tier-member-row-0");
+    // M-496: the row sizes from its own width, not the viewport's, and every
+    // cell can shrink below its content so a long runtime label cannot spill
+    // over the next column.
+    expect(row.className).toContain("@container");
+    const grid = row.firstElementChild as HTMLElement;
+    expect(grid.className).toContain("@[46rem]:grid-cols-");
+    for (const label of ["Harness", "Model", "Thinking", "Runtime", "Slots"]) {
+      const cell = screen.getByLabelText(label).parentElement;
+      expect(cell?.className).toContain("min-w-0");
+    }
+    // The runtime select fills its column instead of sizing to its label.
+    const runtime = screen.getByLabelText("Runtime");
+    expect(runtime.className).toContain("w-full");
+    expect(runtime.className).toContain("min-w-0");
+    const slots = screen.getByLabelText("Slots") as HTMLInputElement;
+    expect(slots.inputMode).toBe("numeric");
+    expect(slots.value).toBe("1");
+  });
+
   it("rejects a non-slug name before submitting", async () => {
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
