@@ -12,6 +12,7 @@ vi.mock("@multica/views/tabs", () => ({
 vi.mock("@/platform/web-tab-navigation", () => ({
   WebTabNavigationProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   WebTabSync: () => null,
+  useWebTabProjector: () => () => {},
 }));
 
 describe("WebTabStrip", () => {

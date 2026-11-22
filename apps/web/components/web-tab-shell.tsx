@@ -13,6 +13,7 @@ import { selectTabByShortcut } from "@multica/views/tabs";
 import {
   WebTabNavigationProvider,
   WebTabSync,
+  useWebTabProjector,
 } from "@/platform/web-tab-navigation";
 
 /**
@@ -59,6 +60,10 @@ export function WebTabProvider({ children }: { children: React.ReactNode }) {
  * page tabs, a hairline, and the chats.
  */
 export function WebTabStrip() {
+  // Project a tab click's URL in the same transition as the store write, so
+  // the page does not wait a render + effect round-trip (M-519). The sync
+  // still owns every other projection (adapter writes, deep links, close).
+  const projectTab = useWebTabProjector();
   return (
     <div
       data-slot="web-tab-strip"
@@ -66,7 +71,7 @@ export function WebTabStrip() {
     >
       <TabHistoryButtons />
       <div className="min-w-0 flex-1">
-        <TabBar compact />
+        <TabBar compact host={{ onTabActivate: projectTab }} />
       </div>
     </div>
   );
