@@ -13,7 +13,11 @@ import {
   useIssueOpeningCapability,
   type SidePreviewOpenTarget,
 } from "./issue-opening-capability";
-import { IssuePeekActionsContext, useIssuePeekClick } from "./peek-context";
+import {
+  IssuePeekActionsContext,
+  useIssuePeekClick,
+  useSidePreviewTargetClick,
+} from "./peek-context";
 
 const nav = vi.hoisted(() => ({
   openInNewTab: undefined as ((path: string, issueId: string, opts?: { activate?: boolean }) => boolean) | undefined,
@@ -72,6 +76,28 @@ function IssueLink() {
   return (
     <button data-testid="issue-link" onClick={(event) => click("issue-1", event)}>
       M-1
+    </button>
+  );
+}
+
+function TargetLink({ onOpened }: { onOpened: (target: SidePreviewOpenTarget) => boolean }) {
+  return (
+    <IssueOpeningCapabilityProvider supportsTabs supportsPeek openSidePreview={onOpened}>
+      <TargetLinkButton />
+    </IssueOpeningCapabilityProvider>
+  );
+}
+
+function TargetLinkButton() {
+  const click = useSidePreviewTargetClick();
+  return (
+    <button
+      data-testid="target-link"
+      onClick={(event) =>
+        click(event, { view: "agent", id: "agent-1" }, "/acme/agents/agent-1", "Agent one")
+      }
+    >
+      Agent one
     </button>
   );
 }
@@ -415,5 +441,33 @@ describe("late host adapter (the island's boot order)", () => {
       JSON.parse(localStorage.getItem(ISLAND_PREFIX + "multica_issue_opening")!)
         .state,
     ).toEqual({ openMode: "peek" });
+  });
+});
+
+describe("useSidePreviewTargetClick", () => {
+  it("opens a non-issue target in the host preview when Side preview is selected", () => {
+    const onOpened = vi.fn(() => true);
+    nav.openInNewTab = vi.fn(() => true);
+    useIssueOpeningStore.setState({ openMode: "peek", hasUserChoice: true });
+    render(<TargetLink onOpened={onOpened} />);
+
+    fireEvent.click(screen.getByTestId("target-link"));
+
+    expect(onOpened).toHaveBeenCalledWith({ view: "agent", id: "agent-1" });
+    expect(nav.openInNewTab).not.toHaveBeenCalled();
+  });
+
+  it("opens a non-issue target in a new tab when New tab is selected", () => {
+    nav.openInNewTab = vi.fn(() => true);
+    useIssueOpeningStore.setState({ openMode: "tab", hasUserChoice: true });
+    render(<TargetLink onOpened={() => true} />);
+
+    fireEvent.click(screen.getByTestId("target-link"));
+
+    expect(nav.openInNewTab).toHaveBeenCalledWith(
+      "/acme/agents/agent-1",
+      "Agent one",
+      { activate: true },
+    );
   });
 });

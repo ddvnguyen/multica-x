@@ -100,6 +100,7 @@ import {
   type ProjectGroupField,
 } from "./project-groups";
 import { PriorityIcon } from "../../issues/components/priority-icon";
+import { useSidePreviewTargetClick } from "../../issues/surface/peek-context";
 import { cn } from "@multica/ui/lib/utils";
 
 // Sort order maps for the enum columns (header sort needs a total order).
@@ -315,6 +316,7 @@ export function ProjectsPage() {
   const { t } = useT("projects");
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
+  const handleSidePreviewClick = useSidePreviewTargetClick();
   const currentUser = useAuthStore((s) => s.user);
   const { getActorName } = useActorName();
 
@@ -957,6 +959,7 @@ export function ProjectsPage() {
               getRowId={(project) => project.id}
               getRowHref={(project) => wsPaths.projectDetail(project.id)}
               getRowTitle={(project) => project.title}
+              onRowClick={(project, event) => handleSidePreviewClick(event, { view: "project", id: project.id }, wsPaths.projectDetail(project.id), project.title)}
               rowMenu={(project) => (
                 <ProjectRowActions
                   project={project}

@@ -37,6 +37,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { rowLinkInteractiveProps, useNavigation } from "../../navigation";
+import { useSidePreviewTargetClick } from "../../issues/surface/peek-context";
 import {
   CollectionNoMatches,
   CollectionPageHeader,
@@ -247,6 +248,7 @@ export default function SkillsPage() {
   const { t } = useT("skills");
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
+  const handleSidePreviewClick = useSidePreviewTargetClick();
   const navigation = useNavigation();
   const timeAgo = useTimeAgo();
   const currentUserId = useAuthStore((s) => s.user?.id ?? null);
@@ -580,6 +582,7 @@ export default function SkillsPage() {
           getRowId={(row) => row.skill.id}
           getRowHref={(row) => paths.skillDetail(row.skill.id)}
           getRowTitle={(row) => row.skill.name}
+          onRowClick={(row, event) => handleSidePreviewClick(event, { view: "skill", id: row.skill.id }, paths.skillDetail(row.skill.id), row.skill.name)}
           rowMenu={(row) => <SkillRowActions row={row} ctx={actionsCtx} />}
           sort={sort}
           selection={{ selectedIds, onChange: setSelectedIds }}

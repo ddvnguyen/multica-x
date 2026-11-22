@@ -18,6 +18,7 @@ import {
 import { Calendar } from "@multica/ui/icons";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
+import { useSidePreviewTargetClick } from "../../issues/surface/peek-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { Project, UpdateProjectRequest } from "@multica/core/types";
 import { AppLink } from "../../navigation";
@@ -193,6 +194,7 @@ function ProjectBoardCard({
   onUpdate: (data: UpdateProjectRequest) => void;
 }) {
   const paths = useWorkspacePaths();
+  const handleSidePreviewClick = useSidePreviewTargetClick();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: project.id,
     data: { project, columnKey } satisfies DragData,
@@ -209,6 +211,7 @@ function ProjectBoardCard({
       <AppLink
         href={paths.projectDetail(project.id)}
         newTabTitle={project.title}
+        onClick={(event) => handleSidePreviewClick(event, { view: "project", id: project.id }, paths.projectDetail(project.id), project.title)}
         className={cn("block", isDragging && "pointer-events-none")}
       >
         <ProjectBoardCardContent project={project} onUpdate={onUpdate} />
