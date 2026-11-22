@@ -4797,6 +4797,9 @@ export const ModelTierSchema = z.object({
   // M-423: defaulted so older backends keep parsing; UI treats missing
   // roles as unconfigured (legacy).
   roles: z.array(z.string()).default([]),
+  // M-497: position inside the requested role's list. Present only on
+  // role-filtered (?role=) reads and role reorder responses.
+  role_idx: z.number().int().optional(),
   manual_only: z.boolean().default(false),
   // M-481: the profile's scheduling choices. Older backends omit them, so the
   // defaults keep the list rendering; `auto_pick` mirrors `NOT manual_only`.
@@ -4832,6 +4835,14 @@ export const ModelTierMemberSchema = z.object({
 });
 
 export const ModelTierMemberListSchema = z.array(ModelTierMemberSchema);
+
+// Workspace role registry (M-497, Owner Q4): free workspace-defined keys.
+export const TierRoleSchema = z.object({
+  key: z.string().default(""),
+  position: z.number().int().default(0),
+});
+
+export const TierRoleListSchema = z.array(TierRoleSchema);
 
 export const EMPTY_MODEL_TIER_MEMBER: ModelTierMember = {
   id: "",

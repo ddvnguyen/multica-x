@@ -2434,7 +2434,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			shouldClearRole = true
 		} else {
 			if !validTierRoleName(role) {
-				writeError(w, http.StatusBadRequest, "role must be architect, leader, reviewer, orchestrator, engineer or planning")
+				writeError(w, http.StatusBadRequest, "role must be lowercase letters, digits or hyphens, up to 40 chars")
 				return
 			}
 			params.Role = pgtype.Text{String: role, Valid: true}

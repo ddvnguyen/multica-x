@@ -43,7 +43,9 @@ func TestNormalizeTierInput423(t *testing.T) {
 
 	// Create validation.
 	for name, mut := range map[string]func(*modelTierInput){
-		"bad role":  func(i *modelTierInput) { i.RolesSet = true; i.Roles = []string{"ceo"} },
+		// M-497 (Owner Q4): roles are free slug-shaped keys, so "ceo" is a
+		// valid custom role; only malformed keys are rejected.
+		"bad role":  func(i *modelTierInput) { i.RolesSet = true; i.Roles = []string{"Bad Role!"} },
 		"bad quota": func(i *modelTierInput) { i.QuotaKind = str("yearly") },
 	} {
 		base := modelTierInput{Name: str("t"), Provider: str("p"), Model: str("m")}

@@ -69,6 +69,11 @@ export interface ModelTier {
   enabled: boolean;
   /** Roles served (M-423). Empty = legacy/unconfigured. */
   roles: string[];
+  /**
+   * Position inside the requested role's list (M-497). Present only on
+   * role-filtered (?role=) reads and role reorder responses.
+   */
+  role_idx?: number;
   /** Never auto-resolves; explicit picks need a workspace owner. */
   manual_only: boolean;
   /**
@@ -153,6 +158,15 @@ export interface ModelTierMemberInput {
   runtime_id?: string;
   provider_slots?: number;
   enabled?: boolean;
+}
+
+/**
+ * One entry of the workspace role registry (M-497, Owner Q4). Keys are free
+ * workspace-defined strings; the registry seeds the three classic roles.
+ */
+export interface TierRole {
+  key: string;
+  position: number;
 }
 
 /** A named agent+tier quick pick. */

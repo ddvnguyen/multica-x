@@ -100,6 +100,7 @@ import type {
   ModelTierInput,
   ModelTierMember,
   ModelTierMemberInput,
+  TierRole,
   AgentPreset,
   MemberWithUser,
   User,
@@ -642,6 +643,7 @@ import {
   ModelTierMemberListSchema,
   ModelTierMemberSchema,
   ModelTierSchema,
+  TierRoleListSchema,
   EMPTY_MODEL_TIER_MEMBER,
   AgentPresetSchema,
   AgentPresetListSchema,
@@ -4121,14 +4123,27 @@ export class ApiClient {
     );
   }
 
-  /** The workspace's model tiers, ordered by idx. Member-visible. */
-  async listModelTiers(workspaceId: string): Promise<ModelTier[]> {
-    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers`);
+  /** The workspace's model tiers. With role, only that role's list in role order. Member-visible. */
+  async listModelTiers(workspaceId: string, role?: string): Promise<ModelTier[]> {
+    const path = role
+      ? `/api/workspaces/${workspaceId}/tiers?role=${encodeURIComponent(role)}`
+      : `/api/workspaces/${workspaceId}/tiers`;
+    const raw = await this.fetch<unknown>(path);
     const parsed = parseWithFallback<{ tiers: ModelTier[] } | null>(raw, z.object({ tiers: ModelTierListSchema }), null, {
       endpoint: "GET /api/workspaces/{id}/tiers",
     });
     if (!parsed) throw new Error("Invalid tiers response");
     return parsed.tiers;
+  }
+
+  /** The workspace's role registry in tab order (M-497). Member-visible. */
+  async listTierRoles(workspaceId: string): Promise<TierRole[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/roles`);
+    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(raw, z.object({ roles: TierRoleListSchema }), null, {
+      endpoint: "GET /api/workspaces/{id}/tiers/roles",
+    });
+    if (!parsed) throw new Error("Invalid tier roles response");
+    return parsed.roles;
   }
 
   /** Presets are workspace-scoped and return an empty list while the workspace flag is off. */
@@ -4193,11 +4208,11 @@ export class ApiClient {
     );
   }
 
-  /** Replaces the tier order (admin). Position in ids becomes the new idx. */
-  async reorderModelTiers(workspaceId: string, ids: string[]): Promise<ModelTier[]> {
+  /** Replaces the tier order (admin). Position in ids becomes the new idx; with role, only that role's list. */
+  async reorderModelTiers(workspaceId: string, ids: string[], role?: string): Promise<ModelTier[]> {
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/reorder`, {
       method: "PUT",
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify(role ? { ids, role } : { ids }),
     });
     const parsed = parseWithFallback<{ tiers: ModelTier[] } | null>(raw, z.object({ tiers: ModelTierListSchema }), null, {
       endpoint: "PUT /api/workspaces/{id}/tiers/reorder",
