@@ -81,6 +81,17 @@ type IssueRunTrigger struct {
 	DeclineReason   dispatch.ReasonCode
 }
 
+// roleRunForTrigger is the WillEnqueueRun form of the M-499 slice 2 Role
+// exemption: the assign/create/status trigger carries no RuntimeLookup, so
+// flags come from the TaskService. A nil service or nil flags fails closed,
+// keeping a flag-off Role-shaped row on the pre-M-510 Agent path.
+func roleRunForTrigger(ctx context.Context, s *IssueService, agent db.Agent) bool {
+	if s == nil || s.TaskService == nil {
+		return false
+	}
+	return roleRunEnabledWithFlags(ctx, s.TaskService.FeatureFlags, agent)
+}
+
 func declineRun(reason dispatch.ReasonCode) (IssueRunTrigger, bool) {
 	return IssueRunTrigger{DeclineReason: reason}, false
 }
@@ -166,7 +177,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if err != nil || agent.ArchivedAt.Valid {
 			return declineRun(dispatch.ReasonTargetUnavailable)
 		}
-		if !agent.RuntimeID.Valid {
+		if !agent.RuntimeID.Valid && !roleRunForTrigger(ctx, s, agent) {
 			return declineRun(dispatch.ReasonAgentRuntimeRequired)
 		}
 		if !canAccess(agent) {

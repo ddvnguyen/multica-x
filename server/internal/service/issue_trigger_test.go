@@ -12,6 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // An issue write that could have started a run but did not names why, so the
@@ -112,4 +113,46 @@ func TestWillEnqueueRunNamesWhyAWriteStartsNoRun(t *testing.T) {
 func inTriage(cols testutil.Cols) testutil.Cols {
 	cols["triage_state"] = "pending"
 	return cols
+}
+
+// A flag-on Role passes the assign trigger's runtime gate: its route comes
+// from the tier resolver, not a runtime binding. Flag off (or nil flags)
+// keeps the pre-M-510 decline with the original reason code.
+func TestWillEnqueueRunRoleAssignPassesRuntimeGate(t *testing.T) {
+	ctx := context.Background()
+	pool := newResolveOriginatorPool(t)
+	q := db.New(pool)
+	bootstrap := testutil.New(pool, "", "")
+	suffix := time.Now().UnixNano()
+	userID := bootstrap.User(t, "trigger-role-owner", fmt.Sprintf("trigger-role-owner-%d@example.com", suffix))
+	workspaceID := bootstrap.Workspace(t, "role trigger", fmt.Sprintf("role-trigger-%d", suffix))
+	f := testutil.New(pool, workspaceID, userID)
+	f.Member(t, workspaceID, userID, "owner")
+	if err := q.SeedIssueStatusEntries(ctx, util.MustParseUUID(workspaceID)); err != nil {
+		t.Fatalf("seed statuses: %v", err)
+	}
+	roleID := f.Agent(t, "role no runtime", "", testutil.Cols{"subtype": "role", "tier_role": "engineer"})
+
+	newSvc := func(flags *featureflag.Service) *IssueService {
+		tsvc := NewTaskService(q, pool, nil, events.New())
+		tsvc.FeatureFlags = flags
+		return &IssueService{Queries: q, TaskService: tsvc}
+	}
+
+	issueID := f.Issue(t, "role assign", testutil.Cols{"assignee_type": "agent", "assignee_id": roleID, "status": "todo"})
+	issue, err := q.GetIssue(ctx, util.MustParseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	in := IssueTriggerInput{Issue: issue, PrevStatus: issue.Status, AssigneeChanged: true}
+
+	if trigger, ok := newSvc(roleFlagService(true, workspaceID)).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); !ok {
+		t.Fatalf("flag-on Role assign declined: %q", trigger.DeclineReason)
+	}
+	if trigger, ok := newSvc(roleFlagService(false, workspaceID)).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
+		t.Fatalf("flag-off Role assign = run:%v reason:%q, want decline agent_runtime_required", ok, trigger.DeclineReason)
+	}
+	if trigger, ok := newSvc(nil).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
+		t.Fatalf("nil-flags Role assign = run:%v reason:%q, want decline agent_runtime_required", ok, trigger.DeclineReason)
+	}
 }
