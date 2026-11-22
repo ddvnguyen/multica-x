@@ -75,6 +75,7 @@ import {
 } from "./agent-list-toolbar";
 import { useLocale, useT } from "../../i18n";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { useSidePreviewTargetClick } from "../../issues/surface/peek-context";
 
 export interface AgentListRow {
   agent: Agent;
@@ -381,6 +382,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
   const locale = useLocale();
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
+  const handleSidePreviewClick = useSidePreviewTargetClick();
   const navigation = useNavigation();
   const currentUser = useAuthStore((s) => s.user);
 
@@ -765,6 +767,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
           getRowId={(row) => row.agent.id}
           getRowHref={(row) => paths.agentDetail(row.agent.id)}
           getRowTitle={(row) => row.agent.name}
+          onRowClick={(row, event) => handleSidePreviewClick(event, { view: "agent", id: row.agent.id }, paths.agentDetail(row.agent.id), row.agent.name)}
           rowMenu={(row) => (
             <AgentRowActions
               agent={row.agent}

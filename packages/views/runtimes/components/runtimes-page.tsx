@@ -39,6 +39,7 @@ import {
   runtimeKeys,
 } from "@multica/core/runtimes/queries";
 import { useWSEvent } from "@multica/core/realtime";
+import { useSidePreviewTargetClick } from "../../issues/surface/peek-context";
 import {
   agentListOptions,
   memberListOptions,
@@ -185,6 +186,7 @@ export function RuntimesPage({
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const paths = useWorkspacePaths();
+  const handleSidePreviewClick = useSidePreviewTargetClick();
   const { data: qoderConnection, isLoading: qoderLoading } = useQuery(qoderOptions(wsId));
   const navigation = useNavigation();
   const [qoderDialogOpen, setQoderDialogOpen] = useState(false);
@@ -535,6 +537,13 @@ export function RuntimesPage({
                   ? t(($) => $.qoder.cloud_title)
                   : undefined
             }
+            onRowClick={(row, event) => {
+              if (row.kind !== "machine" && row.kind !== "qoder") return false;
+              const id = row.kind === "machine" ? row.machine.id : QODER_RUNTIME_LOCATOR;
+              const href = rowHref(row);
+              const title = row.kind === "machine" ? row.machine.title : t(($) => $.qoder.cloud_title);
+              return href ? handleSidePreviewClick(event, { view: "runtime", id }, href, title) : false;
+            }}
             empty={
               <CollectionNoMatches
                 title={t(($) => $.page.rows.no_matches)}

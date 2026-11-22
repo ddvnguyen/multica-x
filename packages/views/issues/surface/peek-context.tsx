@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useMemo } from "react";
 import type { IssueOpenMode } from "@multica/core/issues/stores/issue-opening-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
-import { useIssueOpeningCapability } from "./issue-opening-capability";
+import { useIssueOpeningCapability, type SidePreviewOpenTarget } from "./issue-opening-capability";
 
 /**
  * Side peek: Shift+Click (or Space) on an issue — a board or swimlane card, a
@@ -226,6 +226,47 @@ export function useIssuePeekClick() {
     }
     return false;
   }, [peek, capability, push, paths]);
+}
+
+/** Route a non-issue detail link through the shared New tab / Side preview choice. */
+export function useSidePreviewTargetClick() {
+  const capability = useIssueOpeningCapability();
+  const navigation = useNavigation();
+  return useCallback(
+    (
+      event: React.MouseEvent | undefined,
+      target: Exclude<SidePreviewOpenTarget, string>,
+      href: string,
+      title?: string,
+    ) => {
+      if (
+        event?.defaultPrevented ||
+        (event && (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey))
+      ) {
+        return false;
+      }
+      if (capability.openMode === "tab") {
+        if (!navigation.openInNewTab) return false;
+        event?.preventDefault();
+        navigation.openInNewTab(href, title, { activate: true });
+        return true;
+      }
+      if (capability.openMode !== "peek" || capability.openSidePreview === null) return false;
+      if (capability.openSidePreview(target)) {
+        event?.preventDefault();
+        return true;
+      }
+      // The host owns the preview but cannot resolve its folder; retain the
+      // issue opener's fallback and open the detail in a new tab.
+      if (navigation.openInNewTab) {
+        event?.preventDefault();
+        navigation.openInNewTab(href, title, { activate: true });
+        return true;
+      }
+      return false;
+    },
+    [capability, navigation],
+  );
 }
 
 /** Empty outside a peek host, so other issue links retain normal navigation. */

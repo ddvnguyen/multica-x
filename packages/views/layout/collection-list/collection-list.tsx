@@ -94,6 +94,8 @@ export interface CollectionListProps<T> {
   getRowTitle?: (row: T) => string | undefined;
   /** Runs right before an in-place navigation to the row's href. */
   onRowNavigate?: (row: T) => void;
+  /** Intercepts a primary row click when a host-specific open mode handles it. */
+  onRowClick?: (row: T, event?: ReactMouseEvent<HTMLDivElement>) => boolean;
   /** Activation for rows without an href. */
   onRowOpen?: (row: T) => void;
   /** One menu for both the ⋯ button and right-click (see CollectionRowMenu). */
@@ -176,6 +178,7 @@ export function CollectionList<T>({
   getRowHref,
   getRowTitle,
   onRowNavigate,
+  onRowClick,
   onRowOpen,
   rowMenu,
   getRowClassName,
@@ -338,13 +341,14 @@ export function CollectionList<T>({
     (row: T, newTab: boolean) => {
       const href = getRowHref?.(row);
       if (href) {
+        if (!newTab && onRowClick?.(row)) return;
         if (!newTab) onRowNavigate?.(row);
         intentNavigate(href, newTab ? "foreground-tab" : "push", getRowTitle?.(row));
         return;
       }
       onRowOpen?.(row);
     },
-    [getRowHref, getRowTitle, intentNavigate, onRowNavigate, onRowOpen],
+    [getRowHref, getRowTitle, intentNavigate, onRowClick, onRowNavigate, onRowOpen],
   );
 
   const handleKey = useCallback(
@@ -488,6 +492,7 @@ export function CollectionList<T>({
         href={getRowHref?.(row) ?? null}
         title={getRowTitle?.(row)}
         onNavigate={onRowNavigate}
+        onClick={onRowClick}
         onOpen={onRowOpen}
         menu={rowMenu ? rowMenu(row) : undefined}
         hasMenuSlot={hasMenu}
@@ -761,6 +766,7 @@ function CollectionRow<T>({
   href,
   title,
   onNavigate,
+  onClick,
   onOpen,
   menu,
   hasMenuSlot,
@@ -778,6 +784,7 @@ function CollectionRow<T>({
   href: string | null;
   title?: string;
   onNavigate?: (row: T) => void;
+  onClick?: (row: T, event?: ReactMouseEvent<HTMLDivElement>) => boolean;
   onOpen?: (row: T) => void;
   menu: ReactNode;
   hasMenuSlot: boolean;
@@ -821,6 +828,7 @@ function CollectionRow<T>({
         }}
         onClick={(e) => {
           if (!inside(e) || e.defaultPrevented) return;
+          if (onClick?.(row, e)) return;
           if (e.shiftKey && rangeSelect && selection?.selectable) {
             e.preventDefault();
             rangeSelect(true);
