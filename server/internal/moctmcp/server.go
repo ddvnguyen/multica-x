@@ -58,8 +58,13 @@ const (
 type Scope struct {
 	WorkspaceRef string
 	ExpertRef    string
-	TaskRef      string
-	ChannelRef   string
+	// ReadExpertRef, when set, is the knowledge profile reads are widened to
+	// (an implementing Agent may read its Role's memory). Writes always stay
+	// attributed to ExpertRef and may never target another expert's home.
+	// Empty means the legacy single-expert seam — no behaviour change.
+	ReadExpertRef string
+	TaskRef       string
+	ChannelRef    string
 }
 
 // Complete reports whether this scope can make any call at all. moct-be answers
@@ -71,7 +76,11 @@ func (s Scope) Complete() bool {
 
 // readerScope widens the scope refs into the OR-ed tag filter every read takes.
 func (s Scope) readerScope() moct.Scope {
-	scope := moct.Scope{WorkspaceID: s.WorkspaceRef, ExpertID: s.ExpertRef}
+	readExpert := s.ExpertRef
+	if s.ReadExpertRef != "" {
+		readExpert = s.ReadExpertRef
+	}
+	scope := moct.Scope{WorkspaceID: s.WorkspaceRef, ExpertID: readExpert}
 	if s.ChannelRef != "" {
 		scope.Channels = []string{s.ChannelRef}
 	}
@@ -333,6 +342,12 @@ func (s *Server) noteHome(explicit *moct.Home) (moct.Home, error) {
 	if explicit != nil {
 		if explicit.Kind == "" || explicit.Ref == "" {
 			return moct.Home{}, errors.New("memory_note: home needs both kind and ref")
+		}
+		// In dual-scope mode an Agent may read its Role's memory but must
+		// never write into that scope: an expert home outside this run's own
+		// knowledge profile is refused before any request reaches moct-be.
+		if s.scope.ReadExpertRef != "" && explicit.Kind == "expert" && explicit.Ref != s.scope.ExpertRef {
+			return moct.Home{}, errors.New("memory_note: a run may only write to its own expert scope")
 		}
 		return *explicit, nil
 	}

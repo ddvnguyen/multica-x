@@ -19,8 +19,12 @@ const (
 	moctBaseURLEnv     = "MOCT_BASE_URL"
 	moctWorkspaceIDEnv = "MOCT_WORKSPACE_ID"
 	moctExpertIDEnv    = "MOCT_EXPERT_ID"
-	moctTaskRefEnv     = "MOCT_TASK_REF"
-	moctChannelRefEnv  = "MOCT_CHANNEL_REF"
+	// MOCT_READ_EXPERT_ID is optional: a Role-implementing Agent reads the
+	// Role's knowledge scope while its writes stay attributed to itself.
+	// Unset keeps the single-expert seam unchanged.
+	moctReadExpertIDEnv = "MOCT_READ_EXPERT_ID"
+	moctTaskRefEnv      = "MOCT_TASK_REF"
+	moctChannelRefEnv   = "MOCT_CHANNEL_REF"
 )
 
 var moctMCPCmd = &cobra.Command{
@@ -44,10 +48,11 @@ never take a task down with it (docs/moct-seam.md, failure mode).`,
 
 func runMoctMCP(cmd *cobra.Command, _ []string) error {
 	scope := moctmcp.Scope{
-		WorkspaceRef: strings.TrimSpace(os.Getenv(moctWorkspaceIDEnv)),
-		ExpertRef:    strings.TrimSpace(os.Getenv(moctExpertIDEnv)),
-		TaskRef:      strings.TrimSpace(os.Getenv(moctTaskRefEnv)),
-		ChannelRef:   strings.TrimSpace(os.Getenv(moctChannelRefEnv)),
+		WorkspaceRef:  strings.TrimSpace(os.Getenv(moctWorkspaceIDEnv)),
+		ExpertRef:     strings.TrimSpace(os.Getenv(moctExpertIDEnv)),
+		ReadExpertRef: strings.TrimSpace(os.Getenv(moctReadExpertIDEnv)),
+		TaskRef:       strings.TrimSpace(os.Getenv(moctTaskRefEnv)),
+		ChannelRef:    strings.TrimSpace(os.Getenv(moctChannelRefEnv)),
 	}
 	// stdout belongs to the protocol, so every human-readable line goes to
 	// stderr — a stray byte on stdout would corrupt the JSON-RPC stream.
