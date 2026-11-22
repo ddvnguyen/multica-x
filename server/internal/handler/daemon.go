@@ -3055,6 +3055,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"error_runtime_access_denied", http.StatusForbidden, "private runtime does not permit task agent",
 		)
 	}
+	// M-499 slice 3: an Agent that implements a Role inherits the Role's
+	// instructions and enabled skills. Resolve it once here so the instruction
+	// and skill paths below compose from the same, already-authorized Role.
+	// A missing/inaccessible Role is fatal: dispatch must never fall back to a
+	// Role-less payload that hashes and validates like a complete one.
+	composition, err := h.TaskService.ResolveRoleComposition(r.Context(), agent)
+	if err != nil {
+		slog.Error("daemon claim: implemented role unavailable; refusing dispatch",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(task.AgentID), "error", err)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
+			r.Context(), task,
+			"This agent implements a Role that is no longer available to its owner. Restore the Role or clear the link, then retry the task.",
+			taskfailure.ReasonInvalidTaskIdentity,
+			"error_role_unavailable", http.StatusConflict, "implemented role unavailable at claim",
+		)
+	}
 	useSkillRefs := requestHasClientCapability(r, protocol.DaemonCapabilitySkillBundlesV1)
 	// A daemon older than the multica-platform merge assembles a brief that
 	// still names the built-ins this server stopped shipping. It cannot be
@@ -3187,7 +3203,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
-		Instructions:          agent.Instructions,
+		Instructions:          composition.InstructionsFor(agent.Instructions),
 		CustomEnv:             customEnv,
 		CustomArgs:            customArgs,
 		McpConfig:             mcpConfig,
@@ -3239,14 +3255,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
 	if useSkillRefs {
-		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
+		_, skillRefs, err := h.TaskService.LoadComposedSkillBundles(r.Context(), composition, agent, agent.SystemKey.String, legacySkillRedirects)
 		if err != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
 		}
 		agentSkillCount = len(skillRefs)
 		resp.Agent.SkillRefs = skillRefs
 	} else {
-		skills, err := h.TaskService.LoadAgentSkills(r.Context(), task.AgentID)
+		skills, err := h.TaskService.LoadComposedSkills(r.Context(), composition, agent)
 		if err != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, h.rejectClaimSkillLoad(task, err)
 		}
@@ -4796,11 +4812,30 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 		wanted = append(wanted, service.AgentSkillBundleRef{ID: ref.ID, Source: ref.Source})
 	}
 
+	// M-499 slice 3: a Role-implementing Agent advertises the Role's skills in
+	// its claim refs, so the resolve path must authorize against the same
+	// composed set. A Role that disappeared after claim fails closed here
+	// instead of resolving to a partial, valid-looking bundle set.
+	taskAgent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
+	if err != nil {
+		slog.Error("resolve skill bundles: load task agent failed",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(task.AgentID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load task agent")
+		return
+	}
+	composition, err := h.TaskService.ResolveRoleComposition(r.Context(), taskAgent)
+	if err != nil {
+		slog.Error("resolve skill bundles: implemented role unavailable",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(task.AgentID), "error", err)
+		writeError(w, http.StatusConflict, "implemented role unavailable")
+		return
+	}
+
 	// Load ONLY what was asked for. The daemon resolves one skill per request,
 	// so serving these out of the agent's full bundle set meant reading and
 	// hashing every skill the agent has, once per request, to return one of
 	// them — quadratic in skill count across a cold dispatch.
-	allowed, err := h.TaskService.LoadRequestedAgentSkillBundles(r.Context(), task.AgentID, wanted)
+	allowed, err := h.TaskService.LoadRequestedComposedSkillBundles(r.Context(), composition, taskAgent, wanted)
 	if err != nil {
 		// 5xx, not a partial answer: the daemon's resolve retry can recover a
 		// transient read, and a bundle assembled from a failed read would pass

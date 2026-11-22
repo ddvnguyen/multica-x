@@ -2615,6 +2615,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
+					// Read-only inherited-content preview for the Team Role UI
+					// (M-499 slice 3). Human actors only: a task token must not
+					// use it to read a Role outside its own run.
+					r.With(handler.RequireHumanActor).Get("/role-preview", h.PreviewRoleComposition)
 					r.Get("/apps", h.ListAgentApps)
 					r.With(handler.RequireHumanActor).Put("/apps", h.UpdateAgentApps)
 					r.Post("/archive", h.ArchiveAgent)
