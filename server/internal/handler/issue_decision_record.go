@@ -23,7 +23,7 @@ type issueDecisionRecordResponse struct {
 }
 
 func (h *Handler) ListIssueDecisionRecords(w http.ResponseWriter, r *http.Request) {
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "issueId"))
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}

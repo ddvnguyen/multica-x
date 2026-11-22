@@ -60,7 +60,7 @@ func TestCreateCommentRecordsAndSupersedesOwnerDecision(t *testing.T) {
 		t.Fatal("old decision was not marked superseded")
 	}
 
-	readReq := withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/decision-records", nil), "issueId", issueID)
+	readReq := withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/decision-records", nil), "id", issueID)
 	readResponse := httptest.NewRecorder()
 	testHandler.ListIssueDecisionRecords(readResponse, readReq)
 	if readResponse.Code != http.StatusOK {
@@ -171,7 +171,7 @@ func TestDecisionResponseRouteRejectsAgentWithoutWritingCommentOrRecord(t *testi
 	}
 	issueID, _, _, body := m209ReviewSetup(t)
 	router := chi.NewRouter()
-	router.With(RequireHumanActor).Post("/api/issues/{issueId}/decision-response", testHandler.DecisionResponse)
+	router.With(RequireHumanActor).Post("/api/issues/{id}/decision-response", testHandler.DecisionResponse)
 	request := httptest.NewRequest(http.MethodPost, "/api/issues/"+issueID+"/decision-response", jsonBody(t, body))
 	request.Header.Set("X-Actor-Source", "task_token")
 	w := httptest.NewRecorder()

@@ -38,7 +38,7 @@ func decisionResponseMatches(receipt db.IssueDecisionResponse, issueID, actorID 
 func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	ctx := r.Context()
-	issueID := chi.URLParam(r, "issueId")
+	issueID := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, issueID)
 	if !ok {
 		return
