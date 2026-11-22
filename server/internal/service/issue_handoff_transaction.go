@@ -43,7 +43,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 	if err != nil {
 		return PreparedIssueHandoff{}, fmt.Errorf("load handoff agent: %w", err)
 	}
-	if agent.ArchivedAt.Valid || (!agent.RuntimeID.Valid && !agent.UseTiers) {
+	if agent.ArchivedAt.Valid || (!agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent)) {
 		return PreparedIssueHandoff{}, fmt.Errorf("handoff agent is archived or has no runtime")
 	}
 	attr := s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorID)
@@ -53,7 +53,7 @@ func (s *TaskService) PrepareIssueHandoff(ctx context.Context, issue db.Issue, a
 	}
 	// M-351: resolve tiers outside the tx (pool capacity reads); the tx
 	// insert below only stamps.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, TierTriggerOverride{})
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, TierTriggerOverride{}, actorID)
 	if tierErr != nil {
 		return PreparedIssueHandoff{}, tierErr
 	}

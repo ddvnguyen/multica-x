@@ -1181,7 +1181,7 @@ func tierExplicitFlag(tierID pgtype.UUID, override TierTriggerOverride) pgtype.B
 }
 
 func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (tierResolution, pgtype.Bool, bool, error) {
-	return s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, TierTriggerOverride{})
+	return s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, TierTriggerOverride{}, pgtype.UUID{})
 }
 
 // applyTierResolutionWithOverride is applyTierResolution plus the M-359
@@ -1190,9 +1190,22 @@ func (s *TaskService) applyTierResolution(ctx context.Context, agent db.Agent) (
 // Model stamps a one-off override that is still blocked when it targets a
 // manual-only tier's runtime for a non-owner. issueID/properties carry the
 // task issue for difficulty-aware auto-resolve; zero values mean legacy
-// behavior (levels default to 1).
-func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent db.Agent, issueID pgtype.UUID, properties []byte, override TierTriggerOverride) (res tierResolution, parked pgtype.Bool, queuedOnly bool, err error) {
+// behavior (levels default to 1). requester is the picking member, threaded
+// separately because a plain (non-explicit) Role pick still authorizes the
+// Role against the member who performed it.
+func (s *TaskService) applyTierResolutionWithOverride(ctx context.Context, agent db.Agent, issueID pgtype.UUID, properties []byte, override TierTriggerOverride, requester pgtype.UUID) (res tierResolution, parked pgtype.Bool, queuedOnly bool, err error) {
 	var none tierResolution
+	// M-499 slice 2: a Role is a model-free identity. Its tiers come from the
+	// role-keyed M-497 index, not from agent_tier, and it is authorized on every
+	// pick (including retry). Everything else keeps the Agent path below —
+	// including a Role-shaped row seen while the flag is off (M-501 spike).
+	if roleRunEnabled(ctx, s, agent) {
+		roleOverride := override
+		if !roleOverride.Requester.Valid {
+			roleOverride.Requester = requester
+		}
+		return s.applyRoleTierResolution(ctx, agent, agent.WorkspaceID, issueID, properties, roleOverride)
+	}
 	if override.RuntimeID.Valid {
 		// One-off runtime+model override: allowed unless it targets a
 		// manual-only tier's runtime for a non-owner — the equivalent-tier
@@ -1476,7 +1489,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid && !agent.UseTiers {
+	// A Role has no runtime of its own (M-501): its tier stamp supplies one at
+	// applyTierResolutionWithOverride below, so it must pass this legacy guard.
+	if !agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
@@ -1503,7 +1518,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 	// first selected tier with a free provider slot. Full tiers are
 	// backpressure: the row is still inserted (queued) but carries no
 	// runtime, so no daemon can claim it until promotion re-resolves.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, actorUserID)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
@@ -1737,7 +1752,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, actorUserID)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
@@ -1974,7 +1989,7 @@ func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, wo
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override)
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override, requesterID)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
@@ -2394,7 +2409,7 @@ func (s *TaskService) enqueueChatTaskTxWithOverride(
 	if agent.ArchivedAt.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentArchived
 	}
-	if !agent.RuntimeID.Valid && !agent.UseTiers {
+	if !agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
 
@@ -2453,7 +2468,7 @@ func (s *TaskService) enqueueChatTaskTxWithOverride(
 
 	// M-351 auto path, or the M-359 explicit pick when override is set.
 	// Chat has no issue: difficulty-unaware (levels default to 1).
-	tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override)
+	tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, agent, pgtype.UUID{}, nil, override, initiatorUserID)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
@@ -2857,7 +2872,7 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 		// Uses the pool (not qtx) for the capacity reads; the insert below
 		// still runs in this tx so the row is atomic with the rest of the send.
 		// Chat has no issue: difficulty-unaware (levels default to 1).
-		tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, pgtype.UUID{}, nil, override)
+		tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, pgtype.UUID{}, nil, override, pgtype.UUID{})
 		tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 		if tierErr != nil {
 			return tierErr
@@ -4191,7 +4206,9 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		// fence (ClaimAgentTask + batch candidates) still enforces owner and
 		// visibility per row, and provider_slots is rechecked after the claim
 		// below so the two-enqueue race cannot oversubscribe a tier.
-		if runtimeID.Valid && agent.RuntimeID != runtimeID && !agent.UseTiers {
+		// M-499 slice 2: a Role has no runtime of its own — the tier stamp on
+		// the task routed it, so the agent's NULL binding is not a mismatch.
+		if runtimeID.Valid && agent.RuntimeID != runtimeID && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 			outcome = "runtime_mismatch"
 			return nil
 		}
@@ -5076,6 +5093,44 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 	if err != nil {
 		return task, false
 	}
+	// M-499 slice 2: a parked Role row re-authorizes the Role and revalidates a
+	// forced pick on every retry (deletion, archive, permission change or a tier
+	// leaving the Role's list all keep it queued). The forced tier is recovered
+	// from the existing tier_id + tier_explicit stamp; auto rows keep resolving
+	// from the role-keyed list. Only runtime-less parked rows reach here.
+	if roleRunEnabled(ctx, s, agent) {
+		override := TierTriggerOverride{Requester: task.OriginatorUserID}
+		if task.TierExplicit && task.TierID.Valid {
+			override.TierID = task.TierID
+		}
+		var issueProps []byte
+		if task.IssueID.Valid {
+			if issue, ierr := s.Queries.GetIssue(ctx, task.IssueID); ierr == nil {
+				issueProps = issue.Properties
+			}
+		}
+		res, _, queuedOnly, rerr := s.applyRoleTierResolution(ctx, agent, agent.WorkspaceID, task.IssueID, issueProps, override)
+		if rerr != nil || queuedOnly {
+			return task, false
+		}
+		stamped, serr := s.Queries.RestampQueuedTierTask(ctx, db.RestampQueuedTierTaskParams{
+			ID:                    task.ID,
+			RuntimeID:             res.runtimeID,
+			ModelOverride:         res.modelOverride,
+			ThinkingLevelOverride: res.thinkingLevel,
+			ServiceTierOverride:   res.serviceTier,
+			TierID:                res.tierID,
+			TierMemberID:          res.memberID,
+			TierQualityFallback:   res.qualityFallback,
+			TierQualityUnverified: res.qualityUnverified,
+		})
+		if serr != nil {
+			slog.Warn("role tier restamp write failed: task stays queued",
+				"task_id", util.UUIDToString(task.ID), "error", serr)
+			return task, false
+		}
+		return stamped, true
+	}
 	// M-359: an explicit-pick row waits on ITS tier only — never the
 	// idx-ranked fallback. A use_tiers=false agent with a parked explicit
 	// row keeps it too (plain rows never park).
@@ -5102,7 +5157,7 @@ func (s *TaskService) restampQueuedTierTask(ctx context.Context, task db.AgentTa
 		var queuedOnly bool
 		res, _, queuedOnly, err = s.applyTierResolutionWithOverride(ctx, agent, task.IssueID, issueProps, TierTriggerOverride{
 			TierID: tierID, PresetID: presetID, PresetAgentID: agent.ID, Requester: task.OriginatorUserID,
-		})
+		}, task.OriginatorUserID)
 		if queuedOnly {
 			return task, false
 		}
