@@ -121,6 +121,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"model_tier":                         workspaceDelete,
 	"model_tier_member":                  workspaceDelete,
 	"model_tier_role":                    workspaceDelete,
+	"tier_role":                          workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
 	"workspace_mcp_server":               workspaceDelete,
 	"workspace_account":                  workspaceDelete,

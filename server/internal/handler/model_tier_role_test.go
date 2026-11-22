@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func listTiersWithRole(t *testing.T, userID, role string) ([]ModelTierResponse, 
 	}
 	path := "/api/workspaces/" + testWorkspaceID + "/tiers"
 	if role != "" {
-		path += "?role=" + role
+		path += "?role=" + url.QueryEscape(role)
 	}
 	rec := testutil.Call(t, testHandler.ListModelTiers, withURLParam(
 		newRequestAs(userID, http.MethodGet, path, nil), "id", testWorkspaceID)).ResponseRecorder
@@ -104,8 +105,14 @@ func TestModelTierRoleLists(t *testing.T) {
 		}
 	}
 	_ = legacy
-	if _, code := listTiersWithRole(t, testUserID, "reviewer"); code != http.StatusBadRequest {
-		t.Fatalf("legacy ?role=reviewer = %d, want 400", code)
+	// Unknown but well-formed keys match nothing (200, empty).
+	unknown, _ := listTiersWithRole(t, testUserID, "qa")
+	if len(unknown) != 0 {
+		t.Fatalf("unknown role list = %+v, want empty", unknown)
+	}
+	// Malformed keys are rejected.
+	if _, code := listTiersWithRole(t, testUserID, "Bad Role!"); code != http.StatusBadRequest {
+		t.Fatalf("malformed ?role= = %d, want 400", code)
 	}
 }
 
@@ -131,8 +138,8 @@ func TestModelTierRoleReorderIsolation(t *testing.T) {
 	if len(arch) != 2 || arch[0].ID != a.ID || arch[1].ID != b.ID {
 		t.Fatalf("architect list after engineer reorder = %+v, want [a b] unchanged", arch)
 	}
-	if _, code := reorderTiersWithRole(t, []string{a.ID}, "leader"); code != http.StatusBadRequest {
-		t.Fatalf("reorder legacy role = %d, want 400", code)
+	if _, code := reorderTiersWithRole(t, []string{a.ID}, "Bad Role!"); code != http.StatusBadRequest {
+		t.Fatalf("reorder malformed role = %d, want 400", code)
 	}
 }
 
@@ -269,9 +276,9 @@ func TestModelTierRoleBackfill(t *testing.T) {
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
 func TestCanonicalTierRoles(t *testing.T) {
-	got := canonicalTierRoles([]string{"leader", "engineer", "planning", "engineer", "", "nope"})
-	if len(got) != 3 || got[0] != "architect" || got[1] != "engineer" || got[2] != "management" {
-		t.Fatalf("canonicalTierRoles = %+v, want [architect engineer management]", got)
+	got := canonicalTierRoles([]string{"leader", "engineer", "planning", "engineer", "", "Bad Key!", "qa"})
+	if len(got) != 4 || got[0] != "architect" || got[1] != "engineer" || got[2] != "management" || got[3] != "qa" {
+		t.Fatalf("canonicalTierRoles = %+v, want [architect engineer management qa]", got)
 	}
 	if len(canonicalTierRoles(nil)) != 0 {
 		t.Fatalf("canonicalTierRoles(nil) should be empty")
@@ -293,4 +300,63 @@ func TestTierIsFreeFromKinds(t *testing.T) {
 			t.Fatalf("tierIsFreeFromKinds(%v) = %v, want %v", ks, got, want)
 		}
 	}
+}
+
+// TestModelTierCustomRoleAndRegistry pins Owner Q4: a fourth,
+// workspace-defined role works end to end — tier create registers it,
+// ?role= lists it, role reorder scopes to it, and the registry seeds the
+// three classic roles first.
+func TestModelTierCustomRoleAndRegistry(t *testing.T) {
+	newTierTestEnv(t)
+	roles := listTierRoles(t, testUserID)
+	if len(roles) < 3 || roles[0].Key != "architect" || roles[1].Key != "management" || roles[2].Key != "engineer" {
+		t.Fatalf("seeded registry = %+v, want [architect management engineer] first", roles)
+	}
+	if roles[0].Position != 0 || roles[1].Position != 1 || roles[2].Position != 2 {
+		t.Fatalf("seeded registry positions = %+v, want 0,1,2", roles)
+	}
+	a := mustCreateTier(t, map[string]any{
+		"name": "rqa-a", "provider": "p", "model": "m1", "roles": []string{"qa"},
+	})
+	if len(a.Roles) != 1 || a.Roles[0] != "qa" {
+		t.Fatalf("created custom-role tier roles = %+v, want [qa]", a.Roles)
+	}
+	roles = listTierRoles(t, testUserID)
+	found := false
+	for _, r := range roles {
+		if r.Key == "qa" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("registry after custom create = %+v, want qa registered", roles)
+	}
+	got, code := listTiersWithRole(t, testUserID, "qa")
+	if code != http.StatusOK || len(got) != 1 || got[0].ID != a.ID || got[0].RoleIdx == nil || *got[0].RoleIdx != 0 {
+		t.Fatalf("qa list = %+v code %d, want [a] role_idx 0", got, code)
+	}
+	b := mustCreateTier(t, map[string]any{
+		"name": "rqa-b", "provider": "p", "model": "m2", "roles": []string{"qa"},
+	})
+	reordered, code := reorderTiersWithRole(t, []string{b.ID, a.ID}, "qa")
+	if code != http.StatusOK || len(reordered) != 2 || reordered[0].ID != b.ID {
+		t.Fatalf("qa reorder = %+v code %d, want [b a]", reordered, code)
+	}
+	eng, _ := listTiersWithRole(t, testUserID, "engineer")
+	for _, tr := range eng {
+		if tr.ID == a.ID || tr.ID == b.ID {
+			t.Fatalf("engineer list contains custom-role tier: %+v", eng)
+		}
+	}
+}
+
+func listTierRoles(t *testing.T, userID string) []TierRoleResponse {
+	t.Helper()
+	var out struct {
+		Roles []TierRoleResponse `json:"roles"`
+	}
+	testutil.Call(t, testHandler.ListTierRoles, withURLParam(
+		newRequestAs(userID, http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/tiers/roles", nil), "id", testWorkspaceID)).
+		Want(http.StatusOK).JSON(&out)
+	return out.Roles
 }

@@ -1888,6 +1888,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is available to pick in M-351. Writes stay
 					// admin-only below.
 					r.Get("/tiers", h.ListModelTiers)
+					r.Get("/tiers/roles", h.ListTierRoles)
 					r.Get("/tiers/{tierId}/members", h.ListModelTierMembers)
 					r.Get("/presets", h.ListAgentPresets)
 					// Installed Plugins are member-visible so a member can

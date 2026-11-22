@@ -2220,6 +2220,14 @@ type ThemeStoreDownload struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
+type TierRole struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Key         string             `json:"key"`
+	Position    int32              `json:"position"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type User struct {
 	ID                      pgtype.UUID        `json:"id"`
 	Name                    string             `json:"name"`

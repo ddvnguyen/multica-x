@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -85,8 +86,10 @@ func tierCoolingDown(until pgtype.Timestamptz, now time.Time) bool {
 	return until.Valid && until.Time.After(now)
 }
 
-// M-481: 3 roles (architect, management, engineer). Legacy roles map to the
-// new bands during transition. Planning work uses the architect band.
+// M-497 (Owner Q4): roles are free workspace-defined keys. The three
+// classic roles keep their quality bands; legacy names fold onto them during
+// the transition. Custom keys pass through and resolve with no floor
+// (requiredTierQuality returns 0 for unknown bands).
 var tierQualityBands = map[string][2]int{
 	"architect":  {72, 75},
 	"management": {65, 72},
@@ -98,10 +101,9 @@ var tierQualityBands = map[string][2]int{
 	"planning":     {72, 75},
 }
 
-var validTierRoles = map[string]bool{
-	"architect": true, "management": true, "engineer": true,
-	"leader": true, "reviewer": true, "orchestrator": true, "planning": true,
-}
+// tierRoleKeyPattern constrains role keys to slug shape (mirrors the
+// tier_role registry CHECK and handler validation).
+var tierRoleKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 
 func normalizeTierRole(r string) string {
 	switch r {
@@ -114,16 +116,18 @@ func normalizeTierRole(r string) string {
 	}
 }
 
-// tierAgentRole normalizes agent.Role; legacy roles map to the 3-role system.
+// tierAgentRole normalizes agent.Role; legacy roles map to the classic
+// bands, custom workspace-defined keys pass through. Empty or malformed
+// roles mean legacy unfiltered resolution.
 func tierAgentRole(agent db.Agent) string {
 	if !agent.Role.Valid {
 		return ""
 	}
 	r := normalizeTierRole(agent.Role.String)
-	if validTierRoles[r] {
-		return r
+	if !tierRoleKeyPattern.MatchString(r) {
+		return ""
 	}
-	return ""
+	return r
 }
 
 // difficultyFromProperties reads important_level/complexity (1..5) from the
@@ -298,7 +302,7 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 func (s *TaskService) tierRoleIdx(ctx context.Context, tiers []db.ModelTier, role string) map[string]int32 {
 	out := map[string]int32{}
 	canonical := normalizeTierRole(role)
-	if !validTierRoles[canonical] || s == nil || s.Queries == nil {
+	if canonical == "" || !tierRoleKeyPattern.MatchString(canonical) || s == nil || s.Queries == nil {
 		return out
 	}
 	ids := make([]pgtype.UUID, 0, len(tiers))

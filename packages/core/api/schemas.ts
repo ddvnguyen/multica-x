@@ -4836,6 +4836,14 @@ export const ModelTierMemberSchema = z.object({
 
 export const ModelTierMemberListSchema = z.array(ModelTierMemberSchema);
 
+// Workspace role registry (M-497, Owner Q4): free workspace-defined keys.
+export const TierRoleSchema = z.object({
+  key: z.string().default(""),
+  position: z.number().int().default(0),
+});
+
+export const TierRoleListSchema = z.array(TierRoleSchema);
+
 export const EMPTY_MODEL_TIER_MEMBER: ModelTierMember = {
   id: "",
   tier_id: "",

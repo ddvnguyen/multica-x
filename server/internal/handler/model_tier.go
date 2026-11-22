@@ -416,7 +416,7 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	if in.RolesSet {
 		for _, r := range in.Roles {
 			if !validTierRoleName(r) {
-				return params, nil, errors.New("roles must be a subset of architect, management, engineer, leader, reviewer, orchestrator, planning")
+				return params, nil, errors.New("roles must be lowercase letters, digits or hyphens, up to 40 chars")
 			}
 		}
 		// M-497: store the canonical set (legacy mapped, deduped, sorted) so
@@ -498,21 +498,22 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	return params, runtimeID, nil
 }
 
-// validTierRoleName mirrors the 735 CHECK constraint vocabulary. Centralized
-// so handler validation and the resolver agree; the DB constraint is the
-// final backstop.
+// validTierRoleName reports whether r is a usable role key (M-497, Owner
+// Q4): roles are free workspace-defined keys, so only the slug shape is
+// enforced — lowercase letters, digits, hyphens, up to 40 chars, starting
+// with a letter or digit. The old fixed vocabulary CHECKs are gone (746);
+// the tier_role registry (744) is the workspace's role set.
 func validTierRoleName(r string) bool {
-	switch r {
-	case "architect", "management", "engineer",
-		// Legacy roles accepted during transition (M-481).
-		"leader", "reviewer", "orchestrator", "planning":
-		return true
-	}
-	return false
+	return tierRoleKeyPattern.MatchString(r)
 }
 
-// canonicalTierRole maps a role name onto the 3-role system (M-497). Legacy
-// names fold the same way migration 740 folded stored rows.
+// tierRoleKeyPattern constrains role keys so they survive mentions, URLs and
+// tab params. Shared by tier roles, agent roles and the registry.
+var tierRoleKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// canonicalTierRole maps the four legacy M-481 role names onto the three
+// classic roles (migration 740 did the same for stored rows). Custom
+// workspace-defined keys pass through unchanged.
 func canonicalTierRole(r string) string {
 	switch r {
 	case "leader", "reviewer", "orchestrator":
@@ -524,25 +525,23 @@ func canonicalTierRole(r string) string {
 	}
 }
 
-// validCanonicalTierRole reports whether r names one of the 3 roles that own
-// a per-role list (M-497). ?role= and role reorder accept only these.
-func validCanonicalTierRole(r string) bool {
-	switch r {
-	case "architect", "management", "engineer":
-		return true
-	}
-	return false
+// validTierRoleKey reports whether r is a usable per-role-list key: any
+// slug-shaped role, classic or workspace-defined (M-497, Owner Q4). ?role=
+// and role reorder accept these; unknown keys simply match no tiers.
+func validTierRoleKey(r string) bool {
+	return validTierRoleName(r)
 }
 
-// canonicalTierRoles normalizes a roles set onto the 3-role system: legacy
-// names mapped, blank/unknown dropped, deduped, sorted. The result is what
-// model_tier.roles stores and what model_tier_role rows are kept for.
+// canonicalTierRoles normalizes a roles set: legacy names mapped, blank or
+// malformed keys dropped, deduped, sorted. Custom keys are kept as-is. The
+// result is what model_tier.roles stores and what model_tier_role rows (and
+// tier_role registry entries) are kept for.
 func canonicalTierRoles(roles []string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 	for _, r := range roles {
 		c := canonicalTierRole(strings.TrimSpace(r))
-		if !validCanonicalTierRole(c) {
+		if !validTierRoleKey(c) {
 			continue
 		}
 		if _, dup := seen[c]; dup {
@@ -626,6 +625,19 @@ func (h *Handler) modelTierRuntimeInWorkspace(r *http.Request, wsUUID pgtype.UUI
 	return err == nil && count == 1
 }
 
+// ensureTierRole registers a role key in the workspace registry (M-497,
+// Owner Q4), appending unknown keys at the end. Concurrent writers may tie
+// on position; the registry list breaks ties by key.
+func (h *Handler) ensureTierRole(r *http.Request, wsUUID pgtype.UUID, key string) {
+	maxPos, err := h.Queries.MaxTierRolePosition(r.Context(), wsUUID)
+	if err != nil {
+		return
+	}
+	_ = h.Queries.InsertTierRoleIgnore(r.Context(), db.InsertTierRoleIgnoreParams{
+		WorkspaceID: wsUUID, Key: key, Position: maxPos + 1,
+	})
+}
+
 // syncTierRoleRows reconciles a tier's model_tier_role rows with its
 // canonical roles (M-497): rows for dropped roles are removed, rows for kept
 // roles are left at their position, and rows for newly added roles are
@@ -637,6 +649,9 @@ func (h *Handler) syncTierRoleRows(r *http.Request, wsUUID pgtype.UUID, tierID p
 	_ = h.Queries.DeleteModelTierRolesNotIn(r.Context(), db.DeleteModelTierRolesNotInParams{
 		TierID: tierID, Roles: roles,
 	})
+	for _, role := range roles {
+		h.ensureTierRole(r, wsUUID, role)
+	}
 	for _, role := range roles {
 		rows, err := h.Queries.ListModelTierRoleIdxForTiers(r.Context(), db.ListModelTierRoleIdxForTiersParams{
 			Ids: []pgtype.UUID{tierID}, Role: role,
@@ -691,10 +706,11 @@ func withRoleIdx(tiers []ModelTierResponse, roleIdx map[string]int32) []ModelTie
 
 // ListModelTiers returns the workspace's tiers ordered by idx. Member-visible:
 // the payload names runtimes and models only, and M-351 agent pickers need it.
-// With ?role=<architect|management|engineer> (M-497) only tiers in that
-// role's list are returned, ordered by the role-specific idx, each carrying
-// its role_idx. A tier appears in a role's list only if it has a row for
-// that role; legacy tiers with no rows match only the unfiltered list.
+// With ?role=<key> (M-497) only tiers in that role's list are returned,
+// ordered by the role-specific idx, each carrying its role_idx. Keys are
+// free workspace-defined strings (Owner Q4); an unknown key matches nothing.
+// A tier appears in a role's list only if it has a row for that role;
+// legacy tiers with no rows match only the unfiltered list.
 func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
@@ -705,8 +721,8 @@ func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roleFilter := strings.TrimSpace(r.URL.Query().Get("role"))
-	if roleFilter != "" && !validCanonicalTierRole(roleFilter) {
-		writeError(w, http.StatusBadRequest, "role must be architect, management or engineer")
+	if roleFilter != "" && !validTierRoleKey(roleFilter) {
+		writeError(w, http.StatusBadRequest, "role must be lowercase letters, digits or hyphens, up to 40 chars")
 		return
 	}
 	tiers, err := h.Queries.ListModelTiers(r.Context(), wsUUID)
@@ -738,6 +754,37 @@ func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 		out = withRoleIdx(out, roleIdx)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tiers": out})
+}
+
+// TierRoleResponse is one entry of the workspace role registry (M-497).
+type TierRoleResponse struct {
+	Key      string `json:"key"`
+	Position int    `json:"position"`
+}
+
+// ListTierRoles returns the workspace's role registry in tab order
+// (M-497, Owner Q4): the seeded classic roles plus every workspace-defined
+// key tier writes have registered. Member-visible: the Settings tabs and
+// tier pickers read it.
+func (h *Handler) ListTierRoles(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	rows, err := h.Queries.ListTierRolesByWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list roles")
+		return
+	}
+	out := make([]TierRoleResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, TierRoleResponse{Key: row.Key, Position: int(row.Position)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"roles": out})
 }
 
 // CreateModelTier adds a tier (owner/admin).
@@ -962,8 +1009,9 @@ func (h *Handler) DeleteModelTier(w http.ResponseWriter, r *http.Request) {
 //
 // With {"role", "ids"} (M-497) only that role's list is rewritten —
 // reordering Engineer never moves Architect — and the response carries
-// role_idx for the reordered role. Without "role" the legacy global idx
-// order is rewritten (old binary compat).
+// role_idx for the reordered role. Role keys are free workspace-defined
+// strings (Owner Q4); reordering registers an unknown key. Without "role"
+// the legacy global idx order is rewritten (old binary compat).
 func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
@@ -986,9 +1034,12 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := strings.TrimSpace(req.Role)
-	if role != "" && !validCanonicalTierRole(role) {
-		writeError(w, http.StatusBadRequest, "role must be architect, management or engineer")
-		return
+	if role != "" {
+		if !validTierRoleKey(role) {
+			writeError(w, http.StatusBadRequest, "role must be lowercase letters, digits or hyphens, up to 40 chars")
+			return
+		}
+		h.ensureTierRole(r, wsUUID, role)
 	}
 	seen := make(map[string]struct{}, len(req.IDs))
 	uuids := make([]pgtype.UUID, 0, len(req.IDs))

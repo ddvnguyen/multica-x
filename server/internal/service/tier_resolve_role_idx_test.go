@@ -146,3 +146,20 @@ func TestResolve497_FallbackUsesRoleIdx(t *testing.T) {
 		t.Fatalf("fallback resolve = %s, want rfb-2 (role idx)", got)
 	}
 }
+
+// TestResolve497_CustomRole: a workspace-defined role resolves by its own
+// role idx with no quality floor (Owner Q4) — even a low measured quality
+// qualifies when the custom agent picks from its list.
+func TestResolve497_CustomRole(t *testing.T) {
+	s := tier423Fixture(t)
+	rt := s.runtime(t, "r497 custom rt")
+	qa := s.agentWithRole(t, "r497 qa", rt, "qa")
+	low1 := s.tier(t, "rqa-1", 0, rt, []string{"qa"}, false, i32(10))
+	low2 := s.tier(t, "rqa-2", 1, rt, []string{"qa"}, false, i32(90))
+	s.selectTiers(t, qa, low1, low2)
+	upsertRoleIdx(t, s, low1, "qa", 7)
+	upsertRoleIdx(t, s, low2, "qa", 3)
+	if got := resolveName497(t, s, qa); got != "rqa-2" {
+		t.Fatalf("custom role resolve = %s, want rqa-2 (qa idx order, no floor)", got)
+	}
+}

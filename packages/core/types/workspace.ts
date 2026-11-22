@@ -160,6 +160,15 @@ export interface ModelTierMemberInput {
   enabled?: boolean;
 }
 
+/**
+ * One entry of the workspace role registry (M-497, Owner Q4). Keys are free
+ * workspace-defined strings; the registry seeds the three classic roles.
+ */
+export interface TierRole {
+  key: string;
+  position: number;
+}
+
 /** A named agent+tier quick pick. */
 export interface AgentPreset {
   id: string;
