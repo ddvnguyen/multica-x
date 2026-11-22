@@ -802,7 +802,7 @@ func TestRequestedPresetResolvesAndStampsActualTier(t *testing.T) {
 	qq, agent, rtA, _, tierA, _, _ := tierTestSetupWithWorkspace(t, 99, "")
 	svc := newTierTestService(pool, qq)
 	tierAID := util.MustParseUUID(tierA)
-	workspaceID := util.MustParseUUID(agent.WorkspaceID)
+	workspaceID := agent.WorkspaceID
 
 	// The preset points at tier A, which has a free provider slot (slotsA=99),
 	// and the requester is the workspace owner, so no fallback is expected.
