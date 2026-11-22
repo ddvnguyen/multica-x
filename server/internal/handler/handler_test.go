@@ -140,6 +140,15 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 		return "", "", err
 	}
 
+	// The role registry a real CreateWorkspace writes (M-498); tests that read
+	// the registry act on the same three tabs a new workspace has.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tier_role (workspace_id, key, position)
+		VALUES ($1, 'architect', 0), ($1, 'management', 1), ($1, 'engineer', 2)
+	`, workspaceID); err != nil {
+		return "", "", err
+	}
+
 	var runtimeID string
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO agent_runtime (
@@ -185,6 +194,10 @@ func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
 		if _, err := pool.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, handlerTestEmail); err != nil {
 			return err
 		}
+	}
+	// tier_role has no FK to workspace (repo rule), so it is cleared here.
+	if _, err := pool.Exec(ctx, `DELETE FROM tier_role WHERE workspace_id IN (SELECT id FROM workspace WHERE slug = $1)`, handlerTestWorkspaceSlug); err != nil {
+		return err
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, handlerTestWorkspaceSlug); err != nil {
 		return err

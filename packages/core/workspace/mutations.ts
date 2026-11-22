@@ -173,10 +173,15 @@ export function useDeleteModelTier(wsId: string) {
   });
 }
 
+/**
+ * Replaces the tier order (M-350). With a role (M-498) the ids are that
+ * role's tab, and the write only moves positions inside it.
+ */
 export function useReorderModelTiers(wsId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (ids: string[]) => api.reorderModelTiers(wsId, ids),
+    mutationFn: ({ ids, role }: { ids: string[]; role?: string }) =>
+      api.reorderModelTiers(wsId, ids, role),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
   });
