@@ -223,35 +223,16 @@ JOIN model_tier t ON t.workspace_id = :'workspace_id'::uuid
                  AND p.position_role = ANY(t.roles)
 ORDER BY p.position_name, t.idx, t.name;
 
+-- M-520: preset seeding is FROZEN. The M-471 rollout already ran on lane z;
+-- the resolver, legacy read aliases and existing preset rows stay untouched,
+-- but no code path may add new preset rows. The apply branch is therefore a
+-- documented no-op: the snapshot result sets above are the entire output.
+-- Any future preset <-> Role conversion needs a separate, Architect-approved
+-- and reviewed script (see docs/moct-x/agent-presets-seed.md).
 \if :apply
-    INSERT INTO agent_preset (workspace_id, name, agent_id, tier_id, legacy_agent_id)
-    SELECT :'workspace_id'::uuid, legacy_name, position_agent_id, tier_id, legacy_agent_id
-    FROM m471_seed_rows
-    ON CONFLICT (workspace_id, (lower(name))) DO NOTHING;
-
-    INSERT INTO agent_tier (agent_id, tier_id)
-    SELECT DISTINCT p.position_agent_id, t.id
-    FROM m471_positions p
-    JOIN model_tier t ON t.workspace_id = :'workspace_id'::uuid
-                     AND p.position_role = ANY(t.roles)
-    ON CONFLICT DO NOTHING;
-
-    UPDATE agent a
-    SET use_tiers = TRUE, updated_at = now()
-    FROM m471_positions p
-    WHERE a.id = p.position_agent_id
-      AND a.workspace_id = :'workspace_id'::uuid
-      AND a.use_tiers IS DISTINCT FROM TRUE;
-
-    UPDATE workspace
-    SET settings = COALESCE(settings, '{}'::jsonb) || '{"agent_presets_enabled":true}'::jsonb,
-        updated_at = now()
-    WHERE id = :'workspace_id'::uuid
-      AND settings->'agent_presets_enabled' IS DISTINCT FROM 'true'::jsonb;
-
-    \echo 'M-471 seed applied. Rollback switch: set agent_presets_enabled=false for this workspace.'
+    \echo 'M-520: preset seeding is FROZEN. No changes applied (no preset rows, agent_tier, use_tiers or workspace settings written). The snapshot above is a read-only view of the current lane state.'
 \else
-    \echo 'Snapshot only: no changes applied. Review the rows, then re-run with -v apply=true.'
+    \echo 'Snapshot only: no changes applied. Review the rows; apply mode is frozen per M-520.'
 \endif
 
 COMMIT;

@@ -209,8 +209,15 @@ umask 077
   echo "LOCAL_UPLOAD_DIR=${MULTICA_Z_UPLOADS_DIR:-/mnt/containers/volumes/multica_backend_uploads/_data}"
   # Lane auth bootstrap: fixed dev verification code; never set in production.
   echo "MULTICA_DEV_VERIFICATION_CODE=$MULTICA_Z_DEV_CODE"
+  # M-520: durable lane-z Role flag. This file is rebuilt with `>` on every
+  # deploy, so re-emitting the flag here is what keeps a redeploy from wiping
+  # it. dsh-z.env (lane-z only) is the single source of truth; default to true
+  # so a stale/partial env cannot silently turn the Role subtype back off.
+  echo "FF_AGENT_ROLE_TYPE=${FF_AGENT_ROLE_TYPE:-true}"
 } > "$LANE_ROOT/multica-be/env"
 umask 022
+grep -q '^FF_AGENT_ROLE_TYPE=' "$LANE_ROOT/multica-be/env" \
+  || die "FF_AGENT_ROLE_TYPE missing from regenerated server env"
 
 # ---------------------------------------------------------------------------
 # Phase 4 — migrations
