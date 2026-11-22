@@ -944,7 +944,13 @@
     "memory_loading": "Cargando informe de memoria...",
     "memory_load_failed": "No se pudo cargar el informe de memoria.",
     "memory_retry": "Reintentar",
-    "memory_empty": "No se inyectó memoria."
+    "memory_empty": "No se inyectó memoria.",
+    "memory_tools_title": "Herramientas de memoria usadas en esta ejecución",
+    "memory_tools_unavailable": "La transcripción de la ejecución no está disponible, así que no se pueden listar las llamadas a herramientas de memoria.",
+    "memory_tools_empty": "No hay llamadas a herramientas de memoria en esta ejecución.",
+    "memory_tools_no_result": "No se registró ningún resultado para esta llamada.",
+    "memory_tools_error": "Error de la ejecución: {{error}}",
+    "memory_tools_truncated": "Resultado truncado."
   },
   "terminate_dialog": {
     "title": "¿Detener esta ejecución?",

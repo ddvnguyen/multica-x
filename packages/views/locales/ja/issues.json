@@ -922,7 +922,13 @@
     "memory_loading": "メモリレポートを読み込み中...",
     "memory_load_failed": "メモリレポートを読み込めませんでした。",
     "memory_retry": "再試行",
-    "memory_empty": "メモリは注入されませんでした。"
+    "memory_empty": "メモリは注入されませんでした。",
+    "memory_tools_title": "この実行で使用されたメモリツール",
+    "memory_tools_unavailable": "実行のトランスクリプトを利用できないため、メモリツールの呼び出しを表示できません。",
+    "memory_tools_empty": "この実行にはメモリツールの呼び出しがありません。",
+    "memory_tools_no_result": "この呼び出しの結果は記録されていません。",
+    "memory_tools_error": "実行エラー: {{error}}",
+    "memory_tools_truncated": "結果は切り詰められています。"
   },
   "runs_timeline": {
     "title": "実行履歴",

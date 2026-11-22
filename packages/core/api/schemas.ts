@@ -2665,6 +2665,18 @@ export const TaskContextReceiptResponseSchema = z.object({
   recorded_at: z.string().optional(),
 }).loose();
 
+const MemoryToolCallSchema = z.object({
+  seq: z.number().catch(0),
+  call_id: z.string().optional(),
+  tool: z.string().catch(""),
+  name: z.string().catch(""),
+  arguments: z.unknown().optional(),
+  has_result: z.boolean().catch(false),
+  result: z.string().optional(),
+  result_truncated: z.boolean().optional(),
+  error: z.string().optional(),
+}).loose();
+
 export const TaskMemoryReportSchema = z.object({
   task_id: z.string().catch(""),
   workspace_id: z.string().catch(""),
@@ -2678,6 +2690,11 @@ export const TaskMemoryReportSchema = z.object({
       body: z.string().catch(""),
     }).loose()).catch([]),
   }).loose().nullable().catch(null),
+  // Absent on servers before M-132 E3; the report then shows "unavailable".
+  memory_tools: z.object({
+    available: z.boolean().catch(false),
+    calls: z.array(MemoryToolCallSchema).catch([]),
+  }).loose().optional(),
 }).loose();
 
 // Task cancellation (`POST /api/tasks/:id/cancel`) is consumed directly by

@@ -922,7 +922,13 @@
     "memory_loading": "正在載入記憶報告…",
     "memory_load_failed": "無法載入記憶報告。",
     "memory_retry": "重試",
-    "memory_empty": "未注入記憶。"
+    "memory_empty": "未注入記憶。",
+    "memory_tools_title": "本次執行使用的記憶工具",
+    "memory_tools_unavailable": "執行的轉錄不可用，無法列出記憶工具呼叫。",
+    "memory_tools_empty": "本次執行沒有記憶工具呼叫。",
+    "memory_tools_no_result": "本次呼叫未記錄結果。",
+    "memory_tools_error": "執行錯誤：{{error}}",
+    "memory_tools_truncated": "結果已截斷。"
   },
   "runs_timeline": {
     "title": "執行記錄",

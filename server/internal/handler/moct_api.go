@@ -52,11 +52,18 @@ func (h *Handler) GetTaskMemoryReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	memory := memoryReportPart(task.Result)
+	// M-132 E3: the on-demand memory tools this run called, from its own stored
+	// transcript. A failed read is reported as unavailable, never as "no calls".
+	tools := memoryToolsReport{Available: false, Calls: []memoryToolCall{}}
+	if rows, err := h.Queries.ListTaskMessages(r.Context(), task.ID); err == nil {
+		tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(rows)}
+	}
 	writeJSON(w, http.StatusOK, struct {
-		TaskID      string          `json:"task_id"`
-		WorkspaceID string          `json:"workspace_id"`
-		Memory      json.RawMessage `json:"memory"`
-	}{TaskID: uuidToString(task.ID), WorkspaceID: workspaceID, Memory: memory})
+		TaskID      string            `json:"task_id"`
+		WorkspaceID string            `json:"workspace_id"`
+		Memory      json.RawMessage   `json:"memory"`
+		MemoryTools memoryToolsReport `json:"memory_tools"`
+	}{TaskID: uuidToString(task.ID), WorkspaceID: workspaceID, Memory: memory, MemoryTools: tools})
 }
 
 func memoryReportPart(result json.RawMessage) json.RawMessage {

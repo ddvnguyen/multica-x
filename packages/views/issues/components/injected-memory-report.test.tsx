@@ -46,4 +46,65 @@ describe("InjectedMemoryReport", () => {
       expect(await screen.findByText(note)).toBeInTheDocument();
     },
   );
+
+  // M-132 E3: the on-demand memory tools, as the stored transcript proves them.
+  it("says unavailable when the transcript could not be read", async () => {
+    show(vi.fn().mockResolvedValue({
+      task_id: "task-1", workspace_id: "ws-1", memory: { part: "memory", entries: [] },
+      memory_tools: { available: false, calls: [] },
+    }));
+    expect(
+      await screen.findByText(/transcript is unavailable/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No memory tool calls in this run.")).not.toBeInTheDocument();
+  });
+
+  it("says unavailable when the server predates the tool list", async () => {
+    show(vi.fn().mockResolvedValue({
+      task_id: "task-1", workspace_id: "ws-1", memory: { part: "memory", entries: [] },
+    }));
+    expect(
+      await screen.findByText(/transcript is unavailable/i),
+    ).toBeInTheDocument();
+  });
+
+  it("says no memory tool calls when the run made none", async () => {
+    show(vi.fn().mockResolvedValue({
+      task_id: "task-1", workspace_id: "ws-1", memory: { part: "memory", entries: [] },
+      memory_tools: { available: true, calls: [] },
+    }));
+    expect(
+      await screen.findByText("No memory tool calls in this run."),
+    ).toBeInTheDocument();
+  });
+
+  it("lists each memory tool call with its arguments, result and error state", async () => {
+    show(vi.fn().mockResolvedValue({
+      task_id: "task-1", workspace_id: "ws-1", memory: { part: "memory", entries: [] },
+      memory_tools: {
+        available: true,
+        calls: [
+          {
+            seq: 2, call_id: "a", tool: "mcp__moct__memory_search", name: "memory_search",
+            arguments: { q: "tier resolver" }, has_result: true, result: '{"records":[{"id":"r1"}]}',
+          },
+          {
+            seq: 6, call_id: "b", tool: "memory_get", name: "memory_get",
+            arguments: { ids: ["r1"] }, has_result: false, error: "moct is unreachable",
+          },
+          {
+            seq: 9, call_id: "c", tool: "memory_note", name: "memory_note",
+            arguments: {}, has_result: false, result_truncated: true,
+          },
+        ],
+      },
+    }));
+    expect(await screen.findAllByTestId("memory-tool-call")).toHaveLength(3);
+    expect(screen.getByText("memory_search")).toBeInTheDocument();
+    expect(screen.getByText(/tier resolver/)).toBeInTheDocument();
+    expect(screen.getByText('{"records":[{"id":"r1"}]}')).toBeInTheDocument();
+    expect(screen.getByText(/Run error: moct is unreachable/)).toBeInTheDocument();
+    expect(screen.getByText("No result was recorded for this call.")).toBeInTheDocument();
+    expect(screen.getByText("Result truncated.")).toBeInTheDocument();
+  });
 });

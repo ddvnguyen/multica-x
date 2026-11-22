@@ -961,7 +961,13 @@
     "memory_loading": "Chargement du rapport mémoire...",
     "memory_load_failed": "Impossible de charger le rapport mémoire.",
     "memory_retry": "Réessayer",
-    "memory_empty": "Aucune mémoire n’a été injectée."
+    "memory_empty": "Aucune mémoire n’a été injectée.",
+    "memory_tools_title": "Outils de mémoire utilisés dans cette exécution",
+    "memory_tools_unavailable": "La transcription de l’exécution est indisponible : les appels d’outils de mémoire ne peuvent pas être listés.",
+    "memory_tools_empty": "Aucun appel d’outil de mémoire dans cette exécution.",
+    "memory_tools_no_result": "Aucun résultat n’a été enregistré pour cet appel.",
+    "memory_tools_error": "Erreur d’exécution : {{error}}",
+    "memory_tools_truncated": "Résultat tronqué."
   },
   "runs_timeline": {
     "title": "Exécutions",
