@@ -29,8 +29,12 @@ psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -f scripts/seed-agent-presets.sql > /mnt/workspace/agent-preset-seed-snapshot.tsv
 ```
 
-After review, re-run against the same workspace with `-v apply=true -v snapshot_reviewed=true`. The explicit marker prevents accidental application on the snapshot-only pass. The script repeats all checks inside a transaction, adds missing presets and agent-tier memberships, enables tier selection on the five canonical agents, and turns on `agent_presets_enabled`. It never deletes or updates legacy profile, assignment, task, or mention rows. Repeated apply runs are idempotent.
+After review, re-run against the same workspace with `-v apply=true -v snapshot_reviewed=true`. The explicit marker prevents accidental application on the snapshot-only pass. The script repeats all checks inside a transaction and never deletes or updates legacy profile, assignment, task, or mention rows.
 
-To roll back the rollout, set `agent_presets_enabled` to `false` for that workspace. Seeded rows remain for inspection and can be cleaned up in a separately reviewed operation.
+## M-520: seeding frozen (no retirement)
 
-The script cannot confirm a real tier-routed run or a visible fallback; those require lane-z runtime access after the reviewed snapshot is applied.
+The M-471 rollout already ran on lane z. Per the M-499 approved plan and the Owner's answer (presets are kept, not retired), **preset seeding is frozen**: from M-520 onward the script's apply branch is a documented no-op and no *seeding* path adds new `agent_preset` rows. The `-v apply=true -v snapshot_reviewed=true` invocation still runs every preflight check and prints the same snapshot result sets, but writes nothing — no preset rows, no `agent_tier` memberships, no `use_tiers` changes and no workspace-settings change. The snapshot is now the script's complete output.
+
+Nothing about compatibility is retired: existing preset rows, the requested-preset resolver and the `legacy_agent_id` read aliases keep working unchanged. The `CreateAgentPreset` API is the one intentional write path and is kept for two-way preset ↔ Role conversion (per the Owner's answer); it is not a seeding path. Rolling back the rollout is still `agent_presets_enabled = false` for that workspace. Any future conversion seed requires a separate, Architect-approved and reviewed script; applying the agent→Role mapping is explicitly out of scope for M-520.
+
+The script cannot confirm a real tier-routed run or a visible fallback; those require lane-z runtime access. The M-520 Go tests pin requested-preset resolution, requested-vs-actual tier stamping, fallback and retry re-authorization.

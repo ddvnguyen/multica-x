@@ -788,3 +788,66 @@ func TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry(t *testing.
 		t.Fatalf("restamped fallback reason = %#v, want tier_no_capacity", restampedMetadata["preset_fallback_reason"])
 	}
 }
+
+// TestRequestedPresetResolvesAndStampsActualTier pins the M-469/M-470 happy
+// path that preset compatibility (M-520) must not break: a requested-preset
+// task whose preset tier has capacity resolves straight to that tier, stamps
+// the requested preset/tier in its context alongside the actual tier on the
+// row, and carries no fallback reason. The parked fallback and the retry
+// re-authorization (owner role revoked/restored) are pinned by the sibling
+// TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry above.
+func TestRequestedPresetResolvesAndStampsActualTier(t *testing.T) {
+	ctx := context.Background()
+	pool := sharedTestPool(t)
+	qq, agent, rtA, _, tierA, _, _ := tierTestSetupWithWorkspace(t, 99, "")
+	svc := newTierTestService(pool, qq)
+	tierAID := util.MustParseUUID(tierA)
+	workspaceID := agent.WorkspaceID
+
+	// The preset points at tier A, which has a free provider slot (slotsA=99),
+	// and the requester is the workspace owner, so no fallback is expected.
+	var presetID pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO agent_preset (workspace_id, name, agent_id, tier_id) VALUES ($1, 'happy preset', $2, $3) RETURNING id`, workspaceID, agent.ID, tierAID).Scan(&presetID); err != nil {
+		t.Fatalf("create preset: %v", err)
+	}
+	issueID := util.MustParseUUID(newTierTestIssue(t, pool, agent))
+	issue, err := qq.GetIssue(ctx, issueID)
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+
+	override := TierTriggerOverride{TierID: tierAID, PresetID: presetID, PresetAgentID: agent.ID, Requester: agent.OwnerID}
+	task, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+	if err != nil {
+		t.Fatalf("enqueue requested preset: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = qq.CancelAgentTask(context.Background(), task.ID)
+	})
+
+	if task.TierParked {
+		t.Fatalf("requested preset with capacity parked (runtime=%v)", task.RuntimeID)
+	}
+	if !task.RuntimeID.Valid || util.UUIDToString(task.RuntimeID) != rtA {
+		t.Fatalf("runtime = %v, want tier-A runtime %s", task.RuntimeID, rtA)
+	}
+	if util.UUIDToString(task.TierID) != tierA {
+		t.Fatalf("actual tier = %s, want preset tier %s", util.UUIDToString(task.TierID), tierA)
+	}
+	if !task.TierExplicit {
+		t.Fatal("tier_explicit = false, want true for a requested preset")
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(task.Context, &metadata); err != nil {
+		t.Fatalf("decode task context: %v", err)
+	}
+	if metadata["requested_preset_id"] != util.UUIDToString(presetID) {
+		t.Fatalf("requested_preset_id = %#v, want %s", metadata["requested_preset_id"], util.UUIDToString(presetID))
+	}
+	if metadata["requested_tier_id"] != tierA {
+		t.Fatalf("requested_tier_id = %#v, want %s", metadata["requested_tier_id"], tierA)
+	}
+	if _, ok := metadata["preset_fallback_reason"]; ok {
+		t.Fatalf("happy-path preset must not stamp a fallback reason: %#v", metadata)
+	}
+}
