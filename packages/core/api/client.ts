@@ -101,6 +101,7 @@ import type {
   ModelTierMember,
   ModelTierMemberInput,
   TierRole,
+  RoleCompositionPreview,
   AgentPreset,
   MemberWithUser,
   User,
@@ -645,6 +646,8 @@ import {
   ModelTierMemberSchema,
   ModelTierSchema,
   TierRoleListSchema,
+  RoleCompositionPreviewSchema,
+  EMPTY_ROLE_COMPOSITION_PREVIEW,
   EMPTY_MODEL_TIER_MEMBER,
   AgentPresetSchema,
   AgentPresetListSchema,
@@ -4156,6 +4159,19 @@ export class ApiClient {
     });
     if (!parsed) throw new Error("Invalid tier roles response");
     return parsed.roles;
+  }
+
+  /**
+   * Read-only inherited view for an Agent implementing a Role (M-499 slice 4):
+   * Role instructions first, the Agent's own additions after, and the union
+   * of both agents' enabled skills. Human-actor only; 403 when the flag is
+   * off or the caller cannot see the Role.
+   */
+  async previewRoleComposition(agentId: string): Promise<RoleCompositionPreview> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/role-preview`);
+    return parseWithFallback(raw, RoleCompositionPreviewSchema, EMPTY_ROLE_COMPOSITION_PREVIEW, {
+      endpoint: "GET /api/agents/{id}/role-preview",
+    });
   }
 
   /** Presets are workspace-scoped and return an empty list while the workspace flag is off. */

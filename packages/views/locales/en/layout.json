@@ -231,7 +231,9 @@
       "runtimes_online_one": "{{count}} online",
       "runtimes_online_other": "{{count}} online",
       "invite_member": "Invite member",
-      "open_issue": "Open {{identifier}}"
+      "open_issue": "Open {{identifier}}",
+      "tier_config": "Tier config",
+      "tier_config_link": "Per-role tier config"
     },
     "autopilots": {
       "all": "All autopilots",

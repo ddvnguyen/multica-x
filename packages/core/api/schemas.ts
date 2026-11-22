@@ -117,6 +117,7 @@ import type {
   SkillVersionSummary,
   ModelTier,
   ModelTierMember,
+  RoleCompositionPreview,
   Squad,
   TimelineEntry,
   User,
@@ -4868,6 +4869,35 @@ export const TierRoleSchema = z.object({
 });
 
 export const TierRoleListSchema = z.array(TierRoleSchema);
+// Role composition preview (M-499 slice 4): read-only inherited view for an
+// Agent implementing a Role. Field names match the backend JSON tags in
+// server/internal/handler/agent_role_preview.go exactly.
+export const RolePreviewSkillSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  description: z.string().default(""),
+  source: z.string().default("agent"),
+});
+
+export const RoleCompositionPreviewSchema = z.object({
+  agent_id: z.string().default(""),
+  role_id: z.string().nullable().optional(),
+  role_name: z.string().default(""),
+  instructions: z.string().default(""),
+  role_instructions: z.string().default(""),
+  agent_instructions: z.string().default(""),
+  skills: z.array(RolePreviewSkillSchema).default([]),
+});
+
+export const EMPTY_ROLE_COMPOSITION_PREVIEW: RoleCompositionPreview = {
+  agent_id: "",
+  role_name: "",
+  instructions: "",
+  role_instructions: "",
+  agent_instructions: "",
+  skills: [],
+};
+
 
 export const EMPTY_MODEL_TIER_MEMBER: ModelTierMember = {
   id: "",

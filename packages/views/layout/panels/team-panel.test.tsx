@@ -229,6 +229,16 @@ describe("TeamPanel agent menu", () => {
   });
 });
 
+describe("TeamPanel tier config (M-499)", () => {
+  it("hides the Tier config section while the flag is off", () => {
+    seedAgents(1);
+    renderPanel([runtime()]);
+
+    expect(screen.queryByText("Tier config")).not.toBeInTheDocument();
+    expect(screen.queryByText("Per-role tier config")).not.toBeInTheDocument();
+  });
+});
+
 describe("TeamPanel runtime badge", () => {
   it("shows a green online machine count without a total or duplicate providers", () => {
     renderPanel([

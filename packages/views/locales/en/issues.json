@@ -1200,7 +1200,9 @@
       "agents_group": "Agents",
       "squads_group": "Squads",
       "agent_runtime_required": "Bind a runtime before assigning work to this agent",
-      "squad_runtime_required": "Bind a runtime to this squad's leader before assigning work"
+      "squad_runtime_required": "Bind a runtime to this squad's leader before assigning work",
+      "roles_group": "Roles",
+      "role_badge": "Role"
     },
     "start_date": {
       "trigger_label": "Start date",

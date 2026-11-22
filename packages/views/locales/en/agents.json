@@ -248,7 +248,18 @@
     "role_engineer": "Engineer",
     "role_planning": "Planning",
     "tiers_role_mismatch_badge": "role mismatch",
-    "tiers_manual_badge": "manual only"
+    "tiers_manual_badge": "manual only",
+    "prop_tier_role": "Tier role",
+    "tier_role_hint": "Selects the Role tier table the tier resolver walks.",
+    "tier_role_none": "Select a tier role",
+    "role_execution_note": "Roles are model-free: the tier stamps model and runtime onto each task.",
+    "prop_implements_role": "Implements Role",
+    "implements_role_hint": "Inherit instructions and skills from a Role. Role instructions run first, then this agent's own additions.",
+    "implements_role_none": "No Role",
+    "role_preview_label": "Inherited from Role",
+    "role_preview_hint": "Preview of what a claim of this agent sends when {name} is linked.",
+    "role_preview_skill_role": "Role",
+    "role_preview_skill_agent": "Agent"
   },
   "overview": {
     "attention_title": "Runs need attention",
@@ -369,6 +380,7 @@
     },
     "sections": {
       "identity": "Identity",
+      "type": "Type",
       "behavior": "Behavior & capabilities",
       "execution": "Execution",
       "execution_hint": "Unspecified options use the runtime defaults.",
@@ -504,7 +516,15 @@
       "cancel": "Cancel",
       "next": "Next"
     },
-    "back": "Go back"
+    "back": "Go back",
+    "type_label": "Agent or Role",
+    "type_hint": "A Role is a model-free identity: the tier stamps model and runtime onto each task. Agents keep their own model and runtime.",
+    "type_agent": "Agent",
+    "type_role": "Role",
+    "tier_role_label": "Tier role",
+    "tier_role_hint": "Selects the Role tier table the tier resolver walks. Required for a Role.",
+    "tier_role_none": "Select a tier role",
+    "role_skills_note": "Roles carry no skills of their own: an implementing Agent inherits the preview below at claim time."
   },
   "create_dialog": {
     "title_create": "Create Agent",

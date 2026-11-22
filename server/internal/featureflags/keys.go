@@ -73,6 +73,9 @@ var frontendPublicFlags = []string{
 	ComposioMCPApps,
 	PluginsV1,
 	DocsV1,
+	// Published so Team/Role UI can gate on it; lane-only until the
+	// FF_AGENT_ROLE_TYPE env override is set elsewhere. Off by default.
+	AgentRoleType,
 }
 
 func BillingWorkspaceSubscriptionsEnabled(ctx context.Context, flags *featureflag.Service) bool {

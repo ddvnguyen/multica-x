@@ -8,10 +8,13 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   applyDraftModelChange,
   applyDraftRuntimeChange,
+  useAgentRoleTypeEnabled,
   type AgentDraft,
   type AgentPermissionScope,
 } from "@multica/core/agents";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { useConfigStore } from "@multica/core/config";
+import { tierRolesOptions } from "@multica/core/workspace/queries";
 import type { MemberWithUser, RuntimeDevice } from "@multica/core/types";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
@@ -93,6 +96,16 @@ export function AgentConfigurationPanel({
   // The Qoder bridge refuses tasks from agents with skills or per-agent
   // config, so the fields that would produce them are not offered.
   const qoderRuntime = selectedRuntime?.provider === "qoder_cloud";
+  // Role create (M-499 slice 4): a model-free Agent subtype behind the
+  // workspace flag. Flag off = this block is inert and the form is
+  // byte-identical to today (Agent-only).
+  const wsId = useWorkspaceId();
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const isRole = roleTypeEnabled && draft.subtype === "role";
+  const { data: tierRoles = [] } = useQuery({
+    ...tierRolesOptions(wsId),
+    enabled: isRole,
+  });
   const handleRuntimeSelect = (id: string) => {
     if (id === draft.runtimeId) return;
     if (onRuntimeSelect) {
@@ -176,6 +189,77 @@ export function AgentConfigurationPanel({
           ) : null}
         </SettingsCard>
       </SettingsSection>
+      {roleTypeEnabled ? (
+        <SettingsSection
+          title={t(($) => $.creation_studio.sections.type)}
+        >
+          <SettingsCard>
+            <DraftFieldRow
+              compact={compact}
+              label={t(($) => $.creation_studio.type_label)}
+              description={t(($) => $.creation_studio.type_hint)}
+            >
+              <div
+                className="flex gap-2"
+                role="radiogroup"
+                aria-label={t(($) => $.creation_studio.type_label)}
+              >
+                {(
+                  [
+                    { value: undefined, label: t(($) => $.creation_studio.type_agent) },
+                    { value: "role", label: t(($) => $.creation_studio.type_role) },
+                  ] as const
+                ).map((option) => {
+                  const selected =
+                    (draft.subtype ?? undefined) === option.value;
+                  return (
+                    <button
+                      key={option.label}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() =>
+                        set("subtype", option.value as AgentDraft["subtype"])
+                      }
+                      className={cn(
+                        "rounded-md border px-3 py-1.5 text-body",
+                        selected
+                          ? "border-primary bg-primary/10"
+                          : "hover:bg-muted",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </DraftFieldRow>
+            {isRole ? (
+              <DraftFieldRow
+                compact={compact}
+                label={t(($) => $.creation_studio.tier_role_label)}
+                description={t(($) => $.creation_studio.tier_role_hint)}
+              >
+                <select
+                  aria-label={t(($) => $.creation_studio.tier_role_label)}
+                  value={draft.tierRole ?? ""}
+                  onChange={(event) => set("tierRole", event.target.value)}
+                  className="max-w-64 truncate rounded-md border bg-background px-2 py-1.5 text-sm"
+                >
+                  <option value="">
+                    {t(($) => $.creation_studio.tier_role_none)}
+                  </option>
+                  {tierRoles.map((entry) => (
+                    <option key={entry.key} value={entry.key}>
+                      {entry.key}
+                    </option>
+                  ))}
+                </select>
+              </DraftFieldRow>
+            ) : null}
+          </SettingsCard>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection
         title={t(($) => $.creation_studio.sections.behavior)}
@@ -200,7 +284,11 @@ export function AgentConfigurationPanel({
               className="min-h-44 resize-y font-mono text-label leading-6"
             />
           </DraftFieldRow>
-          {qoderRuntime ? (
+          {isRole ? (
+            <p className="px-4 py-3 text-caption text-muted-foreground">
+              {t(($) => $.creation_studio.role_skills_note)}
+            </p>
+          ) : qoderRuntime ? (
             <p className="px-4 py-3 text-caption text-muted-foreground">
               {t(($) => $.creation_studio.cloud_fields_note)}
             </p>
@@ -215,6 +303,7 @@ export function AgentConfigurationPanel({
         </SettingsCard>
       </SettingsSection>
 
+      {isRole ? null : (
       <SettingsSection
         title={t(($) => $.creation_studio.sections.execution)}
         description={t(($) => $.creation_studio.sections.execution_hint)}
@@ -236,9 +325,6 @@ export function AgentConfigurationPanel({
                 autoSelect={!onRuntimeSelect}
               />
               )}
-              {/* A silently greyed-out picker is the worst version of this: the
-                  user reaches for it exactly when the current runtime has gone
-                  wrong, so say what unblocks it instead of just refusing. */}
               {runtimeSwitchPending && (
                 <p className="mt-1.5 text-caption text-muted-foreground">
                   {t(($) => $.creation_studio.builder.switch_runtime_pending)}
@@ -262,17 +348,10 @@ export function AgentConfigurationPanel({
                 onAutomaticChange={(value) =>
                   onAutomaticChange(applyDraftModelChange(draft, value))
                 }
-                // A successful switch clears the model, so an edit made while the
-                // rebind is in flight would be silently discarded.
                 disabled={!selectedRuntime || runtimeSwitchInFlight}
               />
             )}
           </div>
-          {/* Both fields fail closed: they render only when the exact selected
-              model's live catalog advertises the capability (or a value is
-              already set and needs clearing), so an offline runtime, a failed
-              discovery or an empty model shows nothing instead of an input
-              that cannot be honoured. */}
           <AgentExecutionOverrides
             draft={draft}
             runtime={selectedRuntime}
@@ -281,6 +360,7 @@ export function AgentConfigurationPanel({
           />
         </SettingsCard>
       </SettingsSection>
+      )}
 
       <SettingsSection
         title={t(($) => $.creation_studio.sections.access)}

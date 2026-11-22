@@ -1,4 +1,5 @@
 export * from "./types";
+export * from "./role-type";
 export * from "./draft";
 export * from "./stored-draft";
 export * from "./manual-draft-store";

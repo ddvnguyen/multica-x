@@ -20,7 +20,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { projectKeys } from "@multica/core/projects/queries";
 import { configStore, featureFlagEnabled } from "@multica/core/config";
 import { docKeys, docTreeOptions } from "@multica/core/docs";
-import { DOCS_V1_FLAG } from "@multica/core/feature-flags";
+import { AGENT_ROLE_TYPE_FLAG, DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import { useAuthStore } from "@multica/core/auth";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isAgentRuntimeBound } from "@multica/core/agents";
@@ -103,6 +103,12 @@ export interface MentionItem {
   projectArchived?: boolean;
   /** Present when the target should remain discoverable but cannot be selected. */
   disabledReason?: "agent_runtime_required";
+  /**
+   * A Role (M-499) renders with a Role badge but inserts as a plain agent
+   * mention — the node type, `mention://agent/<uuid>` serialization and the
+   * `#tier` suffix path are identical for Roles and Agents.
+   */
+  isRole?: boolean;
 }
 
 interface MentionListProps {
@@ -750,7 +756,9 @@ function MentionRow({
       </span>
       {item.type === "agent" && (
         <Badge variant="outline" className="ml-auto text-micro h-4 px-1.5">
-          {t(($) => $.mention.agent_badge)}
+          {item.isRole
+            ? t(($) => $.mention.role_badge)
+            : t(($) => $.mention.agent_badge)}
         </Badge>
       )}
       {item.type === "squad" && (
@@ -913,6 +921,16 @@ export function createMentionSuggestion(
         type: "member" as const,
       }));
 
+    // Roles (M-499 slice 4) stay `type: "agent"` rows: the mention node,
+    // `mention://agent/<uuid>` serialization and `#tier` suffix path are
+    // identical for Roles and Agents. Only the badge differs. Roles are
+    // model-free so they skip the runtime-bound gate (backend M-510
+    // exemption); permission still gates the row. Flag off = `isRole`
+    // never set, rows byte-identical to today.
+    const roleTypeEnabled = featureFlagEnabled(
+      configStore.getState().featureFlags,
+      AGENT_ROLE_TYPE_FLAG,
+    );
     const agentItems: MentionItem[] = agents
       .filter(
         (a) =>
@@ -920,14 +938,19 @@ export function createMentionSuggestion(
           (a.name.toLowerCase().includes(q) || matchesPinyin(a.name, q)) &&
           canAssignAgentToIssue(a, { userId, role: myRole }).allowed,
       )
-      .map((a) => ({
-        id: a.id,
-        label: a.name,
-        type: "agent" as const,
-        disabledReason: isAgentRuntimeBound(a)
-          ? undefined
-          : ("agent_runtime_required" as const),
-      }));
+      .map((a) => {
+        const roleRow = roleTypeEnabled && a.subtype === "role";
+        return {
+          id: a.id,
+          label: a.name,
+          type: "agent" as const,
+          disabledReason:
+            roleRow || isAgentRuntimeBound(a)
+              ? undefined
+              : ("agent_runtime_required" as const),
+          ...(roleRow ? { isRole: true as const } : {}),
+        };
+      });
     const activeAgentRuntimeBinding = new Map(
       agents
         .filter((agent) => !agent.archived_at)

@@ -6,7 +6,7 @@ import type { Agent, IssueAssigneeType, UpdateIssueRequest } from "@multica/core
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
-import { isAgentRuntimeBound } from "@multica/core/agents";
+import { isAgentRuntimeBound, isRoleAgent, useAgentRoleTypeEnabled } from "@multica/core/agents";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -243,8 +243,17 @@ function useAssigneeChoices(filter: string) {
   const filteredMembers = members
     .filter((m) => m.name.toLowerCase().includes(query) || matchesPinyin(m.name, query))
     .sort((a, b) => getFreq("member", b.user_id) - getFreq("member", a.user_id));
+  // Roles (M-499 slice 4) partition out of the agent list behind the flag.
+  // Flag off = the partition is empty and filteredAgents keeps every
+  // unarchived agent, exactly as today.
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const filteredRoles = roleTypeEnabled
+    ? agents
+        .filter((a) => isRoleAgent(a) && !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
+        .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id))
+    : [];
   const filteredAgents = agents
-    .filter((a) => !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
+    .filter((a) => !a.archived_at && (!roleTypeEnabled || !isRoleAgent(a)) && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
     .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id));
   const filteredSquads = squads
     .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(query) || matchesPinyin(s.name, query)))
@@ -269,6 +278,7 @@ function useAssigneeChoices(filter: string) {
     agents,
     filteredMembers,
     filteredAgents,
+    filteredRoles,
     filteredSquads,
     runnableAgentIds,
     filteredPresets,
@@ -294,7 +304,7 @@ function AssigneeOptions({
 }) {
   const [tierAgent, setTierAgent] = useState<{ id: string; name: string } | null>(null);
   const { t } = useT("issues");
-  const { userId, memberRole, agents, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds, filteredPresets } =
+  const { userId, memberRole, agents, filteredMembers, filteredAgents, filteredRoles, filteredSquads, runnableAgentIds, filteredPresets } =
     choices;
 
   const isSelected = (type: string, id: string) =>
@@ -303,12 +313,16 @@ function AssigneeOptions({
   if (tierAgent) {
     // M-493: the tier step only offers tiers the chosen agent supports
     // (`agent_tier`, exposed as `Agent.tier_ids`). An agent with no selection
-    // keeps the legacy behaviour of offering every enabled tier.
-    const supportedTierIds = agents.find((agent) => agent.id === tierAgent.id)?.tier_ids;
+    // keeps the legacy behaviour of offering every enabled tier. A Role
+    // scopes to its tier_role table instead — a forced tier outside it 409s.
+    const picked = agents.find((agent) => agent.id === tierAgent.id);
+    const supportedTierIds = picked?.tier_ids;
+    const tierRole = picked && isRoleAgent(picked) ? picked.tier_role || undefined : undefined;
     return (
       <TierStep
         agentName={tierAgent.name}
         supportedTierIds={supportedTierIds}
+        tierRole={tierRole}
         onBack={() => setTierAgent(null)}
         onPick={(tierId) =>
           onPick({
@@ -434,6 +448,54 @@ function AssigneeOptions({
         </PickerSection>
       )}
 
+      {filteredRoles.length > 0 && (
+        <PickerSection label={t(($) => $.pickers.assignee.roles_group)}>
+          {filteredRoles.map((a) => {
+            const decision = canAssignAgentToIssue(a, {
+              userId,
+              role:
+                memberRole === "owner" ||
+                memberRole === "admin" ||
+                memberRole === "member"
+                  ? memberRole
+                  : null,
+            });
+            // Roles are model-free: no runtime binding to require. The
+            // backend exemption (AgentReadiness, M-510) keeps flag-on Roles
+            // routable; permission still gates the row.
+            const allowed = decision.allowed;
+            return (
+              <PickerItem
+                key={a.id}
+                selected={isSelected("agent", a.id)}
+                disabled={!allowed}
+                tooltip={!decision.allowed ? decision.message : undefined}
+                onClick={() => {
+                  if (!allowed) return;
+                  if (tierPick) {
+                    setTierAgent({ id: a.id, name: a.name });
+                    return;
+                  }
+                  onPick({
+                    assignee_type: "agent",
+                    assignee_id: a.id,
+                  });
+                }}
+              >
+                <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
+                <span className={`truncate ${allowed ? "" : "text-muted-foreground"}`}>{a.name}</span>
+                <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                  {t(($) => $.pickers.assignee.role_badge)}
+                </span>
+                {a.visibility === "private" && (
+                  <Lock className="h-3 w-3 text-muted-foreground" />
+                )}
+              </PickerItem>
+            );
+          })}
+        </PickerSection>
+      )}
+
       {/* Squads — group ownership; assigning to a squad routes the issue to
           its leader agent on the backend. */}
       {filteredSquads.length > 0 && (
@@ -486,26 +548,37 @@ function AssigneeOptions({
 function TierStep({
   agentName,
   supportedTierIds,
+  tierRole,
   onBack,
   onPick,
 }: {
   agentName: string;
   supportedTierIds?: string[];
+  /** A Role's tier-role: scope the list to that role's tier table (M-499). */
+  tierRole?: string;
   onBack: () => void;
   onPick: (tierId: string | null) => void;
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
+  // A Role reads its own role table (one query, cached per role); an Agent
+  // keeps today's unscoped list. Role tiers are authoritative for forced
+  // picks — the backend 409s a tier outside the Role's list.
+  const { data: roleTiers } = useQuery({
+    ...modelTiersOptions(wsId, tierRole),
+    enabled: !!tierRole,
+  });
 
   // An agent with an explicit tier selection only sees those tiers; an agent
   // without one keeps the legacy behaviour of every enabled tier.
   const eligible = useMemo(() => {
-    const enabled = tiers.filter((tier) => tier.enabled);
+    const source = tierRole ? (roleTiers ?? []) : tiers;
+    const enabled = source.filter((tier) => tier.enabled);
     if (!supportedTierIds || supportedTierIds.length === 0) return enabled;
     const allowed = new Set(supportedTierIds);
     return enabled.filter((tier) => allowed.has(tier.id));
-  }, [tiers, supportedTierIds]);
+  }, [tiers, roleTiers, tierRole, supportedTierIds]);
 
   return (
     <>
