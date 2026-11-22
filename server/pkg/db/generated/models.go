@@ -58,6 +58,9 @@ type Agent struct {
 	AccountID             pgtype.UUID `json:"account_id"`
 	UseTiers              bool        `json:"use_tiers"`
 	Role                  pgtype.Text `json:"role"`
+	Subtype               string      `json:"subtype"`
+	ImplementsRoleID      pgtype.UUID `json:"implements_role_id"`
+	TierRole              pgtype.Text `json:"tier_role"`
 }
 
 type AgentApp struct {

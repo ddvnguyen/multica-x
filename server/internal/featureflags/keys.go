@@ -60,6 +60,12 @@ const (
 	// projectWorkflowsCompat keeps workflow UI available in installed desktop
 	// clients that still gate it on this config decision and default to false.
 	projectWorkflowsCompat = "project_workflows_v1"
+	// AgentRoleType gates the additive agent subtype (`agent` | `role`) and the
+	// implements_role_id / tier_role fields on the agent API (M-499 slice 1).
+	// Off by default: enable it for a single workspace with an allow rule keyed
+	// on workspace_id. Existing Agents and their direct/use_tiers flows never
+	// read this flag.
+	AgentRoleType = "agent_role_type"
 )
 
 var frontendPublicFlags = []string{
@@ -91,6 +97,18 @@ func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bo
 
 func DocsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, DocsV1, false)
+}
+
+// AgentRoleTypeEnabledForWorkspace evaluates AgentRoleType with the workspace
+// attached to the flag context, so `allow_by: workspace_id` rules can enable
+// the Role subtype for one workspace (lane z) while the default stays off.
+// An empty workspace id fails closed.
+func AgentRoleTypeEnabledForWorkspace(ctx context.Context, flags *featureflag.Service, workspaceID string) bool {
+	if workspaceID == "" || flags == nil {
+		return false
+	}
+	scoped := featureflag.WithEvalContext(ctx, featureflag.EvalContext{WorkspaceID: workspaceID})
+	return flags.IsEnabled(scoped, AgentRoleType, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

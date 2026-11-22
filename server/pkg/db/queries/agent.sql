@@ -68,7 +68,8 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
-    account_mode, account_id, use_tiers
+    account_mode, account_id, use_tiers,
+    subtype, tier_role, implements_role_id
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -78,7 +79,10 @@ INSERT INTO agent (
     COALESCE(sqlc.narg('permission_mode'), 'private'),
     COALESCE(sqlc.narg('account_mode'), 'default'),
     sqlc.narg('account_id'),
-    COALESCE(sqlc.narg('use_tiers')::boolean, FALSE)
+    COALESCE(sqlc.narg('use_tiers')::boolean, FALSE),
+    COALESCE(sqlc.narg('subtype'), 'agent'),
+    sqlc.narg('tier_role'),
+    sqlc.narg('implements_role_id')::uuid
 )
 RETURNING *;
 
@@ -155,6 +159,9 @@ UPDATE agent SET
     model = COALESCE(sqlc.narg('model'), model),
     use_tiers = COALESCE(sqlc.narg('use_tiers')::boolean, use_tiers),
     role = COALESCE(sqlc.narg('role'), role),
+    subtype = COALESCE(sqlc.narg('subtype'), subtype),
+    tier_role = COALESCE(sqlc.narg('tier_role'), tier_role),
+    implements_role_id = COALESCE(sqlc.narg('implements_role_id')::uuid, implements_role_id),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
     service_tier = COALESCE(sqlc.narg('service_tier'), service_tier),
     conversation_starters = COALESCE(sqlc.narg('conversation_starters'), conversation_starters),
@@ -200,6 +207,20 @@ RETURNING *;
 -- cannot restore NULL). The API layer routes "role cleared → legacy
 -- unfiltered" through this dedicated query.
 UPDATE agent SET role = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentImplementsRole :one
+-- M-501: explicit NULL-clear for implements_role_id. The COALESCE-based
+-- UpdateAgent cannot restore NULL, so removing an Agent's Role link routes
+-- through this dedicated query.
+UPDATE agent SET implements_role_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentTierRole :one
+-- M-501: explicit NULL-clear for a Role's tier_role selection.
+UPDATE agent SET tier_role = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 

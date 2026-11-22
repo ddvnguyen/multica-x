@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -125,6 +126,14 @@ type AgentResponse struct {
 	// architect | leader | reviewer | orchestrator | engineer | planning.
 	// Empty = legacy: no role filtering until set in Agent settings.
 	Role string `json:"role,omitempty"`
+	// Subtype is the additive agent|role discriminator (M-501). Empty means
+	// the legacy `agent` subtype so installed clients see no change.
+	Subtype string `json:"subtype,omitempty"`
+	// ImplementsRoleID names the Role an Agent implements. Roles and Agents
+	// with no Role link omit it.
+	ImplementsRoleID *string `json:"implements_role_id,omitempty"`
+	// TierRole is a Role's Owner-managed tier-role selection. Agents omit it.
+	TierRole string `json:"tier_role,omitempty"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -247,6 +256,9 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		Model:                    a.Model.String,
 		UseTiers:                 a.UseTiers,
 		Role:                     a.Role.String,
+		Subtype:                  a.Subtype,
+		ImplementsRoleID:         uuidToPtr(a.ImplementsRoleID),
+		TierRole:                 a.TierRole.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
 		AccountMode:              a.AccountMode,
@@ -1539,6 +1551,12 @@ type CreateAgentRequest struct {
 	// SkillIDs are attached inside the same transaction as the agent row so a
 	// create never becomes visible in a partially configured state.
 	SkillIDs []string `json:"skill_ids"`
+	// Subtype, TierRole and ImplementsRoleID are gated by the AgentRoleType
+	// workspace flag (M-501). `subtype: "role"` creates a model-free Role; an
+	// ordinary Agent may name the Role it implements via implements_role_id.
+	Subtype          string `json:"subtype"`
+	TierRole         string `json:"tier_role"`
+	ImplementsRoleID string `json:"implements_role_id"`
 }
 
 func decodeJSONBodyWithRawFields(body io.Reader, dst any) (map[string]json.RawMessage, error) {
@@ -1603,6 +1621,15 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subtype := req.Subtype
+	if subtype == "" {
+		subtype = "agent"
+	}
+	if subtype != "agent" && subtype != "role" {
+		writeError(w, http.StatusBadRequest, "subtype must be agent or role")
+		return
+	}
+
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -1611,7 +1638,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("description must be %d characters or fewer", maxAgentDescriptionLength))
 		return
 	}
-	if req.RuntimeID == "" {
+	if req.RuntimeID == "" && subtype != "role" {
 		writeError(w, http.StatusBadRequest, "runtime_id is required")
 		return
 	}
@@ -1628,13 +1655,46 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runtimeUUID, ok := parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
-	if !ok {
-		return
+	var runtimeUUID pgtype.UUID
+	if subtype != "role" {
+		runtimeUUID, ok = parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
+		if !ok {
+			return
+		}
 	}
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
 		return
+	}
+
+	// The Role subtype and its fields only exist behind the workspace flag.
+	// Deny every request that tries to use them while the flag is off rather
+	// than silently dropping the fields.
+	if hasField(rawFields, "subtype") || hasField(rawFields, "tier_role") || hasField(rawFields, "implements_role_id") {
+		if !featureflags.AgentRoleTypeEnabledForWorkspace(r.Context(), h.FeatureFlags, workspaceID) {
+			writeError(w, http.StatusForbidden, "agent role type is not enabled for this workspace")
+			return
+		}
+	}
+	if subtype == "role" {
+		h.createRoleAgent(w, r, req, rawFields, wsUUID, workspaceID, ownerID, conversationStarters)
+		return
+	}
+	// A model-free Role has no implements_role link, and tier_role is a
+	// Role-only setting enforced by the database CHECK as well.
+	if req.TierRole != "" {
+		writeError(w, http.StatusBadRequest, "tier_role is only valid on a Role")
+		return
+	}
+	var implementsRoleID pgtype.UUID
+	if req.ImplementsRoleID != "" {
+		if !h.requireRoleManager(w, r, workspaceID) {
+			return
+		}
+		implementsRoleID, ok = h.resolveImplementableRole(w, r, workspaceID, ownerID, req.ImplementsRoleID)
+		if !ok {
+			return
+		}
 	}
 
 	// Resolve invocation permission (MUL-3963). permission_mode is
@@ -1853,6 +1913,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ComposioToolkitAllowlist: allowlist,
 		AccountMode:              accountSel.Mode,
 		AccountID:                accountSel.ID,
+		Subtype:                  "agent",
+		ImplementsRoleID:         implementsRoleID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1980,6 +2042,14 @@ type UpdateAgentRequest struct {
 	// tri-state as ThinkingLevel: omitted preserves, empty clears (legacy
 	// unfiltered), non-empty sets (validated against the role vocabulary).
 	Role *string `json:"role"`
+	// Subtype is immutable in slice 1: when present it must equal the stored
+	// subtype. Switching between Agent and Role is a later slice.
+	Subtype *string `json:"subtype"`
+	// ImplementsRoleID is tri-state: omitted preserves, empty/null clears the
+	// link, non-empty links this Agent to a Role in the same workspace.
+	ImplementsRoleID *string `json:"implements_role_id"`
+	// TierRole is tri-state and Role-only: omitted preserves, empty/null clears.
+	TierRole *string `json:"tier_role"`
 	// Account selection for freebuff-desktop runtimes (M-153). Tri-state:
 	// omitted preserves; present sets account_mode (+ account_id when specific).
 	AccountMode *string `json:"account_mode"`
@@ -2198,8 +2268,71 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Role subtype fields are gated by the workspace flag. Deny their use
+	// while it is off instead of silently ignoring a requested link or tier.
+	var shouldClearImplementsRole, shouldClearTierRole bool
+	if hasField(rawFields, "subtype") || hasField(rawFields, "implements_role_id") || hasField(rawFields, "tier_role") {
+		if !featureflags.AgentRoleTypeEnabledForWorkspace(r.Context(), h.FeatureFlags, uuidToString(existing.WorkspaceID)) {
+			writeError(w, http.StatusForbidden, "agent role type is not enabled for this workspace")
+			return
+		}
+	}
+	if req.Subtype != nil && *req.Subtype != existing.Subtype {
+		writeError(w, http.StatusBadRequest, "subtype is immutable; create a new Role instead of converting an existing agent")
+		return
+	}
+	// Tri-state handling keys off raw field presence: a JSON null decodes to
+	// a nil pointer but still means "clear the column".
+	var tierRoleValue, implementsRoleValue string
+	if hasField(rawFields, "tier_role") {
+		if existing.Subtype != "role" {
+			writeError(w, http.StatusBadRequest, "tier_role is only valid on a Role")
+			return
+		}
+		if isExplicitClear(rawFields, "tier_role") {
+			shouldClearTierRole = true
+		} else if req.TierRole == nil {
+			writeError(w, http.StatusBadRequest, "tier_role must be a string or null")
+			return
+		} else if err := validateAgentTierRole(*req.TierRole); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		} else {
+			tierRoleValue = *req.TierRole
+		}
+	}
+	if hasField(rawFields, "implements_role_id") {
+		if existing.Subtype == "role" {
+			writeError(w, http.StatusBadRequest, "a Role cannot implement another Role")
+			return
+		}
+		if isExplicitClear(rawFields, "implements_role_id") {
+			shouldClearImplementsRole = true
+		} else if req.ImplementsRoleID == nil {
+			writeError(w, http.StatusBadRequest, "implements_role_id must be a Role id or null")
+			return
+		} else if !h.requireRoleManager(w, r, uuidToString(existing.WorkspaceID)) {
+			return
+		} else {
+			implementsRoleValue = *req.ImplementsRoleID
+		}
+	}
+
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
+	}
+	if tierRoleValue != "" {
+		params.TierRole = pgtype.Text{String: tierRoleValue, Valid: true}
+	}
+	if implementsRoleValue != "" {
+		roleUUID, ok := h.resolveImplementableRole(w, r, uuidToString(existing.WorkspaceID), requestUserID(r), implementsRoleValue)
+		if !ok {
+			return
+		}
+		params.ImplementsRoleID = roleUUID
+	}
+	if req.Subtype != nil {
+		params.Subtype = pgtype.Text{String: *req.Subtype, Valid: true}
 	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}
@@ -2880,6 +3013,22 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent role failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear role")
+			return
+		}
+	}
+	if shouldClearImplementsRole {
+		updated, err = h.Queries.ClearAgentImplementsRole(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent implements_role_id failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear implements_role_id")
+			return
+		}
+	}
+	if shouldClearTierRole {
+		updated, err = h.Queries.ClearAgentTierRole(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent tier_role failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to clear tier_role")
 			return
 		}
 	}
