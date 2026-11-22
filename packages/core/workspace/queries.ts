@@ -285,7 +285,10 @@ export function modelTiersOptions(wsId: string, role?: string) {
 export function tierRolesOptions(wsId: string) {
   return queryOptions({
     queryKey: workspaceKeys.tierRoles(wsId),
-    queryFn: () => api.listTierRoles(wsId),
+    // The endpoint also returns the workspace-scoped agent_role_type flag
+    // (M-517); the registry consumers only need the roles list. The Role
+    // probe reads the boolean via api.listTierRoles directly.
+    queryFn: () => api.listTierRoles(wsId).then((res) => res.roles),
     enabled: wsId !== "",
   });
 }

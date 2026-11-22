@@ -4151,14 +4151,22 @@ export class ApiClient {
     return parsed.tiers;
   }
 
-  /** The workspace's role registry in tab order (M-497). Member-visible. */
-  async listTierRoles(workspaceId: string): Promise<TierRole[]> {
+  /**
+   * The workspace's role registry in tab order (M-497). Member-visible.
+   * Also carries the workspace-scoped `agent_role_type` boolean (M-517):
+   * the UI gates its Role surfaces on that value, evaluated with the
+   * workspace attached. Older backends omit it — treat undefined as false.
+   */
+  async listTierRoles(workspaceId: string): Promise<{ roles: TierRole[]; agentRoleType: boolean }> {
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/roles`);
-    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(raw, z.object({ roles: TierRoleListSchema }), null, {
-      endpoint: "GET /api/workspaces/{id}/tiers/roles",
-    });
+    const parsed = parseWithFallback<{ roles: TierRole[]; agent_role_type?: boolean } | null>(
+      raw,
+      z.object({ roles: TierRoleListSchema, agent_role_type: z.boolean().optional() }),
+      null,
+      { endpoint: "GET /api/workspaces/{id}/tiers/roles" },
+    );
     if (!parsed) throw new Error("Invalid tier roles response");
-    return parsed.roles;
+    return { roles: parsed.roles, agentRoleType: parsed.agent_role_type === true };
   }
 
   /**

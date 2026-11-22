@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -821,7 +822,15 @@ func (h *Handler) ListTierRoles(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		out = append(out, TierRoleResponse{Key: row.Key, Position: int(row.Position)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"roles": out})
+	// Workspace-scoped Role flag (M-517 fix): the UI gates its Role surfaces
+	// on this boolean, evaluated with the workspace attached, so an
+	// allow_by: workspace_id rule enables lane z while every other workspace
+	// reads false. The roles list itself stays member-visible and flag-off
+	// callers (Settings Tiers, tier pickers) ignore the new key.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"roles":            out,
+		"agent_role_type": featureflags.AgentRoleTypeEnabledForWorkspace(r.Context(), h.FeatureFlags, workspaceID),
+	})
 }
 
 // tierRoleList is the registry as the API returns it.

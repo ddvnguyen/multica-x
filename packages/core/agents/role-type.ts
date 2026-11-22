@@ -2,8 +2,6 @@
 
 import { useQuery, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
-import { useFeatureEnabled } from "../config";
-import { AGENT_ROLE_TYPE_FLAG } from "../feature-flags/keys";
 import type { Agent, RoleCompositionPreview } from "../types";
 import { workspaceKeys } from "../workspace/queries";
 
@@ -19,11 +17,14 @@ export function isRoleAgent(
 
 /**
  * Whether the agent_role_type workspace flag is on for this workspace
- * (M-499 slice 4). Reads the published frontend flag when the server
- * publishes it; falls back to the member-visible tier-roles registry probe
- * (`GET /tiers/roles` is NOT flag-gated — ListTierRoles only requires
- * workspace membership). Fails closed: empty workspace, fetch error, or
- * unpublished flag all read as off.
+ * (M-499 slice 4, fixed by M-517 Architect verdict). Reads the
+ * workspace-scoped boolean the tier-roles endpoint evaluates with the
+ * workspace attached — an `allow_by: workspace_id` rule enables lane z
+ * while every other workspace reads false. The roles list itself stays
+ * member-visible; only this boolean gates the Role surfaces. Fails closed:
+ * empty workspace or fetch error reads as off. There is deliberately no
+ * published-flag OR: the published flag has no workspace context and would
+ * diverge from the per-workspace rule.
  *
  * The probe result is cached per workspace (5min) so one check covers the
  * Team menu, create/edit forms, and all pickers.
@@ -33,8 +34,8 @@ export function agentRoleTypeProbeOptions(wsId: string) {
     queryKey: [...workspaceKeys.tierRoles(wsId), "probe"],
     queryFn: async () => {
       try {
-        await api.listTierRoles(wsId);
-        return true;
+        const res = await api.listTierRoles(wsId);
+        return res.agentRoleType === true;
       } catch {
         return false;
       }
@@ -46,13 +47,9 @@ export function agentRoleTypeProbeOptions(wsId: string) {
 }
 
 export function useAgentRoleTypeEnabled(wsId?: string): boolean {
-  const published = useFeatureEnabled(AGENT_ROLE_TYPE_FLAG, false);
-  const { data: probed = false } = useQuery({
-    ...agentRoleTypeProbeOptions(wsId ?? ""),
-    enabled: !published && !!wsId,
-  });
+  const { data: enabled = false } = useQuery(agentRoleTypeProbeOptions(wsId ?? ""));
   if (!wsId) return false;
-  return published || probed;
+  return enabled;
 }
 
 /**
