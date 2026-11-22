@@ -610,7 +610,13 @@
     "workdir_path_copy_failed": "作業ディレクトリのパスをコピーできませんでした",
     "workdir_path_unavailable": "まだローカルの作業ディレクトリがありません。ローカルエージェントがこのタスクを実行していません",
     "pull_requests_empty_title": "関連する PR はありません。",
-    "restore_to_inbox_tooltip": "インボックスに戻す"
+    "restore_to_inbox_tooltip": "インボックスに戻す",
+    "owner_decisions": "オーナーの決定",
+    "owner_decisions_loading": "決定を読み込み中…",
+    "owner_decisions_failed": "決定を読み込めませんでした。",
+    "owner_decisions_retry": "再試行",
+    "owner_decisions_empty": "決定を記録",
+    "owner_decisions_superseded": "「{{decision}}」に置き換え済み"
   },
   "timeline": {
     "loading": "読み込み中...",
@@ -781,7 +787,10 @@
     "trigger_blocked_tier_waiting_capacity": "選択したtierは満杯またはオフラインです — 空きが出たら実行が開始されます",
     "trigger_blocked_tier_unavailable": "選択したtierは存在しない、無効化されている、またはこのエージェントで利用できません — 名前を修正してください",
     "trigger_blocked_short_tier_waiting_capacity": "tier満杯 — 待機中",
-    "trigger_blocked_short_tier_unavailable": "tierが無効"
+    "trigger_blocked_short_tier_unavailable": "tierが無効",
+    "record_as_decision": "決定として記録",
+    "supersedes_decision": "置き換える既存の決定",
+    "new_decision": "新しい決定"
   },
   "reply": {
     "recipients_changed": "返信先が変更されました。送信先を確認してから、もう一度送信してください。",

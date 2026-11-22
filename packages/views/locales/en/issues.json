@@ -620,7 +620,13 @@
     "workdir_path_copy_failed": "Failed to copy workdir path",
     "workdir_path_unavailable": "No local workdir yet — issue has not been run by a local agent",
     "pull_requests_empty_title": "No linked pull requests.",
-    "restore_to_inbox_tooltip": "Restore to inbox"
+    "restore_to_inbox_tooltip": "Restore to inbox",
+    "owner_decisions": "Owner decisions",
+    "owner_decisions_loading": "Loading decisions…",
+    "owner_decisions_failed": "Could not load decisions.",
+    "owner_decisions_retry": "Retry",
+    "owner_decisions_empty": "Record a decision",
+    "owner_decisions_superseded": "Superseded by “{{decision}}”"
   },
   "timeline": {
     "loading": "Loading...",
@@ -806,7 +812,10 @@
     "trigger_blocked_tier_unavailable": "The selected tier doesn't exist, is disabled, or isn't available to this agent — fix the name",
     "trigger_blocked_tier_waiting_capacity": "The selected tier is full or offline — the run is queued and starts when a slot frees",
     "trigger_blocked_short_tier_unavailable": "Bad tier",
-    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued"
+    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued",
+    "record_as_decision": "Record as decision",
+    "supersedes_decision": "Replace an existing decision",
+    "new_decision": "New decision"
   },
   "reply": {
     "recipients_changed": "Reply target changed. Review the recipients before sending again.",
