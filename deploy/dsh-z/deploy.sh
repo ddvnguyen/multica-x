@@ -39,6 +39,11 @@ log()  { printf '[lane-z] %s\n' "$*"; }
 die()  { printf '[lane-z] ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
+# Shared with autodeploy so package reinstalls and regular deploys converge the
+# profile onto the same sidebar-right fork.
+# shellcheck source=../../scripts/lane-z/lane-lib.sh
+. "$SCRIPT_DIR/../../scripts/lane-z/lane-lib.sh"
+
 need git; need node; need curl; need podman; need pnpm; need openssl
 
 # Shared credential-ref emitter (M-103). Sourced so deploy and sync share one
@@ -548,6 +553,14 @@ else
     if ! node -p "require('$WEB_PROFILE/node_modules/@multica/dsh-plugin/package.json').version" >/dev/null 2>&1; then
       log "WARN: @multica/dsh-plugin install failed; rerun deploy/dsh-z/deploy.sh to retry"
     fi
+
+    # pnpm may replace this fork with the published package during profile
+    # installation. Keep the deploy-time profile aligned with the dsh host.
+    if ensure_sidebar_right_profile; then
+      [ "${SIDEBAR_RIGHT_PROFILE_CHANGED:-0}" = 0 ] || touch "$LANE_ROOT/data/.plugin-changed"
+    else
+      log "WARN: could not restore the sidebar-right fork in $WEB_PROFILE"
+    fi
   fi
 
   # Row config: the bundle ships placeholder values; the lane's row overrides
@@ -578,6 +591,8 @@ else
     echo "    serverUrl: $DSH_PLUGIN_SERVER_URL"
     echo "    token: ''"
     echo "    workspaceSlug: $DSH_PLUGIN_WORKSPACE_SLUG"
+    # Required by hosted-session selection in the dsh sidebar-right bridge.
+    echo "    workspaceFolder: /mnt/workspace/clouds/dsh-z/src/moct"
     # The browser's memory seam (M-121, docs/moct-seam.md out-path 3). Empty
     # keeps /moct answering 503 and the memory surfaces hidden.
     if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
