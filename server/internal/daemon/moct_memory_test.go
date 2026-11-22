@@ -444,10 +444,12 @@ func TestBuildPromptWithoutMoctInjectIsUnchanged(t *testing.T) {
 	}
 }
 
-// S1-B (M-110 fix-round 1): moct-be whitelists decision attrs to
+// S1-B (M-110 fix-round 2): moct-be whitelists decision attrs to
 // decidedBy/sourceRef/date and 400s anything else (live 400 on
-// attrs.issue_id, lane-z probe T-105). The write-back must send only those
-// attrs, with the session_ref + usage payload in the body.
+// attrs.issue_id, lane-z probe T-105), and its schema-v8 secret filter 422s
+// high-entropy runs in title/body/attrs (lane-z probe M-495: session_ref,
+// task_id and issue refs trip it). The write-back must send only the two
+// required attrs with a token-counts-only body.
 func TestMoctRecordUsageSendsOnlyAllowedDecisionAttrs(t *testing.T) {
 	var gotAttrs map[string]any
 	var gotBody struct {
@@ -490,7 +492,7 @@ func TestMoctRecordUsageSendsOnlyAllowedDecisionAttrs(t *testing.T) {
 			t.Errorf("attrs missing required %q", key)
 		}
 	}
-	for _, want := range []string{"session_ref: sess-1", "totals: input=10 output=5", "- p/m: input=10"} {
+	for _, want := range []string{"totals: input=10 output=5", "- p/m: input=10"} {
 		if !strings.Contains(gotBody.Body, want) {
 			t.Errorf("body missing %q:\n%s", want, gotBody.Body)
 		}

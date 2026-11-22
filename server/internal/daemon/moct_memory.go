@@ -283,37 +283,26 @@ func moctRecordUsage(ctx context.Context, baseURL string, task Task, sessionID s
 		}
 		return
 	}
-	// Build a stable, machine-readable usage payload.
-	usagePayload := make(map[string]any, len(usage))
+	// Build a stable, human-readable usage payload. Only totals and per-model
+	// token counts reach moct-be: record ids, session refs and task ids are
+	// content-scanned on write (schema v8 secret filter), and a raw id is
+	// exactly the high-entropy run it rejects.
 	var totalInput, totalOutput, totalCacheRead, totalCacheWrite int64
 	for _, u := range usage {
-		key := u.Model
-		if u.Provider != "" {
-			key = u.Provider + "/" + u.Model
-		}
-		if key == "" {
-			key = "unknown"
-		}
-		usagePayload[key] = map[string]any{
-			"input_tokens":       u.InputTokens,
-			"output_tokens":      u.OutputTokens,
-			"cache_read_tokens":  u.CacheReadTokens,
-			"cache_write_tokens": u.CacheWriteTokens,
-		}
 		totalInput += u.InputTokens
 		totalOutput += u.OutputTokens
 		totalCacheRead += u.CacheReadTokens
 		totalCacheWrite += u.CacheWriteTokens
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "session_ref: %s\n", sessionID)
-	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
-	fmt.Fprintf(&b, "issue: %s\n", moct.IssueRef(task.IssueID))
 	fmt.Fprintf(&b, "totals: input=%d output=%d cache_read=%d cache_write=%d\n", totalInput, totalOutput, totalCacheRead, totalCacheWrite)
 	for _, u := range usage {
 		model := u.Model
 		if u.Provider != "" {
 			model = u.Provider + "/" + u.Model
+		}
+		if strings.TrimSpace(model) == "" {
+			model = "unknown"
 		}
 		fmt.Fprintf(&b, "- %s: input=%d output=%d cache_read=%d cache_write=%d\n", model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
 	}
@@ -327,7 +316,7 @@ func moctRecordUsage(ctx context.Context, baseURL string, task Task, sessionID s
 	}
 	params := moct.NoteParams{
 		Type:        "decision",
-		Title:       "Usage summary " + task.ID,
+		Title:       "Usage summary",
 		Body:        b.String(),
 		Attrs:       attrs,
 		Home:        moct.Home{Kind: "task", Ref: moct.IssueRef(task.IssueID)},
