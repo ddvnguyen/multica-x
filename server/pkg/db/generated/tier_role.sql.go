@@ -11,6 +11,94 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countTiersUsingRole = `-- name: CountTiersUsingRole :one
+SELECT COUNT(*)::int AS tier_count FROM model_tier_role
+WHERE workspace_id = $1 AND role = $2
+`
+
+type CountTiersUsingRoleParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Role        string      `json:"role"`
+}
+
+func (q *Queries) CountTiersUsingRole(ctx context.Context, arg CountTiersUsingRoleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countTiersUsingRole, arg.WorkspaceID, arg.Role)
+	var tier_count int32
+	err := row.Scan(&tier_count)
+	return tier_count, err
+}
+
+const createTierRole = `-- name: CreateTierRole :one
+
+INSERT INTO tier_role (workspace_id, key, position)
+VALUES ($1, $2, $3)
+RETURNING id, workspace_id, key, position, created_at
+`
+
+type CreateTierRoleParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Key         string      `json:"key"`
+	Position    int32       `json:"position"`
+}
+
+// Registry management (M-498). The registry is the workspace's role set; a
+// tier write auto-registers unknown keys, and these three let an admin curate
+// the set explicitly. Rename and delete move the per-role rows with the key so
+// a tier never keeps a position in a role that no longer exists.
+func (q *Queries) CreateTierRole(ctx context.Context, arg CreateTierRoleParams) (TierRole, error) {
+	row := q.db.QueryRow(ctx, createTierRole, arg.WorkspaceID, arg.Key, arg.Position)
+	var i TierRole
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Key,
+		&i.Position,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteTierRole = `-- name: DeleteTierRole :execrows
+DELETE FROM tier_role
+WHERE workspace_id = $1 AND key = $2
+`
+
+type DeleteTierRoleParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Key         string      `json:"key"`
+}
+
+func (q *Queries) DeleteTierRole(ctx context.Context, arg DeleteTierRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteTierRole, arg.WorkspaceID, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getTierRole = `-- name: GetTierRole :one
+SELECT id, workspace_id, key, position, created_at FROM tier_role
+WHERE workspace_id = $1 AND key = $2
+`
+
+type GetTierRoleParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Key         string      `json:"key"`
+}
+
+func (q *Queries) GetTierRole(ctx context.Context, arg GetTierRoleParams) (TierRole, error) {
+	row := q.db.QueryRow(ctx, getTierRole, arg.WorkspaceID, arg.Key)
+	var i TierRole
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Key,
+		&i.Position,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertTierRoleIgnore = `-- name: InsertTierRoleIgnore :exec
 INSERT INTO tier_role (workspace_id, key, position)
 VALUES ($1, $2, $3)
@@ -74,4 +162,57 @@ func (q *Queries) MaxTierRolePosition(ctx context.Context, workspaceID pgtype.UU
 	var max_position int32
 	err := row.Scan(&max_position)
 	return max_position, err
+}
+
+const renameModelTierRoleInTiers = `-- name: RenameModelTierRoleInTiers :exec
+UPDATE model_tier SET roles = array_replace(roles, $1::text, $2::text)
+WHERE workspace_id = $3 AND $1::text = ANY(roles)
+`
+
+type RenameModelTierRoleInTiersParams struct {
+	OldKey      string      `json:"old_key"`
+	NewKey      string      `json:"new_key"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The legacy array the old binary still reads. array_replace keeps the
+// element order and touches nothing else.
+func (q *Queries) RenameModelTierRoleInTiers(ctx context.Context, arg RenameModelTierRoleInTiersParams) error {
+	_, err := q.db.Exec(ctx, renameModelTierRoleInTiers, arg.OldKey, arg.NewKey, arg.WorkspaceID)
+	return err
+}
+
+const renameModelTierRoleKey = `-- name: RenameModelTierRoleKey :exec
+UPDATE model_tier_role SET role = $1
+WHERE workspace_id = $2 AND role = $3
+`
+
+type RenameModelTierRoleKeyParams struct {
+	NewKey      string      `json:"new_key"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OldKey      string      `json:"old_key"`
+}
+
+func (q *Queries) RenameModelTierRoleKey(ctx context.Context, arg RenameModelTierRoleKeyParams) error {
+	_, err := q.db.Exec(ctx, renameModelTierRoleKey, arg.NewKey, arg.WorkspaceID, arg.OldKey)
+	return err
+}
+
+const renameTierRole = `-- name: RenameTierRole :execrows
+UPDATE tier_role SET key = $1
+WHERE workspace_id = $2 AND key = $3
+`
+
+type RenameTierRoleParams struct {
+	NewKey      string      `json:"new_key"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OldKey      string      `json:"old_key"`
+}
+
+func (q *Queries) RenameTierRole(ctx context.Context, arg RenameTierRoleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameTierRole, arg.NewKey, arg.WorkspaceID, arg.OldKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

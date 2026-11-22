@@ -1963,6 +1963,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/presets/{presetId}", h.UpdateAgentPreset)
 					r.Delete("/presets/{presetId}", h.DeleteAgentPreset)
 					r.Put("/tiers/reorder", h.ReorderModelTiers)
+					// Role registry (M-498): the role tabs are built from this list,
+					// so curating it is an admin action like curating tiers.
+					r.Post("/tiers/roles", h.CreateTierRole)
+					r.Put("/tiers/roles/{roleKey}", h.RenameTierRole)
+					r.Delete("/tiers/roles/{roleKey}", h.DeleteTierRole)
 					r.Post("/tiers/{tierId}/members", h.CreateModelTierMember)
 					r.Put("/tiers/{tierId}/members/reorder", h.ReorderModelTierMembers)
 					r.Put("/tiers/{tierId}/members/{memberId}", h.UpdateModelTierMember)

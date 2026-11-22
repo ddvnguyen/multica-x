@@ -51,15 +51,18 @@ const member = (over: Record<string, unknown>) => ({
 
 const data = vi.hoisted(() => ({
   tiers: [] as Array<Record<string, unknown>>,
+  // Per-role lists (M-498): the tab fetches one role's tiers at a time.
+  tiersByRole: {} as Record<string, Array<Record<string, unknown>>>,
+  roles: [] as Array<{ key: string; position: number }>,
   members: {} as Record<string, Array<Record<string, unknown>>>,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
 }));
 
 /**
- * One mock for every query in the tab and the dialog: the tier list, the
- * per-tier member queries, the runtime list and per-runtime model discovery.
- * The key shape decides which fixture answers.
+ * One mock for every query in the tab and the dialog: the role registry, the
+ * per-role tier list, the per-tier member queries, the runtime list and
+ * per-runtime model discovery. The key shape decides which fixture answers.
  */
 function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
   const key = options.queryKey ?? [];
@@ -74,8 +77,14 @@ function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
       refetch: vi.fn(),
     };
   }
+  if (key.includes("roles")) {
+    return { data: data.roles, isLoading: false, isSuccess: true };
+  }
   if (key.includes("tiers")) {
-    return { data: data.tiers, isLoading: data.isLoading, isSuccess: true };
+    const role = key.length === 4 ? String(key[3] ?? "") : "";
+    const list =
+      role !== "" && data.tiersByRole[role] ? data.tiersByRole[role]! : data.tiers;
+    return { data: list, isLoading: data.isLoading, isSuccess: true };
   }
   if (key.includes("list")) {
     return { data: [], isLoading: false, isSuccess: true };
@@ -98,7 +107,14 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
-  modelTiersOptions: () => ({ queryKey: ["workspaces", "workspace-1", "tiers"] }),
+  modelTiersOptions: (_wsId: string, role?: string) => ({
+    queryKey: role
+      ? ["workspaces", "workspace-1", "tiers", role]
+      : ["workspaces", "workspace-1", "tiers"],
+  }),
+  tierRolesOptions: () => ({
+    queryKey: ["workspaces", "workspace-1", "tiers", "roles"],
+  }),
   modelTierMembersOptions: (_wsId: string, tierId: string) => ({
     queryKey: ["workspaces", "workspace-1", "tiers", tierId, "members"],
   }),
@@ -162,6 +178,12 @@ describe("TiersTab", () => {
       tier({ id: "tier-1", name: "fast", idx: 0 }),
       tier({ id: "tier-2", name: "fallback", idx: 1, enabled: false }),
     ];
+    data.roles = [
+      { key: "architect", position: 0 },
+      { key: "management", position: 1 },
+      { key: "engineer", position: 2 },
+    ];
+    data.tiersByRole = {};
     data.members = {
       "tier-1": [
         member({ id: "member-1", position: 0 }),
@@ -244,10 +266,10 @@ describe("TiersTab", () => {
     expect(screen.queryByText(/cooling down/i)).toBeNull();
   });
 
-  it("shows the empty state when no tiers exist", () => {
+  it("names the role in the empty state of its tab", () => {
     data.tiers = [];
     render(<TiersTab />, { wrapper: Wrapper });
-    expect(screen.getByText("No tiers yet")).toBeInTheDocument();
+    expect(screen.getByText("No tiers in Architect yet")).toBeInTheDocument();
   });
 
   it("renders the read-only notice for members and no management actions", () => {
@@ -261,12 +283,15 @@ describe("TiersTab", () => {
     ).toBeInTheDocument();
   });
 
-  it("moves a tier down through the reorder mutation", async () => {
+  it("moves a tier down through the reorder mutation, scoped to the tab's role", async () => {
     mockReorder.mockResolvedValue([]);
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /move fast down/i }));
     await waitFor(() => {
-      expect(mockReorder).toHaveBeenCalledWith(["tier-2", "tier-1"]);
+      expect(mockReorder).toHaveBeenCalledWith({
+        ids: ["tier-2", "tier-1"],
+        role: "architect",
+      });
     });
   });
 
@@ -291,10 +316,13 @@ describe("TiersTab", () => {
     expect(screen.queryByRole("checkbox", { name: "Reviewer" })).toBeNull();
   });
 
-  it("offers the seven quota kinds as checkboxes", async () => {
+  it("offers the seven quota kinds behind one selector", async () => {
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     await screen.findByTestId("tier-editor");
+    // The dialog itself shows no quota checkbox until the selector opens.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3); // 3 roles
+    fireEvent.click(screen.getByTestId("tier-quota-add"));
     for (const label of [
       "Free daily",
       "Free",
@@ -304,9 +332,39 @@ describe("TiersTab", () => {
       "Quota weekly",
       "Quota monthly",
     ]) {
-      expect(screen.getByRole("checkbox", { name: label })).toBeInTheDocument();
+      expect(
+        await screen.findByRole("checkbox", { name: label }),
+      ).toBeInTheDocument();
     }
-    expect(screen.getAllByRole("checkbox")).toHaveLength(10); // 3 roles + 7 quotas
+  });
+
+  it("renders quota picks as tags and clears them back to None", async () => {
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
+    await screen.findByTestId("tier-editor");
+    expect(screen.getByTestId("tier-quota-none")).toHaveTextContent("None");
+
+    fireEvent.click(screen.getByTestId("tier-quota-add"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Quota weekly" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Free daily" }));
+    expect(screen.getByTestId("tier-quota-tag-quota_weekly")).toHaveTextContent(
+      "Quota weekly",
+    );
+    expect(screen.getByTestId("tier-quota-tag-free_daily")).toHaveTextContent(
+      "Free daily",
+    );
+    expect(screen.queryByTestId("tier-quota-none")).toBeNull();
+
+    // Unticking in the selector removes the tag too.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Free daily" }));
+    expect(screen.queryByTestId("tier-quota-tag-free_daily")).toBeNull();
+
+    // The tag's own remove control is the second way to deselect.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove Quota weekly" }),
+    );
+    expect(screen.queryByTestId("tier-quota-tag-quota_weekly")).toBeNull();
+    expect(screen.getByTestId("tier-quota-none")).toHaveTextContent("None");
   });
 
   it("marks context and compaction advisory and shows the derived token count", async () => {
@@ -348,8 +406,12 @@ describe("TiersTab", () => {
     fireEvent.change(screen.getByLabelText("Model"), {
       target: { value: "deepseek-v4.1-flash" },
     });
+    // "Add tier" was pressed on the Architect tab, so Architect is preselected.
     fireEvent.click(screen.getByRole("checkbox", { name: "Engineer" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Quota weekly" }));
+    fireEvent.click(screen.getByTestId("tier-quota-add"));
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "Quota weekly" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => {
       expect(mockCreate).toHaveBeenCalledTimes(1);
@@ -358,12 +420,14 @@ describe("TiersTab", () => {
       name: "flash",
       provider: "freebuff",
       model: "deepseek-v4.1-flash",
-      roles: ["engineer"],
+      roles: ["architect", "engineer"],
       auto_pick: true,
       quota_kinds: ["quota_weekly"],
       ctx_max_tokens: 280000,
       compact_at_pct: 75,
     });
+    // is_free is derived from the quota kinds on the server (M-497).
+    expect(mockCreate.mock.calls[0]![0]).not.toHaveProperty("is_free");
   });
 
   it("adds the remaining members of a new tier after the profile", async () => {
@@ -533,5 +597,92 @@ describe("TiersTab", () => {
       await screen.findByText(/Each member needs a harness and a model/i),
     ).toBeInTheDocument();
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("opens one tab per registry role and lists only that role's tiers", () => {
+    // The same tier in two roles shows in both tabs, with each role's order.
+    data.tiersByRole = {
+      architect: [
+        tier({ id: "tier-both", name: "both", roles: ["architect", "management"] }),
+        tier({ id: "tier-a", name: "arch-only", roles: ["architect"] }),
+      ],
+      management: [
+        tier({ id: "tier-both", name: "both", roles: ["architect", "management"] }),
+        tier({ id: "tier-m", name: "mgmt-only", roles: ["management"] }),
+      ],
+    };
+    render(<TiersTab />, { wrapper: Wrapper });
+    for (const label of ["Architect", "Management", "Engineer"]) {
+      expect(screen.getByRole("tab", { name: label })).toBeInTheDocument();
+    }
+    expect(screen.getByTestId("tier-row-tier-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("tier-row-tier-m")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Management" }));
+    expect(screen.getByTestId("tier-row-tier-m")).toBeInTheDocument();
+    expect(screen.getByTestId("tier-row-tier-both")).toBeInTheDocument();
+    expect(screen.queryByTestId("tier-row-tier-a")).toBeNull();
+  });
+
+  it("reorders inside the active tab and sends that role", async () => {
+    mockReorder.mockResolvedValue([]);
+    data.tiersByRole = {
+      architect: [tier({ id: "tier-a", name: "arch-only" })],
+      management: [
+        tier({ id: "tier-m1", name: "mgmt-one" }),
+        tier({ id: "tier-m2", name: "mgmt-two" }),
+      ],
+    };
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("tab", { name: "Management" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /move mgmt-one down/i }),
+    );
+    await waitFor(() => {
+      expect(mockReorder).toHaveBeenCalledWith({
+        ids: ["tier-m2", "tier-m1"],
+        role: "management",
+      });
+    });
+  });
+
+  it("preselects the active tab's role when adding a tier", async () => {
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("tab", { name: "Engineer" }));
+    fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
+    await screen.findByTestId("tier-editor");
+    expect(screen.getByRole("checkbox", { name: "Engineer" })).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Architect" }),
+    ).not.toBeChecked();
+  });
+
+  it("grays the form out and disables everything but Enabled, Cancel and Save", async () => {
+    mockUpdate.mockResolvedValue({ id: "tier-1" });
+    data.members = { "tier-1": [member({ id: "member-1" })] };
+    data.tiers = [tier({ id: "tier-1", name: "fast" })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const fields = (await screen.findByTestId(
+      "tier-editor-fields",
+    )) as HTMLFieldSetElement;
+    expect(fields.disabled).toBe(false);
+
+    fireEvent.click(screen.getByTestId("tier-enabled-switch"));
+    expect(fields.disabled).toBe(true);
+    expect(fields.className).toContain("opacity-60");
+    expect(
+      (screen.getByLabelText("Name") as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect(screen.getByTestId("tier-enabled-switch")).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /cancel/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+
+    // Saving the off state still works: only the tier's own fields are off.
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalled();
+    });
+    expect(mockUpdate.mock.calls[0]![0]).toMatchObject({ enabled: false });
   });
 });

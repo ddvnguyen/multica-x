@@ -364,6 +364,15 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Seed the role registry with the classic three (M-498) in the same
+	// transaction, so Tier config opens on real tabs rather than an empty
+	// role list until the first tier is written.
+	if err := seedTierRoles(r.Context(), qtx, ws.ID); err != nil {
+		slog.Warn("seed tier roles failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to seed tier roles")
+		return
+	}
+
 	// NOTE: CreateWorkspace deliberately does NOT mark the user as
 	// onboarded. The `onboarded_at` flag is owned by CompleteOnboarding
 	// (Step 3 of the flow) and by AcceptInvitation (invitee joining an

@@ -26,6 +26,11 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@multica/ui/components/ui/popover";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -33,13 +38,21 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { Switch } from "@multica/ui/components/ui/switch";
-import { Loader2 } from "@multica/ui/icons";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@multica/ui/components/ui/tabs";
+import { Loader2, Plus, X } from "@multica/ui/icons";
+import { cn } from "@multica/ui/lib/utils";
 import { ApiError } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
   modelTierMembersOptions,
   modelTiersOptions,
+  tierRolesOptions,
 } from "@multica/core/workspace/queries";
 import {
   useCreateModelTier,
@@ -276,6 +289,12 @@ function TierRow({
   );
 }
 
+/**
+ * The registry seeds these for every workspace (M-497); a workspace that has
+ * none yet still opens on the three classic tabs instead of an empty list.
+ */
+const FALLBACK_TIER_ROLES = ["architect", "management", "engineer"] as const;
+
 export function TiersTab() {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
@@ -283,7 +302,31 @@ export function TiersTab() {
   const { role } = useCurrentMember(wsId);
   const canManage = role === "owner" || role === "admin";
 
-  const tiersQuery = useQuery(modelTiersOptions(wsId));
+  // Tabs come from the workspace's role registry (M-498), so a custom role a
+  // tier registered opens its own tab without a code change.
+  const rolesQuery = useQuery(tierRolesOptions(wsId));
+  const roles = useMemo(() => {
+    const keys = (rolesQuery.data ?? []).map((entry) => entry.key);
+    return keys.length > 0 ? keys : [...FALLBACK_TIER_ROLES];
+  }, [rolesQuery.data]);
+  const [selectedRole, setSelectedRole] = useState<string | null>(null);
+  // A renamed or deleted role falls back to the first tab rather than to a
+  // tab that no longer exists.
+  const activeRole =
+    selectedRole && roles.includes(selectedRole) ? selectedRole : roles[0]!;
+  const roleLabels = useMemo<Record<string, string>>(
+    () => ({
+      architect: t(($) => $.tiers.role_architect),
+      management: t(($) => $.tiers.role_management),
+      engineer: t(($) => $.tiers.role_engineer),
+    }),
+    [t],
+  );
+  const roleLabel = (key: string) => roleLabels[key] ?? key;
+
+  // Only this tab's tiers, in this role's own order: a tier in two roles
+  // appears in both tabs, each with its own reorder arrows.
+  const tiersQuery = useQuery(modelTiersOptions(wsId, activeRole));
   const createTier = useCreateModelTier(wsId);
   const updateTier = useUpdateModelTier(wsId);
   const deleteTier = useDeleteModelTier(wsId);
@@ -316,8 +359,18 @@ export function TiersTab() {
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTier, setEditingTier] = useState<ModelTier | null>(null);
+  // The tab "Add tier" was pressed on: the new tier starts in that role.
+  const [editorRole, setEditorRole] = useState<string>(roles[0]!);
   const [deletingTier, setDeletingTier] = useState<ModelTier | null>(null);
 
+  const openEditor = (tier: ModelTier | null) => {
+    setEditingTier(tier);
+    setEditorRole(activeRole);
+    setEditorOpen(true);
+  };
+
+  // The arrows reorder inside the active tab only, so a tier's position in
+  // another role is untouched.
   const handleMove = async (tier: ModelTier, direction: -1 | 1) => {
     const ids = tiers.map((row) => row.id);
     const from = ids.indexOf(tier.id);
@@ -327,7 +380,7 @@ export function TiersTab() {
     next.splice(from, 1);
     next.splice(to, 0, tier.id);
     try {
-      await reorderTiers.mutateAsync(next);
+      await reorderTiers.mutateAsync({ ids: next, role: activeRole });
     } catch {
       toast.error(t(($) => $.tiers.reorder_failed_toast));
     }
@@ -342,66 +395,72 @@ export function TiersTab() {
       <SettingsSection title={t(($) => $.tiers.list_title)}>
         <SettingsCard>
           {!canManage && <SettingsReadOnlyNotice wsId={wsId} />}
-          {tiersQuery.isLoading ? (
-            <p className="px-4 py-6 text-body text-muted-foreground">
-              {t(($) => $.tiers.loading)}
-            </p>
-          ) : tiers.length === 0 ? (
-            <div className="space-y-3 px-4 py-6">
-              <p className="font-medium">{t(($) => $.tiers.empty_title)}</p>
-              <p className="text-body text-muted-foreground">
-                {t(($) => $.tiers.empty_description)}
-              </p>
+          <Tabs
+            value={activeRole}
+            onValueChange={(value) => setSelectedRole(String(value))}
+            className="gap-0"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2">
+              <TabsList
+                aria-label={t(($) => $.tiers.role_tabs_label)}
+                data-testid="tier-role-tabs"
+              >
+                {roles.map((entry) => (
+                  <TabsTrigger
+                    key={entry}
+                    value={entry}
+                    data-testid={`tier-role-tab-${entry}`}
+                  >
+                    {roleLabel(entry)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
               {canManage && (
-                <Button
-                  onClick={() => {
-                    setEditingTier(null);
-                    setEditorOpen(true);
-                  }}
-                >
+                <Button onClick={() => openEditor(null)}>
                   {t(($) => $.tiers.add_tier)}
                 </Button>
               )}
             </div>
-          ) : (
-            <>
-              {canManage && (
-                <div className="flex justify-end border-b px-4 py-2">
-                  <Button
-                    onClick={() => {
-                      setEditingTier(null);
-                      setEditorOpen(true);
-                    }}
-                  >
-                    {t(($) => $.tiers.add_tier)}
-                  </Button>
+            <TabsContent value={activeRole} className="min-h-0">
+              {tiersQuery.isLoading ? (
+                <p className="px-4 py-6 text-body text-muted-foreground">
+                  {t(($) => $.tiers.loading)}
+                </p>
+              ) : tiers.length === 0 ? (
+                <div className="space-y-2 px-4 py-6">
+                  <p className="font-medium">
+                    {t(($) => $.tiers.empty_role_title, {
+                      role: roleLabel(activeRole),
+                    })}
+                  </p>
+                  <p className="text-body text-muted-foreground">
+                    {t(($) => $.tiers.empty_description)}
+                  </p>
                 </div>
+              ) : (
+                <ul className="divide-y">
+                  {tiers.map((tier, index) => {
+                    const state = membersByTier.get(tier.id);
+                    return (
+                      <TierRow
+                        key={tier.id}
+                        tier={tier}
+                        members={state?.members ?? []}
+                        membersLoading={state?.loading ?? false}
+                        position={index}
+                        total={tiers.length}
+                        canManage={canManage}
+                        onEdit={() => openEditor(tier)}
+                        onDelete={() => setDeletingTier(tier)}
+                        onMove={(direction) => void handleMove(tier, direction)}
+                        movePending={reorderTiers.isPending}
+                      />
+                    );
+                  })}
+                </ul>
               )}
-              <ul className="divide-y">
-                {tiers.map((tier, index) => {
-                  const state = membersByTier.get(tier.id);
-                  return (
-                    <TierRow
-                      key={tier.id}
-                      tier={tier}
-                      members={state?.members ?? []}
-                      membersLoading={state?.loading ?? false}
-                      position={index}
-                      total={tiers.length}
-                      canManage={canManage}
-                      onEdit={() => {
-                        setEditingTier(tier);
-                        setEditorOpen(true);
-                      }}
-                      onDelete={() => setDeletingTier(tier)}
-                      onMove={(direction) => void handleMove(tier, direction)}
-                      movePending={reorderTiers.isPending}
-                    />
-                  );
-                })}
-              </ul>
-            </>
-          )}
+            </TabsContent>
+          </Tabs>
         </SettingsCard>
       </SettingsSection>
 
@@ -409,6 +468,9 @@ export function TiersTab() {
         <TierEditorDialog
           wsId={wsId}
           tier={editingTier}
+          defaultRole={editorRole}
+          roleOptions={roles}
+          roleLabel={roleLabel}
           onClose={() => {
             setEditorOpen(false);
             setEditingTier(null);
@@ -549,6 +611,9 @@ function blankDraftMember(): DraftMember {
 function TierEditorDialog({
   wsId,
   tier,
+  defaultRole,
+  roleOptions,
+  roleLabel,
   onClose,
   onSaved,
   createTier,
@@ -559,6 +624,11 @@ function TierEditorDialog({
 }: {
   wsId: string;
   tier: ModelTier | null;
+  /** The tab "Add tier" was pressed on; a new tier starts in that role. */
+  defaultRole: string;
+  /** The workspace registry, so a custom role is assignable too (M-498). */
+  roleOptions: string[];
+  roleLabel: (key: string) => string;
   onClose: () => void;
   onSaved: () => void;
   createTier: TierCreateMutation;
@@ -579,14 +649,15 @@ function TierEditorDialog({
   const [clearQuality, setClearQuality] = useState(false);
   const [serviceTier, setServiceTier] = useState(tier?.service_tier ?? "");
   const [enabled, setEnabled] = useState(tier?.enabled ?? true);
-  const [roles, setRoles] = useState<string[]>(tier?.roles ?? []);
+  const [roles, setRoles] = useState<string[]>(
+    tier?.roles ?? (defaultRole ? [defaultRole] : []),
+  );
   const [autoPick, setAutoPick] = useState(
     tier?.auto_pick ?? !(tier?.manual_only ?? false),
   );
   const [quotaKinds, setQuotaKinds] = useState<string[]>(
     tier?.quota_kinds ?? [],
   );
-  const [isFree, setIsFree] = useState(tier?.is_free ?? true);
   const [ctxMax, setCtxMax] = useState(
     String(tier?.ctx_max_tokens ?? 280000),
   );
@@ -775,7 +846,8 @@ function TierEditorDialog({
       roles,
       // M-481: auto_pick replaces manual_only; the server keeps both in sync.
       auto_pick: autoPick,
-      is_free: isFree,
+      // M-497: is_free is no longer an input — the server derives it from
+      // quota_kinds, so the dialog has no Free tier switch.
       quota_kinds: quotaKinds,
       ctx_max_tokens: ctx,
       compact_at_pct: pct,
@@ -825,11 +897,15 @@ function TierEditorDialog({
     { kind: "quota_weekly", label: t(($) => $.tiers.quota_weekly) },
     { kind: "quota_monthly", label: t(($) => $.tiers.quota_monthly) },
   ];
-  const roleOptions = [
-    { role: "architect", label: t(($) => $.tiers.role_architect) },
-    { role: "management", label: t(($) => $.tiers.role_management) },
-    { role: "engineer", label: t(($) => $.tiers.role_engineer) },
-  ];
+  const quotaLabel = (kind: string) =>
+    quotaOptions.find((entry) => entry.kind === kind)?.label ?? kind;
+  // Selection order is kept: a newly ticked kind joins the end of the tags.
+  const toggleQuota = (kind: string, checked: boolean) =>
+    setQuotaKinds((prev) =>
+      checked
+        ? [...prev.filter((k) => k !== kind), kind]
+        : prev.filter((k) => k !== kind),
+    );
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -852,12 +928,17 @@ function TierEditorDialog({
             {t(($) => $.tiers.editor_description)}
           </p>
 
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <div className="space-y-1.5">
+          {/* M-498: Enabled sits at the top next to the name. Everything else
+              is inside the fieldset below, which the browser disables and the
+              class grays out while the tier is off; Enabled, Cancel and Save
+              stay live. */}
+          <div className="grid grid-cols-2 items-start gap-4 md:grid-cols-4">
+            <div className="col-span-2 space-y-1.5 md:col-span-3">
               <Label htmlFor="tier-name">{t(($) => $.tiers.name_label)}</Label>
               <Input
                 id="tier-name"
                 value={name}
+                disabled={!enabled}
                 onChange={(e) => setName(e.target.value)}
                 placeholder={t(($) => $.tiers.name_placeholder)}
               />
@@ -867,6 +948,30 @@ function TierEditorDialog({
                 </p>
               )}
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tier-enabled">
+                {t(($) => $.tiers.enabled_label)}
+              </Label>
+              <div className="flex h-9 items-center">
+                <Switch
+                  id="tier-enabled"
+                  data-testid="tier-enabled-switch"
+                  checked={enabled}
+                  onCheckedChange={setEnabled}
+                />
+              </div>
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.tiers.enabled_hint)}
+              </p>
+            </div>
+          </div>
+
+          <fieldset
+            disabled={!enabled}
+            data-testid="tier-editor-fields"
+            className={cn("space-y-5", !enabled && "opacity-60")}
+          >
+          <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-1.5">
               <Label htmlFor="tier-cost">{t(($) => $.tiers.cost_label)}</Label>
               <Input
@@ -927,28 +1032,28 @@ function TierEditorDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label>{t(($) => $.tiers.roles_label)}</Label>
               <div className="flex flex-wrap gap-x-4 gap-y-1">
                 {roleOptions.map((entry) => (
                   <label
-                    key={entry.role}
-                    htmlFor={`tier-role-${entry.role}`}
+                    key={entry}
+                    htmlFor={`tier-role-${entry}`}
                     className="flex items-center gap-1.5 text-sm"
                   >
                     <Checkbox
-                      id={`tier-role-${entry.role}`}
-                      checked={roles.includes(entry.role)}
+                      id={`tier-role-${entry}`}
+                      checked={roles.includes(entry)}
                       onCheckedChange={(checked) => {
                         setRoles(
                           checked === true
-                            ? [...roles, entry.role]
-                            : roles.filter((r) => r !== entry.role),
+                            ? [...roles, entry]
+                            : roles.filter((r) => r !== entry),
                         );
                       }}
                     />
-                    {entry.label}
+                    {roleLabel(entry)}
                   </label>
                 ))}
               </div>
@@ -976,55 +1081,76 @@ function TierEditorDialog({
                 {t(($) => $.tiers.auto_pick_hint)}
               </p>
             </div>
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="tier-free">{t(($) => $.tiers.free_label)}</Label>
-                <div>
-                  <Switch
-                    id="tier-free"
-                    checked={isFree}
-                    onCheckedChange={setIsFree}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="tier-enabled">
-                  {t(($) => $.tiers.enabled_label)}
-                </Label>
-                <div>
-                  <Switch
-                    id="tier-enabled"
-                    checked={enabled}
-                    onCheckedChange={setEnabled}
-                  />
-                </div>
-              </div>
-            </div>
           </div>
 
-          <div className="space-y-1.5">
+          {/* M-498: a multi-select whose ticks render as tags, instead of a
+              row of seven checkboxes. Empty reads "None". */}
+          <div className="space-y-1.5" data-testid="tier-quota-select">
             <Label>{t(($) => $.tiers.quota_label)}</Label>
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {quotaOptions.map((entry) => (
-                <label
-                  key={entry.kind}
-                  htmlFor={`tier-quota-${entry.kind}`}
-                  className="flex items-center gap-1.5 text-sm"
+            <div className="flex flex-wrap items-center gap-1.5">
+              {quotaKinds.length === 0 ? (
+                <span
+                  data-testid="tier-quota-none"
+                  className="text-sm text-muted-foreground"
                 >
-                  <Checkbox
-                    id={`tier-quota-${entry.kind}`}
-                    checked={quotaKinds.includes(entry.kind)}
-                    onCheckedChange={(checked) => {
-                      setQuotaKinds(
-                        checked === true
-                          ? [...quotaKinds, entry.kind]
-                          : quotaKinds.filter((k) => k !== entry.kind),
-                      );
-                    }}
-                  />
-                  {entry.label}
-                </label>
-              ))}
+                  {t(($) => $.tiers.quota_none)}
+                </span>
+              ) : (
+                quotaKinds.map((kind) => (
+                  <Badge
+                    key={kind}
+                    variant="secondary"
+                    data-testid={`tier-quota-tag-${kind}`}
+                    className="gap-1 pr-1"
+                  >
+                    {quotaLabel(kind)}
+                    <button
+                      type="button"
+                      aria-label={t(($) => $.tiers.quota_remove, {
+                        name: quotaLabel(kind),
+                      })}
+                      className="rounded-sm p-0.5 hover:bg-surface-hover"
+                      onClick={() => toggleQuota(kind, false)}
+                    >
+                      <X aria-hidden="true" className="size-3" />
+                    </button>
+                  </Badge>
+                ))
+              )}
+              <Popover>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="tier-quota-add"
+                      aria-label={t(($) => $.tiers.quota_select)}
+                    >
+                      <Plus aria-hidden="true" className="size-3.5" />
+                      {t(($) => $.tiers.quota_add)}
+                    </Button>
+                  }
+                />
+                <PopoverContent align="start" className="w-60 p-1">
+                  {quotaOptions.map((entry) => (
+                    <label
+                      key={entry.kind}
+                      htmlFor={`tier-quota-${entry.kind}`}
+                      className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-surface-hover"
+                    >
+                      <Checkbox
+                        id={`tier-quota-${entry.kind}`}
+                        checked={quotaKinds.includes(entry.kind)}
+                        onCheckedChange={(checked) =>
+                          toggleQuota(entry.kind, checked === true)
+                        }
+                      />
+                      {entry.label}
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
             <p className="text-caption text-muted-foreground">
               {t(($) => $.tiers.quota_helper)}
@@ -1141,6 +1267,8 @@ function TierEditorDialog({
               </p>
             )}
           </div>
+
+          </fieldset>
 
           {error && <p className="text-body text-destructive">{error}</p>}
         </div>

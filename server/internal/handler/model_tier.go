@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"regexp"
@@ -625,17 +627,43 @@ func (h *Handler) modelTierRuntimeInWorkspace(r *http.Request, wsUUID pgtype.UUI
 	return err == nil && count == 1
 }
 
+// defaultTierRoles is the classic role set a workspace starts with (M-498).
+// Migration 744 seeds it for workspaces that already existed; a workspace
+// created later is seeded by CreateWorkspace, so Tier config always opens on
+// real tabs even before its first tier is written.
+var defaultTierRoles = []string{"architect", "management", "engineer"}
+
+// seedTierRoles writes the classic roles into a workspace's registry
+// (M-498). Idempotent: an existing key keeps its position.
+func seedTierRoles(ctx context.Context, q *db.Queries, wsUUID pgtype.UUID) error {
+	for pos, key := range defaultTierRoles {
+		if err := q.InsertTierRoleIgnore(ctx, db.InsertTierRoleIgnoreParams{
+			WorkspaceID: wsUUID, Key: key, Position: int32(pos),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ensureTierRole registers a role key in the workspace registry (M-497,
 // Owner Q4), appending unknown keys at the end. Concurrent writers may tie
 // on position; the registry list breaks ties by key.
 func (h *Handler) ensureTierRole(r *http.Request, wsUUID pgtype.UUID, key string) {
 	maxPos, err := h.Queries.MaxTierRolePosition(r.Context(), wsUUID)
 	if err != nil {
+		// A missing registry row is not worth failing the tier write, but it is
+		// worth knowing about: the role would otherwise vanish from the tabs.
+		slog.WarnContext(r.Context(), "tier role registry: position read failed",
+			"workspace_id", uuidToString(wsUUID), "role", key, "error", err)
 		return
 	}
-	_ = h.Queries.InsertTierRoleIgnore(r.Context(), db.InsertTierRoleIgnoreParams{
+	if err := h.Queries.InsertTierRoleIgnore(r.Context(), db.InsertTierRoleIgnoreParams{
 		WorkspaceID: wsUUID, Key: key, Position: maxPos + 1,
-	})
+	}); err != nil {
+		slog.WarnContext(r.Context(), "tier role registry: register failed",
+			"workspace_id", uuidToString(wsUUID), "role", key, "error", err)
+	}
 }
 
 // syncTierRoleRows reconciles a tier's model_tier_role rows with its
@@ -646,9 +674,12 @@ func (h *Handler) syncTierRoleRows(r *http.Request, wsUUID pgtype.UUID, tierID p
 	roleIdx := map[string]int32{}
 	// Drop rows for removed roles (empty roles drop every row: the tier
 	// leaves every role list but keeps matching legacy role-less agents).
-	_ = h.Queries.DeleteModelTierRolesNotIn(r.Context(), db.DeleteModelTierRolesNotInParams{
+	if err := h.Queries.DeleteModelTierRolesNotIn(r.Context(), db.DeleteModelTierRolesNotInParams{
 		TierID: tierID, Roles: roles,
-	})
+	}); err != nil {
+		slog.WarnContext(r.Context(), "tier role rows: drop failed",
+			"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID), "error", err)
+	}
 	for _, role := range roles {
 		h.ensureTierRole(r, wsUUID, role)
 	}
@@ -664,12 +695,18 @@ func (h *Handler) syncTierRoleRows(r *http.Request, wsUUID pgtype.UUID, tierID p
 			WorkspaceID: wsUUID, Role: role,
 		})
 		if err != nil {
+			slog.WarnContext(r.Context(), "tier role rows: max idx read failed",
+				"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID),
+				"role", role, "error", err)
 			continue
 		}
 		row, err := h.Queries.UpsertModelTierRole(r.Context(), db.UpsertModelTierRoleParams{
 			WorkspaceID: wsUUID, TierID: tierID, Role: role, Idx: maxIdx + 1,
 		})
 		if err != nil {
+			slog.WarnContext(r.Context(), "tier role rows: append failed",
+				"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID),
+				"role", role, "error", err)
 			continue
 		}
 		roleIdx[role] = row.Idx
@@ -785,6 +822,163 @@ func (h *Handler) ListTierRoles(w http.ResponseWriter, r *http.Request) {
 		out = append(out, TierRoleResponse{Key: row.Key, Position: int(row.Position)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"roles": out})
+}
+
+// tierRoleList is the registry as the API returns it.
+func (h *Handler) tierRoleList(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID) {
+	rows, err := h.Queries.ListTierRolesByWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list roles")
+		return
+	}
+	out := make([]TierRoleResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, TierRoleResponse{Key: row.Key, Position: int(row.Position)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"roles": out})
+}
+
+// CreateTierRole adds a role to the workspace registry (M-498, owner/admin).
+// Roles are free workspace-defined keys; the tabs are built from this list, so
+// an admin adds, renames and removes them here instead of editing a tier.
+// Idempotent on the key: registering an existing role returns 409 so the tab
+// list cannot grow a duplicate row.
+func (h *Handler) CreateTierRole(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	var in struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	key := canonicalTierRole(strings.TrimSpace(in.Key))
+	if !validTierRoleKey(key) {
+		writeError(w, http.StatusBadRequest, "role must be lowercase letters, digits or hyphens, up to 40 chars")
+		return
+	}
+	maxPos, err := h.Queries.MaxTierRolePosition(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read roles")
+		return
+	}
+	if _, err := h.Queries.CreateTierRole(r.Context(), db.CreateTierRoleParams{
+		WorkspaceID: wsUUID, Key: key, Position: maxPos + 1,
+	}); err != nil {
+		if isTierNameConflict(err) {
+			writeError(w, http.StatusConflict, "this role already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create role")
+		return
+	}
+	h.tierRoleList(w, r, wsUUID)
+}
+
+// RenameTierRole renames a registry key (M-498, owner/admin). The tier rows
+// move with it — model_tier_role is the source of truth for a tier's roles and
+// per-role order, and model_tier.roles stays in step for the old binary — so a
+// renamed role keeps every tier it had instead of emptying its tab.
+func (h *Handler) RenameTierRole(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	oldKey := canonicalTierRole(strings.TrimSpace(chi.URLParam(r, "roleKey")))
+	var in struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	newKey := canonicalTierRole(strings.TrimSpace(in.Key))
+	if !validTierRoleKey(newKey) {
+		writeError(w, http.StatusBadRequest, "role must be lowercase letters, digits or hyphens, up to 40 chars")
+		return
+	}
+	if _, err := h.Queries.GetTierRole(r.Context(), db.GetTierRoleParams{WorkspaceID: wsUUID, Key: oldKey}); err != nil {
+		writeError(w, http.StatusNotFound, "role not found")
+		return
+	}
+	if newKey != oldKey {
+		if _, err := h.Queries.GetTierRole(r.Context(), db.GetTierRoleParams{WorkspaceID: wsUUID, Key: newKey}); err == nil {
+			writeError(w, http.StatusConflict, "this role already exists")
+			return
+		}
+		if rows, err := h.Queries.RenameTierRole(r.Context(), db.RenameTierRoleParams{
+			WorkspaceID: wsUUID, OldKey: oldKey, NewKey: newKey,
+		}); err != nil || rows == 0 {
+			if isTierNameConflict(err) {
+				writeError(w, http.StatusConflict, "this role already exists")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to rename role")
+			return
+		}
+		if err := h.Queries.RenameModelTierRoleKey(r.Context(), db.RenameModelTierRoleKeyParams{
+			WorkspaceID: wsUUID, OldKey: oldKey, NewKey: newKey,
+		}); err != nil {
+			slog.ErrorContext(r.Context(), "tier role rename: per-role rows not moved",
+				"workspace_id", uuidToString(wsUUID), "from", oldKey, "to", newKey, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to rename role")
+			return
+		}
+		if err := h.Queries.RenameModelTierRoleInTiers(r.Context(), db.RenameModelTierRoleInTiersParams{
+			WorkspaceID: wsUUID, OldKey: oldKey, NewKey: newKey,
+		}); err != nil {
+			slog.WarnContext(r.Context(), "tier role rename: legacy roles array not updated",
+				"workspace_id", uuidToString(wsUUID), "from", oldKey, "to", newKey, "error", err)
+		}
+	}
+	h.tierRoleList(w, r, wsUUID)
+}
+
+// DeleteTierRole removes a registry key (M-498, owner/admin). Refused while a
+// tier still carries the role: deleting it would leave those tiers pointing at
+// a list that no longer exists, and the admin can move them first.
+func (h *Handler) DeleteTierRole(w http.ResponseWriter, r *http.Request) {
+	workspaceID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	key := canonicalTierRole(strings.TrimSpace(chi.URLParam(r, "roleKey")))
+	inUse, err := h.Queries.CountTiersUsingRole(r.Context(), db.CountTiersUsingRoleParams{
+		WorkspaceID: wsUUID, Role: key,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read roles")
+		return
+	}
+	if inUse > 0 {
+		writeErrorCode(w, http.StatusConflict, "role_in_use", "role is used by a tier")
+		return
+	}
+	rows, err := h.Queries.DeleteTierRole(r.Context(), db.DeleteTierRoleParams{WorkspaceID: wsUUID, Key: key})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete role")
+		return
+	}
+	if rows == 0 {
+		writeError(w, http.StatusNotFound, "role not found")
+		return
+	}
+	h.tierRoleList(w, r, wsUUID)
 }
 
 // CreateModelTier adds a tier (owner/admin).
@@ -1072,6 +1266,16 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if role != "" {
+		// A role reorder may only reorder that role's own list (M-498 review):
+		// an id outside it would silently join the role through the upsert,
+		// which is the tier editor's job, not a drag of another tab's rows.
+		roleIdxBefore := h.tierRoleIdxMap(r, wsUUID, role)
+		for _, id := range uuids {
+			if _, ok := roleIdxBefore[uuidToString(id)]; !ok {
+				writeError(w, http.StatusBadRequest, "ids must list tiers of this role only")
+				return
+			}
+		}
 		for pos, id := range uuids {
 			if _, err := h.Queries.UpsertModelTierRole(r.Context(), db.UpsertModelTierRoleParams{
 				WorkspaceID: wsUUID, TierID: id, Role: role, Idx: int32(pos),

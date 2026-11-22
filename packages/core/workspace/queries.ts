@@ -25,6 +25,8 @@ export const workspaceKeys = {
   /** Under `tiers` so any tier write also refreshes its members. */
   tierMembers: (wsId: string, tierId: string) =>
     ["workspaces", wsId, "tiers", tierId, "members"] as const,
+  /** The role registry (M-498); under `tiers` so a tier write refreshes it. */
+  tierRoles: (wsId: string) => ["workspaces", wsId, "tiers", "roles"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
 };
@@ -262,11 +264,28 @@ export function agentMcpServersOptions(agentId: string) {
  * The workspace's model tiers (M-350), ordered by idx. Fetched for plain
  * members too — M-351 agent pickers need the list, and it names runtimes
  * and models only.
+ *
+ * With a role (M-498), only that role's list, in that role's own order — the
+ * Settings tab is one tab per role, and a tier in two roles appears in both.
  */
-export function modelTiersOptions(wsId: string) {
+export function modelTiersOptions(wsId: string, role?: string) {
   return queryOptions({
-    queryKey: workspaceKeys.tiers(wsId),
-    queryFn: () => api.listModelTiers(wsId),
+    queryKey: role
+      ? ([...workspaceKeys.tiers(wsId), role] as const)
+      : workspaceKeys.tiers(wsId),
+    queryFn: () => api.listModelTiers(wsId, role),
+    enabled: wsId !== "",
+  });
+}
+
+/**
+ * The workspace's role registry in tab order (M-498). One tab per role, so a
+ * custom role a tier registered shows up without a code change.
+ */
+export function tierRolesOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.tierRoles(wsId),
+    queryFn: () => api.listTierRoles(wsId),
     enabled: wsId !== "",
   });
 }
