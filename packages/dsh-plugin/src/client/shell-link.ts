@@ -183,10 +183,10 @@ export const SIDEBAR_NO_SESSION_MESSAGE = "no session surface is mounted";
  * The words the hosted column fails with when the panel is not hosting it.
  *
  * Naming a Session is ignored unless the dsh gate holds (the MMX panel is one
- * of the claimed `hostedPanels` in the same commit, M-504): `mounted` then
- * stays empty even though the name was stored. That is a different state from
- * "no Session on screen" — the column has a Session, just not beside MMX — so
- * it gets its own message instead of the generic no-session note.
+ * of the claimed `hostedPanels` in the same commit, M-504): the face then
+ * does not hold the named id and `mounted` stays empty. That is a different
+ * state from "no Session on screen", so it gets its own message instead of
+ * the generic no-session note.
  */
 export const HOSTED_COLUMN_NOT_HOSTING_MESSAGE = "panel is not hosting the column";
 
@@ -201,12 +201,13 @@ export function noSessionSurfaceError(): Error {
 }
 
 /**
- * The failure for a named Session the panel never drew beside MMX.
+ * The failure for a name the panel never drew beside MMX.
  *
- * Thrown when `hostedSession` holds the named id but `mounted` stays empty:
- * the gate (claimed `hostedPanels` + active panel) rejected the name, so the
- * column has nothing to act on. Kept distinct from `noSessionSurfaceError`
- * so the toggle's note says which state the reader is in.
+ * Thrown when `hostedSession` does not hold the named id while `mounted`
+ * stays empty: the gate (claimed `hostedPanels` + active panel) ignored the
+ * name, so the column has nothing to act on. Kept distinct from
+ * `noSessionSurfaceError` so the toggle's note says which state the reader
+ * is in.
  */
 export function notHostingColumnError(): Error {
   return new Error(`sidebarRight: ${HOSTED_COLUMN_NOT_HOSTING_MESSAGE}`);
