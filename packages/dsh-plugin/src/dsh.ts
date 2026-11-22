@@ -102,6 +102,19 @@ export interface DshLayout {
 }
 
 /**
+ * The session navigation dsh's ui-workspace publishes (`ctx.uiWorkspace`).
+ *
+ * One member is enough for this plugin: `openSession` selects a Session and
+ * shows its Conversation, which is what a sidebar row does. The deep-link
+ * consumer is the only caller — the rail rows deliberately do not navigate
+ * Sessions (M-316).
+ */
+export interface DshUiWorkspace {
+  /** Select a Session and show its Conversation as one UI navigation action. */
+  openSession(sessionId: string): void;
+}
+
+/**
  * One page-tab type a shell plugin contributes (dsh's `sidebarRightTabs`).
  *
  * Stage one of dsh's two-stage tab registration: the static face — what the
