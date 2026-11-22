@@ -56,7 +56,7 @@ var projectScopedRouteParams = map[string]privateRouteResolver{
 	"inbox/{id}":                       func(f *privateRouteFixture, caller string) string { return f.inboxItem(caller) },
 	// The inbox is where a member route names an issue as {issueId}; the
 	// caller has a notification about it, so marking it read has an effect.
-	"issues/{issueId}": func(f *privateRouteFixture, caller string) string { f.inboxItem(caller); return f.issue() },
+	"issues/{issueId}":     func(f *privateRouteFixture, caller string) string { f.inboxItem(caller); return f.issue() },
 	"decisions/{sourceId}": func(f *privateRouteFixture, _ string) string { return f.issue() },
 }
 
@@ -77,11 +77,12 @@ var routeParamsOutsideProjects = map[string]outsideProjectParam{
 	"question-cards/{cardId}":        {why: "a workspace question card; its issue is checked when a route loads it"},
 	"sections/{sectionId}":           {why: "a workspace plan section; its issue is checked when a route loads it"},
 	"questions/{id}":                 {why: "a task-token question answered by the running agent"},
-	"accounts/{accountId}":            {why: "a workspace model account"},
-	"decisions/{kind}":                {why: "a workspace decision category", value: func(*privateRouteFixture) string { return "status" }},
-	"revisions/{revision}":            {why: "a workspace plan revision number"},
-	"tiers/{tierId}":                  {why: "a workspace model tier"},
-	"presets/{presetId}":              {why: "a workspace agent preset"},
+	"accounts/{accountId}":           {why: "a workspace model account"},
+	"decisions/{kind}":               {why: "a workspace decision category", value: func(*privateRouteFixture) string { return "status" }},
+	"revisions/{revision}":           {why: "a workspace plan revision number"},
+	"tiers/{tierId}":                 {why: "a workspace model tier"},
+	"roles/{roleKey}":                {why: "a workspace tier role key; the tiers using it are what a project could hide"},
+	"presets/{presetId}":             {why: "a workspace agent preset"},
 	"members/{memberId}":             {why: "a workspace membership"},
 	"invitations/{id}":               {why: "the caller's own workspace invitation"},
 	"invitations/{invitationId}":     {why: "a workspace invitation"},
@@ -155,10 +156,10 @@ var routePrefixesNotProbed = map[string]string{
 // privateProjectRoutesNotProbed lists routes ("METHOD pattern") declaring a
 // project-scoped parameter that the probe cannot judge, each with the reason.
 var privateProjectRoutesNotProbed = map[string]string{
-	"GET /api/attachments/{id}/signed-download": "the signed URL is the credential, not a session; it is minted only by the attachment routes probed here",
-	"POST /api/projects/{id}/join":              "the workspace owner's way into a private project they cannot see; TestWorkspaceOwnerJoinsPrivateProject covers who may call it",
-	"POST /api/workspaces/{id}/tasks/{taskId}/ask": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a question card",
-	"POST /api/workspaces/{id}/tasks/{taskId}/plans": "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a plan",
+	"GET /api/attachments/{id}/signed-download":                             "the signed URL is the credential, not a session; it is minted only by the attachment routes probed here",
+	"POST /api/projects/{id}/join":                                          "the workspace owner's way into a private project they cannot see; TestWorkspaceOwnerJoinsPrivateProject covers who may call it",
+	"POST /api/workspaces/{id}/tasks/{taskId}/ask":                          "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a question card",
+	"POST /api/workspaces/{id}/tasks/{taskId}/plans":                        "requires the exact running task token; callerRunningIssueTask checks project visibility before creating a plan",
 	"POST /api/workspaces/{id}/plans/{planId}/comments/{commentId}/resolve": "workspace-scoped plan comment resolution; plan access is checked by its handler",
 }
 
@@ -171,8 +172,8 @@ type privateRouteRequest struct {
 }
 
 var privateProjectRouteRequests = map[string]privateRouteRequest{
-	"PUT /api/projects/{id}/interactions": {body: func(*privateRouteFixture, string) string { return `{"timeout_seconds":60}` }},
-	"GET /api/workspaces/{id}/issues/{issueId}/ask-plan": {},
+	"PUT /api/projects/{id}/interactions":                          {body: func(*privateRouteFixture, string) string { return `{"timeout_seconds":60}` }},
+	"GET /api/workspaces/{id}/issues/{issueId}/ask-plan":           {},
 	"POST /api/workspaces/{id}/issues/{issueId}/decision-response": {body: func(*privateRouteFixture, string) string { return `{}` }},
 	"POST /api/issues/{id}/labels": {body: func(f *privateRouteFixture, _ string) string {
 		return fmt.Sprintf(`{"label_id":%q}`, f.shared.labelID)
