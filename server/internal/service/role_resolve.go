@@ -12,6 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // M-499 slice 2. A Role is an agent-backed identity with no model/runtime
@@ -25,8 +26,14 @@ import (
 // Role-specific enqueue/restamp branch uses it so a flag-off Role-shaped row
 // keeps the pre-M-510 Agent path (the M-501 spike depends on that).
 func roleRunEnabled(ctx context.Context, s *TaskService, agent db.Agent) bool {
+	return roleRunEnabledWithFlags(ctx, s.FeatureFlags, agent)
+}
+
+// roleRunEnabledWithFlags is the flag-only form used by the shared readiness
+// predicate, which receives flags through RuntimeLookup rather than a service.
+func roleRunEnabledWithFlags(ctx context.Context, flags *featureflag.Service, agent db.Agent) bool {
 	return agent.Subtype == "role" &&
-		featureflags.AgentRoleTypeEnabledForWorkspace(ctx, s.FeatureFlags, util.UUIDToString(agent.WorkspaceID))
+		featureflags.AgentRoleTypeEnabledForWorkspace(ctx, flags, util.UUIDToString(agent.WorkspaceID))
 }
 
 var (

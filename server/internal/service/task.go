@@ -1729,7 +1729,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid && !agent.UseTiers {
+	if !agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
@@ -1929,7 +1929,7 @@ func (s *TaskService) enqueueQuickCreateTaskWithOverride(ctx context.Context, wo
 	if agent.ArchivedAt.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
 	}
-	if !agent.RuntimeID.Valid && !agent.UseTiers {
+	if !agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
@@ -2251,7 +2251,7 @@ func (s *TaskService) PrepareChatTaskEnqueue(
 	if agent.ArchivedAt.Valid {
 		return PreparedChatTaskEnqueue{}, ErrChatTaskAgentArchived
 	}
-	if !agent.RuntimeID.Valid {
+	if !agent.RuntimeID.Valid && !roleRunEnabled(ctx, s, agent) {
 		return PreparedChatTaskEnqueue{}, ErrChatTaskAgentNoRuntime
 	}
 
@@ -2853,7 +2853,7 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 		if carrier.ArchivedAt.Valid {
 			return ErrChatTaskAgentArchived
 		}
-		if !carrier.RuntimeID.Valid && !carrier.UseTiers {
+		if !carrier.RuntimeID.Valid && !carrier.UseTiers && !roleRunEnabled(ctx, s, carrier) {
 			return ErrChatTaskAgentNoRuntime
 		}
 
@@ -2872,7 +2872,7 @@ func (s *TaskService) sendDirectChatMessageWithOverride(
 		// Uses the pool (not qtx) for the capacity reads; the insert below
 		// still runs in this tx so the row is atomic with the rest of the send.
 		// Chat has no issue: difficulty-unaware (levels default to 1).
-		tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, pgtype.UUID{}, nil, override, pgtype.UUID{})
+		tierRes, tierParked, _, tierErr := s.applyTierResolutionWithOverride(ctx, carrier, pgtype.UUID{}, nil, override, initiatorUserID)
 		tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 		if tierErr != nil {
 			return tierErr

@@ -138,6 +138,15 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 		}, nil
 	}
 	if !agent.RuntimeID.Valid {
+		// M-499 slice 2: a Role is model-free — its runtime is stamped from
+		// the tier at enqueue, so having no binding is its normal shape. Only a
+		// flag-enabled, non-archived Role wins this exemption; the archive check
+		// above already ran, and a flag-off Role keeps today's blocked verdict.
+		// This is the one place every admission path (assign, @mention, chat,
+		// quick-create, autopilot) reads, so they all move together.
+		if roleRunEnabledWithFlags(ctx, lookup.FeatureFlags, agent) {
+			return AgentVerdict{Availability: AgentAvailable}, nil
+		}
 		return AgentVerdict{
 			Availability: AgentBlocked,
 			Reason:       dispatch.ReasonAgentRuntimeRequired,

@@ -728,7 +728,7 @@ func (h *Handler) getAgentRuntimes(ctx context.Context, source string, ids []pgt
 // runtimeLookup is the same reader, unexecuted, for handlers that hand it to a
 // shared readiness helper instead of reading the row themselves.
 func (h *Handler) runtimeLookup(source string) service.RuntimeLookup {
-	return service.RuntimeLookup{Queries: h.Queries, Metrics: h.Metrics, Source: source}
+	return service.RuntimeLookup{Queries: h.Queries, Metrics: h.Metrics, Source: source, FeatureFlags: h.FeatureFlags}
 }
 
 // runtimeWorkspaceAccessRevocationPlan is the owner-visible snapshot of work
