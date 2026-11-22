@@ -581,6 +581,27 @@ export interface TaskContextReceiptResponse {
   recorded_at?: string;
 }
 
+/**
+ * One on-demand MOCT memory tool call the run made, as its stored transcript
+ * proves it (M-132 E3): the tool_use row's name and arguments, and the
+ * tool_result row with the same call id when one was recorded.
+ */
+export interface MemoryToolCall {
+  seq: number;
+  call_id?: string;
+  /** The harness's name for the tool (e.g. `mcp__moct__memory_search`). */
+  tool: string;
+  /** The memory tool itself: `memory_search`, `memory_get` or `memory_note`. */
+  name: string;
+  /** The tool_use row's JSON arguments, verbatim. */
+  arguments?: unknown;
+  has_result: boolean;
+  result?: string;
+  result_truncated?: boolean;
+  /** A run error recorded while this call was the latest; not a per-tool flag. */
+  error?: string;
+}
+
 export interface TaskMemoryReport {
   task_id: string;
   workspace_id: string;
@@ -589,6 +610,15 @@ export interface TaskMemoryReport {
     note?: string;
     entries: { id: string; type: string; title: string; body: string }[];
   } | null;
+  /**
+   * The memory tools this run called. `available: false` means the transcript
+   * could not be read — show "unavailable", never "no calls". Absent on servers
+   * that predate M-132 E3, which is the same "unavailable" state.
+   */
+  memory_tools?: {
+    available: boolean;
+    calls: MemoryToolCall[];
+  };
 }
 
 /**

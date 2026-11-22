@@ -922,7 +922,13 @@
     "memory_loading": "메모리 보고서 불러오는 중...",
     "memory_load_failed": "메모리 보고서를 불러오지 못했습니다.",
     "memory_retry": "다시 시도",
-    "memory_empty": "주입된 메모리가 없습니다."
+    "memory_empty": "주입된 메모리가 없습니다.",
+    "memory_tools_title": "이 실행에서 사용된 메모리 도구",
+    "memory_tools_unavailable": "실행 트랜스크립트를 사용할 수 없어 메모리 도구 호출을 표시할 수 없습니다.",
+    "memory_tools_empty": "이 실행에는 메모리 도구 호출이 없습니다.",
+    "memory_tools_no_result": "이 호출의 결과가 기록되지 않았습니다.",
+    "memory_tools_error": "실행 오류: {{error}}",
+    "memory_tools_truncated": "결과가 잘렸습니다."
   },
   "runs_timeline": {
     "title": "실행 기록",

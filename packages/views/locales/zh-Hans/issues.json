@@ -922,7 +922,13 @@
     "memory_loading": "正在加载记忆报告…",
     "memory_load_failed": "无法加载记忆报告。",
     "memory_retry": "重试",
-    "memory_empty": "未注入记忆。"
+    "memory_empty": "未注入记忆。",
+    "memory_tools_title": "本次运行使用的记忆工具",
+    "memory_tools_unavailable": "运行的转录不可用，无法列出记忆工具调用。",
+    "memory_tools_empty": "本次运行没有记忆工具调用。",
+    "memory_tools_no_result": "本次调用未记录结果。",
+    "memory_tools_error": "运行错误：{{error}}",
+    "memory_tools_truncated": "结果已截断。"
   },
   "runs_timeline": {
     "title": "运行记录",
