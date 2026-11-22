@@ -45,9 +45,9 @@ export function WebTabProvider({ children }: { children: React.ReactNode }) {
   return (
     <WebTabNavigationProvider>
       {/* Open chats are tabs of the header strip here, not chips under the
-          page (M-413): one strip for "where am I". The bottom bar reads the
-          same provider, drops its chips and its Ask Multica, and leaves the
-          footer empty. */}
+          page (M-413 round 5): one strip for "where am I", and a
+          conversation is an ordinary tab of it. The bottom bar reads the same
+          provider, drops its quick chat, and leaves the footer empty. */}
       <ChatTabsInHeaderProvider>{children}</ChatTabsInHeaderProvider>
     </WebTabNavigationProvider>
   );
@@ -56,8 +56,7 @@ export function WebTabProvider({ children }: { children: React.ReactNode }) {
 /**
  * The strip. Lives in the dashboard header slot, above the content card and
  * the section panel, so it reads as the window's chrome rather than the
- * page's toolbar: Back and Forward at the leading edge, then the tabs — the
- * page tabs, a hairline, and the chats.
+ * page's toolbar: Back and Forward at the leading edge, then the tabs.
  */
 export function WebTabStrip() {
   // Project a tab click's URL in the same transition as the store write, so

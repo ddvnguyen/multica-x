@@ -8,6 +8,7 @@ import {
   within,
   type RenderResult,
 } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { SupportedLocale } from "@multica/core/i18n";
 import { RESOURCES } from "@multica/views/locales";
@@ -43,7 +44,10 @@ const state = vi.hoisted(() => ({
   prefetch: vi.fn<(path: string) => void>(),
 }));
 
-vi.mock("@multica/core/tabs", () => {
+// The chat tab's identity rule is part of the strip's contract (one session,
+// one tab), so the test uses the real helper instead of restating it.
+vi.mock("@multica/core/tabs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/tabs")>();
   const store = {
     get activeWorkspaceSlug() {
       return state.activeWorkspaceSlug;
@@ -58,6 +62,7 @@ vi.mock("@multica/core/tabs", () => {
     setActiveTab: state.setActiveTab,
     moveTab: state.moveTab,
     addTab: state.addTab,
+    openTab: state.addTab,
     updateTab: state.updateTab,
   };
   const useTabStore = Object.assign(
@@ -69,8 +74,27 @@ vi.mock("@multica/core/tabs", () => {
     state.activeWorkspaceSlug
       ? (state.byWorkspace[state.activeWorkspaceSlug] ?? null)
       : null;
-  return { useTabStore, useActiveGroup };
+  return { ...actual, useTabStore, useActiveGroup };
 });
+
+// Chat tab decoration reads the same caches the Chat surfaces use; the strip
+// tests seed them below so the status is visible on the first render.
+const chatData = vi.hoisted(() => ({
+  sessions: [] as { id: string; has_unread?: boolean }[],
+  tasks: [] as { chat_session_id: string }[],
+}));
+vi.mock("@multica/core/chat/queries", () => ({
+  chatSessionsOptions: () => ({
+    queryKey: ["tab-bar-test", "chat-sessions"],
+    queryFn: async () => chatData.sessions,
+    staleTime: Infinity,
+  }),
+  pendingChatTasksOptions: () => ({
+    queryKey: ["tab-bar-test", "chat-tasks"],
+    queryFn: async () => ({ tasks: chatData.tasks }),
+    staleTime: Infinity,
+  }),
+}));
 
 vi.mock("@multica/views/navigation", () => ({
   useNavigation: () => ({
@@ -87,6 +111,9 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
       issues: () => `/${slug}/issues`,
     }),
   },
+  // Chat tab decoration resolves the workspace id from the current workspace;
+  // the strip renders outside a workspace route provider in these tests.
+  useCurrentWorkspace: () => ({ id: "ws-1", slug: "acme" }),
 }));
 
 // The tab bar's presentation (URL/cache → visual + title) is covered by the
@@ -153,23 +180,37 @@ function acmeTabs(): { id: string; url: string; title: string; pinned: boolean }
 
 import { useTabPresentation } from "@multica/views/layout";
 
+/**
+ * The strip's providers: i18n, plus the query client the chat tab decoration
+ * reads the chat caches from.
+ */
+function withProviders(
+  ui: ReactElement,
+  locale: SupportedLocale = "en",
+): ReactElement {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  qc.setQueryData(["tab-bar-test", "chat-sessions"], chatData.sessions);
+  qc.setQueryData(["tab-bar-test", "chat-tasks"], { tasks: chatData.tasks });
+  return (
+    <QueryClientProvider client={qc}>
+      <I18nProvider locale={locale} resources={RESOURCES}>
+        {ui}
+      </I18nProvider>
+    </QueryClientProvider>
+  );
+}
+
 function render(
   ui: ReactElement,
   locale: SupportedLocale = "en",
 ): RenderResult {
-  return renderRtl(
-    <I18nProvider locale={locale} resources={RESOURCES}>
-      {ui}
-    </I18nProvider>,
-  );
+  return renderRtl(withProviders(ui, locale));
 }
 
-function englishTabBar() {
-  return (
-    <I18nProvider locale="en" resources={RESOURCES}>
-      <TabBar />
-    </I18nProvider>
-  );
+function englishTabBar(): ReactElement {
+  return withProviders(<TabBar />);
 }
 
 function reset() {
@@ -195,6 +236,8 @@ function reset() {
   state.prefetch.mockReset();
   pres.title = null;
   pres.titleResolved = true;
+  chatData.sessions = [];
+  chatData.tasks = [];
   vi.mocked(useTabPresentation).mockClear();
 }
 
@@ -820,4 +863,83 @@ describe("TabBar locale", () => {
       expect(queryByText("Open as new window")).toBeNull();
     });
   }
+});
+
+// M-413 round 5: a chat conversation is an ordinary tab of the one strip. It
+// sits in strip order with the page tabs, closes like them, and carries its
+// running/unread state on its own tab instead of in a second chip row.
+describe("TabBar chat conversations as ordinary tabs", () => {
+  const chatTabsSeed = [
+    { id: "tA", url: "/acme/issues", title: "Issues", pinned: false },
+    { id: "tC", url: "/acme/chat?session=one", title: "Weekly report", pinned: false },
+    { id: "tD", url: "/acme/chat?session=two", title: "Read and done", pinned: false },
+  ];
+
+  function tabFrames(container: HTMLElement): (HTMLElement | null)[] {
+    return Array.from(container.querySelectorAll<HTMLElement>("[data-tab-id]"));
+  }
+
+  it("renders chats in strip order with no divider and no chip strip", () => {
+    setAcmeTabs(chatTabsSeed);
+    const { container, getByLabelText } = render(<TabBar compact />);
+
+    expect(tabFrames(container).map((frame) => frame?.dataset.tabId)).toEqual([
+      "tA",
+      "tC",
+      "tD",
+    ]);
+    expect(container.querySelector('[data-tab-zone-divider]')).toBeNull();
+    expect(container.querySelector("[data-chat-tab]")).toBeNull();
+    // A chat tab title is the session title, like any other tab's title.
+    expect(getByLabelText("Weekly report")).toBeInTheDocument();
+  });
+
+  it("closes only the chat tab whose X was pressed", () => {
+    setAcmeTabs(chatTabsSeed);
+    const { getByLabelText } = render(<TabBar compact />);
+
+    const frame = getByLabelText("Weekly report").closest("[data-tab-id]");
+    const close = frame?.querySelector('[aria-label="Close tab"]');
+    fireEvent.click(close!);
+
+    expect(state.closeTab).toHaveBeenCalledWith("tC");
+    expect(state.closeTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes only the chat tab on middle click", () => {
+    setAcmeTabs(chatTabsSeed);
+    const { getByLabelText } = render(<TabBar compact />);
+
+    // Browser convention: a middle click closes the tab. `fireEvent` has no
+    // auxClick helper in this version, so dispatch the native event the
+    // button's onAuxClick listener receives.
+    fireEvent(
+      getByLabelText("Read and done"),
+      new MouseEvent("auxclick", { bubbles: true, button: 1 }),
+    );
+
+    expect(state.closeTab).toHaveBeenCalledWith("tD");
+    expect(state.closeTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a running conversation with a spinner and an unread one with a dot", () => {
+    chatData.sessions = [{ id: "two", has_unread: true }];
+    chatData.tasks = [{ chat_session_id: "one" }];
+    setAcmeTabs(chatTabsSeed);
+    const { container, getByLabelText } = render(<TabBar compact />);
+
+    const running = getByLabelText("Weekly report, Running").closest("[data-tab-id]");
+    expect(running?.getAttribute("data-chat-tab-state")).toBe("running");
+    expect(running?.querySelector("[data-chat-tab-running]")).not.toBeNull();
+
+    const unread = getByLabelText("Read and done, Unread").closest("[data-tab-id]");
+    expect(unread?.getAttribute("data-chat-tab-state")).toBe("unread");
+    expect(unread?.querySelector("[data-chat-tab-unread]")).not.toBeNull();
+
+    // A page tab gains no chat decoration at all.
+    expect(
+      getByLabelText("Issues").closest("[data-tab-id]")?.hasAttribute("data-chat-tab-state"),
+    ).toBe(false);
+    expect(tabFrames(container)).toHaveLength(3);
+  });
 });

@@ -340,7 +340,8 @@ export function WebTabSync(props: WebTabSyncOptions): null {
  *   the browser's own history for the page that was open before the shell;
  * - a chat session is one tab: a navigation that names a session an open tab
  *   already shows focuses that tab instead of pointing this one at a second
- *   copy of the same conversation;
+ *   copy of the same conversation, and opening a conversation from another
+ *   page opens its tab rather than retargeting that page;
  * - `openInNewTab` writes through the store so modifier-clicks and
  *   "open in new tab" CTAs open product tabs; cross-workspace opens also
  *   switch workspace for the same focus reason;
@@ -388,6 +389,7 @@ export function WebTabNavigationProvider({
       push: (path: string) => {
         const store = useTabStore.getState();
         if (focusOpenChatSession(store, path)) return;
+        if (openChatSessionInTab(store, path)) return;
         if (tryRouteToPinnedNewTab(path)) return;
         const slug = workspaceSlugForPath(path);
         if (slug && slug !== store.activeWorkspaceSlug) {
@@ -492,6 +494,34 @@ function focusOpenChatSession(
   const match = findTabForUrl(group, path);
   if (!match) return false;
   if (match.id !== group.activeTabId) store.setActiveTab(match.id);
+  return true;
+}
+
+/**
+ * A conversation belongs to its own tab (M-413 round 5). Opening one from
+ * anywhere but the Chat page — the list in another space, the strip's history,
+ * a deep link — opens that conversation's tab instead of pointing the current
+ * page tab at it, which would leave no tab where the reader was.
+ *
+ * The Chat page itself stays in place: its own list switches the conversation
+ * inside the active tab, the way the Inbox rewrites its selection without
+ * leaving `/inbox`. Returns false to let the caller navigate normally.
+ */
+function openChatSessionInTab(
+  store: ReturnType<typeof useTabStore.getState>,
+  path: string,
+): boolean {
+  if (!chatSessionIdForUrl(path)) return false;
+  const active = getActiveTab(store);
+  if (
+    active &&
+    splitLocation(active.url).pathname === splitLocation(path).pathname
+  ) {
+    return false;
+  }
+  const slug = workspaceSlugForPath(path);
+  if (!slug || slug !== store.activeWorkspaceSlug) return false;
+  store.openTab(path, "", { activate: true });
   return true;
 }
 

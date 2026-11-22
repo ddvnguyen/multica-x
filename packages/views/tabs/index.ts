@@ -35,9 +35,13 @@ export {
   resetTabSwitchPerfForTests,
 } from "./tab-switch-perf";
 export {
+  ChatTabLeading,
   ChatTabsInHeaderProvider,
+  useChatSessionState,
   HeaderChatControls,
-  HeaderChatTabs,
+  chatSessionHref,
+  openChatSessionTab,
+  useChatTabState,
   useChatTabsInHeader,
 } from "./chat-tabs";
 export { TabHistoryButtons } from "./tab-history-buttons";

@@ -2055,6 +2055,34 @@ describe("chat session identity (M-413 round 4)", () => {
     expect(store.openTab("/acme/chat?session=a", "hi")).toBe(a);
     expect(useTabStore.getState().byWorkspace.acme?.tabs).toHaveLength(3);
   });
+
+  // M-413 round 5: a conversation is an ordinary tab, so a reload restores it
+  // like any page tab — same order, same active tab, same identity for dedupe.
+  it("restores open conversations as tabs after a restart", () => {
+    const store = useTabStore.getState();
+    store.switchWorkspace("acme");
+    const a = store.openTab("/acme/chat?session=a", "Weekly report", { activate: true });
+    const b = store.openTab("/acme/chat?session=b", "Read and done", { activate: true });
+    const persisted = JSON.parse(
+      JSON.stringify(useTabStore.persist.getOptions().partialize!(useTabStore.getState())),
+    );
+
+    store.reset();
+    useTabStore.setState(
+      mergePersistedTabs(persisted, { activeWorkspaceSlug: null, byWorkspace: {} }),
+    );
+
+    const restored = useTabStore.getState().byWorkspace.acme!;
+    expect(restored.tabs.map((tab) => tab.url)).toEqual([
+      "/acme/issues",
+      "/acme/chat?session=a",
+      "/acme/chat?session=b",
+    ]);
+    expect(restored.activeTabId).toBe(b);
+    expect(restored.tabs.find((tab) => tab.id === a)?.title).toBe("Weekly report");
+    // A restored conversation still dedupes to its own tab.
+    expect(useTabStore.getState().openTab("/acme/chat?session=a", "Weekly report", { activate: true })).toBe(a);
+  });
 });
 
 describe("window history (M-413 round 4)", () => {
