@@ -37,6 +37,7 @@ export {
 export {
   ChatTabLeading,
   ChatTabsInHeaderProvider,
+  useChatSessionState,
   HeaderChatControls,
   chatSessionHref,
   openChatSessionTab,

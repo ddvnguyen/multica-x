@@ -42,13 +42,19 @@ import {
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { cn } from "@multica/ui/lib/utils";
-import { useTabStore, useActiveGroup, type Tab } from "@multica/core/tabs";
+import {
+  chatSessionIdForUrl,
+  useTabStore,
+  useActiveGroup,
+  type Tab,
+} from "@multica/core/tabs";
 import { paths, parseTabSubject } from "@multica/core/paths";
 import { useT } from "../i18n";
 import {
   ChatTabLeading,
   HeaderChatControls,
-  useChatTabState,
+  useChatSessionState,
+  type ChatTabState,
 } from "./chat-tabs";
 import {
   useTabPresentation,
@@ -163,18 +169,7 @@ export interface TabBarHostCapabilities {
   openIssueWindow?: (request: { path: string; title: string }) => void;
 }
 
-function SortableTabItem({
-  tab,
-  isActive,
-  isOnly,
-  canCloseOthers,
-  canCloseRight,
-  isNew,
-  shouldReduceMotion,
-  compact,
-  host,
-  prefetch,
-}: {
+interface SortableTabItemProps {
   tab: Tab;
   isActive: boolean;
   /**
@@ -191,7 +186,44 @@ function SortableTabItem({
   compact: boolean;
   host: TabBarHostCapabilities;
   prefetch?: (url: string) => void;
-}) {
+}
+
+/**
+ * One tab. A page tab never touches the chat caches: only a conversation tab
+ * mounts `ConversationTabItem`, which is the only place the per-tab chat
+ * queries run, so a shell with no chat (desktop's strip, a fresh web tab)
+ * needs neither the query client nor the chat module for its pages.
+ */
+function SortableTabItem(props: SortableTabItemProps) {
+  const sessionId = chatSessionIdForUrl(props.tab.url);
+  if (!sessionId) return <SortableTabItemView {...props} chatState={null} />;
+  return <ConversationTabItem {...props} sessionId={sessionId} />;
+}
+
+function ConversationTabItem({
+  sessionId,
+  ...props
+}: SortableTabItemProps & { sessionId: string }) {
+  // A conversation's tab carries the state the chips used to hold: a spinner
+  // while its task runs, a dot for an unread reply. Read from the chat caches
+  // here, so the tab and the Chat surfaces cannot disagree (M-413 round 5).
+  const chatState = useChatSessionState(sessionId);
+  return <SortableTabItemView {...props} chatState={chatState} />;
+}
+
+function SortableTabItemView({
+  tab,
+  isActive,
+  isOnly,
+  canCloseOthers,
+  canCloseRight,
+  isNew,
+  shouldReduceMotion,
+  compact,
+  host,
+  prefetch,
+  chatState,
+}: SortableTabItemProps & { chatState: ChatTabState | null }) {
   const { t } = useT("settings");
   const { t: chatT } = useT("chat");
   const setActiveTab = useTabStore((s) => s.setActiveTab);
@@ -210,10 +242,6 @@ function SortableTabItem({
   // updated as the cache updates. `tab.title` is only a persisted first-frame
   // fallback. See @multica/views useTabPresentation.
   const { visual, title, titleResolved, issueIdentity } = useTabPresentation(tab.url, tab.title, { fetch: true });
-  // A conversation's tab carries the state the chips used to hold: a spinner
-  // while its task runs, a dot for an unread reply. Read from the chat caches
-  // here, so the tab and the Chat surfaces cannot disagree (M-413 round 5).
-  const chatState = useChatTabState(tab.url);
   const pinLabel = tab.pinned
     ? t(($) => $.desktop.tab_bar.unpin)
     : t(($) => $.desktop.tab_bar.pin);

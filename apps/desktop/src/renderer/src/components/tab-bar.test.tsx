@@ -76,7 +76,15 @@ vi.mock("@multica/core/tabs", () => {
     state.activeWorkspaceSlug
       ? (state.byWorkspace[state.activeWorkspaceSlug] ?? null)
       : null;
-  return { useTabStore, useActiveGroup };
+  // The strip reads a tab's conversation id before mounting any chat hook, so
+  // the mock needs the pure helper even though these tests are all page tabs.
+  const chatSessionIdForUrl = (url: string): string | null => {
+    const [path, search = ""] = url.split("#")[0]!.split("?");
+    const segments = path!.split("/").filter(Boolean);
+    if (segments.length !== 2 || segments[1] !== "chat") return null;
+    return new URLSearchParams(search).get("session") || null;
+  };
+  return { useTabStore, useActiveGroup, chatSessionIdForUrl };
 });
 
 vi.mock("@multica/views/navigation", () => ({

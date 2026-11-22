@@ -97,7 +97,15 @@ export interface ChatTabState {
  * the window and the history popover.
  */
 export function useChatTabState(url: string): ChatTabState | null {
-  const sessionId = chatSessionIdForUrl(url);
+  return useChatSessionState(chatSessionIdForUrl(url));
+}
+
+/**
+ * The state of one conversation by id. The strip resolves the id first and
+ * mounts this only for a conversation tab, so page tabs never subscribe to
+ * the chat caches.
+ */
+export function useChatSessionState(sessionId: string | null): ChatTabState | null {
   const wsId = useCurrentWorkspace()?.id ?? "";
   const enabled = !!sessionId && !!wsId;
   const { data: sessions = EMPTY_SESSIONS } = useQuery({
