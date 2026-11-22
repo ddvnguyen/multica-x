@@ -12,10 +12,15 @@ import {
   folderForSelection,
   folderOfProjectResources,
   HOST_NO_BESIDE_PANEL_TOOLTIP,
+  hostedSessionId,
+  isHostingNamedSession,
   isNoSessionSurfaceError,
+  isNotHostingColumnError,
   normalizePath,
   NO_SESSION_SURFACE_NOTE,
   noSessionSurfaceError,
+  NOT_HOSTING_COLUMN_NOTE,
+  notHostingColumnError,
   panelToggleTitle,
   planSidebarToggle,
   sessionSurfaceMounted,
@@ -362,6 +367,55 @@ describe("panelToggleTitle", () => {
 describe("noSessionSurfaceError", () => {
   it("raises the same failure the dsh face raises", () => {
     expect(isNoSessionSurfaceError(noSessionSurfaceError())).toBe(true);
+  });
+});
+
+describe("notHostingColumnError", () => {
+  it("is distinct from the no-session failure", () => {
+    expect(isNotHostingColumnError(notHostingColumnError())).toBe(true);
+    expect(isNoSessionSurfaceError(notHostingColumnError())).toBe(false);
+    expect(isNotHostingColumnError(noSessionSurfaceError())).toBe(false);
+    expect(isNotHostingColumnError(new Error("boom"))).toBe(false);
+    expect(isNotHostingColumnError("sidebarRight: panel is not hosting the column")).toBe(false);
+  });
+
+  it("names the state for the reader", () => {
+    expect(NOT_HOSTING_COLUMN_NOTE).toBe("The dsh side panel is not hosting the MMX column");
+  });
+});
+
+describe("hostedSessionId", () => {
+  const face = (snapshot: string | null | undefined) => ({
+    hostedSession: { getSnapshot: () => snapshot, subscribe: () => () => {} },
+  });
+
+  it("reads the named id, trimmed", () => {
+    expect(hostedSessionId(face("s-1"))).toBe("s-1");
+    expect(hostedSessionId(face("  s-1  "))).toBe("s-1");
+  });
+
+  it("is null without the face, a blank name, or a throwing read", () => {
+    expect(hostedSessionId(face(null))).toBeNull();
+    expect(hostedSessionId(face(undefined))).toBeNull();
+    expect(hostedSessionId(face("   "))).toBeNull();
+    expect(hostedSessionId(null)).toBeNull();
+    expect(hostedSessionId(undefined)).toBeNull();
+    expect(hostedSessionId({})).toBeNull();
+  });
+});
+
+describe("isHostingNamedSession", () => {
+  it("matches only the name just given", () => {
+    const face = {
+      hostedSession: { getSnapshot: () => "s-1", subscribe: () => () => {} },
+    };
+    expect(isHostingNamedSession(face, "s-1")).toBe(true);
+    expect(isHostingNamedSession(face, "s-9")).toBe(false);
+  });
+
+  it("is false when the face publishes nothing", () => {
+    expect(isHostingNamedSession(null, "s-1")).toBe(false);
+    expect(isHostingNamedSession({}, "s-1")).toBe(false);
   });
 });
 

@@ -36,7 +36,9 @@ import { ISSUE_PROJECT_ID, installBackend } from "./backend";
  * `?noName` leaves only `hostPanel` on the face, the card C build before naming
  * shipped; `?otherSession` starts on a Session from another Workspace, so a
  * press has to retarget before it opens; `?noSurface` starts with no Session on
- * screen, the state the hosted column's own writes reject.
+ * screen, the state the hosted column's own writes reject. `?noMount` keeps the
+ * gate closed (M-504): `selectHostedSession` records the name but nothing
+ * mounts, so the press must fail with the not-hosting note.
  *
  * `?issue` opens the island on one issue instead of the board, and gives that
  * issue a project (`ISSUE_PROJECT_ID`) whose `local_directory` resource names
@@ -62,6 +64,10 @@ const onAnotherWorkspace = params.has("otherSession");
 const withoutSurface = params.has("noSurface");
 const withoutFolder = params.has("noFolder");
 const onIssue = params.has("issue");
+// M-504: the dsh gate closed — `selectHostedSession` records the name but the
+// panel never draws for it (`mounted` stays empty), the state the lane showed
+// when the active panel was not a claimed `hostedPanels` id.
+const withoutMount = params.has("noMount");
 
 // The folder the "All projects" default addresses: the toggle reads it from
 // `/multica/config`, which this stub answers.
@@ -119,12 +125,25 @@ if (withHostPanel) {
   if (!withoutName) {
     // The hosted column is drawn for the named Session, exactly as the real
     // controller names it: the stub moves its on-screen Session with the name.
+    // `?noMount` is the closed gate (M-504): the name is recorded but nothing
+    // mounts, so the press must fail with the not-hosting note.
     sidebarRight.selectHostedSession = (sessionId: string): (() => void) => {
       calls.push(`selectHostedSession ${sessionId}`);
-      window.__sessionSurfaceMounted = sessionId;
-      trigger();
+      if (!withoutMount) {
+        window.__sessionSurfaceMounted = sessionId;
+        trigger();
+      }
       return () => { calls.push(`selectHostedSession-release ${sessionId}`); };
     };
+    if (withoutMount) {
+      // The face holds the name the way the lane's `hostedSession` does when
+      // the gate ignores it: here it holds nothing, so the press reports the
+      // panel is not hosting the column rather than the generic no-session note.
+      sidebarRight.hostedSession = {
+        getSnapshot: (): null => null,
+        subscribe: (): (() => void) => () => {},
+      };
+    }
   }
 }
 

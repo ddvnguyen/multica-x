@@ -235,4 +235,60 @@ describe("createSidePreviewOpener", () => {
       })("iss-1"),
     ).rejects.toThrow(/cannot show the side panel next to MMX/);
   });
+
+  it("reports the panel is not hosting the column when the gate ignores the name", async () => {
+    // M-504: `selectHostedSession` returns normally but nothing mounts and the
+    // face does not hold the named id — the dsh gate rejected it.
+    const mounted: string | undefined = undefined;
+    const names: string[] = [];
+    const sidebarRight: SidebarRightLike = {
+      mounted: { getSnapshot: () => mounted, subscribe: () => () => {} },
+      toggleExpanded: () => {},
+      isExpanded: () => false,
+      hostPanel: () => () => {},
+      selectHostedSession: (sessionId: string) => {
+        names.push(sessionId);
+        return () => {};
+      },
+      hostedSession: { getSnapshot: () => null, subscribe: () => () => {} },
+      openTab: () => {},
+    };
+    await expect(
+      createSidePreviewOpener({
+        sidebarRight,
+        workspaces: fakeWorkspaces(
+          [],
+          [{ workspaceId: "w-1", path: "/work/acme", sessionIds: ["s-1"] }],
+        ),
+        sessions: fakeSessions([]),
+        folder: "/work/acme",
+      })("iss-1"),
+    ).rejects.toThrow(/panel is not hosting the column/);
+    expect(names).toEqual(["s-1"]);
+  });
+
+  it("keeps the generic note when the face publishes no named id", async () => {
+    // Without `hostedSession` the press cannot tell the gate state apart from
+    // an unresolvable Session, so it stays with the no-session failure.
+    const mounted: string | undefined = undefined;
+    const sidebarRight: SidebarRightLike = {
+      mounted: { getSnapshot: () => mounted, subscribe: () => () => {} },
+      toggleExpanded: () => {},
+      isExpanded: () => false,
+      hostPanel: () => () => {},
+      selectHostedSession: () => () => {},
+      openTab: () => {},
+    };
+    await expect(
+      createSidePreviewOpener({
+        sidebarRight,
+        workspaces: fakeWorkspaces(
+          [],
+          [{ workspaceId: "w-1", path: "/work/acme", sessionIds: ["s-1"] }],
+        ),
+        sessions: fakeSessions([]),
+        folder: "/work/acme",
+      })("iss-1"),
+    ).rejects.toThrow(/no session surface is mounted/);
+  });
 });

@@ -144,8 +144,32 @@ export const inject = [
 
 let hostCreateElement: HostCreateElement | null = null;
 
+/** A face without `effect` reads as "no teardown surface". */
+type EffectFace = Pick<DshClientContext, "effect">;
+
 /** A face the shell context carries: undefined when the host does not provide it. */
 type Face = Record<string, unknown>;
+
+/**
+ * Run `fn` under the plugin's page lifetime, or at once when the shell gives
+ * the browser context no `effect`.
+ *
+ * The client `effect` is optional (M-504): `ctx.effect?.(...)` no-ops
+ * silently when it is absent, which left the `hostPanel` claims unregistered
+ * — the panel then ignored every name while `selectHostedSession` still
+ * returned a disposer. Falling back to a direct call keeps the claim; the
+ * warn makes the missing teardown loud instead of silent. Page-lifetime
+ * registrations (this module's only kind here) outlive nothing by leaking:
+ * `apply` runs once per page.
+ */
+function runClientEffect(face: EffectFace, label: string, fn: () => (() => void) | void): void {
+  if (typeof face.effect === "function") {
+    face.effect(fn, label);
+    return;
+  }
+  console.warn(`[multica] ${label}: no ctx.effect, running without teardown`);
+  fn();
+}
 
 /** Read one service off the shell context without assuming it exists. */
 function face(ctx: DshClientContext, name: string): unknown {
@@ -211,12 +235,15 @@ export function apply(ctx: DshClientContext): void {
     replaceSearch: consumeSessionParam,
   });
   if (deepLinkDone !== null) {
-    ctx.effect?.(() => deepLinkDone, "multica: dsh_session deep link");
+    runClientEffect(ctx, "multica: dsh_session deep link", () => deepLinkDone);
   }
 
   // Card C's opt-in: the right sidebar may render beside a hosted `main`
-  // panel. Register every MMX panel id inside `ctx.effect` — the disposer is
-  // the plugin's teardown — so an MMX view keeps the side panel next to it.
+  // panel. Register every MMX panel id under the plugin's page lifetime — the
+  // disposer is the plugin's teardown — so an MMX view keeps the side panel
+  // next to it. A shell without `ctx.effect` still gets the claims at once
+  // (M-504: skipping them left the gate closed and every name ignored); only
+  // the teardown is lost.
   // Hosting only keeps the column drawn: which Session's folder it edits is
   // named per press by the toggle's `retarget` plan, because the project (and
   // so the folder) changes while MMX stays in the main column. A face without
@@ -224,14 +251,14 @@ export function apply(ctx: DshClientContext): void {
   // toggle disables itself there (M-316) instead of putting a Session on
   // screen.
   if (sidebarRight !== null && typeof sidebarRight.hostPanel === "function") {
-    ctx.effect?.(() => {
+    runClientEffect(ctx, "multica: sidebarRight.hostPanel for the seven MMX panels", () => {
       const disposers = MULTICA_ENTRIES.map((entry) =>
         sidebarRight.hostPanel?.(entry.id) ?? null,
       ).filter((dispose): dispose is () => void => dispose !== null);
       return () => {
         for (const dispose of disposers) dispose();
       };
-    }, "multica: sidebarRight.hostPanel for the seven MMX panels");
+    });
   }
 
   // The rail dot's baseline count. The browser half has no teardown path —
@@ -264,14 +291,15 @@ export function apply(ctx: DshClientContext): void {
   // dsh's own right column. The chip is generic because one tab serves
   // different targets; the identifier belongs in the body's header.
   if (tabTypes !== null && canOpenSidePreview(sidebarRight, true)) {
-    ctx.effect?.(
+    runClientEffect(
+      ctx,
+      "multica: sidebarRightTabs.register for the side preview",
       () =>
         tabTypes.register({
           id: SIDE_PREVIEW_TAB_ID,
           kind: SIDE_PREVIEW_KIND,
           title: () => SIDE_PREVIEW_TITLES.title,
         }),
-      "multica: sidebarRightTabs.register for the side preview",
     );
     ctx.slots.inject("sidebar.right.pane.tab", () =>
       ctx.slots.register(

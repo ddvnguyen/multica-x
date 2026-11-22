@@ -180,6 +180,17 @@ export function sessionSurfaceMounted(
 export const SIDEBAR_NO_SESSION_MESSAGE = "no session surface is mounted";
 
 /**
+ * The words the hosted column fails with when the panel is not hosting it.
+ *
+ * Naming a Session is ignored unless the dsh gate holds (the MMX panel is one
+ * of the claimed `hostedPanels` in the same commit, M-504): `mounted` then
+ * stays empty even though the name was stored. That is a different state from
+ * "no Session on screen" — the column has a Session, just not beside MMX — so
+ * it gets its own message instead of the generic no-session note.
+ */
+export const HOSTED_COLUMN_NOT_HOSTING_MESSAGE = "panel is not hosting the column";
+
+/**
  * The failure the dsh face raises for a write with no Session on screen.
  *
  * The hosted press raises this exact error rather than a new message, so one
@@ -187,6 +198,28 @@ export const SIDEBAR_NO_SESSION_MESSAGE = "no session surface is mounted";
  */
 export function noSessionSurfaceError(): Error {
   return new Error(`sidebarRight: ${SIDEBAR_NO_SESSION_MESSAGE}`);
+}
+
+/**
+ * The failure for a named Session the panel never drew beside MMX.
+ *
+ * Thrown when `hostedSession` holds the named id but `mounted` stays empty:
+ * the gate (claimed `hostedPanels` + active panel) rejected the name, so the
+ * column has nothing to act on. Kept distinct from `noSessionSurfaceError`
+ * so the toggle's note says which state the reader is in.
+ */
+export function notHostingColumnError(): Error {
+  return new Error(`sidebarRight: ${HOSTED_COLUMN_NOT_HOSTING_MESSAGE}`);
+}
+
+/**
+ * Whether a failure is exactly the not-hosting state.
+ *
+ * Checked after the call, like `isNoSessionSurfaceError`: a press that names
+ * but never mounts means the panel is not hosting the column.
+ */
+export function isNotHostingColumnError(cause: unknown): boolean {
+  return cause instanceof Error && cause.message.includes(HOSTED_COLUMN_NOT_HOSTING_MESSAGE);
 }
 
 /**
@@ -198,6 +231,27 @@ export function noSessionSurfaceError(): Error {
  */
 export function isNoSessionSurfaceError(cause: unknown): boolean {
   return cause instanceof Error && cause.message.includes(SIDEBAR_NO_SESSION_MESSAGE);
+}
+
+/** The id last named via `selectHostedSession`, when the face publishes it. */
+export function hostedSessionId(
+  sidebarRight: { hostedSession?: { getSnapshot(): string | null | undefined } } | null | undefined,
+): string | null {
+  try {
+    const snapshot = sidebarRight?.hostedSession?.getSnapshot() ?? null;
+    const id = typeof snapshot === "string" ? snapshot.trim() : "";
+    return id === "" ? null : id;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the name just given is the one the face is holding. */
+export function isHostingNamedSession(
+  sidebarRight: { hostedSession?: { getSnapshot(): string | null | undefined } } | null | undefined,
+  sessionId: string,
+): boolean {
+  return hostedSessionId(sidebarRight) === sessionId.trim();
 }
 
 export type DisabledReason = FolderReason | "no-session" | "host";
@@ -216,6 +270,16 @@ export const HOST_NO_BESIDE_PANEL_TOOLTIP =
 /** The copy a press that found no Session surface to draw surfaces. */
 export const NO_SESSION_SURFACE_NOTE =
   "The dsh side panel needs a session in the project folder";
+
+/**
+ * The copy a press surfaces when the panel is not hosting the MMX column.
+ *
+ * The name landed (`hostedSession` holds it) but the column drew nothing
+ * (`mounted` stayed empty): the dsh gate rejected it, usually because the
+ * MMX panel on screen is not one of the claimed `hostedPanels`.
+ */
+export const NOT_HOSTING_COLUMN_NOTE =
+  "The dsh side panel is not hosting the MMX column";
 
 /**
  * The tooltip copy for one reason, the way the disabled state reads.
@@ -419,6 +483,24 @@ export interface SidebarRightLike {
    * while MMX keeps the main column.
    */
   selectHostedSession?(sessionId: string): () => void;
+  /**
+   * The id last named via `selectHostedSession`, when the build publishes it.
+   * Read after naming to tell "the panel ignored the name" (gate closed: the
+   * MMX panel on screen is not a claimed `hostedPanels` id) apart from "no
+   * Session on screen". Absent on builds that only publish `mounted`.
+   */
+  hostedSession?: {
+    getSnapshot(): string | null | undefined;
+    subscribe(listener: () => void): () => void;
+  };
+  /**
+   * The panel ids the sidebar is willing to stand beside (card C's
+   * `hostPanel` claims). Published for diagnosis; absent on older builds.
+   */
+  hostedPanels?: {
+    getSnapshot(): readonly string[];
+    subscribe(listener: () => void): () => void;
+  };
   /**
    * dsh's page-tab navigation (0.2.2+): open a registered kind, or reveal the
    * tab already showing it and hand it `params`. Absent on an older build,
