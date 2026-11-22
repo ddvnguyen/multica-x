@@ -165,8 +165,9 @@ export interface DshClientContext {
   layout?: DshLayout;
   /**
    * Run `fn` under the plugin's page lifetime, when the shell gives the
-   * browser context one (the host face always has it). Optional: the absence
-   * reads as "no teardown surface", which only shortens hostPanel's cleanup.
+   * browser context one (the host face always has it). Optional: without it
+   * the plugin runs the registration at once with no teardown (M-504), so a
+   * missing `effect` never means a missing `hostPanel` claim.
    */
   effect?(fn: () => (() => void) | void, label: string): unknown;
   /**

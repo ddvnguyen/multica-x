@@ -1,7 +1,9 @@
 import {
   boundSessionId,
   describe,
+  isHostingNamedSession,
   noSessionSurfaceError,
+  notHostingColumnError,
   planSidebarToggle,
   sessionSurfaceMounted,
   workspaceForFolder,
@@ -87,5 +89,14 @@ export async function prepareHostedColumn(
     sessionId = await sessions.create({ workspaceId: workspace.workspaceId });
   }
   nameHostedSession(sidebarRight, sessionId);
-  if (!sessionSurfaceMounted(sidebarRight)) throw noSessionSurfaceError();
+  if (sessionSurfaceMounted(sidebarRight)) return;
+  // The name was ignored: the face does not hold the named id, so the dsh
+  // gate rejected it (the MMX panel on screen is not a claimed `hostedPanels`
+  // id). That is a different state from "no Session on screen" and gets its
+  // own note. Without the face — or when the face holds the name but nothing
+  // mounted (an unresolvable Session) — only the generic note is available.
+  if ("hostedSession" in sidebarRight && !isHostingNamedSession(sidebarRight, sessionId)) {
+    throw notHostingColumnError();
+  }
+  throw noSessionSurfaceError();
 }

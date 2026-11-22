@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { DshClientContext, DshSidebarRightTabDefinition } from "../src/dsh";
 import { apply } from "../src/client/index";
 import { resetIsland } from "../src/client/island";
@@ -132,5 +132,37 @@ describe("side preview registration", () => {
 
     expect(tabTypes).toHaveLength(0);
     expect(hostShell()?.sidePreviewKind).toBeNull();
+  });
+
+  it("still claims every MMX panel when the shell gives the browser context no effect", () => {
+    // M-504: `ctx.effect` is optional, and skipping the claims left the dsh
+    // gate closed while `selectHostedSession` still returned a disposer.
+    const { ctx, tabTypes } = fakeContext();
+    const claims: string[] = [];
+    const sidebarRight = (ctx as unknown as { sidebarRight: SidebarRightLike }).sidebarRight;
+    sidebarRight.hostPanel = (panelId: string) => {
+      claims.push(panelId);
+      return () => {};
+    };
+    const contextWithoutEffect = ctx as unknown as Record<string, unknown>;
+    delete contextWithoutEffect.effect;
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      apply(ctx as Parameters<typeof apply>[0]);
+      expect(warned).toHaveBeenCalled();
+    } finally {
+      warned.mockRestore();
+    }
+
+    expect(claims).toEqual([
+      "multica",
+      "multica-agents",
+      "multica-skills",
+      "multica-inbox",
+      "multica-decisions",
+      "multica-chat",
+      "multica-settings",
+    ]);
+    expect(tabTypes).toHaveLength(1);
   });
 });

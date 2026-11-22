@@ -179,3 +179,23 @@ test("no folder: the toggle is disabled and says what is missing", async ({
 
   await expectNoPageErrors(page);
 });
+
+test("the closed gate names but never mounts: the press says the panel is not hosting the column", async ({
+  page,
+}) => {
+  // M-504: the dsh gate ignores the name (the MMX panel on screen is not a
+  // claimed `hostedPanels` id), so `mounted` stays empty. The press must fail
+  // with the not-hosting note, not the generic no-session one.
+  await openShell(page, "?hostPanel&noSurface&noMount");
+
+  await expect(page.locator(toggle)).toBeEnabled();
+  await page.locator(toggle).click();
+  await expect(page.locator(toggle)).toHaveAttribute(
+    "title",
+    "The dsh side panel is not hosting the MMX column",
+    { timeout: 20_000 },
+  );
+  expect(await stubCalls(page)).toEqual(["selectHostedSession s-1"]);
+
+  await expectNoPageErrors(page);
+});

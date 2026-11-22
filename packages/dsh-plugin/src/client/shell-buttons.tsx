@@ -7,6 +7,8 @@ import { useSidebarFolder } from "./sidebar-folder";
 import {
   describe,
   isNoSessionSurfaceError,
+  isNotHostingColumnError,
+  NOT_HOSTING_COLUMN_NOTE,
   toggleState,
   type SidebarRightLike,
 } from "./shell-link";
@@ -139,9 +141,11 @@ function SidePanelToggle({
       setNote(
         isNoSessionSurfaceError(cause)
           ? describe("no-session")
-          : cause instanceof Error
-            ? cause.message
-            : String(cause),
+          : isNotHostingColumnError(cause)
+            ? NOT_HOSTING_COLUMN_NOTE
+            : cause instanceof Error
+              ? cause.message
+              : String(cause),
       );
     } finally {
       setBusy(false);
