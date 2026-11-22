@@ -40,6 +40,32 @@ SET status = 'answered',
 WHERE id = $1 AND status = 'open'
 RETURNING *;
 
+-- name: AttachAskPlanAnswerToPendingTask :one
+-- M-500: the answer arrived while another run for the same (issue, agent) was
+-- already queued (a comment trigger or the escalation lead run won the pending
+-- slot). The answer CAS above already committed — rolling the answer back
+-- would strand it — so the pending run carries the handoff instead: it gets
+-- the answer/verdict evidence kind + ref and the rendered handoff note, and
+-- the daemon prompt renders [ANSWER]/[PLAN VERDICT] for it (evidence branch
+-- precedes the comment branch). Oldest pending run wins; there is at most one
+-- per (issue, agent).
+UPDATE agent_task_queue
+SET handoff_note = @handoff_note,
+    trigger_evidence_kind = @evidence_kind,
+    trigger_evidence_ref_id = @evidence_ref_id
+WHERE id = (
+    SELECT id FROM agent_task_queue
+    WHERE agent_task_queue.issue_id = @issue_id AND agent_task_queue.agent_id = @agent_id
+      AND agent_task_queue.status IN ('queued', 'dispatched')
+      -- A wakeup task carries its own [WAKEUP] handoff; the answer must never
+      -- overwrite it. The pending-slot indexes exclude wakeups the same way,
+      -- so the duplicate that led here is never one — this is belt only.
+      AND (agent_task_queue.context IS NULL OR agent_task_queue.context->>'wakeup_id' IS NULL)
+    ORDER BY created_at ASC
+    LIMIT 1
+)
+RETURNING *;
+
 -- name: EscalateAgentQuestionCard :one
 -- M-332 escalation, once per card. The CAS on 'escalated_at IS NULL' is the
 -- idempotency gate: a second sweep round (or a racing first one) matches no

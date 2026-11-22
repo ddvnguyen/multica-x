@@ -64,11 +64,16 @@ func init() {
 
 // questionCardPayload is the agent-facing read shape of an ask card
 // (GET /api/question-cards/{id}); only what an answerer needs is decoded.
+// M-500: answered cards also carry the chosen answers and their provenance,
+// so `show` prints what was decided, by whom and when.
 type questionCardPayload struct {
-	ID      string `json:"id"`
-	Status  string `json:"status"`
-	Context string `json:"context"`
-	Questions []struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	Context        string `json:"context"`
+	AnsweredBy     string `json:"answered_by"`
+	AnsweredByType string `json:"answered_by_type"`
+	AnsweredAt     string `json:"answered_at"`
+	Questions      []struct {
 		Prompt   string `json:"prompt"`
 		Multiple bool   `json:"multiple"`
 		Options  []struct {
@@ -76,6 +81,10 @@ type questionCardPayload struct {
 			Description string `json:"description"`
 		} `json:"options"`
 	} `json:"questions"`
+	Answers []struct {
+		Selected []int  `json:"selected"`
+		Text     string `json:"text"`
+	} `json:"answers"`
 }
 
 type questionCardAnswer struct {
@@ -110,6 +119,18 @@ func runQuestionCardShow(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(card.Context) != "" {
 		fmt.Printf("Context: %s\n", card.Context)
 	}
+	if card.Status == "answered" {
+		who := "the Owner"
+		if card.AnsweredByType == "agent" {
+			who = "the project lead, on the Owner's behalf"
+		}
+		when := strings.TrimSpace(card.AnsweredAt)
+		if when != "" {
+			fmt.Printf("Answered by %s at %s\n", who, when)
+		} else {
+			fmt.Printf("Answered by %s\n", who)
+		}
+	}
 	for i, question := range card.Questions {
 		kind := "single choice"
 		if question.Multiple {
@@ -122,6 +143,22 @@ func runQuestionCardShow(cmd *cobra.Command, args []string) error {
 				line += " — " + option.Description
 			}
 			fmt.Println(line)
+		}
+		if card.Status == "answered" && i < len(card.Answers) {
+			answer := card.Answers[i]
+			chosen := make([]string, 0, len(answer.Selected)+1)
+			for _, idx := range answer.Selected {
+				if idx >= 0 && idx < len(question.Options) {
+					chosen = append(chosen, question.Options[idx].Label)
+				}
+			}
+			if text := strings.TrimSpace(answer.Text); text != "" {
+				chosen = append(chosen, fmt.Sprintf("text: %s", text))
+			}
+			if len(chosen) == 0 {
+				chosen = append(chosen, "(no answer)")
+			}
+			fmt.Printf("   Answer: %s\n", strings.Join(chosen, ", "))
 		}
 	}
 	return nil

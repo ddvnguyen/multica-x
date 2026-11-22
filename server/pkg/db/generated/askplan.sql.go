@@ -110,6 +110,125 @@ func (q *Queries) ApproveAgentPlan(ctx context.Context, arg ApproveAgentPlanPara
 	return i, err
 }
 
+const attachAskPlanAnswerToPendingTask = `-- name: AttachAskPlanAnswerToPendingTask :one
+UPDATE agent_task_queue
+SET handoff_note = $1,
+    trigger_evidence_kind = $2,
+    trigger_evidence_ref_id = $3
+WHERE id = (
+    SELECT id FROM agent_task_queue
+    WHERE agent_task_queue.issue_id = $4 AND agent_task_queue.agent_id = $5
+      AND agent_task_queue.status IN ('queued', 'dispatched')
+      -- A wakeup task carries its own [WAKEUP] handoff; the answer must never
+      -- overwrite it. The pending-slot indexes exclude wakeups the same way,
+      -- so the duplicate that led here is never one — this is belt only.
+      AND (agent_task_queue.context IS NULL OR agent_task_queue.context->>'wakeup_id' IS NULL)
+    ORDER BY created_at ASC
+    LIMIT 1
+)
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id, tier_parked, tier_explicit, tier_quality_fallback, tier_quality_unverified, tier_member_id
+`
+
+type AttachAskPlanAnswerToPendingTaskParams struct {
+	HandoffNote   pgtype.Text `json:"handoff_note"`
+	EvidenceKind  pgtype.Text `json:"evidence_kind"`
+	EvidenceRefID pgtype.UUID `json:"evidence_ref_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+}
+
+// M-500: the answer arrived while another run for the same (issue, agent) was
+// already queued (a comment trigger or the escalation lead run won the pending
+// slot). The answer CAS above already committed — rolling the answer back
+// would strand it — so the pending run carries the handoff instead: it gets
+// the answer/verdict evidence kind + ref and the rendered handoff note, and
+// the daemon prompt renders [ANSWER]/[PLAN VERDICT] for it (evidence branch
+// precedes the comment branch). Oldest pending run wins; there is at most one
+// per (issue, agent).
+func (q *Queries) AttachAskPlanAnswerToPendingTask(ctx context.Context, arg AttachAskPlanAnswerToPendingTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, attachAskPlanAnswerToPendingTask,
+		arg.HandoffNote,
+		arg.EvidenceKind,
+		arg.EvidenceRefID,
+		arg.IssueID,
+		arg.AgentID,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.WorkflowStep,
+		&i.AccountID,
+		&i.ModelOverride,
+		&i.ThinkingLevelOverride,
+		&i.ServiceTierOverride,
+		&i.TierID,
+		&i.TierParked,
+		&i.TierExplicit,
+		&i.TierQualityFallback,
+		&i.TierQualityUnverified,
+		&i.TierMemberID,
+	)
+	return i, err
+}
+
 const cancelAgentPlan = `-- name: CancelAgentPlan :one
 UPDATE agent_plan
 SET status = 'cancelled',

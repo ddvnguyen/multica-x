@@ -33,11 +33,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -199,11 +201,17 @@ func (s *TaskService) CreateQuestionCard(ctx context.Context, task db.AgentTaskQ
 	return card, nil
 }
 
-// AnswerQuestionCard stores the single answer and enqueues the resume run in
-// ONE transaction: a half-committed answer (recorded, no resume) would strand
-// the card as answered with no continuation, and a half-committed resume
-// (enqueued, answer lost) would resurrect a session the human never steered.
-// The CAS on 'open' makes a second answer ErrQuestionCardClosed → 409.
+// AnswerQuestionCard stores the single answer and resumes the parked run.
+//
+// M-500: the answer CAS commits FIRST, on its own, and the resume enqueue
+// follows. The old single-transaction shape rolled the answer back when a
+// comment trigger (or the escalation lead run) already held the pending slot,
+// so the human's answer was silently lost (409 run_already_queued) and the
+// queued run executed with the stale trigger text and no [ANSWER]. Now the
+// answer always lands; when the resume slot is taken the pending run carries
+// the handoff instead (AttachAskPlanAnswerToPendingTask), and the daemon
+// prompt renders the answer block for it. The CAS on 'open' still makes a
+// second answer ErrQuestionCardClosed → 409.
 //
 // answeredByType is "member" for the Owner (or any workspace member) and
 // "agent" for the project lead answering on the Owner's behalf after the
@@ -213,62 +221,67 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 	if answeredByType != AnsweredByAgent {
 		answeredByType = AnsweredByMember
 	}
-	var (
-		card       db.AgentQuestionCard
-		resumeTask *db.AgentTaskQueue
-	)
-	err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		answered, err := qtx.AnswerAgentQuestionCard(ctx, db.AnswerAgentQuestionCardParams{
-			ID:             cardID,
-			Answers:        answers,
-			AnsweredBy:     answeredBy,
-			AnsweredByType: answeredByType,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrQuestionCardClosed
-		}
-		if err != nil {
-			return fmt.Errorf("answer question card: %w", err)
-		}
-		card = answered
-
-		parked, err := qtx.GetAgentTask(ctx, card.TaskID)
-		if err != nil {
-			return fmt.Errorf("load parked task: %w", err)
-		}
-		issue, err := qtx.GetIssue(ctx, parked.IssueID)
-		if err != nil {
-			return fmt.Errorf("load issue: %w", err)
-		}
-		narrator := ""
-		if card.AnsweredByType == AnsweredByAgent {
-			// A lead's answer is the lead's, not the Owner's: naming it in the
-			// handoff is what keeps the resumed run from treating an inference
-			// as a recorded Owner decision.
-			if agent, err := qtx.GetAgent(ctx, card.AnsweredBy); err == nil {
-				narrator = agent.Name
-			} else {
-				narrator = "the project lead"
-			}
-		}
-		note := renderQuestionAnswerHandoff(card, answers, narrator)
-		txService := &TaskService{Queries: qtx}
-		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
-		if err != nil {
-			return err
-		}
-		resumeTask = &task
-		return nil
+	answered, err := s.Queries.AnswerAgentQuestionCard(ctx, db.AnswerAgentQuestionCardParams{
+		ID:             cardID,
+		Answers:        answers,
+		AnsweredBy:     answeredBy,
+		AnsweredByType: answeredByType,
 	})
-	if err != nil {
-		if errors.Is(err, ErrQuestionCardClosed) {
-			return db.AgentQuestionCard{}, nil, err
-		}
-		return db.AgentQuestionCard{}, nil, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.AgentQuestionCard{}, nil, ErrQuestionCardClosed
 	}
-	// Post-commit side effects mirror every other enqueue path.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *resumeTask)
-	s.NotifyTaskEnqueued(ctx, *resumeTask)
+	if err != nil {
+		return db.AgentQuestionCard{}, nil, fmt.Errorf("answer question card: %w", err)
+	}
+	card := answered
+
+	parked, err := s.Queries.GetAgentTask(ctx, card.TaskID)
+	if err != nil {
+		return db.AgentQuestionCard{}, nil, fmt.Errorf("load parked task: %w", err)
+	}
+	issue, err := s.Queries.GetIssue(ctx, parked.IssueID)
+	if err != nil {
+		return db.AgentQuestionCard{}, nil, fmt.Errorf("load issue: %w", err)
+	}
+	narrator := ""
+	if card.AnsweredByType == AnsweredByAgent {
+		// A lead's answer is the lead's, not the Owner's: naming it in the
+		// handoff is what keeps the resumed run from treating an inference
+		// as a recorded Owner decision.
+		if agent, err := s.Queries.GetAgent(ctx, card.AnsweredBy); err == nil {
+			narrator = agent.Name
+		} else {
+			narrator = "the project lead"
+		}
+	}
+	note := renderQuestionAnswerHandoff(card, answers, narrator)
+	resumeTask, err := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
+	if err != nil {
+		if errors.Is(err, ErrDuplicatePendingTask) {
+			// M-500: a comment trigger or the escalation lead run holds the
+			// pending slot. The answer is already committed, so attach the
+			// handoff to that run instead of losing the answer.
+			attached, attachErr := s.attachAskPlanHandoffToPendingTask(ctx, s.Queries, issue, parked.AgentID, EvidenceQuestionAnswer, card.ID, note)
+			if attachErr != nil {
+				return card, nil, attachErr
+			}
+			if attached == nil {
+				// The pending run drained between the enqueue and the
+				// attach; retry the resume enqueue once so the answer
+				// still resumes a run.
+				retry, retryErr := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
+				if retryErr != nil {
+					return card, nil, retryErr
+				}
+				resumeTask = retry
+			} else {
+				resumeTask = *attached
+			}
+		} else {
+			return card, nil, err
+		}
+	}
+	postAskPlanResumeCommit(ctx, s, resumeTask)
 	// M-333: the answer closed the card, so its ask inbox rows are stale for
 	// every member. Archive them now (post-commit — a failure leaves them for
 	// the lazy sweep on list) with the parked task id, which also resolves the
@@ -280,7 +293,124 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 			"card_id", util.UUIDToString(card.ID),
 			"issue_id", util.UUIDToString(card.IssueID), "error", err)
 	}
-	return card, resumeTask, nil
+	// M-500: mirror the answer into the issue thread so the record survives
+	// context loss and other agents see it. Best-effort like every inbox
+	// housekeeping path.
+	s.mirrorQuestionAnswerToThread(ctx, card, answers)
+	return card, &resumeTask, nil
+}
+
+// postAskPlanResumeCommit runs the post-commit side effects every ask/plan
+// resume path shares: broadcast the queued resume and notify enqueue.
+func postAskPlanResumeCommit(ctx context.Context, s *TaskService, resumeTask db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, resumeTask)
+	s.NotifyTaskEnqueued(ctx, resumeTask)
+}
+
+// attachAskPlanHandoffToPendingTask carries an answer/verdict handoff onto the
+// already-queued run for the same (issue, agent) — the M-500 path for an
+// answer that arrives while a comment trigger or the escalation lead run holds
+// the pending slot. Returns (nil, nil) when the pending run drained between
+// the enqueue and the attach so the caller retries the resume enqueue.
+func (s *TaskService) attachAskPlanHandoffToPendingTask(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID, evidenceKind string, evidenceRefID pgtype.UUID, handoffNote string) (*db.AgentTaskQueue, error) {
+	attached, err := q.AttachAskPlanAnswerToPendingTask(ctx, db.AttachAskPlanAnswerToPendingTaskParams{
+		HandoffNote:   pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
+		EvidenceKind:  pgtype.Text{String: evidenceKind, Valid: true},
+		EvidenceRefID: evidenceRefID,
+		IssueID:       issue.ID,
+		AgentID:       agentID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("attach answer to pending task: %w", err)
+	}
+	return &attached, nil
+}
+
+// mirrorQuestionAnswerToThread records the answer as a system comment on the
+// issue (M-500), threaded under the card's trigger comment when there is one.
+// The handoff note only reaches the resumed run; this copy survives context
+// loss and is visible to every agent and member reading the thread.
+func (s *TaskService) mirrorQuestionAnswerToThread(ctx context.Context, card db.AgentQuestionCard, answers json.RawMessage) {
+	issue, err := s.Queries.GetIssue(ctx, card.IssueID)
+	if err != nil {
+		slog.Warn("ask answer mirror: load issue failed",
+			"card_id", util.UUIDToString(card.ID), "error", err)
+		return
+	}
+	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID:          dbid.NewV7(),
+		IssueID:     card.IssueID,
+		WorkspaceID: card.WorkspaceID,
+		AuthorType:  "system",
+		AuthorID:    pgtype.UUID{Valid: true},
+		Content:     renderAnswerThreadSummary(card, answers),
+		Type:        "system",
+		ParentID:    card.TriggerCommentID,
+	})
+	if err != nil {
+		slog.Warn("ask answer mirror: create system comment failed",
+			"card_id", util.UUIDToString(card.ID),
+			"issue_id", util.UUIDToString(card.IssueID), "error", err)
+		return
+	}
+	comment := created.Comment()
+	if s.Bus != nil {
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventCommentCreated,
+			WorkspaceID: util.UUIDToString(card.WorkspaceID),
+			ActorType:   "system",
+			Payload: map[string]any{
+				"comment": map[string]any{
+					"id":          util.UUIDToString(comment.ID),
+					"issue_id":    util.UUIDToString(comment.IssueID),
+					"author_type": comment.AuthorType,
+					"author_id":   util.UUIDToString(comment.AuthorID),
+					"content":     comment.Content,
+					"type":        comment.Type,
+					"revision":    comment.Revision,
+				},
+				"issue_title":    issue.Title,
+				"issue_revision": created.IssueRevision,
+			},
+		})
+	}
+}
+
+// renderAnswerThreadSummary is the one-line-per-question mirror of an answer:
+// who decided, which labels (or free text) per question, in question order.
+func renderAnswerThreadSummary(card db.AgentQuestionCard, answers json.RawMessage) string {
+	var qs []askPlanQuestion
+	var as []askPlanAnswer
+	_ = json.Unmarshal(card.Questions, &qs)
+	_ = json.Unmarshal(answers, &as)
+	who := "The Owner"
+	if card.AnsweredByType == AnsweredByAgent {
+		who = "The project lead, on the Owner's behalf"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s answered this question card (%s):", who, util.UUIDToString(card.ID))
+	for i, q := range qs {
+		b.WriteString(fmt.Sprintf("\nQ%d %s = ", i+1, strings.TrimSpace(q.Prompt)))
+		parts := make([]string, 0, 2)
+		if i < len(as) {
+			for _, idx := range as[i].Selected {
+				if idx >= 0 && idx < len(q.Options) {
+					parts = append(parts, strings.TrimSpace(q.Options[idx].Label))
+				}
+			}
+			if text := strings.TrimSpace(as[i].Text); text != "" {
+				parts = append(parts, strconv.Quote(text))
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "(no answer)")
+		}
+		b.WriteString(strings.Join(parts, ", "))
+	}
+	return b.String()
 }
 
 // ReviewPlan applies one human verdict to an in_review plan and, on every
@@ -437,7 +567,25 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 		handoff := renderPlanVerdictHandoffWithComments(plan, verdict, comments, note, pending)
 		txService := &TaskService{Queries: qtx}
 		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy)
-		if err != nil {
+		if errors.Is(err, ErrDuplicatePendingTask) {
+			// M-500: same lost-verdict shape as the answer path. The verdict
+			// tx commits below, so the verdict always lands; the already-queued
+			// run carries the handoff instead. qtx is aborted by the failed
+			// insert, so the attach runs on the pool handle.
+			attached, attachErr := s.attachAskPlanHandoffToPendingTask(ctx, s.Queries, issue, parked.AgentID, EvidencePlanVerdict, plan.ID, handoff)
+			if attachErr != nil {
+				return attachErr
+			}
+			if attached == nil {
+				retry, retryErr := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy)
+				if retryErr != nil {
+					return retryErr
+				}
+				task = retry
+			} else {
+				task = *attached
+			}
+		} else if err != nil {
 			return err
 		}
 		resumeTask = &task
@@ -465,8 +613,9 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 // enqueueAskPlanResumeTask builds the resume run: a normal issue task for the
 // PARKED task's agent, carrying rerun_of_task_id (the claim handler resolves
 // prior_session_id from that named source — the only path that can see a
-// blocked row's session) and the evidence kind naming the card/plan. Runs in
-// the caller's transaction via the tx-scoped service.
+// blocked row's session) and the evidence kind naming the card/plan. It runs
+// in the caller's transaction when given a tx-scoped service, or on the pool
+// when the answer/verdict already committed (M-500 two-phase).
 //
 // M-327: the resume inherits the parked task's trigger_comment_id. Without it,
 // every resume task was written with trigger_comment_id NULL, so the claim had

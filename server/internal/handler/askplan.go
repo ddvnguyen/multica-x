@@ -238,6 +238,11 @@ type cardResponse struct {
 	Context          *string         `json:"context,omitempty"`
 	Questions        json.RawMessage `json:"questions"`
 	Answers          json.RawMessage `json:"answers,omitempty"`
+	// M-500: who decided and when, so `question-card show` on an answered
+	// card prints the answer's provenance instead of only the questions.
+	AnsweredBy     *string `json:"answered_by,omitempty"`
+	AnsweredByType *string `json:"answered_by_type,omitempty"`
+	AnsweredAt     *string `json:"answered_at,omitempty"`
 }
 
 type askPlanStateResponse struct {
@@ -294,6 +299,18 @@ func cardToResponse(c db.AgentQuestionCard) cardResponse {
 	}
 	if len(c.Answers) > 0 {
 		resp.Answers = json.RawMessage(c.Answers)
+	}
+	if c.AnsweredBy.Valid {
+		s := uuidToString(c.AnsweredBy)
+		resp.AnsweredBy = &s
+	}
+	if c.AnsweredByType != "" {
+		s := c.AnsweredByType
+		resp.AnsweredByType = &s
+	}
+	if c.AnsweredAt.Valid {
+		s := c.AnsweredAt.Time.UTC().Format(time.RFC3339Nano)
+		resp.AnsweredAt = &s
 	}
 	return resp
 }
@@ -704,7 +721,7 @@ func (h *Handler) AnswerQuestionCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, service.ErrDuplicatePendingTask) {
-		writeErrorCode(w, http.StatusConflict, "run_already_queued", "a run is already queued for this issue; the answer was not recorded")
+		writeErrorCode(w, http.StatusConflict, "run_already_queued", "the answer was recorded but a run is already queued for this issue; the queued run carries the answer")
 		return
 	}
 	if err != nil {
@@ -772,12 +789,65 @@ func (h *Handler) leadAnswerCard(w http.ResponseWriter, r *http.Request) (db.Age
 // GetQuestionCardForLead handles GET /api/question-cards/{cardId} (M-332): the
 // lead reads the card it was escalated to, so it can see the questions and the
 // labels before answering (or see that the Owner already answered it).
+//
+// M-500: the asking agent itself may also read its own card (to see the
+// answer), not just the lead. Anyone else is refused with a message naming who
+// may read, not a bare "permission denied".
 func (h *Handler) GetQuestionCardForLead(w http.ResponseWriter, r *http.Request) {
-	card, _, ok := h.leadAnswerCard(w, r)
+	card, _, ok := h.readQuestionCard(w, r)
 	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, cardToResponse(card))
+}
+
+// readQuestionCard resolves the card for a task-token caller and allows exactly
+// two readers: the agent whose task asked (card.AgentID) and the issue's
+// project lead agent (the M-332 escalation ladder). Shared by the read route
+// only — the lead-answer route keeps its lead-only gate (leadAnswerCard).
+func (h *Handler) readQuestionCard(w http.ResponseWriter, r *http.Request) (db.AgentQuestionCard, db.AgentTaskQueue, bool) {
+	cardID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "cardId"), "card_id")
+	if !ok {
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		writeError(w, http.StatusForbidden, "reading a question card requires an agent task token; only the asking agent or the issue's project lead may read it")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	task, ok := h.taskFromRequestHeader(r)
+	if !ok || !task.AgentID.Valid {
+		writeError(w, http.StatusForbidden, "reading a question card requires an agent task token; only the asking agent or the issue's project lead may read it")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	card, err := h.Queries.GetAgentQuestionCard(r.Context(), cardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if h.resolveWorkspaceID(r) != uuidToString(card.WorkspaceID) {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	// The asking agent reads its own card, answered or not.
+	if task.AgentID == card.AgentID {
+		return card, task, true
+	}
+	issue, err := h.Queries.GetIssue(r.Context(), card.IssueID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "question card not found")
+		return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
+	}
+	if issue.ProjectID.Valid {
+		if project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+			ID:          issue.ProjectID,
+			WorkspaceID: issue.WorkspaceID,
+		}); err == nil && project.LeadType.Valid && project.LeadType.String == "agent" &&
+			project.LeadID.Valid && project.LeadID == task.AgentID {
+			return card, task, true
+		}
+	}
+	writeError(w, http.StatusForbidden, "only the asking agent or the issue's project lead may read this card")
+	return db.AgentQuestionCard{}, db.AgentTaskQueue{}, false
 }
 
 // LeadAnswerQuestionCard handles POST /api/question-cards/{cardId}/lead-answer
@@ -827,7 +897,7 @@ func (h *Handler) LeadAnswerQuestionCard(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if errors.Is(err, service.ErrDuplicatePendingTask) {
-		writeErrorCode(w, http.StatusConflict, "run_already_queued", "a run is already queued for this issue; the answer was not recorded")
+		writeErrorCode(w, http.StatusConflict, "run_already_queued", "the answer was recorded but a run is already queued for this issue; the queued run carries the answer")
 		return
 	}
 	if err != nil {
@@ -912,7 +982,7 @@ func (h *Handler) ReviewPlan(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusConflict, "issue_revision_conflict", "the issue changed while reviewing; retry the verdict")
 		return
 	case errors.Is(err, service.ErrDuplicatePendingTask):
-		writeErrorCode(w, http.StatusConflict, "run_already_queued", "a run is already queued for this issue; the verdict was not recorded")
+		writeErrorCode(w, http.StatusConflict, "run_already_queued", "the verdict was recorded but a run is already queued for this issue; the queued run carries the verdict")
 		return
 	case err != nil:
 		slog.Warn("review plan failed", "error", err)
