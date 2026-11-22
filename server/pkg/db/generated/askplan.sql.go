@@ -114,8 +114,7 @@ const attachAskPlanAnswerToPendingTask = `-- name: AttachAskPlanAnswerToPendingT
 UPDATE agent_task_queue
 SET handoff_note = $1,
     trigger_evidence_kind = $2,
-    trigger_evidence_ref_id = $3,
-    updated_at = now()
+    trigger_evidence_ref_id = $3
 WHERE id = (
     SELECT id FROM agent_task_queue
     WHERE agent_task_queue.issue_id = $4 AND agent_task_queue.agent_id = $5

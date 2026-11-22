@@ -52,8 +52,7 @@ RETURNING *;
 UPDATE agent_task_queue
 SET handoff_note = @handoff_note,
     trigger_evidence_kind = @evidence_kind,
-    trigger_evidence_ref_id = @evidence_ref_id,
-    updated_at = now()
+    trigger_evidence_ref_id = @evidence_ref_id
 WHERE id = (
     SELECT id FROM agent_task_queue
     WHERE agent_task_queue.issue_id = @issue_id AND agent_task_queue.agent_id = @agent_id
