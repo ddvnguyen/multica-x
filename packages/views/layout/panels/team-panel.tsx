@@ -288,10 +288,11 @@ export function TeamPanel() {
   const canChatWith = (agent: Agent) =>
     !agent.archived_at && canAssignAgentToIssue(agent, { userId: userId ?? null, role: myRole ?? null }).allowed;
   const onAgents = pathname === p.agents();
-  // Tier config (M-499 slice 4): Roles link to the per-role tier config.
-  // Flag off = no section, no count, no link — the panel is byte-identical.
+  // Tier config (M-499 slice 4, M-545): Roles open the per-role tier config
+  // inside the Team panel's own page, not Settings. Flag off = no section,
+  // no count, no link — the panel is byte-identical.
   const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
-  const tiersHref = `${p.settings()}?tab=tiers`;
+  const tiersHref = p.agentTierConfig();
   // Member pages live under /members/:id; the list itself is a Settings tab.
   const membersRoot = p.memberDetail("").replace(/\/$/, "");
 

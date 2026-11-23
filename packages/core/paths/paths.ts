@@ -52,6 +52,10 @@ function workspaceScoped(slug: string) {
     autopilots: () => `${ws}/autopilots`,
     autopilotDetail: (id: string) => `${ws}/autopilots/${encode(id)}`,
     agents: () => `${ws}/agents`,
+    // Team → Tier config, rendered in the Team main panel (M-545). A static
+    // segment under /agents so it stays in the Team space; Next resolves it
+    // before the /agents/:id dynamic route.
+    agentTierConfig: () => `${ws}/agents/tiers`,
     // Step 1 of agent creation: choose where the agent runs.
     newAgent: () => `${ws}/agents/new`,
     // Step 2: configure the agent on the chosen runtime. A real route so a

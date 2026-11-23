@@ -59,6 +59,8 @@ const data = vi.hoisted(() => ({
   tiersByRole: {} as Record<string, Array<Record<string, unknown>>>,
   roles: [] as Array<{ key: string; position: number }>,
   members: {} as Record<string, Array<Record<string, unknown>>>,
+  runtimes: [] as Array<Record<string, unknown>>,
+  models: [] as Array<{ id: string; label: string }>,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
 }));
@@ -91,10 +93,10 @@ function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
     return { data: list, isLoading: data.isLoading, isSuccess: true };
   }
   if (key.includes("list")) {
-    return { data: [], isLoading: false, isSuccess: true };
+    return { data: data.runtimes, isLoading: false, isSuccess: true };
   }
   return {
-    data: { models: [], supported: true },
+    data: { models: data.models, supported: true },
     isLoading: false,
     isPending: false,
     isError: false,
@@ -191,6 +193,8 @@ describe("TiersTab", () => {
       { key: "engineer", position: 2 },
     ];
     data.tiersByRole = {};
+    data.runtimes = [];
+    data.models = [];
     data.members = {
       "tier-1": [
         member({ id: "member-1", position: 0 }),
@@ -692,6 +696,55 @@ describe("TiersTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(await screen.findByText(/lowercase letters/i)).toBeInTheDocument();
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("makes the member harness a selector that keeps an unknown stored value", async () => {
+    data.members = {
+      "tier-1": [member({ id: "member-1", provider: "acme-harness" })],
+    };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await screen.findByTestId("tier-member-row-0");
+    const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+    // M-545: no typing — the harness is pickable from the known set.
+    expect(harness.tagName).toBe("SELECT");
+    const values = [...harness.options].map((option) => option.value);
+    expect(values).toContain("freebuff");
+    expect(values).toContain("codebuddy");
+    // A saved harness outside the list still loads and stays selectable.
+    expect(harness.value).toBe("acme-harness");
+    expect(values).toContain("acme-harness");
+  });
+
+  it("offers workspace runtime providers as harness options", async () => {
+    data.runtimes = [
+      { id: "rt-1", provider: "qwen-local" },
+    ];
+    data.members = { "tier-1": [member({ id: "member-1" })] };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await screen.findByTestId("tier-member-row-0");
+    const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+    expect([...harness.options].map((option) => option.value)).toContain(
+      "qwen-local",
+    );
+  });
+
+  it("turns the model into a picker when the harness maps to one runtime", async () => {
+    data.runtimes = [
+      { id: "rt-1", provider: "freebuff", name: "Freebuff", status: "online" },
+    ];
+    data.models = [{ id: "deepseek-v4.1-flash", label: "DeepSeek flash" }];
+    data.members = { "tier-1": [member({ id: "member-1", provider: "freebuff" })] };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    await screen.findByTestId("tier-member-row-0");
+    // The catalog is reachable through the harness alone, so Model is a
+    // selector rather than a free-text field.
+    expect(screen.getByLabelText("Model").tagName).not.toBe("INPUT");
   });
 
   it("rejects a member line without a harness or model", async () => {

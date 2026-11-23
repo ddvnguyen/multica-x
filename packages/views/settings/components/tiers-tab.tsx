@@ -96,6 +96,42 @@ import {
 const POSITION_SCRATCH_GAP = 1000;
 
 /**
+ * Harnesses a tier member may name (M-545). A member's harness is an id the
+ * runtime catalog can resolve, never free text: these are the providers the
+ * product ships plus whatever this workspace actually runs. A stored value
+ * outside the list still appears, so an older row loads and saves unchanged.
+ */
+const KNOWN_HARNESSES = [
+  "freebuff",
+  "opencode-go",
+  "opencode-zen",
+  "codebuddy",
+  "claude",
+  "codex",
+  "pi",
+  "omp",
+  "dsh",
+] as const;
+
+function harnessOptions(
+  provider: string,
+  runtimes: Array<{ provider: string }>,
+): string[] {
+  const options: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string) => {
+    const harness = value.trim();
+    if (!harness || seen.has(harness)) return;
+    seen.add(harness);
+    options.push(harness);
+  };
+  for (const harness of KNOWN_HARNESSES) add(harness);
+  for (const runtime of runtimes) add(runtime.provider);
+  add(provider);
+  return options;
+}
+
+/**
  * `HH:MM` in the viewer's own clock for a cooldown deadline (M-352/M-481), or
  * null when it is not cooling. The server sends an absolute timestamp; an
  * already-expired one renders nothing, since the resolver has the row back at
@@ -1621,10 +1657,11 @@ function TierEditorDialog({
 }
 
 /**
- * One mapping line. The model list comes from the runtime catalog (discovery
- * stays optional: the field falls back to free text when discovery is offline
- * or the model is custom), while the harness is free text because a profile
- * spans several harnesses.
+ * One mapping line. The harness is a selector (M-545): a free-text provider
+ * said nothing the resolver could act on. The model list comes from the
+ * runtime catalog — the bound runtime, or the one runtime whose provider is
+ * the chosen harness (discovery stays optional: the field falls back to free
+ * text when discovery is offline or the model is custom).
  */
 function MemberRowEditor({
   row,
@@ -1651,9 +1688,17 @@ function MemberRowEditor({
 }) {
   const { t } = useT("settings");
   const [modelCustom, setModelCustom] = useState(false);
+  // A harness that resolves to exactly one workspace runtime gives that
+  // runtime's catalog, so the model is a picker even before a runtime is bound.
+  // Ambiguous providers (several machines) stay free text until one is picked.
+  const catalogRuntimeId = useMemo(() => {
+    if (row.runtimeId) return row.runtimeId;
+    const matches = runtimes.filter((r) => r.provider === row.provider.trim());
+    return matches.length === 1 ? matches[0]!.id : "";
+  }, [row.runtimeId, row.provider, runtimes]);
   const modelsQuery = useQuery({
-    ...runtimeModelsOptions(row.runtimeId || null),
-    enabled: row.runtimeId !== "",
+    ...runtimeModelsOptions(catalogRuntimeId || null),
+    enabled: catalogRuntimeId !== "",
   });
   const models = useMemo(
     () => modelsQuery.data?.models ?? [],
@@ -1681,18 +1726,27 @@ function MemberRowEditor({
           <Label htmlFor={`member-provider-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_provider_label)}
           </Label>
-          <Input
+          <select
             id={`member-provider-${row.key}`}
             value={row.provider}
             onChange={(e) => onChange({ provider: e.target.value })}
-            placeholder={t(($) => $.tiers.member_provider_placeholder)}
-          />
+            className="h-8 w-full min-w-0 truncate rounded-md border bg-background px-2 text-sm"
+          >
+            <option value="" disabled>
+              {t(($) => $.tiers.member_harness_select)}
+            </option>
+            {harnessOptions(row.provider, runtimes).map((harness) => (
+              <option key={harness} value={harness}>
+                {harness}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="col-start-2 row-start-2 min-w-0 space-y-1 @[46rem]:col-start-3 @[46rem]:row-start-1">
           <Label htmlFor={`member-model-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_model_label)}
           </Label>
-          {row.runtimeId !== "" && !modelCustom && !modelsQuery.isError ? (
+          {catalogRuntimeId !== "" && !modelCustom && !modelsQuery.isError ? (
             <Select
               items={[
                 ...models.map((m) => ({
