@@ -6057,6 +6057,10 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	// S1-B (M-110): write the usage summary and session_ref back to moct-be.
 	// Never blocking: moct-be down/timeout/5xx logs a warning and continues.
 	moctRecordUsage(finalCtx, d.cfg.MoctBaseURL, task, result.SessionID, result.Usage, taskLog)
+	// Step 13 of the memory loop: commit this run's outcome as a durable entry
+	// so the NEXT run's pre-run prepare recalls it instead of starting cold.
+	// Idempotent on the task id and never blocking, like every other seam call.
+	powerContextRecordHandoff(finalCtx, d.cfg, task, result, taskLog)
 
 	// Check if we were cancelled by the polling goroutine.
 	select {
@@ -8404,6 +8408,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 			effectiveMcpConfig = merged
 		}
+		// PowerContext tools (docs/powercontext-seam.md). Same overlay slot as
+		// the moct entry and mutually exclusive with it: whichever backend the
+		// inject came from is the one whose tools a run gets, so an agent can
+		// never read one plane and write the other. PowerContext serves its own
+		// MCP endpoint, so the entry is the remote URL rather than a stdio
+		// wrapper. Never fatal: an unusable URL or a task with no identity
+		// skips the entry and the run keeps the servers it already had.
+		if backend, pcBaseURL, pcToken := memoryBackendFor(d.cfg); backend == memoryBackendPowerContext {
+			if pcConfig, ok := powerContextMCPConfig(pcBaseURL, pcToken, task); !ok {
+				taskLog.Warn("powercontext: MCP server not added; running without memory tools")
+			} else if merged, mergeErr := mergeTaskRemoteMCPConfig(effectiveMcpConfig, pcConfig); mergeErr != nil {
+				taskLog.Warn("powercontext: could not merge MCP server; running without memory tools", "error", mergeErr)
+			} else {
+				effectiveMcpConfig = merged
+			}
+		}
 		// MOCT memory tools (M-101, docs/moct-seam.md out-path 2). The entry
 		// names the `multica moct-mcp` stdio server and carries the run's D2
 		// refs as env, so a tool call can only read or write inside this run's
@@ -9085,7 +9105,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// own BuildPrompt reuses the same block instead of fetching a second time.
 	// Any failure — moct-be down, slow or 5xx — logs and continues WITHOUT
 	// memory: nothing on this path may fail or stall a task.
-	memoryBlock, memoryPart := moctInjectPrompt(ctx, d.cfg.MoctBaseURL, task, taskLog)
+	// The dispatcher picks this host's one memory backend (MOCT or
+	// PowerContext), so a backend swap changes the source and nothing else:
+	// same prompt slot, same memory part on the run row, same "never block a
+	// task" rule.
+	memoryBlock, memoryPart := memoryInjectPrompt(ctx, d.cfg, task, taskLog)
 	if memoryBlock != "" {
 		promptOptions = append(promptOptions, WithMoctInject(memoryBlock))
 	}

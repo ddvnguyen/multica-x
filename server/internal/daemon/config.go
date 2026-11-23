@@ -185,6 +185,17 @@ type Config struct {
 	// URL: moct-be is reached on the daemon host's loopback, which the server
 	// cannot know (docs/moct-seam.md).
 	MoctBaseURL string
+
+	// PowerContextBaseURL is the base URL of this host's PowerContext server
+	// (docs/powercontext-seam.md). Empty — the default — switches the seam off
+	// exactly as MOCT_BASE_URL does. Set means this host reads its pre-run
+	// memory from PowerContext and adds its `/mcp` endpoint as a remote MCP
+	// server, and never from moct-be: a run gets one memory block, not two.
+	PowerContextBaseURL string
+	// PowerContextToken is the bearer PowerContext requires when its
+	// authentication is enabled. Empty sends no Authorization header, which is
+	// correct for the default loopback-only installation.
+	PowerContextToken string
 }
 
 // Overrides allows CLI flags to override environment variables and defaults.
@@ -652,6 +663,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// stdio server as MOCT_BASE_URL — one name, no translation. Empty = off.
 	moctBaseURL := strings.TrimSpace(os.Getenv("MOCT_BASE_URL"))
 
+	// PowerContext seam (docs/powercontext-seam.md). The second implementation
+	// of the same memory seam: one switch, same rule as MOCT_BASE_URL — empty
+	// means off and nothing on the claim path changes. The two are mutually
+	// exclusive on one host (one run gets one memory block, never two); when
+	// both are set MOCT wins and the run row says so — see memoryBackendFor.
+	powerContextBaseURL := strings.TrimSpace(os.Getenv("POWERCONTEXT_BASE_URL"))
+	powerContextToken := strings.TrimSpace(os.Getenv("POWERCONTEXT_TOKEN"))
+
 	// M-102: MESSAGE_SINK=dsh moves dsh-runtime transcripts into the shared
 	// dsh session store. Any other value is ignored: the flag is opt-in and
 	// the legacy transcript path must stay the default until an operator asks
@@ -724,6 +743,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		QwenpawArgs:                     qwenpawArgs,
 		ProfileCommandOverrides:         profileCommandOverrides,
 		MoctBaseURL:                     moctBaseURL,
+		PowerContextBaseURL:             powerContextBaseURL,
+		PowerContextToken:               powerContextToken,
 	}, nil
 }
 
