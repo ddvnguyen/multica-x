@@ -4166,6 +4166,63 @@ export class ApiClient {
   }
 
   /**
+   * Registers a workspace role (admin, M-543). Roles are free workspace-defined
+   * slugs; every response is the registry in tab order.
+   */
+  async createTierRole(workspaceId: string, key: string): Promise<TierRole[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/tiers/roles`, {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    });
+    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(
+      raw,
+      z.object({ roles: TierRoleListSchema }),
+      null,
+      { endpoint: "POST /api/workspaces/{id}/tiers/roles" },
+    );
+    if (!parsed) throw new Error("Invalid tier roles response");
+    return parsed.roles;
+  }
+
+  /**
+   * Renames a registry key (admin, M-543). Tiers carrying the old key move with
+   * it, so their tab keeps every tier it had.
+   */
+  async renameTierRole(workspaceId: string, key: string, newKey: string): Promise<TierRole[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/roles/${encodeURIComponent(key)}`,
+      { method: "PUT", body: JSON.stringify({ key: newKey }) },
+    );
+    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(
+      raw,
+      z.object({ roles: TierRoleListSchema }),
+      null,
+      { endpoint: "PUT /api/workspaces/{id}/tiers/roles/{roleKey}" },
+    );
+    if (!parsed) throw new Error("Invalid tier roles response");
+    return parsed.roles;
+  }
+
+  /**
+   * Removes a registry key (admin, M-543). The server refuses (`role_in_use`)
+   * while a tier still carries it, so an admin moves those tiers first.
+   */
+  async deleteTierRole(workspaceId: string, key: string): Promise<TierRole[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/tiers/roles/${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    );
+    const parsed = parseWithFallback<{ roles: TierRole[] } | null>(
+      raw,
+      z.object({ roles: TierRoleListSchema }),
+      null,
+      { endpoint: "DELETE /api/workspaces/{id}/tiers/roles/{roleKey}" },
+    );
+    if (!parsed) throw new Error("Invalid tier roles response");
+    return parsed.roles;
+  }
+
+  /**
    * Read-only inherited view for an Agent implementing a Role (M-499 slice 4):
    * Role instructions first, the Agent's own additions after, and the union
    * of both agents' enabled skills. Human-actor only; 403 when the flag is
