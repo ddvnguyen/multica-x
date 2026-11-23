@@ -70,14 +70,6 @@ rollback.sh --to <sha|path>         # an explicit release
 rollback.sh --list                  # releases on disk, newest first
 ```
 
-The PWA follows the backend SHA one-to-one (M-451). When the default rollback
-finds no `mmx-pwa/releases/<backend-SHA>` on disk — the first post-merge
-recovery, where the backend's previous release predates the PWA install — it
-falls back to the complete release `mmx-pwa/previous-release` names, rewrites
-that release's env and health-gates it (M-455). `--to` never falls back, and a
-missing release with no usable marker stays a warning: the backend is healthy,
-so the exit stays 0.
-
 ## Invariants
 
 * **No rebuild.** Binaries, migrations and the plugin bundle come from the CI

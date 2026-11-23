@@ -526,11 +526,8 @@ jobs:
         # x.x.x-yyMMMdd.HH.mm stamp so M-151's evidence matches CI.
         run: node scripts/mmx-version.mjs --release-json --ref "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" > release.json
 
-      # Upload FIRST, before the MMX rebuild below replaces the .next tree
-      # in place (M-451): the two artifacts are two brands of one tree, so
-      # the default-brand web-dist must be captured while the tree is still
-      # the default build. Reversing this order would ship MMX branding
-      # under the default artifact name.
+      # web-dist is the default-brand build the lane deploys. Verify the
+      # manifest before upload so a branded build can never ship under it.
       - name: Verify default brand before upload
         if: github.event_name != 'pull_request'
         run: |
@@ -559,32 +556,6 @@ jobs:
             apps/web/public
             release.json
 
-      # M-451: the lane-z MMX PWA is a second brand of the same apps/web
-      # build (MMX_PWA=1 selects the MMX manifest/icons at build time), so
-      # the default-brand web-dist artifact above can never serve it. Build
-      # it from the same tree and publish it beside web-dist; the lane
-      # autodeploy installs it to mmx-pwa/releases/$SHA with no rebuild.
-      - name: Build and stage MMX PWA artifact
-        if: github.event_name != 'pull_request'
-        # MMX_PWA is in turbo.json globalEnv, so this cannot replay a cached
-        # default-brand build. NEXT_PUBLIC_APP_VERSION stamps the SW cache
-        # with the commit the artifact is named for. The script is shared
-        # with the regression test, so the push-only path is tested.
-        run: MMX_PWA_SHA="${{ github.sha }}" bash scripts/build-mmx-pwa-artifact.sh
-
-      - name: Upload mmx-pwa artifact
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: mmx-pwa-${{ github.sha }}
-          if-no-files-found: error
-          # v4 drops hidden files by default; .next/ IS a dot-directory.
-          include-hidden-files: true
-          # One directory, so its contents are the artifact root (M-457).
-          # A multi-path upload is rooted at the paths' common ancestor,
-          # which nested the tree at apps/web/.next/standalone/ and made
-          # autodeploy.sh reject every artifact at verify-artifact.
-          path: mmx-pwa-stage
   frontend-test:
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}

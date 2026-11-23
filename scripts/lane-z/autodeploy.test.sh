@@ -19,15 +19,6 @@ done
 touch -t 202611061000 "$LANE_ROOT/multica-be/releases/old"
 touch -t 202611061100 "$LANE_ROOT/multica-be/releases/middle"
 touch -t 202611061200 "$LANE_ROOT/multica-be/releases/current"
-mkdir -p "$LANE_ROOT/mmx-pwa/releases"
-for release in old current; do
-  mkdir -p "$LANE_ROOT/mmx-pwa/releases/$release/apps/web"
-  printf 'mmx %s\n' "$release" > "$LANE_ROOT/mmx-pwa/releases/$release/apps/web/server.js"
-done
-touch -t 202611061000 "$LANE_ROOT/mmx-pwa/releases/old"
-touch -t 202611061200 "$LANE_ROOT/mmx-pwa/releases/current"
-ln -s "$LANE_ROOT/mmx-pwa/releases/current" "$LANE_ROOT/mmx-pwa/current"
-
 # Model /proc/<pid>/exe after its release was unlinked. Linux appends this
 # marker to readlink output; the proc link itself still refers to the open file.
 printf 'open deleted executable\n' > "$LANE_ROOT/multica-be/releases/old/bin/multica (deleted)"
@@ -54,6 +45,4 @@ prune_releases
 
 test -d "$LANE_ROOT/multica-be/releases/old"
 test ! -e "$LANE_ROOT/multica-be/releases/middle"
-test ! -e "$LANE_ROOT/mmx-pwa/releases/old"
-test -d "$LANE_ROOT/mmx-pwa/releases/current"
 printf 'autodeploy release pruning tests passed\n'
