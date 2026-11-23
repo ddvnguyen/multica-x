@@ -85,7 +85,12 @@ Go to **Actions → Deploy main Multica → Run workflow**. Choose a dispatch re
 of `multica-moct` or a single-component tag and set:
 
 - **image_tag**: a unique immutable tag; it becomes both the image tag and the
-  backend/daemon version.
+  backend/daemon version. By convention it embeds the built short SHA
+  (`main-<version>-<short-sha>`, e.g. `main-0.11.1-4bdc0890c`); a tag whose
+  trailing dash-segment is 7-40 hex chars must match the leading characters of
+  `source_ref`'s commit, and `deploy-main.sh` fails preflight otherwise, so a
+  stale tag built from an older commit (M-539: `main-0.11.1-7239fad88` shipped
+  commit `4bdc0890c`) can never deploy.
 - **source_ref**: `multica-moct` or `refs/tags/<tag>` with no slash in the tag
   name; the workflow records its full commit SHA and builds both images from it.
 - **drain_timeout_seconds**: maximum wait for zero active daemon tasks.
@@ -108,7 +113,13 @@ the `pg_dump -Fc` backup for an operator and never restores the database
 automatically.
 
 The script reads `BACKEND_PORT` and `FRONTEND_PORT` from the stack `.env`,
-defaulting to `3702` and `3180`. A task can arrive after the last zero-task
+defaulting to `3702` and `3180`. The `MULTICA_IMAGE_TAG` update only rewrites
+that one line, so operator-set flags such as `FF_AGENT_ROLE_TYPE=true` survive
+every deploy — but the flag only reaches the backend if the stack's
+`compose.yml` maps it (`FF_AGENT_ROLE_TYPE: ${FF_AGENT_ROLE_TYPE:-}` under the
+backend `environment`, mirroring `docker-compose.selfhost.yml`). Keep both the
+`.env` value and the compose mapping, or the next deploy serves the Role UI
+dark despite the flag (M-539). A task can arrive after the last zero-task
 poll and before the daemon service stops; the script stops the daemon directly
 after draining to keep that interval small, but it cannot make the poll and
 service stop atomic.
