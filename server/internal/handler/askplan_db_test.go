@@ -26,11 +26,20 @@ type askPlanFixture struct {
 // that want a non-planning issue update it themselves.
 func newAskPlanFixture(t *testing.T) askPlanFixture {
 	t.Helper()
+	return newAskPlanFixtureWithDaemon(t, "park-daemon", "AskPlan Agent")
+}
+
+// newAskPlanFixtureWithDaemon is newAskPlanFixture under a named daemon and
+// agent, for tests that need two parked runs in one workspace: runtimes are
+// unique per (workspace, daemon_id, provider) and agents per (workspace, name),
+// so two fixtures cannot share either.
+func newAskPlanFixtureWithDaemon(t *testing.T, daemonID, agentName string) askPlanFixture {
+	t.Helper()
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	runtimeID := dbfx.Runtime(t, "askplan-runtime", testutil.Cols{"provider": "claude", "status": "online", "daemon_id": "park-daemon"})
-	agentID := dbfx.Agent(t, "AskPlan Agent", runtimeID)
+	runtimeID := dbfx.Runtime(t, "askplan-runtime", testutil.Cols{"provider": "claude", "status": "online", "daemon_id": daemonID})
+	agentID := dbfx.Agent(t, agentName, runtimeID)
 	issueID := dbfx.Issue(t, "askplan issue", testutil.Cols{"status": "planing_2", "assignee_type": "agent", "assignee_id": agentID})
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
 		"issue_id":   issueID,
