@@ -516,3 +516,170 @@ func TestMoctRecordUsageDegradesWhenMoctBeDown(t *testing.T) {
 		t.Errorf("expected a write-back warning, got %q", logs.String())
 	}
 }
+
+// M-542: a run whose Agent implements a Role fetches two bounded injects —
+// the Role scope read-only and the run Agent's own — and renders them in
+// labeled sections. Budgets split so neither side starves the other.
+func TestMoctInjectPromptDualRoleAndAgent(t *testing.T) {
+	const roleID = "55555555-5555-4555-8555-555555555555"
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		switch r.URL.Query().Get("expertId") {
+		case "multica:agent:" + roleID:
+			_, _ = io.WriteString(w, `{"entries":[{"id":"role-1","type":"how_to_work","title":"Role way","body":"Work this way."}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"entries":[{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	task := moctTestTask()
+	readExpert := "multica:agent:" + roleID
+	task.MoctReadExpertID = &readExpert
+
+	block, part := moctInjectPrompt(context.Background(), srv.URL, task, moctTestLogger())
+	if len(queries) != 2 {
+		t.Fatalf("expected 2 inject calls, got %d", len(queries))
+	}
+	for _, q := range queries {
+		if got := q.Get("layerTokens"); got != "3000" {
+			t.Errorf("layerTokens = %q, want the split budget 3000", got)
+		}
+	}
+	for _, want := range []string{
+		"## MOCT memory (pre-run inject)",
+		"### Role memory (read-only)",
+		"#### [how_to_work] Role way",
+		"### Agent memory",
+		"#### [convention] Agent habit",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block missing %q\n%s", want, block)
+		}
+	}
+	if strings.Index(block, "Role memory") > strings.Index(block, "Agent memory") {
+		t.Errorf("role section must come first:\n%s", block)
+	}
+	if !strings.Contains(part.Note, "1 role (read-only) + 1 agent entries") {
+		t.Errorf("part note = %q, want per-side counts", part.Note)
+	}
+	if len(part.Entries) != 2 || part.Entries[0].ID != "role-1" || part.Entries[1].ID != "agent-1" {
+		t.Errorf("part entries = %+v, want role then agent", part.Entries)
+	}
+}
+
+// M-542: a Role-side failure loses the Role section, never the run's own
+// memory and never the run — the same degrade contract as the single call.
+func TestMoctInjectPromptRoleFailureDegradesToAgent(t *testing.T) {
+	const roleID = "55555555-5555-4555-8555-555555555555"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("expertId") == "multica:agent:"+roleID {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"ok":false,"code":"down"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"entries":[{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}]}`)
+	}))
+	defer srv.Close()
+
+	task := moctTestTask()
+	readExpert := "multica:agent:" + roleID
+	task.MoctReadExpertID = &readExpert
+
+	var logs strings.Builder
+	block, _ := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
+	if !strings.Contains(block, "Agent habit") {
+		t.Fatalf("agent memory lost on role failure: %q", block)
+	}
+	if strings.Contains(block, "Role memory") {
+		t.Errorf("failed role inject must not render a role section: %q", block)
+	}
+	if !strings.Contains(logs.String(), "role pre-run inject failed") {
+		t.Errorf("expected a role-side degrade warning, got %q", logs.String())
+	}
+}
+
+// M-542: without the claim field the block is the single-expert one — a
+// Role-less run (or a claim from a server predating Roles) is byte-identical.
+func TestMoctInjectPromptWithoutRoleIsSingleExpert(t *testing.T) {
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query())
+		_, _ = io.WriteString(w, `{"entries":[{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}]}`)
+	}))
+	defer srv.Close()
+
+	block, _ := moctInjectPrompt(context.Background(), srv.URL, moctTestTask(), moctTestLogger())
+	if len(queries) != 1 {
+		t.Fatalf("expected 1 inject call, got %d", len(queries))
+	}
+	if got := queries[0].Get("layerTokens"); got != "6000" {
+		t.Errorf("layerTokens = %q, want the full budget", got)
+	}
+	if strings.Contains(block, "Role memory") || strings.Contains(block, "Agent memory") {
+		t.Errorf("single-expert block must not carry section labels: %q", block)
+	}
+}
+
+// M-542 wire contract: the claim field survives the trip, and an absent field
+// stays nil rather than collapsing to an empty scope.
+func TestTaskMoctReadExpertDecodesAbsentAsNil(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"id":"t1"}`), &task); err != nil {
+		t.Fatalf("decode claim without the field: %v", err)
+	}
+	if task.MoctReadExpertID != nil {
+		t.Fatalf("absent moct_read_expert_id = %v, want nil", *task.MoctReadExpertID)
+	}
+	if moctReadExpert(task) != "" {
+		t.Fatalf("absent field must read as no role scope")
+	}
+
+	readExpert := "multica:agent:55555555-5555-4555-8555-555555555555"
+	if err := json.Unmarshal([]byte(`{"id":"t1","moct_read_expert_id":"`+readExpert+`"}`), &task); err != nil {
+		t.Fatalf("decode claim with the field: %v", err)
+	}
+	if task.MoctReadExpertID == nil || *task.MoctReadExpertID != readExpert {
+		t.Fatalf("moct_read_expert_id decoded as %v", task.MoctReadExpertID)
+	}
+}
+
+// M-542: the MCP env carries the Role scope only for Role-implementing runs;
+// Role-less runs keep a byte-identical config (no empty key).
+func TestMoctMCPConfigReadExpertEnv(t *testing.T) {
+	originalResolve := resolveSelfExecutable
+	t.Cleanup(func() { resolveSelfExecutable = originalResolve })
+	resolveSelfExecutable = func() (string, error) { return "/usr/local/bin/multica", nil }
+
+	raw, ok := moctMCPConfig("http://127.0.0.1:8310", moctTestTask())
+	if !ok {
+		t.Fatal("expected an MCP config")
+	}
+	if strings.Contains(string(raw), "MOCT_READ_EXPERT_ID") {
+		t.Errorf("role-less config must not mention the read scope: %s", raw)
+	}
+
+	task := moctTestTask()
+	readExpert := "multica:agent:55555555-5555-4555-8555-555555555555"
+	task.MoctReadExpertID = &readExpert
+	raw, ok = moctMCPConfig("http://127.0.0.1:8310", task)
+	if !ok {
+		t.Fatal("expected an MCP config")
+	}
+	var parsed struct {
+		MCPServers map[string]struct {
+			Env map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	env := parsed.MCPServers["moct"].Env
+	if env["MOCT_READ_EXPERT_ID"] != readExpert {
+		t.Errorf("MOCT_READ_EXPERT_ID = %q, want %q", env["MOCT_READ_EXPERT_ID"], readExpert)
+	}
+	if env["MOCT_EXPERT_ID"] != "multica:agent:"+moctTestAgentID {
+		t.Errorf("writes must stay attributed to the run agent: %q", env["MOCT_EXPERT_ID"])
+	}
+}

@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/moct"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -4402,6 +4403,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// memory must never disappear because a lookup failed.
 		inject := moctInjectEnabled(ws)
 		resp.MoctMemoryInject = &inject
+		// M-542: a run of an Agent that implements a Role additionally reads
+		// the Role's knowledge scope. composition.Active() already requires
+		// the agent_role_type flag, the agent subtype and a live
+		// same-workspace Role, so flag-off and Role-less runs leave the field
+		// absent and behave exactly as before. Writes stay attributed to the
+		// run's own Agent on the daemon side.
+		if composition.Active() {
+			readExpert := moct.ExpertRef(uuidToString(composition.RoleID))
+			resp.MoctReadExpertID = &readExpert
+		}
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",
 			"task_id", uuidToString(task.ID),

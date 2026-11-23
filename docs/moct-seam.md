@@ -96,7 +96,7 @@ run cannot read or write outside its own scope:
 | `MOCT_BASE_URL` | e.g. `http://127.0.0.1:8110` |
 | `MOCT_WORKSPACE_ID` | `multica:ws:…` |
 | `MOCT_EXPERT_ID` | `multica:agent:…` — the run's own write identity |
-| `MOCT_READ_EXPERT_ID` | `multica:agent:…` (optional) — widen reads to a Role's knowledge scope; writes stay attributed to `MOCT_EXPERT_ID` and may not target the Role's expert home. Unset keeps the single-expert seam. |
+| `MOCT_READ_EXPERT_ID` | `multica:agent:…` (optional) — widen reads to a Role's knowledge scope; writes stay attributed to `MOCT_EXPERT_ID` and may not target the Role's expert home. Unset keeps the single-expert seam. Live since M-542: the daemon sets it from the claim's `moct_read_expert_id` whenever the run's Agent implements a Role, and the pre-run inject merges a labeled read-only Role section with the Agent's own (budget split). |
 | `MOCT_TASK_REF` | `multica:issue:…` |
 | `MOCT_CHANNEL_REF` | `multica:project:…` (optional) |
 

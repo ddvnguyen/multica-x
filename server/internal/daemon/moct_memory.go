@@ -78,8 +78,18 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 	// Cap the block at the memory part's budget instead of accepting whatever
 	// moct-be's own configured inject budget happens to be: this is the number
 	// the band is built from, and leaving it implicit is what let the first
-	// request drift unpriced (M-140).
-	params.LayerTokens = initctx.BudgetMemory
+	// request drift unpriced (M-140). A run that implements a Role (M-542)
+	// splits the budget across two bounded calls — the Role's scope, read-only,
+	// and the run Agent's own — so one side can never starve the other.
+	// moctReadExpert derefs the claim's Role scope: absent on Role-less runs
+	// and on claims from servers that predate Roles, which keeps the
+	// single-expert seam byte-identical for both.
+	readExpert := moctReadExpert(task)
+	if readExpert == "" {
+		params.LayerTokens = initctx.BudgetMemory
+	} else {
+		params.LayerTokens = initctx.BudgetMemory / 2
+	}
 	client, err := moct.NewClient(moct.Config{BaseURL: baseURL})
 	if err != nil {
 		// A URL that cannot even be parsed is a configuration bug, not an
@@ -106,8 +116,29 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 			Note:     "moct pre-run inject failed; the run went without memory",
 		}
 	}
-	block := renderMoctInjectBlock(injection)
-	return block, moctMemoryPart(block, injection)
+	// M-542: widen the block to the implemented Role's scope. The second call
+	// is bounded like the first and degrades the same way: a Role-side failure
+	// loses the Role section, never the run's own memory and never the run.
+	var roleInjection *moct.Injection
+	if readExpert != "" {
+		roleParams := params
+		roleParams.ExpertID = readExpert
+		roleParams.LayerTokens = initctx.BudgetMemory - params.LayerTokens
+		if role, rerr := client.Inject(ctx, roleParams); rerr != nil {
+			if logger != nil {
+				logger.Warn("moct: role pre-run inject failed; running on agent memory only",
+					"task_id", task.ID, "error", rerr)
+			}
+		} else {
+			roleInjection = role
+		}
+	}
+	if roleInjection == nil {
+		block := renderMoctInjectBlock(injection)
+		return block, moctMemoryPart(block, injection)
+	}
+	block := renderMoctInjectDualBlock(roleInjection, injection)
+	return block, moctMemoryDualPart(block, roleInjection, injection)
 }
 
 // moctMemoryPart is the memory row for a run. An empty block is reported with
@@ -186,6 +217,87 @@ func renderMoctInjectBlock(injection *moct.Injection) string {
 	return b.String()
 }
 
+// moctReadExpert is the claim's Role knowledge scope, or "" when this run
+// implements no Role. The server sends a full D2 expert ref
+// (multica:agent:<role uuid>), which is used verbatim as the inject expertId
+// and the MOCT_READ_EXPERT_ID env value.
+func moctReadExpert(task Task) string {
+	if task.MoctReadExpertID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*task.MoctReadExpertID)
+}
+
+// renderMoctInjectDualBlock merges the Role and Agent injects into one prompt
+// block. The Role section is labeled read-only so the model never treats
+// shared knowledge as its own writable profile; each side keeps its own
+// deferred-records note so neither count reads as the whole.
+func renderMoctInjectDualBlock(role, agent *moct.Injection) string {
+	roleEntries := role != nil && len(role.Entries) > 0
+	agentEntries := agent != nil && len(agent.Entries) > 0
+	if !roleEntries && !agentEntries {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## MOCT memory (pre-run inject)\n\n")
+	if roleEntries {
+		b.WriteString("### Role memory (read-only)\n\n")
+		writeMoctInjectEntries(&b, role)
+	}
+	if agentEntries {
+		b.WriteString("### Agent memory\n\n")
+		writeMoctInjectEntries(&b, agent)
+	}
+	return b.String()
+}
+
+// writeMoctInjectEntries renders one inject's entries plus its deferred way
+// out. Shared with the single-expert block above it so the two paths cannot
+// drift in shape.
+func writeMoctInjectEntries(b *strings.Builder, injection *moct.Injection) {
+	for _, entry := range injection.Entries {
+		entryType := moctOneLine(entry.Type, 64)
+		fmt.Fprintf(b, "#### [%s] %s\n\n", entryType, moctHeading(entry))
+		if body := strings.TrimSpace(entry.Body); body != "" {
+			b.WriteString(body)
+			b.WriteString("\n\n")
+		}
+	}
+	if injection.Omitted > 0 || len(injection.Index) > 0 {
+		b.WriteString("Some records did not fit above; read them with the `moct` MCP tools `memory_search` and `memory_get`.\n\n")
+	}
+}
+
+// moctMemoryDualPart is the memory row for a dual-scope run: entry counts per
+// side so the row never reads as "this is all the memory there is".
+func moctMemoryDualPart(block string, role, agent *moct.Injection) initctx.PartReport {
+	part := initctx.PartReport{Part: initctx.PartMemory, Measured: true, Tokens: initctx.Estimate(block)}
+	if block == "" {
+		part.Note = "moct returned no entries for this run's agent or role scope"
+		return part
+	}
+	roleCount, agentCount := 0, 0
+	if role != nil {
+		roleCount = len(role.Entries)
+	}
+	if agent != nil {
+		agentCount = len(agent.Entries)
+	}
+	part.Note = fmt.Sprintf("%d role (read-only) + %d agent entries at moct-be's inject budget of %d tokens", roleCount, agentCount, initctx.BudgetMemory)
+	part.Entries = make([]initctx.MemoryEntry, 0, roleCount+agentCount)
+	for _, injection := range []*moct.Injection{role, agent} {
+		if injection == nil {
+			continue
+		}
+		for _, entry := range injection.Entries {
+			part.Entries = append(part.Entries, initctx.MemoryEntry{
+				ID: entry.ID, Type: entry.Type, Title: entry.Title, Body: entry.Body,
+			})
+		}
+	}
+	return part
+}
+
 // moctHeading is an entry's title, single-line and bounded. The id stands in
 // when a record has no title, so an entry is never an empty heading.
 func moctHeading(entry moct.Entry) string {
@@ -246,6 +358,13 @@ func moctMCPConfig(baseURL string, task Task) (json.RawMessage, bool) {
 	}
 	if params.ChannelRef != "" {
 		env["MOCT_CHANNEL_REF"] = params.ChannelRef
+	}
+	// M-542: widen this run's reads to the implemented Role's scope. Absent
+	// on Role-less runs, so their MCP config is byte-identical to before.
+	// Writes stay attributed to MOCT_EXPERT_ID; moctmcp refuses any note
+	// aimed at another expert home before it reaches moct-be.
+	if readExpert := moctReadExpert(task); readExpert != "" {
+		env["MOCT_READ_EXPERT_ID"] = readExpert
 	}
 	raw, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		moctMemoryServerName: map[string]any{
