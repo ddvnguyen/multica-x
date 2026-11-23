@@ -24,14 +24,23 @@ import (
 
 // startPlanGate launches the gate for a task that just parked on a plan.
 //
-// It returns immediately: parkInterruptedTask is on the run path, and waiting
-// for a person to finish reading a plan there would hold the reporting
+// It returns immediately: reportInterruptedTask is on the run path, and
+// waiting for a person to finish reading a plan there would hold the reporting
 // goroutine for as long as the review takes.
+//
+// The gate runs under the daemon's lifecycle context rather than
+// context.Background(). The review process is a child of this daemon, and a
+// daemon that exits while a review is open (shutdown, restart, self-update)
+// must take it with it: an orphaned `plannotator` would keep serving a
+// browser tab for a run that no longer exists, and its temp dir — which holds
+// the plan text — would survive because the deferred cleanup never runs. A
+// killed gate is not a verdict: the plan stays parked and the panel can still
+// decide it.
 func (d *Daemon) startPlanGate(taskID string, logger *slog.Logger) {
 	if !d.cfg.PlanGateEnabled || strings.TrimSpace(taskID) == "" {
 		return
 	}
-	go d.runPlanGate(context.Background(), taskID, logger)
+	go d.runPlanGate(d.daemonLifecycleCtx(), taskID, logger)
 }
 
 // runPlanGate reads the parked plan, runs one gate, and posts the verdict.
@@ -77,12 +86,18 @@ func (d *Daemon) runPlanGate(ctx context.Context, taskID string, logger *slog.Lo
 		log.Info("plan gate: review session", "url", verdict.SessionURL, "plan_id", plan.PlanID)
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			// The daemon is going away and took the review with it. That is the
+			// documented outcome, not a failure: the plan stays parked.
+			log.Info("plan gate: cancelled before a verdict", "plan_id", plan.PlanID)
+			return
+		}
 		// "The gate broke" is not a reviewer's answer: the task stays parked.
 		log.Warn("plan gate: no verdict", "error", err, "plan_id", plan.PlanID, "exit_code", exitCodeOf(verdict))
 		return
 	}
 
-	submission := ParkedPlanVerdict{PlanID: plan.PlanID, BaseRevision: plan.Revision}
+	submission := ParkedPlanVerdict{PlanID: plan.PlanID, BaseRevision: plan.BaseRevision()}
 	switch verdict.Decision {
 	case plannotator.DecisionApproved:
 		submission.Verdict = "approve"
@@ -100,7 +115,15 @@ func (d *Daemon) runPlanGate(ctx context.Context, taskID string, logger *slog.Lo
 	resumeTask, err := d.client.SubmitParkedPlanVerdict(ctx, taskID, submission)
 	if err != nil {
 		if code := planGateConflictCode(err); code != "" {
-			log.Info("plan gate: verdict raced another decision; leaving it to the winner", "code", code, "plan_id", plan.PlanID)
+			// A conflict means something else decided first — except for
+			// run_already_queued, where the verdict WAS recorded and a run was
+			// already queued to carry it. Logging the two the same way would
+			// tell a reader the reviewer's approval was lost when it landed.
+			if code == "run_already_queued" {
+				log.Info("plan gate: verdict recorded; a run was already queued", "code", code, "plan_id", plan.PlanID)
+				return
+			}
+			log.Info("plan gate: another decision landed first; leaving it to the winner", "code", code, "plan_id", plan.PlanID)
 			return
 		}
 		log.Warn("plan gate: could not post the verdict", "error", err, "plan_id", plan.PlanID)

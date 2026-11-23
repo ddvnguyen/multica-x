@@ -162,6 +162,13 @@ func Run(ctx context.Context, cfg Config, req Request) (*Verdict, error) {
 	}
 	stderr := &cappedBuffer{max: 8 << 10}
 	cmd.Stderr = io.MultiWriter(logSink, stderr)
+	// Capturing stderr means exec hands the child a pipe and copies from it,
+	// and Wait waits for that copy to end. A descendant that inherited the pipe
+	// keeps it open after Plannotator itself is killed — `--tailscale` runs
+	// `tailscale serve` that way — so without a bounded teardown a cancelled
+	// gate would block for as long as that descendant lives. WaitDelay closes
+	// the pipe and returns once the process is gone and the delay expires.
+	cmd.WaitDelay = 2 * time.Second
 	stdout, runErr := cmd.Output()
 
 	exitCode := 0
