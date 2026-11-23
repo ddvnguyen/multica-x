@@ -93,7 +93,8 @@
     "./decisions": "./decisions/index.ts",
     "./moct": "./moct/index.ts",
     "./build-info": "./build-info.ts",
-    "./tabs": "./tabs/index.ts"
+    "./tabs": "./tabs/index.ts",
+    "./settings/components/tier-config-page": "./settings/components/tier-config-page.tsx"
   },
   "dependencies": {
     "@base-ui/react": "catalog:",

@@ -2220,6 +2220,7 @@
     "member_disabled": "disabled",
     "member_cooling_until": "cooling until {{time}}",
     "member_provider_placeholder": "e.g. freebuff",
+    "member_harness_select": "Select a harness",
     "member_model_placeholder": "e.g. deepseek-v4.1-flash",
     "member_thinking_placeholder": "default",
     "member_runtime_none": "No runtime",

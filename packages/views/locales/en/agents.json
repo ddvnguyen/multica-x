@@ -219,6 +219,8 @@
     "cancel": "Cancel",
     "section_skills": "Skills",
     "no_description_placeholder": "No description",
+    "legacy_tier_routing": "Legacy tier routing",
+    "legacy_tier_routing_hint": "Kept for agents created before Roles: turn tiers off to pick a runtime and model, and clear the role to drop the tier filter.",
     "prop_use_tiers": "Use tiers",
     "use_tiers_hint": "Resolve runtime and model per task from the selected tiers. Off keeps the single runtime and model below.",
     "prop_tiers": "Tiers",

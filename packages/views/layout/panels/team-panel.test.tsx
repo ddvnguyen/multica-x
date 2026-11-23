@@ -254,6 +254,11 @@ describe("TeamPanel tier config (M-499, M-517 verdict)", () => {
 
     expect(screen.getByText("Tier config")).toBeInTheDocument();
     expect(screen.getByText("Per-role tier config")).toBeInTheDocument();
+    // M-545: the entry opens the tier config inside the Team panel; it no
+    // longer leaves for Settings → Tiers.
+    expect(
+      screen.getByText("Per-role tier config").closest("a"),
+    ).toHaveAttribute("href", "/acme/agents/tiers");
   });
 });
 

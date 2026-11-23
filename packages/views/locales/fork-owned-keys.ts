@@ -34,6 +34,8 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
     "empty.description",
     "empty.title",
     "freebuff_account_field",
+    "inspector.legacy_tier_routing",
+    "inspector.legacy_tier_routing_hint",
     "inspector.no_description_placeholder",
     "inspector.section_skills",
     "inspector.prop_tiers",
