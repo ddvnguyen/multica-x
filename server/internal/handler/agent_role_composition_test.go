@@ -265,3 +265,34 @@ func TestPreviewRoleComposition(t *testing.T) {
 	withFeatureFlag(t, testHandler, featureflags.AgentRoleType, false)
 	testutil.Call(t, testHandler.PreviewRoleComposition, previewRequest(testUserID, agentID)).Want(http.StatusForbidden)
 }
+
+// TestClaimTaskByRuntime_MoctReadExpertID pins the M-542 claim wiring: a run
+// whose Agent implements a Role carries the Role scope, while a Role-less run
+// and a direct Role run leave the field absent (byte-identical seam).
+func TestClaimTaskByRuntime_MoctReadExpertID(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.AgentRoleType, true)
+	ctx := context.Background()
+	name := "moct-read-expert-" + compositionHandlerSuffix()
+	runtimeID, agentID, roleID, issueID, _, _, _ := seedRoleCompositionClaim(t, ctx, name)
+	seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+
+	resp := roleCompositionClaim(t, runtimeID, "")
+	if resp.MoctReadExpertID == nil {
+		t.Fatal("implementing-Agent claim carries no moct_read_expert_id")
+	}
+	if want := "multica:agent:" + roleID; *resp.MoctReadExpertID != want {
+		t.Fatalf("moct_read_expert_id = %q, want %q", *resp.MoctReadExpertID, want)
+	}
+
+	// A Role-less Agent on its own runtime: the field stays absent.
+	plainRuntimeID := createClaimReclaimRuntime(t, ctx, name+" plain runtime")
+	plainAgentID, plainIssueID := createClaimReclaimAgentAndIssue(t, ctx, plainRuntimeID, name+" plain agent")
+	seedQueuedIssueTask(t, ctx, plainAgentID, plainRuntimeID, plainIssueID)
+	plain := roleCompositionClaim(t, plainRuntimeID, "")
+	if plain.MoctReadExpertID != nil {
+		t.Fatalf("role-less claim carries moct_read_expert_id = %q, want absent", *plain.MoctReadExpertID)
+	}
+}

@@ -33,6 +33,10 @@ type Identity struct {
 	ActorID          string
 	Admin            bool
 	AgentInWorkspace func(context.Context, string) (bool, error)
+	// RoleInWorkspace reports whether an agent id names a Role in this
+	// workspace (M-542). Used only to contain null-workspace Role knowledge:
+	// nil keeps the legacy allowance everywhere.
+	RoleInWorkspace func(context.Context, string) (bool, error)
 }
 
 type Proxy struct {
@@ -296,6 +300,10 @@ func (p *Proxy) lookup(ctx context.Context, identity Identity, id string) (bool,
 		Records []struct {
 			ID          string  `json:"id"`
 			WorkspaceID *string `json:"workspaceId"`
+			Home        struct {
+				Kind string `json:"kind"`
+				Ref  string `json:"ref"`
+			} `json:"home"`
 		} `json:"records"`
 	}
 	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&out) != nil || len(out.Records) == 0 || out.Records[0].ID != id {
@@ -304,6 +312,35 @@ func (p *Proxy) lookup(ctx context.Context, identity Identity, id string) (bool,
 	ws := ""
 	if out.Records[0].WorkspaceID != nil {
 		ws = *out.Records[0].WorkspaceID
+	}
+	// M-542 Role-knowledge containment. A null-workspace record homed on an
+	// expert follows that expert across workspaces on moct-be's side, so the
+	// proxy contains it: a home expert that is a Role in this workspace owns
+	// the knowledge here (visible); a home expert that lives in no workspace
+	// this server can see — a Role from another workspace — stays hidden.
+	// Every other shape keeps the legacy allowance, so existing same-workspace
+	// Agent notes (versions, approve, retract) work exactly as before.
+	if ws == "" && out.Records[0].Home.Kind == "expert" {
+		if expertID, ok := strings.CutPrefix(out.Records[0].Home.Ref, "multica:agent:"); ok && uuid.MatchString(expertID) {
+			if identity.RoleInWorkspace != nil {
+				isRole, rerr := identity.RoleInWorkspace(ctx, expertID)
+				if rerr != nil {
+					return false, "", rerr
+				}
+				if isRole {
+					return true, ws, nil
+				}
+			}
+			if identity.AgentInWorkspace != nil {
+				inWorkspace, aerr := identity.AgentInWorkspace(ctx, expertID)
+				if aerr != nil {
+					return false, "", aerr
+				}
+				if !inWorkspace {
+					return false, "", nil
+				}
+			}
+		}
 	}
 	return ws == "multica:ws:"+identity.WorkspaceID || ws == "", ws, nil
 }

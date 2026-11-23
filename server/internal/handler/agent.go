@@ -473,6 +473,15 @@ type AgentTaskResponse struct {
 	// unaffected: they are a deliberate pull, not the automatic block.
 	// Mirror field: internal/daemon/types.go, same JSON name.
 	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
+	// MoctReadExpertID is the Role knowledge scope a run of an Agent that
+	// implements a Role reads in addition to its own (M-542). Set only when
+	// the Role composition is active, which already requires the
+	// agent_role_type flag — flag-off and Role-less runs leave it absent and
+	// behave exactly as before. The daemon widens pre-run inject and the
+	// `moct` MCP tools' reads to this scope; writes stay attributed to the
+	// run's own Agent.
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	MoctReadExpertID *string `json:"moct_read_expert_id,omitempty"`
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —

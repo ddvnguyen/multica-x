@@ -29,6 +29,19 @@ func (h *Handler) ProxyMoct(w http.ResponseWriter, r *http.Request) {
 		}
 		return err == nil, nil
 	}
+	// M-542: Role-knowledge containment for null-workspace expert-home
+	// records. A Role in this workspace owns its knowledge here; anything
+	// else keeps the legacy allowance (see moctapi lookup).
+	identity.RoleInWorkspace = func(ctx context.Context, agentID string) (bool, error) {
+		row, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: parseUUID(agentID), WorkspaceID: parseUUID(workspaceID)})
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return false, nil
+			}
+			return false, err
+		}
+		return row.Subtype == "role", nil
+	}
 	rest := r.URL.Path
 	prefix := "/api/workspaces/" + workspaceID + "/moct"
 	if len(rest) >= len(prefix) {

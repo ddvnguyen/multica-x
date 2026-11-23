@@ -445,3 +445,25 @@ func TestEffectiveAskPlanTimeoutSeconds(t *testing.T) {
 		})
 	}
 }
+
+// M-542: the claim field's name and its two states are the daemon's contract:
+// set (an implementing-Agent run) widens reads to the Role scope, absent
+// (Role-less, or a server predating Roles) keeps the single-expert seam.
+// Pinned here because the daemon reads it by JSON name.
+func TestAgentTaskResponse_MoctReadExpertWireName(t *testing.T) {
+	encoder := func(value *string) string {
+		encoded, err := json.Marshal(AgentTaskResponse{MoctReadExpertID: value})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return string(encoded)
+	}
+
+	role := "multica:agent:55555555-5555-4555-8555-555555555555"
+	if got := encoder(&role); !strings.Contains(got, `"moct_read_expert_id":"multica:agent:55555555-5555-4555-8555-555555555555"`) {
+		t.Fatalf("role claim = %s, want moct_read_expert_id set", got)
+	}
+	if got := encoder(nil); strings.Contains(got, "moct_read_expert_id") {
+		t.Fatalf("a role-less claim must omit the field, got %s", got)
+	}
+}

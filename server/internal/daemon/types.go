@@ -116,6 +116,13 @@ type Task struct {
 	// suppresses the MOCT inject block. The `moct` MCP server is unaffected —
 	// that is the agent's deliberate pull, not the automatic block.
 	MoctMemoryInject *bool `json:"moct_memory_inject,omitempty"`
+	// MoctReadExpertID is the Role knowledge scope (multica:agent:<role uuid>)
+	// a run of an Agent that implements a Role reads in addition to its own
+	// (M-542). Absent for Role-less runs and for servers that predate Roles:
+	// the daemon then keeps the single-expert seam exactly as before. Writes
+	// are always attributed to the run's own Agent, never to this scope.
+	// Mirror field: internal/handler/agent.go AgentTaskResponse, same JSON name.
+	MoctReadExpertID *string `json:"moct_read_expert_id,omitempty"`
 	// IssueStatuses mirrors the claim payload's active CUSTOM status catalog
 	// (MUL-6460): key/name/category/description per status, already in catalog
 	// order. Rendered into the brief's status-command line; empty (including on

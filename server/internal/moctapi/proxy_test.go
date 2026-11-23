@@ -1,6 +1,7 @@
 package moctapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -152,5 +153,53 @@ func TestListIgnoresCallerWorkspaceAndBoundsLimit(t *testing.T) {
 	}
 	if got.Get("workspaceId") != "multica:ws:ws-a" || got.Get("expertId") != "multica:user:user-a" || got.Get("limit") != "20" {
 		t.Fatalf("forwarded query = %v", got)
+	}
+}
+
+// M-542: null-workspace expert-home records are Role knowledge containment.
+// A home expert that is a Role HERE owns the knowledge here (visible);
+// a home expert that lives nowhere this workspace can see stays hidden.
+// Every other shape keeps the legacy allowance.
+func TestVersionsContainsNullWorkspaceRoleKnowledge(t *testing.T) {
+	const (
+		roleHereID   = "55555555-5555-4555-8555-555555555555"
+		agentHereID  = "66666666-6666-4666-8666-666666666666"
+		foreignID    = "77777777-7777-4777-8777-777777777777"
+		versionsPath = "/team/v1/memory/mem_r/versions"
+	)
+	for _, tc := range []struct {
+		name     string
+		record   string
+		wantCode int
+	}{
+		{"role in this workspace visible", `{"id":"mem_r","home":{"kind":"expert","ref":"multica:agent:` + roleHereID + `"}}`, http.StatusOK},
+		{"agent in this workspace keeps legacy", `{"id":"mem_r","home":{"kind":"expert","ref":"multica:agent:` + agentHereID + `"}}`, http.StatusOK},
+		{"expert from another workspace hidden", `{"id":"mem_r","home":{"kind":"expert","ref":"multica:agent:` + foreignID + `"}}`, http.StatusNotFound},
+		{"team home keeps legacy", `{"id":"mem_r","home":{"kind":"team","ref":"multica:ws:ws-a"}}`, http.StatusOK},
+		{"workspace-set record still exact-matched", `{"id":"mem_r","workspaceId":"multica:ws:ws-a","home":{"kind":"expert","ref":"multica:agent:` + roleHereID + `"}}`, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/team/v1/memory/get" {
+					_, _ = io.WriteString(w, `{"records":[`+tc.record+`]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"versions":[]}`)
+			}))
+			defer backend.Close()
+			identity := Identity{WorkspaceID: "ws-a", ActorID: "user-a", Admin: true}
+			identity.AgentInWorkspace = func(_ context.Context, id string) (bool, error) {
+				return id == roleHereID || id == agentHereID, nil
+			}
+			identity.RoleInWorkspace = func(_ context.Context, id string) (bool, error) {
+				return id == roleHereID, nil
+			}
+			req := httptest.NewRequest("GET", "http://app.test"+versionsPath, nil)
+			res := httptest.NewRecorder()
+			New(backend.URL).Serve(res, req, identity, versionsPath)
+			if res.Code != tc.wantCode {
+				t.Fatalf("status = %d body %s, want %d", res.Code, res.Body.String(), tc.wantCode)
+			}
+		})
 	}
 }
