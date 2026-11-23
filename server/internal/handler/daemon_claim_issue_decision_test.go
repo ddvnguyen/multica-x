@@ -72,6 +72,55 @@ func TestCurrentIssueDecisionRecordsMatchEndpointAndClaim(t *testing.T) {
 	}
 }
 
+func TestProjectDecisionAppearsInSiblingIssueClaim(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	projectID := dbfx.Project(t, "Project decision claim")
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Project decision claim runtime")
+	agentID, targetIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Project decision claim agent")
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET project_id=$1 WHERE id=$2`, projectID, targetIssueID); err != nil {
+		t.Fatal(err)
+	}
+	sourceIssueID := dbfx.Issue(t, "Project decision source", testutil.Cols{"project_id": projectID})
+	sourceComment := createDecisionSourceComment(t, sourceIssueID, "Use the shared deployment policy.", "", "")
+	w, record := postDecisionRecord(t, sourceIssueID, map[string]any{
+		"problem":    "How should deployment work across this project?",
+		"decided":    "Use the shared deployment policy.",
+		"comment_id": sourceComment.ID,
+		"scope":      "project",
+	})
+	if w.Code != http.StatusCreated || record.Scope != "project" {
+		t.Fatalf("create project decision = %d, %+v: %s", w.Code, record, w.Body.String())
+	}
+	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, targetIssueID, "120 seconds", false)
+	claimRequest := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
+	claimResponse := httptest.NewRecorder()
+	testHandler.ClaimTaskByRuntime(claimResponse, claimRequest)
+	if claimResponse.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime = %d: %s", claimResponse.Code, claimResponse.Body.String())
+	}
+	var claim struct {
+		Task *struct {
+			ID              string                   `json:"id"`
+			DecisionRecords []TaskDecisionRecordData `json:"decision_records"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimResponse.Body.Bytes(), &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.Task == nil || claim.Task.ID != taskID {
+		t.Fatalf("claim task = %+v, want %s", claim.Task, taskID)
+	}
+	for _, got := range claim.Task.DecisionRecords {
+		if got.ID == record.ID && got.Scope == "project" && got.Problem == "How should deployment work across this project?" {
+			return
+		}
+	}
+	t.Fatalf("sibling issue claim omitted project decision %s: %+v", record.ID, claim.Task.DecisionRecords)
+}
+
 func TestClaimTaskByRuntime_ChatOmitsIssueDecisionRecords(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

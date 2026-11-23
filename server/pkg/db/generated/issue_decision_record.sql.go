@@ -13,21 +13,26 @@ import (
 
 const createIssueDecisionRecord = `-- name: CreateIssueDecisionRecord :exec
 INSERT INTO issue_decision_record (
-    id, workspace_id, issue_id, comment_id, decided, rationale, supersedes_id, source_kind, actor_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (comment_id) DO NOTHING
+    id, workspace_id, issue_id, comment_id, problem, problem_comment_id,
+    decided, rationale, supersedes_id, source_kind, actor_id, scope, project_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+ON CONFLICT (comment_id, (md5(decided))) DO NOTHING
 `
 
 type CreateIssueDecisionRecordParams struct {
-	ID           pgtype.UUID `json:"id"`
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	IssueID      pgtype.UUID `json:"issue_id"`
-	CommentID    pgtype.UUID `json:"comment_id"`
-	Decided      string      `json:"decided"`
-	Rationale    string      `json:"rationale"`
-	SupersedesID pgtype.UUID `json:"supersedes_id"`
-	SourceKind   string      `json:"source_kind"`
-	ActorID      pgtype.UUID `json:"actor_id"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	CommentID        pgtype.UUID `json:"comment_id"`
+	Problem          string      `json:"problem"`
+	ProblemCommentID pgtype.UUID `json:"problem_comment_id"`
+	Decided          string      `json:"decided"`
+	Rationale        string      `json:"rationale"`
+	SupersedesID     pgtype.UUID `json:"supersedes_id"`
+	SourceKind       string      `json:"source_kind"`
+	ActorID          pgtype.UUID `json:"actor_id"`
+	Scope            string      `json:"scope"`
+	ProjectID        pgtype.UUID `json:"project_id"`
 }
 
 func (q *Queries) CreateIssueDecisionRecord(ctx context.Context, arg CreateIssueDecisionRecordParams) error {
@@ -36,13 +41,49 @@ func (q *Queries) CreateIssueDecisionRecord(ctx context.Context, arg CreateIssue
 		arg.WorkspaceID,
 		arg.IssueID,
 		arg.CommentID,
+		arg.Problem,
+		arg.ProblemCommentID,
 		arg.Decided,
 		arg.Rationale,
 		arg.SupersedesID,
 		arg.SourceKind,
 		arg.ActorID,
+		arg.Scope,
+		arg.ProjectID,
 	)
 	return err
+}
+
+const getIssueDecisionRecordByCommentAndDecided = `-- name: GetIssueDecisionRecordByCommentAndDecided :one
+SELECT id, workspace_id, issue_id, comment_id, decided, rationale, supersedes_id, source_kind, actor_id, created_at, problem, problem_comment_id, scope, project_id FROM issue_decision_record
+WHERE comment_id = $1 AND decided = $2
+`
+
+type GetIssueDecisionRecordByCommentAndDecidedParams struct {
+	CommentID pgtype.UUID `json:"comment_id"`
+	Decided   string      `json:"decided"`
+}
+
+func (q *Queries) GetIssueDecisionRecordByCommentAndDecided(ctx context.Context, arg GetIssueDecisionRecordByCommentAndDecidedParams) (IssueDecisionRecord, error) {
+	row := q.db.QueryRow(ctx, getIssueDecisionRecordByCommentAndDecided, arg.CommentID, arg.Decided)
+	var i IssueDecisionRecord
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.CommentID,
+		&i.Decided,
+		&i.Rationale,
+		&i.SupersedesID,
+		&i.SourceKind,
+		&i.ActorID,
+		&i.CreatedAt,
+		&i.Problem,
+		&i.ProblemCommentID,
+		&i.Scope,
+		&i.ProjectID,
+	)
+	return i, err
 }
 
 const issueDecisionRecordExists = `-- name: IssueDecisionRecordExists :one
@@ -71,7 +112,9 @@ func (q *Queries) IssueDecisionRecordExists(ctx context.Context, arg IssueDecisi
 
 const listCurrentIssueDecisionRecords = `-- name: ListCurrentIssueDecisionRecords :many
 WITH current_records AS (
-    SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at
+    SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale,
+           r.supersedes_id, r.source_kind, r.actor_id, r.created_at, r.problem,
+           r.problem_comment_id, r.scope, r.project_id
     FROM issue_decision_record r
     WHERE r.workspace_id = $1 AND r.issue_id = $2
       AND NOT EXISTS (
@@ -81,7 +124,9 @@ WITH current_records AS (
     ORDER BY r.created_at DESC, r.id DESC
     LIMIT 10
 )
-SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at, NULL::uuid AS superseded_by_id
+SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale,
+       r.supersedes_id, r.source_kind, r.actor_id, r.created_at, NULL::uuid AS superseded_by_id,
+       r.problem, r.problem_comment_id, r.scope, r.project_id
 FROM current_records r
 ORDER BY r.created_at ASC, r.id ASC
 `
@@ -92,17 +137,21 @@ type ListCurrentIssueDecisionRecordsParams struct {
 }
 
 type ListCurrentIssueDecisionRecordsRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	CommentID      pgtype.UUID        `json:"comment_id"`
-	Decided        string             `json:"decided"`
-	Rationale      string             `json:"rationale"`
-	SupersedesID   pgtype.UUID        `json:"supersedes_id"`
-	SourceKind     string             `json:"source_kind"`
-	ActorID        pgtype.UUID        `json:"actor_id"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	SupersededByID pgtype.UUID        `json:"superseded_by_id"`
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	CommentID        pgtype.UUID        `json:"comment_id"`
+	Decided          string             `json:"decided"`
+	Rationale        string             `json:"rationale"`
+	SupersedesID     pgtype.UUID        `json:"supersedes_id"`
+	SourceKind       string             `json:"source_kind"`
+	ActorID          pgtype.UUID        `json:"actor_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SupersededByID   pgtype.UUID        `json:"superseded_by_id"`
+	Problem          string             `json:"problem"`
+	ProblemCommentID pgtype.UUID        `json:"problem_comment_id"`
+	Scope            string             `json:"scope"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
 }
 
 func (q *Queries) ListCurrentIssueDecisionRecords(ctx context.Context, arg ListCurrentIssueDecisionRecordsParams) ([]ListCurrentIssueDecisionRecordsRow, error) {
@@ -126,6 +175,90 @@ func (q *Queries) ListCurrentIssueDecisionRecords(ctx context.Context, arg ListC
 			&i.ActorID,
 			&i.CreatedAt,
 			&i.SupersededByID,
+			&i.Problem,
+			&i.ProblemCommentID,
+			&i.Scope,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCurrentProjectDecisionRecords = `-- name: ListCurrentProjectDecisionRecords :many
+WITH current_records AS (
+    SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale,
+           r.supersedes_id, r.source_kind, r.actor_id, r.created_at, r.problem,
+           r.problem_comment_id, r.scope, r.project_id
+    FROM issue_decision_record r
+    WHERE r.workspace_id = $1 AND r.project_id = $2 AND r.scope = 'project'
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_decision_record replacement
+          WHERE replacement.supersedes_id = r.id
+      )
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT 5
+)
+SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale,
+       r.supersedes_id, r.source_kind, r.actor_id, r.created_at, NULL::uuid AS superseded_by_id,
+       r.problem, r.problem_comment_id, r.scope, r.project_id
+FROM current_records r
+ORDER BY r.created_at ASC, r.id ASC
+`
+
+type ListCurrentProjectDecisionRecordsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+type ListCurrentProjectDecisionRecordsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	CommentID        pgtype.UUID        `json:"comment_id"`
+	Decided          string             `json:"decided"`
+	Rationale        string             `json:"rationale"`
+	SupersedesID     pgtype.UUID        `json:"supersedes_id"`
+	SourceKind       string             `json:"source_kind"`
+	ActorID          pgtype.UUID        `json:"actor_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SupersededByID   pgtype.UUID        `json:"superseded_by_id"`
+	Problem          string             `json:"problem"`
+	ProblemCommentID pgtype.UUID        `json:"problem_comment_id"`
+	Scope            string             `json:"scope"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
+}
+
+func (q *Queries) ListCurrentProjectDecisionRecords(ctx context.Context, arg ListCurrentProjectDecisionRecordsParams) ([]ListCurrentProjectDecisionRecordsRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentProjectDecisionRecords, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentProjectDecisionRecordsRow{}
+	for rows.Next() {
+		var i ListCurrentProjectDecisionRecordsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.CommentID,
+			&i.Decided,
+			&i.Rationale,
+			&i.SupersedesID,
+			&i.SourceKind,
+			&i.ActorID,
+			&i.CreatedAt,
+			&i.SupersededByID,
+			&i.Problem,
+			&i.ProblemCommentID,
+			&i.Scope,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -138,7 +271,9 @@ func (q *Queries) ListCurrentIssueDecisionRecords(ctx context.Context, arg ListC
 }
 
 const listIssueDecisionRecords = `-- name: ListIssueDecisionRecords :many
-SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale, r.supersedes_id, r.source_kind, r.actor_id, r.created_at, replacement.id AS superseded_by_id
+SELECT r.id, r.workspace_id, r.issue_id, r.comment_id, r.decided, r.rationale,
+       r.supersedes_id, r.source_kind, r.actor_id, r.created_at, replacement.id AS superseded_by_id,
+       r.problem, r.problem_comment_id, r.scope, r.project_id
 FROM issue_decision_record r
 LEFT JOIN issue_decision_record replacement ON replacement.supersedes_id = r.id
 WHERE r.workspace_id = $1 AND r.issue_id = $2
@@ -151,17 +286,21 @@ type ListIssueDecisionRecordsParams struct {
 }
 
 type ListIssueDecisionRecordsRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	CommentID      pgtype.UUID        `json:"comment_id"`
-	Decided        string             `json:"decided"`
-	Rationale      string             `json:"rationale"`
-	SupersedesID   pgtype.UUID        `json:"supersedes_id"`
-	SourceKind     string             `json:"source_kind"`
-	ActorID        pgtype.UUID        `json:"actor_id"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	SupersededByID pgtype.UUID        `json:"superseded_by_id"`
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	CommentID        pgtype.UUID        `json:"comment_id"`
+	Decided          string             `json:"decided"`
+	Rationale        string             `json:"rationale"`
+	SupersedesID     pgtype.UUID        `json:"supersedes_id"`
+	SourceKind       string             `json:"source_kind"`
+	ActorID          pgtype.UUID        `json:"actor_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SupersededByID   pgtype.UUID        `json:"superseded_by_id"`
+	Problem          string             `json:"problem"`
+	ProblemCommentID pgtype.UUID        `json:"problem_comment_id"`
+	Scope            string             `json:"scope"`
+	ProjectID        pgtype.UUID        `json:"project_id"`
 }
 
 func (q *Queries) ListIssueDecisionRecords(ctx context.Context, arg ListIssueDecisionRecordsParams) ([]ListIssueDecisionRecordsRow, error) {
@@ -185,6 +324,10 @@ func (q *Queries) ListIssueDecisionRecords(ctx context.Context, arg ListIssueDec
 			&i.ActorID,
 			&i.CreatedAt,
 			&i.SupersededByID,
+			&i.Problem,
+			&i.ProblemCommentID,
+			&i.Scope,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}

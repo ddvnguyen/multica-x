@@ -136,9 +136,6 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
   issues: [
     "agent_question",
     "ask_plan",
-    "comment.new_decision",
-    "comment.record_as_decision",
-    "comment.supersedes_decision",
     "batch.delete_dialog_warning",
     "board.add_list",
     "board.collapse_list",
@@ -155,6 +152,7 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
     "detail.owner_decisions_failed",
     "detail.owner_decisions_loading",
     "detail.owner_decisions_retry",
+    "detail.owner_decisions_project",
     "detail.owner_decisions_superseded",
     "execution_log.open_session_tooltip",
     "execution_log.sparkline_now",

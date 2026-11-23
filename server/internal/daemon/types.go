@@ -78,8 +78,10 @@ type ProjectWorkflowData struct {
 // oldest to newest for prompt rendering.
 type DecisionRecordData struct {
 	ID        string `json:"id"`
+	Problem   string `json:"problem"`
 	Decided   string `json:"decided"`
 	Rationale string `json:"rationale"`
+	Scope     string `json:"scope"`
 }
 
 // Task represents a claimed task from the server.

@@ -411,8 +411,10 @@ type TaskProjectWorkflowData struct {
 // an issue task. It mirrors the CLI's current decision read response.
 type TaskDecisionRecordData struct {
 	ID        string `json:"id"`
+	Problem   string `json:"problem"`
 	Decided   string `json:"decided"`
 	Rationale string `json:"rationale"`
+	Scope     string `json:"scope"`
 }
 
 // ClaimParentIssue points a sub-issue's run at its parent issue, where the

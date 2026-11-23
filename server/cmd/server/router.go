@@ -2354,6 +2354,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// ONE issue, so these live here with every other issue
 					// sub-resource; the web client calls them at this shape.
 					r.Get("/decision-records", h.ListIssueDecisionRecords)
+					r.Post("/decision-records", h.CreateIssueDecisionRecord)
 					r.With(handler.RequireHumanActor).Post("/decision-response", h.DecisionResponse)
 				})
 			})

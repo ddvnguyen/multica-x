@@ -1526,6 +1526,10 @@ export const IssueDecisionRecordSchema = z.object({
   decided: z.string(), rationale: z.string(),
   supersedes_id: z.string().nullable(), superseded_by_id: z.string().nullable(),
   source_kind: z.string(), actor_id: z.string(), created_at: z.string(),
+  problem: z.string().optional().default(""),
+  problem_comment_id: z.string().nullable().optional().default(null),
+  scope: z.enum(["issue", "project"]).optional().default("issue"),
+  project_id: z.string().nullable().optional().default(null),
 }).loose();
 export const IssueDecisionRecordsSchema = z.array(IssueDecisionRecordSchema);
 

@@ -140,6 +140,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"757_issue_decision_comment_decided_index":                  "issue_decision_record_comment_decided_idx",
 	"754_issue_decision_record_supersedes_index":                "issue_decision_record_supersedes_idx",
 	"753_issue_decision_record_issue_index":                     "issue_decision_record_issue_idx",
 	"752_issue_decision_record_comment_index":                   "issue_decision_record_comment_idx",
@@ -441,6 +442,7 @@ var concurrentIndexCleanups = map[string]string{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"756_issue_decision_comment_index_swap":                 "issue_decision_record_comment_idx",
 	"739_drop_pending_actual_tier_unique":                   "idx_one_pending_task_per_issue_agent_tier",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
