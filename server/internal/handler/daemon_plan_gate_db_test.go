@@ -8,13 +8,21 @@ package handler
 // server, which cannot catch a change to what the routes actually return.
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // daemonPlanGateRequest authenticates the way a real daemon does: an mdt_ token
@@ -380,5 +388,118 @@ func TestDaemonParkedPlan_CapsALongPlan(t *testing.T) {
 	// The plan really was larger than the cap: 20 sections of the maximum body.
 	if len(body)*len(outline) <= daemonParkedPlanMaxBytes {
 		t.Fatalf("fixture plan is not over the cap")
+	}
+}
+
+// TestDaemonPlanVerdict_MemberCredentialRecordsThatMember: DaemonAuth accepts a
+// member credential on these routes, and a verdict posted that way must be
+// recorded against that member. A state-only assertion would miss it — the
+// whole point of reviewed_by is the identity — so this reads the review row.
+//
+// The member also owns the runtime: the route's binding check refuses a member
+// verdict for a runtime someone else owns, and using a second member keeps the
+// recorded id from matching the suite's default user by accident.
+func TestDaemonPlanVerdict_MemberCredentialRecordsThatMember(t *testing.T) {
+	f := newAskPlanFixture(t)
+	plan := parkPlanThroughAskPlan(t, f, "Member plan", "Ship it.")
+
+	member := dbfx.User(t, "Gate Member", "gate-member-"+f.taskID+"@multica.ai")
+	dbfx.Member(t, testWorkspaceID, member, "member")
+	dbfx.Exec(t, `UPDATE agent_runtime SET owner_id=$2 WHERE id=$1`, f.runtimeID, member)
+
+	req := newRequestAs(member, http.MethodPost, "/api/daemon/tasks/"+f.taskID+"/plan-verdict", map[string]any{
+		"plan_id":       plan.ID,
+		"base_revision": plan.Revision,
+		"verdict":       "approve",
+	})
+	req = withURLParams(req, "taskId", f.taskID)
+	testutil.Call(t, testHandler.SubmitParkedPlanVerdict, req).Want(http.StatusOK)
+
+	var reviewedBy, note string
+	dbfx.QueryRow(t, `SELECT reviewed_by::text, note FROM agent_plan_review WHERE plan_id=$1 AND verdict='approve'`, plan.ID).
+		Scan(&reviewedBy, &note)
+	if reviewedBy != member {
+		t.Fatalf("reviewed_by = %q, want the posting member %q", reviewedBy, member)
+	}
+	// The note is what still separates a gated approval from a panel decision;
+	// recording the member must not turn this into an ordinary review.
+	if !strings.Contains(note, "Plannotator gate") {
+		t.Fatalf("note = %q, want the gate named", note)
+	}
+	var planStatus string
+	dbfx.QueryRow(t, `SELECT status FROM agent_plan WHERE id=$1`, plan.ID).Scan(&planStatus)
+	if planStatus != "approved" {
+		t.Fatalf("plan status = %q, want approved", planStatus)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE rerun_of_task_id=$1`, f.taskID); n != 1 {
+		t.Fatalf("resume runs = %d, want exactly 1", n)
+	}
+}
+
+// TestDaemonPlanVerdict_OwnerlessTokenRefused: a Qoder-managed daemon token has
+// no owner — daemon_token.owner_id stays NULL for the server-run bridge, and
+// DaemonAuth deliberately does not fall back to a member for that path. There is
+// therefore nobody to record a verdict against, and the route must refuse rather
+// than invent a reviewer or 500. The plan stays parked for a human.
+//
+// This is the only way an ownerless credential reaches the verdict route: for
+// every other daemon token the runtime binding check refuses it first, so the
+// test goes through the real DaemonAuth with a real token row and a live
+// cloud_agent_connection, which is what lets a qoder-managed token past binding.
+func TestDaemonPlanVerdict_OwnerlessTokenRefused(t *testing.T) {
+	ctx := context.Background()
+	daemonID := "qoder-managed-" + testWorkspaceID
+	f := newAskPlanFixtureWithDaemon(t, daemonID, "Qoder Gate Agent")
+	plan := parkPlanThroughAskPlan(t, f, "Bridge plan", "Ship it.")
+
+	raw, err := auth.GenerateDaemonToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := testHandler.Queries.CreateDaemonToken(ctx, db.CreateDaemonTokenParams{
+		TokenHash:   auth.HashToken(raw),
+		WorkspaceID: parseUUID(testWorkspaceID),
+		DaemonID:    daemonID,
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("create daemon token: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM daemon_token WHERE id=$1`, token.ID) })
+	dbfx.Exec(t, `INSERT INTO cloud_agent_connection (workspace_id, provider, owner_id, token_id, config_encrypted, enabled)
+		VALUES ($1, 'qoder_cloud', $2, $3, 'test-only', true)`, testWorkspaceID, testUserID, token.ID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND token_id=$1`, token.ID)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/daemon/tasks/"+f.taskID+"/plan-verdict", strings.NewReader(mustJSON(t, map[string]any{
+		"plan_id":       plan.ID,
+		"base_revision": plan.Revision,
+		"verdict":       "approve",
+	})))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+raw)
+	req = withURLParams(req, "taskId", f.taskID)
+
+	rec := httptest.NewRecorder()
+	middleware.DaemonAuth(testHandler.Queries, nil, nil, nil)(
+		http.HandlerFunc(testHandler.SubmitParkedPlanVerdict)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body = %s, want 403", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "reviewer identity") {
+		t.Fatalf("body = %s, want the reviewer-identity refusal", rec.Body.String())
+	}
+
+	// The verdict changed nothing: the plan is still awaiting a human, and no
+	// review or resume run was recorded from the refused call.
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_plan WHERE id=$1 AND status='in_review'`, plan.ID); n != 1 {
+		t.Fatalf("plan left in_review after an ownerless verdict")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_plan_review WHERE plan_id=$1`, plan.ID); n != 0 {
+		t.Fatalf("an ownerless verdict recorded %d reviews", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE rerun_of_task_id=$1`, f.taskID); n != 0 {
+		t.Fatalf("an ownerless verdict queued %d resume runs", n)
 	}
 }
