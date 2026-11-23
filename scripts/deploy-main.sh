@@ -37,6 +37,18 @@ done
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || die "expected commit must be a full 40-character SHA"
 [[ "$MAX_DRAIN_SECONDS" =~ ^[0-9]+$ ]] || die "max drain wait must be a non-negative number of seconds (0 = cancel tasks and deploy immediately)"
 
+# Image tags embed the built short SHA by convention (main-<version>-<sha>).
+# A tag whose trailing dash-segment is 7-40 hex chars must match the leading
+# characters of the expected commit, so a stale tag built from an older commit
+# fails fast here instead of shipping mismatched version labels (M-539:
+# tag main-0.11.1-7239fad88 shipped commit 4bdc0890c).
+if [[ "$IMAGE_TAG" =~ -([0-9a-fA-F]{7,40})$ ]]; then
+  tag_sha="${BASH_REMATCH[1],,}"
+  commit_prefix="${EXPECTED_COMMIT:0:${#tag_sha}}"
+  commit_prefix="${commit_prefix,,}"
+  [ "$tag_sha" = "$commit_prefix" ] || die "image tag '$IMAGE_TAG' embeds short SHA '${BASH_REMATCH[1]}', which is not a prefix of expected commit $EXPECTED_COMMIT"
+fi
+
 STACK_DIR="${MULTICA_MAIN_STACK_DIR:-$HOME/.local/share/multica}"
 ENV_FILE="$STACK_DIR/.env"
 WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"

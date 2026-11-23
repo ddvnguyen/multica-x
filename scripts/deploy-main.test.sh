@@ -202,4 +202,24 @@ output="$(run)"
 [[ "$output" == *"mount $CONTAINERS_ROOT has "*' GiB free'* ]]
 assert test -z "$(ls -A "$MULTICA_MAIN_TMPDIR")"
 
+# FF_AGENT_ROLE_TYPE survives the MULTICA_IMAGE_TAG rewrite (M-539): the awk
+# update only touches the tag line, so a production flag set in the stack .env
+# is not wiped by a deploy.
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\nFF_AGENT_ROLE_TYPE=true\n' > "$STACK_DIR/.env"
+run >/dev/null 2>&1
+assert grep -q '^FF_AGENT_ROLE_TYPE=true$' "$STACK_DIR/.env"
+assert grep -q "MULTICA_IMAGE_TAG=$IMAGE_TAG" "$STACK_DIR/.env"
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+
+# A tag embedding a stale short SHA fails preflight before any state changes
+# (M-539: main-0.11.1-7239fad88 shipped commit 4bdc0890c).
+if bash "$SCRIPT" "main-0.11.1-000000000" "$EXPECTED_COMMIT" 1 --dry-run >/dev/null 2>&1; then
+  echo "expected stale-SHA image tag rejection" >&2; exit 1
+fi
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+
+# A tag embedding the expected commit's short SHA passes preflight.
+matching_tag="main-0.11.1-${EXPECTED_COMMIT:0:9}"
+IMAGE_TAG="$matching_tag" bash "$SCRIPT" "$matching_tag" "$EXPECTED_COMMIT" 1 --dry-run >/dev/null 2>&1
+
 printf 'deploy-main stub tests passed\n'
