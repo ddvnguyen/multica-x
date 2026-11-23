@@ -1720,6 +1720,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// the answer's resume run can continue it. Idempotent CAS, mirroring
 		// the wait-local-directory precedent above.
 		r.Post("/tasks/{taskId}/blocked", h.BlockTask)
+		// Plan gate (docs/plannotator-gate.md): the parked run's plan and the
+		// gate's verdict, both resolved from the task so a daemon can reach
+		// exactly one plan — the open one on its own task's issue.
+		r.Get("/tasks/{taskId}/parked-plan", h.GetParkedPlan)
+		r.Post("/tasks/{taskId}/plan-verdict", h.SubmitParkedPlanVerdict)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)

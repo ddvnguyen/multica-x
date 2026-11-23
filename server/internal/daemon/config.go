@@ -197,6 +197,16 @@ type Config struct {
 	// authentication is enabled. Empty sends no Authorization header, which is
 	// correct for the default loopback-only installation.
 	PowerContextToken string
+
+	// PlanGateEnabled opens a Plannotator review of a plan the agent parked for
+	// approval, and posts the reviewer's verdict back (docs/plannotator-gate.md).
+	// Off by default: it needs a `plannotator` binary and a person at this
+	// machine, and with neither the gate would only ever deny or time out.
+	PlanGateEnabled bool
+	// PlanGateBinary is the `plannotator` executable to run. Empty resolves
+	// "plannotator" on PATH at gate time, so an operator who installed it after
+	// starting the daemon does not have to restart.
+	PlanGateBinary string
 }
 
 // Overrides allows CLI flags to override environment variables and defaults.
@@ -688,6 +698,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	powerContextBaseURL := strings.TrimSpace(os.Getenv("POWERCONTEXT_BASE_URL"))
 	powerContextToken := strings.TrimSpace(os.Getenv("POWERCONTEXT_TOKEN"))
 
+	// Plan gate (docs/plannotator-gate.md). Opt-in, and unlike the memory seam
+	// this one is named MULTICA_* on purpose: it is our own loop step, not a
+	// third-party endpoint, and it never changes where a run's context comes
+	// from — it only inserts a reviewer between a submitted plan and its
+	// verdict. Empty PLANNOTATOR_BIN means PATH.
+	planGateEnabled := boolFromEnv("MULTICA_PLAN_GATE", false)
+	planGateBinary := strings.TrimSpace(os.Getenv("PLANNOTATOR_BIN"))
+
 	// M-102: MESSAGE_SINK=dsh moves dsh-runtime transcripts into the shared
 	// dsh session store. Any other value is ignored: the flag is opt-in and
 	// the legacy transcript path must stay the default until an operator asks
@@ -764,6 +782,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		MoctBaseURL:                     moctBaseURL,
 		PowerContextBaseURL:             powerContextBaseURL,
 		PowerContextToken:               powerContextToken,
+		PlanGateEnabled:                 planGateEnabled,
+		PlanGateBinary:                  planGateBinary,
 	}, nil
 }
 
