@@ -367,7 +367,6 @@ func TestDaemonAuth_MCN_FleetUnreachable(t *testing.T) {
 	}
 }
 
-
 // TestDaemonAuth_MCN_OwnerNotInLocalDB pins the new owner-existence
 // guard end-to-end through the middleware. Cloud verifies the token
 // successfully and returns an owner_id that does not exist in our
@@ -403,5 +402,29 @@ func TestDaemonAuth_MCN_OwnerNotInLocalDB(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 when local user is missing, got %d", w.Code)
+	}
+}
+
+// TestDaemonAuth_RejectsAgentTaskToken pins the boundary the plan-gate routes
+// depend on: an agent's own `mat_` task token cannot reach the daemon API.
+// DaemonAuth has no branch for that prefix and falls through to JWT parsing,
+// which rejects it — so the agent whose plan is parked on the gate can neither
+// read the parked plan nor approve it through the daemon surface.
+func TestDaemonAuth_RejectsAgentTaskToken(t *testing.T) {
+	mw := DaemonAuth(nil, nil, nil, nil) // no caches, no DB
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("an agent task token reached %s %s", r.Method, r.URL.Path)
+	}))
+	for _, path := range []string{
+		"/api/daemon/tasks/01972f7e-7e8d-77ef-a13d-1b0ce3e9c0aa/parked-plan",
+		"/api/daemon/tasks/01972f7e-7e8d-77ef-a13d-1b0ce3e9c0aa/plan-verdict",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer mat_tasktoken")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: status = %d, want 401 for an agent task token", path, w.Code)
+		}
 	}
 }

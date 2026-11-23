@@ -29,6 +29,22 @@ func (p *ParkedPlan) Ready() bool {
 	return p != nil && p.Status == "ready" && p.Markdown != ""
 }
 
+// BaseRevision is the revision a verdict has to be fenced on. ReviewPlan
+// compares against submitted_revision — the revision the plan was submitted
+// at — not against the live edit counter. They agree for an in_review plan
+// today (an in-review edit advances both), but the fence belongs to the
+// submit, so send the field the server checks rather than the one that happens
+// to match it.
+func (p *ParkedPlan) BaseRevision() int32 {
+	if p == nil {
+		return 0
+	}
+	if p.SubmittedRevision > 0 {
+		return p.SubmittedRevision
+	}
+	return p.Revision
+}
+
 // ParkedPlanVerdict is the body of the gate's verdict. Verdict uses the plan
 // vocabulary (approve | changes_requested | cancel); Feedback is the
 // annotator's Markdown and becomes the review's comments.

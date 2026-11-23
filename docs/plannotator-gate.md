@@ -74,11 +74,24 @@ routes, because a daemon has a task token and no member session:
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/daemon/tasks/{taskId}/parked-plan` | the open in-review plan's text, rendered as standalone Markdown |
+| `GET /api/daemon/tasks/{taskId}/parked-plan` | the open in-review plan's text, rendered as standalone Markdown and capped at 256 KiB on a rune boundary |
 | `POST /api/daemon/tasks/{taskId}/plan-verdict` | `{plan_id, base_revision, verdict, feedback}` |
 
-Both resolve the plan **from the task**, so a daemon can reach exactly one plan —
-the open one on its own task's issue — and can neither name nor guess another.
+Both resolve the plan **from the task**, so the caller names a task and the
+server decides which plan that is; an issue id from the caller is never trusted.
+The verdict carries the plan id it reviewed and the **submitted** revision, and
+the route refuses a plan that is no longer open on that issue (`409`) rather
+than applying feedback to a revision that replaced it.
+
+The fence around the routes is **workspace access**, the same one every daemon
+route uses — a daemon credential is workspace-scoped, and the daemon host runs
+the tasks in that workspace. It is not per-task ownership, and this doc should
+not imply otherwise. A member PAT or JWT is accepted too, because `DaemonAuth`
+falls back to user tokens; members already hold verdict authority through the
+panel. An agent's own `mat_` task token is **not** accepted: `DaemonAuth` has no
+branch for it, so the agent whose plan is parked cannot read or approve it here
+(`TestDaemonAuth_RejectsAgentTaskToken`).
+
 The verdict runs through `TaskService.ReviewPlan`, the same path the panel uses:
 the revision fence, the first-verdict-wins CAS and the resume enqueue are
 shared, and this seam adds no review logic and stores nothing.
@@ -118,12 +131,18 @@ Mapping, in `server/internal/daemon/plan_gate.go`:
 | `annotated` | `changes_requested` + feedback as comments | |
 | `dismissed` | *nothing* | closing a review is not a denial; the plan stays parked |
 | exit `2` / no decision | *nothing* | `ErrGateFailed` never reads as a reviewer's no |
-| `409` from the verdict route | logged, not retried | the panel or a cancel decided first |
+| `409` from the verdict route | logged, not retried | the panel or a cancel decided first — except `run_already_queued`, where the verdict landed and a run was already queued |
+
+The gate runs under the daemon's lifecycle context, so a daemon that exits,
+restarts, or self-updates during a review takes the review process with it (the
+temp dir holding the plan text goes too). A bounded `WaitDelay` keeps that
+teardown prompt even when the gate spawned a descendant that inherited its
+stderr — `--tailscale` runs `tailscale serve` that way.
 
 The gate's stderr is forwarded to the daemon log and also captured (bounded to
-8 KiB) for its first URL, logged as `plan gate: review session open`. That is
-for the operator who cannot see the reviewer's browser; the verdict itself is
-still read only from the process.
+8 KiB) for its first URL, logged as `plan gate: review session`. That is for the
+operator who cannot see the reviewer's browser; the verdict itself is still
+read only from the process.
 
 ## Status
 

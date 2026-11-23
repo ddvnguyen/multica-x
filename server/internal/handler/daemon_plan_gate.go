@@ -8,13 +8,23 @@ package handler
 //	POST /api/daemon/tasks/{taskId}/plan-verdict    the gate's verdict
 //
 // They exist because the member-facing set cannot serve this caller. The plan
-// page reads by issue id and verdicts with a member session; a daemon has a
-// task token and no user. Both routes therefore resolve the plan FROM THE TASK:
-// a daemon can reach exactly one plan — the open one on its own task's issue —
-// and can neither name nor guess another. The verdict still runs through
-// TaskService.ReviewPlan, so the revision fence, the first-verdict-wins CAS and
-// the resume enqueue are the ones the panel already uses; this file adds no
-// review path of its own and stores nothing.
+// page reads by issue id and verdicts with a member session; a daemon
+// authenticates as itself. Both routes therefore resolve the plan FROM THE TASK,
+// so the request names a task and the server decides which plan that is: an
+// issue id from the caller is never trusted, and a plan id that belongs to
+// another task (or a newer revision of this issue's plan) is refused rather
+// than applied. The fence is workspace access — the same one every daemon
+// route uses — not per-task ownership: a daemon credential is workspace-scoped,
+// and the daemon that reads a plan is the daemon host that runs the task. A
+// member PAT or JWT is accepted here too, because DaemonAuth falls back to
+// user tokens for daemons registered that way; members already hold verdict
+// authority through the panel. An agent's own `mat_` task token is NOT
+// accepted: DaemonAuth has no branch for it, so an agent cannot read or
+// approve its own plan through this surface.
+//
+// The verdict still runs through TaskService.ReviewPlan, so the revision fence,
+// the first-verdict-wins CAS and the resume enqueue are the ones the panel
+// already uses; this file adds no review path of its own and stores nothing.
 //
 // Provenance: there is no member behind a gate verdict, so reviewed_by stays
 // NULL and the note names the gate. An approved plan with no approver is the
@@ -27,6 +37,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -84,16 +95,13 @@ func (h *Handler) GetParkedPlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, daemonParkedPlanResponse{Status: "none"})
 		return
 	}
-	markdown := parkedPlanMarkdown(plan.Title, plan.Sections)
+	markdown := truncatePlanMarkdown(parkedPlanMarkdown(plan.Title, plan.Sections), daemonParkedPlanMaxBytes)
 	if markdown == "" {
 		// A plan submitted with no body is nothing to review. Say so plainly
 		// rather than handing the gate an empty file and recording
 		// "changes_requested: " with no text behind it.
 		writeJSON(w, http.StatusOK, daemonParkedPlanResponse{Status: "none"})
 		return
-	}
-	if len(markdown) > daemonParkedPlanMaxBytes {
-		markdown = markdown[:daemonParkedPlanMaxBytes]
 	}
 	writeJSON(w, http.StatusOK, daemonParkedPlanResponse{
 		Status:            "ready",
@@ -227,6 +235,21 @@ func (h *Handler) openPlanForTask(w http.ResponseWriter, r *http.Request, task d
 		return db.AgentPlan{}, true
 	}
 	return plan, true
+}
+
+// truncatePlanMarkdown bounds the document without splitting a UTF-8 rune. A
+// byte cut through a multi-byte character hands the annotator invalid UTF-8 in
+// the last section, which is exactly the section a person is most likely to be
+// reading when the cap is hit.
+func truncatePlanMarkdown(markdown string, max int) string {
+	if len(markdown) <= max {
+		return markdown
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(markdown[cut]) {
+		cut--
+	}
+	return markdown[:cut]
 }
 
 // parkedPlanMarkdown renders a plan as the Markdown a reviewer annotates:
