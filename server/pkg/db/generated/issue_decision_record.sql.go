@@ -117,6 +117,7 @@ WITH current_records AS (
            r.problem_comment_id, r.scope, r.project_id
     FROM issue_decision_record r
     WHERE r.workspace_id = $1 AND r.issue_id = $2
+      AND r.scope = 'issue'
       AND NOT EXISTS (
           SELECT 1 FROM issue_decision_record replacement
           WHERE replacement.supersedes_id = r.id
