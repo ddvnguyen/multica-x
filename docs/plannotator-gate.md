@@ -69,10 +69,21 @@ The daemon's park point (`reportInterruptedTask` →
 recorded for the resume. That point owns the plan id, so it is where a plan gate
 belongs.
 
-The verdict then maps onto the endpoints that already exist — `POST
-/plans/{planId}/verdict` with the gate's feedback as comments — and
-`TaskService.ReviewPlan` re-queues the resume run that continues the same
-session. Two consequences are deliberate:
+The gate reads the plan and returns the verdict over two task-scoped daemon
+routes, because a daemon has a task token and no member session:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/daemon/tasks/{taskId}/parked-plan` | the open in-review plan's text, rendered as standalone Markdown |
+| `POST /api/daemon/tasks/{taskId}/plan-verdict` | `{plan_id, base_revision, verdict, feedback}` |
+
+Both resolve the plan **from the task**, so a daemon can reach exactly one plan —
+the open one on its own task's issue — and can neither name nor guess another.
+The verdict runs through `TaskService.ReviewPlan`, the same path the panel uses:
+the revision fence, the first-verdict-wins CAS and the resume enqueue are
+shared, and this seam adds no review logic and stores nothing.
+
+Two consequences are deliberate:
 
 - **The platform stays the system of record.** Revisions, comments, verdicts
   and history live in Multica's tables; Plannotator renders and collects. If the
@@ -82,14 +93,41 @@ session. Two consequences are deliberate:
 - **No new tables.** There is no `review_sessions` row and no reverse proxy:
   both would duplicate state the platform already owns.
 
+## The daemon side
+
+`reportInterruptedTask` is the park point: it reports the blocked task, then
+calls `startPlanGate`, which spawns `runPlanGate` on its own goroutine. The
+order matters — the park report is what makes the plan submittable, so a gate
+that raced it would read "no plan" and drop a review the agent is already
+waiting on. The goroutine matters too: the wait is a person, not an I/O bound,
+and blocking the reporting path on a review would hold the claim loop.
+
+```
+MULTICA_PLAN_GATE=1        # opt-in; off by default
+PLANNOTATOR_BIN=...        # executable; empty resolves `plannotator` on PATH
+```
+
+Off by default because the gate needs a binary *and* a person at this machine:
+with neither, every park would only time out or deny.
+
+Mapping, in `server/internal/daemon/plan_gate.go`:
+
+| Gate | Verdict | Why |
+| --- | --- | --- |
+| `approved` | `approve` | feedback is dropped: nothing asked for changes |
+| `annotated` | `changes_requested` + feedback as comments | |
+| `dismissed` | *nothing* | closing a review is not a denial; the plan stays parked |
+| exit `2` / no decision | *nothing* | `ErrGateFailed` never reads as a reviewer's no |
+| `409` from the verdict route | logged, not retried | the panel or a cancel decided first |
+
+The gate's stderr is forwarded to the daemon log and also captured (bounded to
+8 KiB) for its first URL, logged as `plan gate: review session open`. That is
+for the operator who cannot see the reviewer's browser; the verdict itself is
+still read only from the process.
+
 ## Status
 
 Delivered: the gate package, its argv/env contract, exit-code and record
-parsing, and the tests that pin all three.
-
-Not yet delivered: the daemon patch that spawns the gate at the park point and
-posts the verdict. It needs the run's plan markdown, which lives on the server
-(`GET /issues/{id}/ask-plan`) rather than on the daemon, so wiring it is a
-server-surface change — a daemon-credentialed read of the open plan — rather
-than a one-line spawn. Until then the gate is a library with no caller, and this
-document says so instead of implying the loop is closed.
+parsing, the two daemon routes, and the daemon wiring that closes the loop from
+park to verdict. A gate that cannot run leaves the plan parked and approveable
+in the panel, so no failure here blocks a run.

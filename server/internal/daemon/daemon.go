@@ -6091,6 +6091,12 @@ func (d *Daemon) reportInterruptedTask(ctx context.Context, taskID string, ack T
 			// fresh — so this must never be fatal.
 			taskLog.Warn("park report failed; answer run will start fresh", "error", parkErr)
 		}
+		// The park report is what marks the plan submittable, so the gate starts
+		// after it, never before: a gate that raced the report would read
+		// "no plan" and drop a review the agent is already waiting on. It runs
+		// in its own goroutine (plan_gate.go) because the wait is a person, not
+		// an I/O bound.
+		d.startPlanGate(taskID, taskLog)
 		return
 	}
 	if ackErr := d.client.AckTaskCancelled(ctx, taskID, ack); ackErr != nil {

@@ -13,12 +13,15 @@
 package plannotator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -79,6 +82,10 @@ type Config struct {
 	Port string
 	// Timeout bounds one gate. Zero means DefaultTimeout.
 	Timeout time.Duration
+
+	// logWriter receives the gate's stderr in addition to os.Stderr. Unset
+	// means os.Stderr only; tests set it to swallow the forwarded output.
+	logWriter io.Writer
 }
 
 // Request is one gate invocation.
@@ -102,6 +109,10 @@ type Verdict struct {
 	// ExitCode is the process exit status, kept so a caller can distinguish
 	// "the reviewer dismissed the plan" from "the gate itself failed".
 	ExitCode int
+	// SessionURL is the review link the binary printed on startup, when it
+	// printed one. A caller logs it so an operator on a headless daemon host
+	// can open the review the reviewer's browser already has; empty is normal.
+	SessionURL string
 }
 
 // Approved reports whether the reviewer accepted the plan or diff.
@@ -141,10 +152,16 @@ func Run(ctx context.Context, cfg Config, req Request) (*Verdict, error) {
 
 	cmd := exec.CommandContext(runCtx, binary, args...)
 	cmd.Env = append(os.Environ(), cfg.env()...)
-	// stdout belongs to the gate's JSON record; stderr carries the URL and any
-	// human-readable progress, and is forwarded so a headless reviewer can
-	// still find the session link in the daemon log.
-	cmd.Stderr = os.Stderr
+	// stdout belongs to the gate's JSON record; stderr carries the session URL
+	// and human-readable progress. It is forwarded so a headless reviewer still
+	// finds the link in the daemon log, and captured so the caller can surface
+	// that same link where a person is already looking.
+	logSink := cfg.logWriter
+	if logSink == nil {
+		logSink = os.Stderr
+	}
+	stderr := &cappedBuffer{max: 8 << 10}
+	cmd.Stderr = io.MultiWriter(logSink, stderr)
 	stdout, runErr := cmd.Output()
 
 	exitCode := 0
@@ -156,7 +173,7 @@ func Run(ctx context.Context, cfg Config, req Request) (*Verdict, error) {
 		exitCode = exitErr.ExitCode()
 	}
 
-	verdict := &Verdict{ExitCode: exitCode, Decision: DecisionUnknown}
+	verdict := &Verdict{ExitCode: exitCode, Decision: DecisionUnknown, SessionURL: sessionURL(stderr)}
 	// The result file is authoritative when the caller asked for one; stdout is
 	// the fallback because a gate can be killed after writing neither.
 	record := readRecord(req.ResultFile)
@@ -240,6 +257,39 @@ func (c Config) env() []string {
 		env = append(env, "PLANNOTATOR_PORT="+port)
 	}
 	return env
+}
+
+// cappedBuffer keeps the first max bytes written to it and discards the rest.
+// A gate's stderr is startup chatter; only the opening line carrying the
+// session URL is wanted, and an unbounded copy would let a chatty binary grow
+// the daemon's heap for the length of a session that can run for days.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		if len(p) > room {
+			c.buf.Write(p[:room])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+var sessionURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// sessionURL extracts the first URL a gate printed. Trailing sentence
+// punctuation is trimmed so "open http://host:port/." yields the link, not the
+// period; a gate that printed none yields "" rather than an error.
+func sessionURL(stderr *cappedBuffer) string {
+	if stderr == nil {
+		return ""
+	}
+	match := sessionURLPattern.FindString(stderr.buf.String())
+	return strings.TrimRight(match, ".,;:)")
 }
 
 // record is the subset of Plannotator's JSON record the gate reads. Both modes

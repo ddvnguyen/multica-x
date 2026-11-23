@@ -3,6 +3,7 @@ package plannotator
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -207,5 +208,43 @@ func TestParseRecordToleratesNoise(t *testing.T) {
 	}
 	if parseRecord(nil) != nil {
 		t.Fatalf("empty output must not decode as a record")
+	}
+}
+
+// TestRunSurfacesSessionURL: the review link is printed on stderr, and the
+// caller needs it to tell a headless operator where the review opened. The
+// verdict still comes from the record, never from the URL.
+func TestRunSurfacesSessionURL(t *testing.T) {
+	resultFile := filepath.Join(t.TempDir(), "verdict.json")
+	fake := writeFake(t, `echo "Review at http://127.0.0.1:49152/." >&2
+printf '%s' '{"decision":"approved"}' > "$TEST_RESULT_FILE"
+exit 0
+`)
+	t.Setenv("TEST_RESULT_FILE", resultFile)
+	verdict, err := Run(context.Background(), Config{Binary: fake, logWriter: io.Discard},
+		Request{Mode: ModePlan, Target: "/tmp/plan.md", ResultFile: resultFile})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if verdict.SessionURL != "http://127.0.0.1:49152/" {
+		t.Fatalf("session URL = %q, want the printed link with trailing punctuation trimmed", verdict.SessionURL)
+	}
+	if !verdict.Approved() {
+		t.Fatalf("decision = %q", verdict.Decision)
+	}
+}
+
+// TestCappedBufferKeepsTheOpeningBytes: a gate can run for days, so its stderr
+// capture is bounded rather than accumulated.
+func TestCappedBufferKeepsTheOpeningBytes(t *testing.T) {
+	buf := &cappedBuffer{max: 8}
+	if n, err := buf.Write([]byte("abcdefgh")); n != 8 || err != nil {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if n, _ := buf.Write([]byte("more output")); n != 11 {
+		t.Fatalf("Write must report the bytes accepted, not the bytes kept: %d", n)
+	}
+	if buf.buf.String() != "abcdefgh" {
+		t.Fatalf("captured = %q, want only the first 8 bytes", buf.buf.String())
 	}
 }
