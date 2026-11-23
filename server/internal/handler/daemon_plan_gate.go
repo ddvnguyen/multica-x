@@ -26,15 +26,17 @@ package handler
 // the first-verdict-wins CAS and the resume enqueue are the ones the panel
 // already uses; this file adds no review path of its own and stores nothing.
 //
-// Provenance: there is no member behind a gate verdict, so reviewed_by stays
-// NULL and the note names the gate. An approved plan with no approver is the
-// honest record — an external annotator is not a workspace member, and
-// inventing one would put a person's name on a decision they did not make.
+// Provenance: agent_plan_review.reviewed_by is NOT NULL, so a gate verdict is
+// recorded against the credential that posted it — the runtime's owner for a
+// daemon token, the member for a PAT/JWT — and its note names the gate. That
+// keeps a gated approval distinguishable from one made in the panel without
+// inventing a reviewer row that does not exist.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -43,7 +45,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -157,8 +161,17 @@ func (h *Handler) SubmitParkedPlanVerdict(w http.ResponseWriter, r *http.Request
 		writeErrorCode(w, http.StatusConflict, "stale_plan_revision", "the open plan changed while the gate was reviewing")
 		return
 	}
+	feedback := strings.TrimSpace(req.Feedback)
+	if req.Verdict == "changes_requested" && feedback == "" {
+		// The gate must not send a plan back with nothing to act on. ReviewPlan's
+		// own guard accepts the note as a comment, and the note here only says
+		// "the gate asked for changes" — which would spend a resume run telling
+		// the agent nothing.
+		writeErrorCode(w, http.StatusBadRequest, "review_needs_comment", "changes_requested needs the reviewer's feedback")
+		return
+	}
 	comments := []string{}
-	if feedback := strings.TrimSpace(req.Feedback); feedback != "" {
+	if feedback != "" {
 		comments = append(comments, feedback)
 	}
 	commentsJSON, err := json.Marshal(comments)
@@ -166,9 +179,10 @@ func (h *Handler) SubmitParkedPlanVerdict(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to encode comments")
 		return
 	}
-	// reviewed_by is NULL on purpose: no member made this call. See
-	// daemonPlanGateNote.
-	reviewedBy := pgtype.UUID{}
+	reviewedBy, ok := h.planGateReviewer(w, r)
+	if !ok {
+		return
+	}
 	reviewed, resumeTask, promoted, err := h.TaskService.ReviewPlan(
 		r.Context(), plan.ID, workspaceUUID, reviewedBy, req.BaseRevision, req.Verdict, commentsJSON, daemonPlanGateNote)
 	switch {
@@ -195,6 +209,11 @@ func (h *Handler) SubmitParkedPlanVerdict(w http.ResponseWriter, r *http.Request
 		writeErrorCode(w, http.StatusConflict, "run_already_queued", "the verdict was recorded but a run is already queued for this issue")
 		return
 	case err != nil:
+		// The member route logs here; without it a 500 on this path has no
+		// recorded cause anywhere. (That is how the NOT NULL reviewed_by
+		// failure below first hid: every verdict was a bare 500.)
+		slog.Warn("gate plan verdict failed", "error", err, "plan_id", uuidToString(plan.ID),
+			"task_id", uuidToString(task.ID), "verdict", req.Verdict)
 		writeError(w, http.StatusInternalServerError, "failed to record the verdict")
 		return
 	}
@@ -212,6 +231,35 @@ func (h *Handler) SubmitParkedPlanVerdict(w http.ResponseWriter, r *http.Request
 		"plan":        planToResponse(reviewed),
 		"resume_task": uuidToString(resumeTask.ID),
 	})
+}
+
+// planGateReviewer names the identity a gate verdict is recorded against.
+//
+// agent_plan_review.reviewed_by is NOT NULL, so there is no "no reviewer"
+// option: a verdict has to name the credential that posted it. For a daemon
+// token that is the runtime's owner — the person who installed and authorized
+// the gate on that host — and for a member PAT/JWT it is the member. The note
+// still says the verdict came from the gate, so a reader can tell a gated
+// approval from one made in the panel; the two are not the same act, and the
+// owner is accountable for the host's gate either way.
+func (h *Handler) planGateReviewer(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
+	userID := middleware.DaemonTokenOwnerIDFromContext(r.Context())
+	if userID == "" {
+		userID = requestUserID(r)
+	}
+	if userID == "" {
+		// A daemon token with no owner (the Qoder-managed bridge) has nobody to
+		// record. Refuse plainly rather than inventing an approver or 500ing.
+		writeError(w, http.StatusForbidden, "a plan verdict needs a reviewer identity")
+		return pgtype.UUID{}, false
+	}
+	reviewer, err := util.ParseUUID(userID)
+	if err != nil {
+		slog.Warn("gate plan verdict: reviewer identity is not a UUID", "reviewer", userID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record the verdict")
+		return pgtype.UUID{}, false
+	}
+	return reviewer, true
 }
 
 // openPlanForTask resolves the task's open plan. It answers ok=false only when
