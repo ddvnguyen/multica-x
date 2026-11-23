@@ -17,7 +17,8 @@ func TestBuildPromptAppendsProjectWorkflowBlock(t *testing.T) {
 	task := base
 	task.ProjectWorkflow = &ProjectWorkflowData{Brief: deliveryBrief}
 	out := BuildPrompt(task, "claude")
-	if !strings.HasPrefix(out, plain) {
+	decisionGuidance := buildIssueDecisionRecordsBlock(base)
+	if !strings.HasPrefix(out, strings.TrimSuffix(plain, decisionGuidance)) {
 		t.Fatalf("the workflow block must be appended, not change the prompt ahead of it:\n%s", out)
 	}
 	if !strings.Contains(out, "[Project workflow]\n"+deliveryBrief) {
@@ -36,15 +37,27 @@ func TestBuildPromptIncludesCurrentIssueDecisionsNewestLast(t *testing.T) {
 	task := Task{
 		IssueID: "issue-1",
 		DecisionRecords: []DecisionRecordData{
-			{ID: "record-1", Decided: "Use the existing route", Rationale: "  Keeps   compatibility.\n"},
-			{ID: "record-2", Decided: "Prefer the shared query"},
+			{ID: "record-1", Problem: "Which route should we keep?", Decided: "Use the existing route", Rationale: "  Keeps   compatibility.\n", Scope: "issue"},
+			{ID: "record-2", Decided: "Prefer the shared query", Scope: "issue"},
 		},
 	}
 	out := BuildPrompt(task, "claude")
-	first := strings.Index(out, "- [record-1] Use the existing route — Keeps compatibility.")
+	first := strings.Index(out, "- [record-1] Which route should we keep? → Use the existing route — Keeps compatibility.")
 	second := strings.Index(out, "- [record-2] Prefer the shared query")
 	if first < 0 || second <= first {
 		t.Fatalf("decision records should render in supplied order with ids and one-line text:\n%s", out)
+	}
+}
+
+func TestBuildPromptIncludesProjectDecisionsAndRecordingGuidanceWithoutRecords(t *testing.T) {
+	out := BuildPrompt(Task{IssueID: "issue-1"}, "claude")
+	if !strings.Contains(out, "multica issue decision add") || !strings.Contains(out, "call native `ask`") {
+		t.Fatalf("decision recording guidance missing from empty issue prompt:\n%s", out)
+	}
+	task := Task{IssueID: "issue-1", DecisionRecords: []DecisionRecordData{{ID: "project-1", Problem: "How should all projects behave?", Decided: "Use shared policy", Scope: "project"}}}
+	out = BuildPrompt(task, "claude")
+	if !strings.Contains(out, "### Project decisions") || !strings.Contains(out, "- [project-1] How should all projects behave? → Use shared policy") {
+		t.Fatalf("project decisions missing from prompt:\n%s", out)
 	}
 }
 

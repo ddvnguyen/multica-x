@@ -958,8 +958,6 @@ export function useCreateComment(issueId: string) {
       attachmentIds,
       suppressAgentIds,
       steerTaskIds,
-      recordAsDecision,
-      supersedesRecordId,
     }: {
       content: string;
       type?: string;
@@ -968,11 +966,7 @@ export function useCreateComment(issueId: string) {
       suppressAgentIds?: string[];
       /** Running turns this comment goes into instead of a follow-up run. */
       steerTaskIds?: string[];
-      recordAsDecision?: boolean;
-      supersedesRecordId?: string;
-    }) => recordAsDecision !== undefined || supersedesRecordId !== undefined
-      ? api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds, recordAsDecision, supersedesRecordId)
-      : api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds),
+    }) => api.createComment(issueId, content, type, parentId, attachmentIds, suppressAgentIds, steerTaskIds),
     onSuccess: (comment) => {
       applyCreatedComment(qc, wsId, issueId, comment);
       // Posting a comment changes the trigger answer itself (the enqueued

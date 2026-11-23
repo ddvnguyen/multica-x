@@ -625,8 +625,9 @@
     "owner_decisions_loading": "Loading decisions…",
     "owner_decisions_failed": "Could not load decisions.",
     "owner_decisions_retry": "Retry",
-    "owner_decisions_empty": "Record a decision",
-    "owner_decisions_superseded": "Superseded by “{{decision}}”"
+    "owner_decisions_empty": "No decisions recorded",
+    "owner_decisions_superseded": "Superseded by “{{decision}}”",
+    "owner_decisions_project": "Project"
   },
   "timeline": {
     "loading": "Loading...",
@@ -812,10 +813,7 @@
     "trigger_blocked_tier_unavailable": "The selected tier doesn't exist, is disabled, or isn't available to this agent — fix the name",
     "trigger_blocked_tier_waiting_capacity": "The selected tier is full or offline — the run is queued and starts when a slot frees",
     "trigger_blocked_short_tier_unavailable": "Bad tier",
-    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued",
-    "record_as_decision": "Record as decision",
-    "supersedes_decision": "Replace an existing decision",
-    "new_decision": "New decision"
+    "trigger_blocked_short_tier_waiting_capacity": "Tier full — queued"
   },
   "reply": {
     "recipients_changed": "Reply target changed. Review the recipients before sending again.",

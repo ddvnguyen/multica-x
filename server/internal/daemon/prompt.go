@@ -120,22 +120,57 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 }
 
 func buildIssueDecisionRecordsBlock(task Task) string {
-	if task.IssueID == "" || task.ChatSessionID != "" || len(task.DecisionRecords) == 0 {
+	if task.IssueID == "" || task.ChatSessionID != "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n## Owner Decision Records\n")
-	b.WriteString("Follow these current Owner decisions for this issue. Newer decisions appear later and supersede earlier guidance when they conflict.\n")
+	issueCount, projectCount := 0, 0
 	for _, record := range task.DecisionRecords {
-		decided := strings.Join(strings.Fields(record.Decided), " ")
-		rationale := strings.Join(strings.Fields(record.Rationale), " ")
-		fmt.Fprintf(&b, "- [%s] %s", record.ID, decided)
-		if rationale != "" {
-			fmt.Fprintf(&b, " — %s", rationale)
+		if record.Scope == "project" {
+			projectCount++
+		} else {
+			issueCount++
 		}
-		b.WriteByte('\n')
 	}
+	if issueCount > 0 {
+		b.WriteString("### Issue decisions\n")
+		b.WriteString("Follow these current Owner decisions for this issue.\n")
+	}
+	for _, record := range task.DecisionRecords {
+		if record.Scope == "project" {
+			continue
+		}
+		decided := strings.Join(strings.Fields(record.Decided), " ")
+		writeDecisionPromptLine(&b, record, decided)
+	}
+	if projectCount > 0 {
+		b.WriteString("### Project decisions\n")
+		b.WriteString("These current Owner decisions apply across this project.\n")
+		for _, record := range task.DecisionRecords {
+			if record.Scope != "project" {
+				continue
+			}
+			decided := strings.Join(strings.Fields(record.Decided), " ")
+			writeDecisionPromptLine(&b, record, decided)
+		}
+	}
+	b.WriteString("After each human comment or prompt, decide whether it resolves a question or sets direction. Record decisions with `multica issue decision add`, pairing the nearest preceding question/problem with the human resolution; skip acknowledgements and status checks. If a new decision conflicts with an active one without an explicit override, call native `ask` naming both and suggesting a resolution; keep the older active. Use `--supersedes` only when the human explicitly overrides it. Promote clearly general decisions with `--scope project`.\n")
 	return b.String()
+}
+
+func writeDecisionPromptLine(b *strings.Builder, record DecisionRecordData, decided string) {
+	problem := strings.Join(strings.Fields(record.Problem), " ")
+	rationale := strings.Join(strings.Fields(record.Rationale), " ")
+	fmt.Fprintf(b, "- [%s] ", record.ID)
+	if problem != "" {
+		fmt.Fprintf(b, "%s → ", problem)
+	}
+	b.WriteString(decided)
+	if rationale != "" {
+		fmt.Fprintf(b, " — %s", rationale)
+	}
+	b.WriteByte('\n')
 }
 
 // buildParentIssueBlock points a sub-issue's run at its parent. The sub-issue's

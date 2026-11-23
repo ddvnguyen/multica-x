@@ -3415,8 +3415,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		} else {
 			for _, record := range records {
 				resp.DecisionRecords = append(resp.DecisionRecords, TaskDecisionRecordData{
-					ID: uuidToString(record.ID), Decided: record.Decided, Rationale: record.Rationale,
+					ID: uuidToString(record.ID), Problem: record.Problem, Decided: record.Decided, Rationale: record.Rationale, Scope: "issue",
 				})
+			}
+		}
+		if issue.ProjectID.Valid {
+			if records, err := h.Queries.ListCurrentProjectDecisionRecords(r.Context(), db.ListCurrentProjectDecisionRecordsParams{WorkspaceID: issue.WorkspaceID, ProjectID: issue.ProjectID}); err != nil {
+				slog.Warn("task claim: failed to load current project decisions for prompt injection", "task_id", uuidToString(task.ID), "issue_id", uuidToString(issue.ID), "error", err)
+			} else {
+				for _, record := range records {
+					resp.DecisionRecords = append(resp.DecisionRecords, TaskDecisionRecordData{ID: uuidToString(record.ID), Problem: record.Problem, Decided: record.Decided, Rationale: record.Rationale, Scope: "project"})
+				}
 			}
 		}
 		leaderWorkflow := leaderNoWorkflow

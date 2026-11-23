@@ -1519,7 +1519,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     commentId: string;
     token: number;
   } | null>(null);
-  const [decisionMode, setDecisionMode] = useState(false);
   const activeDeliverableJump = deliverableJump?.issueId === id &&
     deliverableJump.linkedCommentId === linkedCommentId &&
     deliverableJump.linkedRequestToken === linkedRequestToken ? deliverableJump : null;
@@ -3936,12 +3935,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
                 </Button>
               </div>
             ) : decisionRecords.length === 0 ? (
-              <Button size="sm" variant="outline" onClick={() => {
-                setDecisionMode(true);
-                composerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}>
-                {t(($) => $.detail.owner_decisions_empty)}
-              </Button>
+              <p className="text-label text-muted-foreground">{t(($) => $.detail.owner_decisions_empty)}</p>
             ) : (
               <ul className="space-y-2">
                 {decisionRecords.map((record: IssueDecisionRecord) => {
@@ -3950,7 +3944,9 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
                     : undefined;
                   return (
                     <li key={record.id} className={cn("rounded-md border border-border px-3 py-2", replacement && "opacity-50")}>
-                      <p className="text-body font-medium text-foreground">{record.decided}</p>
+                      {record.scope === "project" && <span className="text-micro text-muted-foreground">{t(($) => $.detail.owner_decisions_project)}</span>}
+                      {record.problem && <p className="text-label text-muted-foreground"><a href={`#comment-${record.problem_comment_id ?? record.comment_id}`} onClick={(event) => { event.preventDefault(); jumpToMinimapTarget(record.problem_comment_id ?? record.comment_id); }} className="hover:underline">{record.problem}</a></p>}
+                      <p className="text-body font-medium text-foreground"><span aria-hidden="true">→ </span><a href={`#comment-${record.comment_id}`} onClick={(event) => { event.preventDefault(); jumpToMinimapTarget(record.comment_id); }} className="hover:underline">{record.decided}</a></p>
                       {record.rationale && <p className="mt-1 whitespace-pre-wrap text-label text-muted-foreground">{record.rationale}</p>}
                       {replacement && (
                         <p className="mt-1 text-micro text-muted-foreground">
@@ -4342,9 +4338,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
               <CommentInput
                 key={id}
                 issueId={id}
-                decisionMode={decisionMode}
-                onDecisionModeChange={setDecisionMode}
-                decisionRecords={decisionRecords}
                 onSubmit={submitComment}
                 annotationComposer={descriptionAnnotations.composer}
                 onAccepted={scrollToTimelineBottom}

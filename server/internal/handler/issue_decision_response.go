@@ -382,8 +382,8 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := qtx.CreateIssueDecisionRecord(ctx, db.CreateIssueDecisionRecordParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: lockedIssue.ID,
-		CommentID: commentRow.ID, Decided: req.Decision, Rationale: req.Rationale,
-		SourceKind: "ask_answer", ActorID: authorUUID,
+		CommentID: commentRow.ID, Problem: "", Decided: req.Decision, Rationale: req.Rationale,
+		SourceKind: "ask_answer", ActorID: authorUUID, Scope: "issue",
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record decision")
 		return
