@@ -57,9 +57,12 @@ import {
 import {
   useCreateModelTier,
   useCreateModelTierMember,
+  useCreateTierRole,
   useDeleteModelTier,
   useDeleteModelTierMember,
+  useDeleteTierRole,
   useReorderModelTiers,
+  useRenameTierRole,
   useUpdateModelTier,
   useUpdateModelTierMember,
 } from "@multica/core/workspace/mutations";
@@ -72,6 +75,7 @@ import type {
   ModelTierInput,
   ModelTierMember,
   ModelTierMemberInput,
+  TierRole,
 } from "@multica/core/types";
 import { useT } from "../../i18n";
 import {
@@ -295,6 +299,254 @@ function TierRow({
  */
 const FALLBACK_TIER_ROLES = ["architect", "management", "engineer"] as const;
 
+/** Same key shape the server enforces for a registry entry. */
+const TIER_ROLE_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** The server's machine-readable error code, when it sent one. */
+function apiErrorCode(error: unknown): string {
+  if (!(error instanceof ApiError)) return "";
+  const code = (error.body as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : "";
+}
+
+/**
+ * Workspace role registry editor (M-543). Roles are free workspace-defined
+ * slugs; the Tiers tab builds one tab per registry entry and the tier dialog's
+ * role picker reads the same list. Owner/admin only, like the tier writes.
+ */
+function TierRolesDialog({
+  wsId,
+  roles,
+  roleLabel,
+  onClose,
+}: {
+  wsId: string;
+  roles: TierRole[];
+  roleLabel: (key: string) => string;
+  onClose: () => void;
+}) {
+  const { t } = useT("settings");
+  const createRole = useCreateTierRole(wsId);
+  const renameRole = useRenameTierRole(wsId);
+  const deleteRole = useDeleteTierRole(wsId);
+  const [newKey, setNewKey] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState("");
+  const [error, setError] = useState("");
+  const pending =
+    createRole.isPending || renameRole.isPending || deleteRole.isPending;
+
+  const handleCreate = async () => {
+    setError("");
+    setKeyError("");
+    const key = newKey.trim().toLowerCase();
+    if (!TIER_ROLE_KEY_PATTERN.test(key)) {
+      setKeyError(t(($) => $.tiers.role_key_invalid));
+      return;
+    }
+    try {
+      await createRole.mutateAsync(key);
+      setNewKey("");
+    } catch (e) {
+      setKeyError(
+        e instanceof ApiError && e.status === 409
+          ? t(($) => $.tiers.role_exists)
+          : t(($) => $.tiers.role_save_failed),
+      );
+    }
+  };
+
+  const handleRename = async (key: string) => {
+    setError("");
+    const next = renameValue.trim().toLowerCase();
+    if (!TIER_ROLE_KEY_PATTERN.test(next)) {
+      setError(t(($) => $.tiers.role_key_invalid));
+      return;
+    }
+    if (next === key) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      await renameRole.mutateAsync({ key, newKey: next });
+      setRenaming(null);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 409
+          ? t(($) => $.tiers.role_exists)
+          : t(($) => $.tiers.role_save_failed),
+      );
+    }
+  };
+
+  const handleDelete = async (key: string) => {
+    setError("");
+    try {
+      await deleteRole.mutateAsync(key);
+      setDeleting(null);
+      toast.success(t(($) => $.tiers.role_deleted_toast));
+    } catch (e) {
+      if (apiErrorCode(e) === "role_in_use") {
+        setError(t(($) => $.tiers.role_in_use));
+        return;
+      }
+      setError(t(($) => $.tiers.role_save_failed));
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent data-testid="tier-roles-dialog" className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>{t(($) => $.tiers.roles_dialog_title)}</DialogTitle>
+        </DialogHeader>
+        <p className="text-caption text-muted-foreground">
+          {t(($) => $.tiers.roles_dialog_description)}
+        </p>
+        <ul className="divide-y rounded-md border">
+          {roles.length === 0 ? (
+            <li className="px-3 py-3 text-body text-muted-foreground">
+              {t(($) => $.tiers.roles_empty)}
+            </li>
+          ) : (
+            roles.map((entry) => (
+              <li
+                key={entry.key}
+                data-testid={`tier-role-row-${entry.key}`}
+                className="flex items-center justify-between gap-2 px-3 py-2"
+              >
+                {renaming === entry.key ? (
+                  <div className="flex flex-1 items-center gap-2">
+                    <Input
+                      autoFocus
+                      value={renameValue}
+                      aria-label={t(($) => $.tiers.role_rename_input)}
+                      data-testid="tier-role-rename-input"
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void handleRename(entry.key);
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={pending}
+                      onClick={() => void handleRename(entry.key)}
+                    >
+                      {t(($) => $.tiers.role_save)}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={pending}
+                      onClick={() => setRenaming(null)}
+                    >
+                      {t(($) => $.tiers.cancel)}
+                    </Button>
+                  </div>
+                ) : deleting === entry.key ? (
+                  <div className="flex flex-1 items-center justify-between gap-2">
+                    <p className="text-body">
+                      {t(($) => $.tiers.role_delete_confirm, {
+                        name: roleLabel(entry.key),
+                      })}
+                    </p>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        data-testid="tier-role-delete-confirm"
+                        disabled={pending}
+                        onClick={() => void handleDelete(entry.key)}
+                      >
+                        {t(($) => $.tiers.remove_action)}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={pending}
+                        onClick={() => setDeleting(null)}
+                      >
+                        {t(($) => $.tiers.cancel)}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">
+                        {roleLabel(entry.key)}
+                      </p>
+                      <p className="truncate text-caption text-muted-foreground">
+                        {entry.key}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t(($) => $.tiers.role_rename, {
+                          name: roleLabel(entry.key),
+                        })}
+                        disabled={pending}
+                        onClick={() => {
+                          setRenaming(entry.key);
+                          setRenameValue(entry.key);
+                        }}
+                      >
+                        {t(($) => $.tiers.role_rename_action)}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t(($) => $.tiers.role_tag_remove, {
+                          name: roleLabel(entry.key),
+                        })}
+                        disabled={pending}
+                        onClick={() => setDeleting(entry.key)}
+                      >
+                        {t(($) => $.tiers.remove_action)}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </li>
+            ))
+          )}
+        </ul>
+        <div className="flex items-end gap-2">
+          <div className="flex-1 space-y-1.5">
+            <Label htmlFor="tier-role-new">{t(($) => $.tiers.role_add)}</Label>
+            <Input
+              id="tier-role-new"
+              data-testid="tier-role-new"
+              value={newKey}
+              placeholder={t(($) => $.tiers.role_key_placeholder)}
+              onChange={(e) => setNewKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreate();
+              }}
+            />
+            {keyError && (
+              <p className="text-caption text-destructive">{keyError}</p>
+            )}
+          </div>
+          <Button disabled={pending} onClick={() => void handleCreate()}>
+            {t(($) => $.tiers.role_add)}
+          </Button>
+        </div>
+        {error && <p className="text-body text-destructive">{error}</p>}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            {t(($) => $.tiers.cancel)}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function TiersTab() {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
@@ -357,6 +609,7 @@ export function TiersTab() {
     return map;
   }, [tiers, memberQueries]);
 
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTier, setEditingTier] = useState<ModelTier | null>(null);
   // The tab "Add tier" was pressed on: the new tier starts in that role.
@@ -416,9 +669,18 @@ export function TiersTab() {
                 ))}
               </TabsList>
               {canManage && (
-                <Button onClick={() => openEditor(null)}>
-                  {t(($) => $.tiers.add_tier)}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    data-testid="tier-manage-roles"
+                    onClick={() => setRolesOpen(true)}
+                  >
+                    {t(($) => $.tiers.manage_roles)}
+                  </Button>
+                  <Button onClick={() => openEditor(null)}>
+                    {t(($) => $.tiers.add_tier)}
+                  </Button>
+                </div>
               )}
             </div>
             <TabsContent value={activeRole} className="min-h-0">
@@ -463,6 +725,15 @@ export function TiersTab() {
           </Tabs>
         </SettingsCard>
       </SettingsSection>
+
+      {rolesOpen && (
+        <TierRolesDialog
+          wsId={wsId}
+          roles={rolesQuery.data ?? []}
+          roleLabel={roleLabel}
+          onClose={() => setRolesOpen(false)}
+        />
+      )}
 
       {editorOpen && (
         <TierEditorDialog
@@ -1033,29 +1304,87 @@ function TierEditorDialog({
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-1.5">
+            {/* M-543: the same tag multi-select the quota kinds use. Roles
+                come from the workspace registry, so a custom role is
+                assignable without a code change. */}
+            <div className="space-y-1.5" data-testid="tier-roles-select">
               <Label>{t(($) => $.tiers.roles_label)}</Label>
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {roleOptions.map((entry) => (
-                  <label
-                    key={entry}
-                    htmlFor={`tier-role-${entry}`}
-                    className="flex items-center gap-1.5 text-sm"
+              <div className="flex flex-wrap items-center gap-1.5">
+                {roles.length === 0 ? (
+                  <span
+                    data-testid="tier-roles-none"
+                    className="text-sm text-muted-foreground"
                   >
-                    <Checkbox
-                      id={`tier-role-${entry}`}
-                      checked={roles.includes(entry)}
-                      onCheckedChange={(checked) => {
-                        setRoles(
-                          checked === true
-                            ? [...roles, entry]
-                            : roles.filter((r) => r !== entry),
-                        );
-                      }}
-                    />
-                    {roleLabel(entry)}
-                  </label>
-                ))}
+                    {t(($) => $.tiers.roles_none)}
+                  </span>
+                ) : (
+                  roles.map((entry) => (
+                    <Badge
+                      key={entry}
+                      variant="secondary"
+                      data-testid={`tier-role-tag-${entry}`}
+                      className="gap-1 pr-1"
+                    >
+                      {roleLabel(entry)}
+                      <button
+                        type="button"
+                        aria-label={t(($) => $.tiers.role_tag_remove, {
+                          name: roleLabel(entry),
+                        })}
+                        className="rounded-sm p-0.5 hover:bg-surface-hover"
+                        onClick={() =>
+                          setRoles((prev) => prev.filter((r) => r !== entry))
+                        }
+                      >
+                        <X aria-hidden="true" className="size-3" />
+                      </button>
+                    </Badge>
+                  ))
+                )}
+                <Popover>
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="tier-roles-add"
+                        aria-label={t(($) => $.tiers.roles_select)}
+                      >
+                        <Plus aria-hidden="true" className="size-3.5" />
+                        {t(($) => $.tiers.roles_add)}
+                      </Button>
+                    }
+                  />
+                  <PopoverContent align="start" className="w-60 p-1">
+                    {roleOptions.length === 0 ? (
+                      <p className="px-2 py-1.5 text-caption text-muted-foreground">
+                        {t(($) => $.tiers.roles_empty)}
+                      </p>
+                    ) : (
+                      roleOptions.map((entry) => (
+                        <label
+                          key={entry}
+                          htmlFor={`tier-role-${entry}`}
+                          className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-surface-hover"
+                        >
+                          <Checkbox
+                            id={`tier-role-${entry}`}
+                            checked={roles.includes(entry)}
+                            onCheckedChange={(checked) =>
+                              setRoles((prev) =>
+                                checked === true
+                                  ? [...prev.filter((r) => r !== entry), entry]
+                                  : prev.filter((r) => r !== entry),
+                              )
+                            }
+                          />
+                          {roleLabel(entry)}
+                        </label>
+                      ))
+                    )}
+                  </PopoverContent>
+                </Popover>
               </div>
               <p className="text-caption text-muted-foreground">
                 {t(($) => $.tiers.roles_hint)}
@@ -1196,7 +1525,8 @@ function TierEditorDialog({
               )}
             </div>
             <div className="space-y-1.5">
-              <Label>{t(($) => $.tiers.advisory_badge)}</Label>
+              {/* M-543: the badge already says "advisory"; a second label with
+                  the same word above it read as a duplicate (M-498). */}
               <Badge
                 variant="outline"
                 data-testid="tier-context-advisory"

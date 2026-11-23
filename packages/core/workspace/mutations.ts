@@ -188,6 +188,46 @@ export function useReorderModelTiers(wsId: string) {
 }
 
 /**
+ * Role registry (M-543). Tabs, the dialog's role picker and the agent Role
+ * pickers all read the registry, and a rename rewrites every tier carrying the
+ * key, so both caches are invalidated.
+ */
+function useTierRoleMutation<TVariables>(
+  wsId: string,
+  mutationFn: (variables: TVariables) => Promise<unknown>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: workspaceKeys.tierRoles(wsId) }),
+        queryClient.invalidateQueries({ queryKey: workspaceKeys.tiers(wsId) }),
+      ]),
+  });
+}
+
+export function useCreateTierRole(wsId: string) {
+  return useTierRoleMutation(wsId, (key: string) =>
+    api.createTierRole(wsId, key),
+  );
+}
+
+export function useRenameTierRole(wsId: string) {
+  return useTierRoleMutation(
+    wsId,
+    ({ key, newKey }: { key: string; newKey: string }) =>
+      api.renameTierRole(wsId, key, newKey),
+  );
+}
+
+export function useDeleteTierRole(wsId: string) {
+  return useTierRoleMutation(wsId, (key: string) =>
+    api.deleteTierRole(wsId, key),
+  );
+}
+
+/**
  * Tier members (M-481). The tier write itself resyncs the legacy provider /
  * model columns from the first member, so every member write invalidates the
  * tier list too.

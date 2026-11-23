@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ApiError } from "@multica/core/api";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enSettings from "../../locales/en/settings.json";
 
@@ -13,6 +14,9 @@ const mockReorder = vi.hoisted(() => vi.fn());
 const mockCreateMember = vi.hoisted(() => vi.fn());
 const mockUpdateMember = vi.hoisted(() => vi.fn());
 const mockDeleteMember = vi.hoisted(() => vi.fn());
+const mockCreateRole = vi.hoisted(() => vi.fn());
+const mockRenameRole = vi.hoisted(() => vi.fn());
+const mockDeleteRole = vi.hoisted(() => vi.fn());
 
 const tier = (over: Record<string, unknown>) => ({
   id: "tier-1",
@@ -138,6 +142,9 @@ vi.mock("@multica/core/workspace/mutations", () => ({
     mutateAsync: mockDeleteMember,
     isPending: false,
   }),
+  useCreateTierRole: () => ({ mutateAsync: mockCreateRole, isPending: false }),
+  useRenameTierRole: () => ({ mutateAsync: mockRenameRole, isPending: false }),
+  useDeleteTierRole: () => ({ mutateAsync: mockDeleteRole, isPending: false }),
 }));
 
 vi.mock("@multica/core/runtimes", () => ({
@@ -305,15 +312,114 @@ describe("TiersTab", () => {
     expect(body.className).toContain("overflow-y-auto");
   });
 
-  it("offers exactly the three M-481 roles as toggles", async () => {
+  it("offers the registry roles behind a tag selector", async () => {
+    data.roles = [
+      ...data.roles,
+      { key: "reviewer", position: 3 },
+    ];
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     await screen.findByTestId("tier-editor");
-    expect(screen.getByRole("checkbox", { name: "Architect" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Management" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Engineer" })).toBeInTheDocument();
+    // The preselected tab's role renders as a tag, not as a ticked checkbox.
+    expect(screen.getByTestId("tier-role-tag-architect")).toHaveTextContent(
+      "Architect",
+    );
+    expect(screen.queryByRole("checkbox", { name: "Architect" })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("tier-roles-add"));
+    // A workspace-defined role is offered by its own key.
+    for (const label of ["Architect", "Management", "Engineer", "reviewer"]) {
+      expect(
+        await screen.findByRole("checkbox", { name: label }),
+      ).toBeInTheDocument();
+    }
+    // A role the registry does not carry is still not offered.
     expect(screen.queryByRole("checkbox", { name: "Leader" })).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: "Reviewer" })).toBeNull();
+  });
+
+  it("renders role picks as tags and clears them back to None", async () => {
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
+    await screen.findByTestId("tier-editor");
+
+    // The tag's own remove control deselects the role.
+    fireEvent.click(screen.getByRole("button", { name: "Remove Architect" }));
+    expect(screen.queryByTestId("tier-role-tag-architect")).toBeNull();
+    expect(screen.getByTestId("tier-roles-none")).toHaveTextContent("None");
+
+    fireEvent.click(screen.getByTestId("tier-roles-add"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Management" }));
+    expect(screen.getByTestId("tier-role-tag-management")).toHaveTextContent(
+      "Management",
+    );
+  });
+
+  it("manages the role registry from the Tiers tab", async () => {
+    mockCreateRole.mockResolvedValue([]);
+    mockRenameRole.mockResolvedValue([]);
+    mockDeleteRole.mockResolvedValue([]);
+    render(<TiersTab />, { wrapper: Wrapper });
+
+    fireEvent.click(screen.getByTestId("tier-manage-roles"));
+    await screen.findByTestId("tier-roles-dialog");
+    expect(screen.getByTestId("tier-role-row-engineer")).toHaveTextContent(
+      "Engineer",
+    );
+
+    fireEvent.change(screen.getByTestId("tier-role-new"), {
+      target: { value: "Reviewer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add role" }));
+    await waitFor(() => {
+      expect(mockCreateRole).toHaveBeenCalledWith("reviewer");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Engineer" }));
+    const renameInput = screen.getByTestId("tier-role-rename-input");
+    fireEvent.change(renameInput, { target: { value: "builder" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(mockRenameRole).toHaveBeenCalledWith({
+        key: "engineer",
+        newKey: "builder",
+      });
+    });
+  });
+
+  it("confirms before removing a role and explains a role still in use", async () => {
+    mockDeleteRole.mockRejectedValueOnce(
+      new ApiError("role is used by a tier", 409, "Conflict", {
+        code: "role_in_use",
+      }),
+    );
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByTestId("tier-manage-roles"));
+    await screen.findByTestId("tier-roles-dialog");
+
+    // Remove asks first; nothing is deleted on the first click.
+    fireEvent.click(screen.getByRole("button", { name: "Remove Architect" }));
+    expect(mockDeleteRole).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("tier-role-delete-confirm"));
+    await waitFor(() => {
+      expect(mockDeleteRole).toHaveBeenCalledWith("architect");
+    });
+    expect(
+      await screen.findByText(/A tier still uses this role/i),
+    ).toBeInTheDocument();
+  });
+
+  it("rejects a non-slug role key before calling the API", async () => {
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByTestId("tier-manage-roles"));
+    await screen.findByTestId("tier-roles-dialog");
+    fireEvent.change(screen.getByTestId("tier-role-new"), {
+      target: { value: "Not A Slug" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add role" }));
+    expect(
+      screen.getByText(/Use 1-40 lowercase letters/i),
+    ).toBeInTheDocument();
+    expect(mockCreateRole).not.toHaveBeenCalled();
   });
 
   it("offers the seven quota kinds behind one selector", async () => {
@@ -321,7 +427,7 @@ describe("TiersTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     await screen.findByTestId("tier-editor");
     // The dialog itself shows no quota checkbox until the selector opens.
-    expect(screen.getAllByRole("checkbox")).toHaveLength(3); // 3 roles
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
     fireEvent.click(screen.getByTestId("tier-quota-add"));
     for (const label of [
       "Free daily",
@@ -374,6 +480,9 @@ describe("TiersTab", () => {
     expect(screen.getByTestId("tier-context-advisory")).toHaveTextContent(
       "advisory",
     );
+    // M-543: the badge is the only "advisory" on the field; the duplicate
+    // label above it came from a second copy of the same string.
+    expect(screen.getAllByText("advisory")).toHaveLength(1);
     expect(screen.getByText(/about 210,000 tokens/i)).toBeInTheDocument();
   });
 
@@ -407,7 +516,8 @@ describe("TiersTab", () => {
       target: { value: "deepseek-v4.1-flash" },
     });
     // "Add tier" was pressed on the Architect tab, so Architect is preselected.
-    fireEvent.click(screen.getByRole("checkbox", { name: "Engineer" }));
+    fireEvent.click(screen.getByTestId("tier-roles-add"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Engineer" }));
     fireEvent.click(screen.getByTestId("tier-quota-add"));
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "Quota weekly" }),
@@ -651,10 +761,10 @@ describe("TiersTab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Engineer" }));
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     await screen.findByTestId("tier-editor");
-    expect(screen.getByRole("checkbox", { name: "Engineer" })).toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: "Architect" }),
-    ).not.toBeChecked();
+    expect(screen.getByTestId("tier-role-tag-engineer")).toHaveTextContent(
+      "Engineer",
+    );
+    expect(screen.queryByTestId("tier-role-tag-architect")).toBeNull();
   });
 
   it("grays the form out and disables everything but Enabled, Cancel and Save", async () => {
