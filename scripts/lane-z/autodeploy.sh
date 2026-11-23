@@ -113,7 +113,7 @@ on_error() { # $1 = line
     log "rolling back to the previous release"
     bash "$SCRIPT_DIR/rollback.sh" || log "ROLLBACK FAILED — lane z may be on the broken release"
   else
-    rm -rf "$LANE_ROOT/multica-be/releases/$SHA.tmp.$$" "$LANE_ROOT/mmx-pwa/releases/$SHA.tmp.$$" "$LANE_ROOT/mmx-pwa/.converge-"*
+    rm -rf "$LANE_ROOT/multica-be/releases/$SHA.tmp.$$"
     log "nothing was switched; lane z still runs ${PREV_REL:-the previous release}"
   fi
   # report() prints instead of posting during a drill, so the red body is
@@ -161,176 +161,6 @@ run_for_sha() { # $1 = sha; run id of the successful push run for that sha
     | jq -r --arg sha "$1" '[.[] | select(.headSha == $sha)][0].databaseId // empty'
 }
 
-assert_mmx_health() { # $1 = sha the PWA must serve (full sha; sw.js carries it)
-  # $2 = seconds to wait for the manifest, default 0 = one attempt.
-  # A restarted PWA refuses connections for about a second before it serves,
-  # so every post-restart caller passes a wait (M-459). The "is it already on
-  # this SHA?" precheck keeps the single attempt: a tick must not stall for the
-  # whole wait just because the PWA is down.
-  local sha="$1" wait="${2:-0}" bound="single attempt" manifest port="${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
-  [ "$wait" = 0 ] || bound="waited ${wait}s"
-  if ! wait_http "http://127.0.0.1:$port/manifest.webmanifest" "$wait" '"name":"MMX"'; then
-    # Distinguish a dead PWA from a live one serving the wrong brand: the
-    # second request only runs on failure and only to name the cause.
-    manifest="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/manifest.webmanifest" 2>/dev/null || true)"
-    [ -n "$manifest" ] \
-      || { log "mmx-pwa z manifest did not answer ($bound)"; return 1; }
-    log "mmx-pwa z manifest is not the MMX brand"; return 1
-  fi
-  curl -fsS --max-time 10 "http://127.0.0.1:$port/sw.js" | grep -q "$sha" \
-    || { log "mmx-pwa z sw.js is not stamped with $sha"; return 1; }
-  log "mmx-pwa health ok: brand MMX, sw.js stamped $sha"
-}
-converge_mmx_pwa() { # $1 = sha, $2 = run id. PWA-only repair for a backend-current lane.
-  # Stages the CI mmx-pwa artifact to a temp dir (never the live release dir),
-  # verifies brand + stamp there, then swaps mmx-pwa/current and restarts only
-  # the PWA unit. Backend release, backend current, migrations, backend unit,
-  # daemon, plugin, and backups are untouched.
-  #
-  # Post-switch failures restore the EXACT prior PWA state: symlink, marker,
-  # env file, unit restart, and a health recheck against the prior SHA —
-  # SWITCHED stays 0 (the backend never moved), so on_error cannot roll this
-  # back; converge owns its own undo. A half-downloaded stage dir is removed;
-  # $stage_rel itself is only installed via promote_staged (never merged
-  # into an existing directory).
-  local sha="$1" run_id="$2" stage stage_rel live_rel live_marker live_env
-  [ -n "${MMX_PWA_Z_PORT:-}" ] || { log "converge: MMX_PWA_Z_PORT is not set"; return 1; }
-  [ -n "${MMX_PWA_Z_UNIT:-}" ] || { log "converge: MMX_PWA_Z_UNIT is not set"; return 1; }
-  stage="$(mktemp -d "$LANE_ROOT/mmx-pwa/.converge-XXXXXX")" || return 1
-  if ! gh run download "$run_id" --repo "$AUTODEPLOY_REPO" -n "mmx-pwa-$sha" -D "$stage"; then
-    log "converge: mmx-pwa artifact unavailable for $sha (run $run_id)"
-    rm -rf "$stage"
-    return 1
-  fi
-  if [ "$(jq -r '.sha // empty' "$stage/release.json" 2>/dev/null || true)" != "$sha" ]; then
-    log "converge: staged mmx-pwa release.json sha mismatch for $sha"
-    rm -rf "$stage"
-    return 1
-  fi
-  if ! stage_stand="$(mmx_standalone_root "$stage")"; then
-    log "converge: staged mmx-pwa tree has no standalone tree for $sha"
-    rm -rf "$stage"
-    return 1
-  fi
-  if [ ! -f "$stage_stand/apps/web/server.js" ] \
-    || ! grep -q '"id":"/?mmx-install"' "$stage_stand/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null \
-    || ! grep -q "$sha" "$stage_stand/apps/web/public/sw.js" 2>/dev/null; then
-    log "converge: staged mmx-pwa tree failed brand/stamp verification for $sha"
-    rm -rf "$stage"
-    return 1
-  fi
-  stage_rel="$LANE_ROOT/mmx-pwa/releases/$sha"
-  live_rel="$(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || true)"
-  live_marker="$(cat "$LANE_ROOT/mmx-pwa/previous-release" 2>/dev/null || true)"
-  live_env="$(cat "$LANE_ROOT/mmx-pwa/env" 2>/dev/null || true)"
-  rm -rf "$stage_rel.tmp.$$"; mkdir -p "$stage_rel.tmp.$$"
-  cp -a "$stage_stand/." "$stage_rel.tmp.$$/"
-  rm -rf "$stage"
-  if [ ! -f "$stage_rel.tmp.$$/apps/web/server.js" ] \
-    || ! grep -q '"id":"/?mmx-install"' "$stage_rel.tmp.$$/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null; then
-    log "converge: staged copy failed final verification for $sha"
-    rm -rf "$stage_rel.tmp.$$"
-    return 1
-  fi
-  promote_staged "$stage_rel" "$stage_rel.tmp.$$" || return 1
-  : > "$stage_rel/.complete"
-  # --- point of no return for the PWA symlink; every step below can fail ---
-  ln -sfn "$stage_rel" "$LANE_ROOT/mmx-pwa/current"
-  if [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" != "$stage_rel" ]; then
-    log "converge: mmx-pwa current does not resolve to $stage_rel"
-    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
-    return 1
-  fi
-  printf '%s\n' "$live_rel" > "$LANE_ROOT/mmx-pwa/previous-release"
-  if ! write_mmx_pwa_env "$sha"; then
-    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
-    return 1
-  fi
-  if ! systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"; then
-    log "converge: mmx-pwa unit restart failed for ${sha:0:9}"
-    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
-    return 1
-  fi
-  if ! assert_mmx_health "$sha" 60; then
-    converge_restore_pwa "$live_rel" "$live_marker" "$live_env" "$sha"
-    return 1
-  fi
-  printf 'converged (mmx-pwa-z restarted to %s; backend untouched)\n' "${sha:0:9}" > "$LANE_ROOT/data/autodeploy-mmx-pwa.note"
-  log "mmx-pwa z converged to releases/${sha:0:9}; backend untouched"
-}
-
-converge_restore_pwa() { # $1 = prior current target, $2 = prior marker, $3 = prior env, $4 = failed sha
-  # Best-effort exact-state restore after a failed converge switch. Every
-  # step is guarded: a restore that cannot complete is LOUD, because the
-  # lane is then serving an unknown PWA state with SWITCHED=0.
-  local prior_rel="$1" prior_marker="$2" prior_env="$3" failed_sha="$4" prior_sha
-  log "converge: restoring prior mmx-pwa state after failure on ${failed_sha:0:9}"
-  if [ -n "$prior_rel" ] && [ -d "$prior_rel" ]; then
-    ln -sfn "$prior_rel" "$LANE_ROOT/mmx-pwa/current"
-    [ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$prior_rel" ] \
-      || log "converge RESTORE FAILED: mmx-pwa current does not resolve to $prior_rel"
-  else
-    log "converge RESTORE FAILED: prior PWA release '$prior_rel' is gone; current left on the failed tree for inspection"
-  fi
-  if [ -n "$prior_marker" ]; then
-    printf '%s\n' "$prior_marker" > "$LANE_ROOT/mmx-pwa/previous-release"
-  else
-    rm -f "$LANE_ROOT/mmx-pwa/previous-release"
-  fi
-  if [ -n "$prior_env" ]; then
-    printf '%s' "$prior_env" > "$LANE_ROOT/mmx-pwa/env.tmp.$$"
-    mv -f "$LANE_ROOT/mmx-pwa/env.tmp.$$" "$LANE_ROOT/mmx-pwa/env" \
-      || log "converge RESTORE FAILED: could not restore mmx-pwa env"
-  fi
-  systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}" \
-    || log "converge RESTORE FAILED: mmx-pwa unit did not restart"
-  if [ -n "$prior_rel" ] && [ -f "$prior_rel/apps/web/public/sw.js" ]; then
-    prior_sha="$(grep -oE '[0-9a-f]{40}' "$prior_rel/apps/web/public/sw.js" | head -1 || true)"
-  fi
-  if [ -n "${prior_sha:-}" ]; then
-    assert_mmx_health "$prior_sha" 60 \
-      && log "converge: prior mmx-pwa state restored and healthy (${prior_sha:0:9})" \
-      || log "converge RESTORE FAILED: prior mmx-pwa state did not come back healthy"
-  else
-    wait_http "http://127.0.0.1:${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}/manifest.webmanifest" 60 'MMX' \
-      && log "converge: prior mmx-pwa unit is serving again (stamp unknown, pre-M-451 tree)" \
-      || log "converge RESTORE FAILED: prior mmx-pwa unit is not serving"
-  fi
-}
-
-write_mmx_pwa_env() { # $1 = sha for NEXT_PUBLIC_APP_VERSION
-  # Writes to a temp file and atomically moves it over the live env, so a
-  # failed write never leaves a half-written env behind.
-  if [ -f "$LANE_RUNTIME_ENV" ]; then . "$LANE_RUNTIME_ENV"; fi
-  [ -n "${MULTICA_Z_DEV_CODE:-}" ] || { log "no MULTICA_Z_DEV_CODE in $LANE_RUNTIME_ENV"; return 1; }
-  local tmp="$LANE_ROOT/mmx-pwa/env.tmp.$$"
-  umask 077
-  {
-    echo "PORT=${MMX_PWA_Z_PORT:?MMX_PWA_Z_PORT is not set}"
-    echo "HOSTNAME=127.0.0.1"
-    echo "MMX_BIND_HOST=127.0.0.1"
-    echo "REMOTE_API_URL=http://127.0.0.1:${MULTICA_BE_Z_PORT:?MULTICA_BE_Z_PORT is not set}"
-    echo "NEXT_PUBLIC_APP_VERSION=$1"
-    echo "MMX_AUTH_BYPASS=${MMX_AUTH_BYPASS:-1}"
-    echo "MULTICA_DEV_VERIFICATION_CODE=${MULTICA_Z_DEV_CODE:?MULTICA_Z_DEV_CODE is not set}"
-  } > "$tmp"
-  umask 022
-  mv -f "$tmp" "$LANE_ROOT/mmx-pwa/env" || { log "could not install mmx-pwa env"; rm -f "$tmp"; return 1; }
-}
-mmx_standalone_root() { # $1 = download dir. Prints the standalone tree root.
-  # `gh run download` preserves the multi-path upload layout, so the tree
-  # may sit at $1/standalone (flat) or $1/apps/web/.next/standalone
-  # (nested, as CI's path list produces). Resolve by content, not by guess:
-  # the root that holds apps/web/server.js beside .next/server.
-  local base="$1" cand
-  for cand in "$base/standalone" "$base/apps/web/.next/standalone" "$base"; do
-    if [ -f "$cand/apps/web/server.js" ] && [ -d "$cand/apps/web/.next/server" ]; then
-      printf '%s' "$cand"
-      return 0
-    fi
-  done
-  return 1
-}
 promote_staged() { # $1 = live release dir, $2 = staged dir ($1.tmp.$$)
   # Replace $1 with $2 without ever merging into an existing directory.
   # Plain `mv $2 $1` moves $2 INSIDE $1 when $1 exists — a same-SHA retry,
@@ -339,8 +169,7 @@ promote_staged() { # $1 = live release dir, $2 = staged dir ($1.tmp.$$)
   # moved aside first; a failed promotion restores it, so the live tree is
   # either the complete staged tree or byte-identical to before.
   # Callers must guarantee $1 is not the CURRENT release dir of a running
-  # unit (the switch step only promotes the non-running target SHA; converge
-  # only promotes the non-current PWA SHA).
+  # unit (the switch step only promotes the non-running target SHA).
   local dst="$1" src="$2" aside
   [ -n "$dst" ] && [ -n "$src" ] && [ -d "$src" ] || { log "promote_staged: bad args '$dst' '$src'"; return 1; }
   aside="$dst.aside.$$"
@@ -462,12 +291,11 @@ notify_reporter() { # no args; uses CARD. Non-zero means the evidence was not de
 
 report() { # $1 = green|red
   # A dry run is not a deploy: it must never leave evidence behind.
-  local kind="$1" body="$LANE_ROOT/data/autodeploy-comment.md" dur applied plugin_note mmx_note
+  local kind="$1" body="$LANE_ROOT/data/autodeploy-comment.md" dur applied plugin_note
   dur=$(( $(date +%s) - STARTED ))
   applied="$( [ -s "$LANE_ROOT/data/autodeploy-migrations.applied" ] && paste -sd', ' "$LANE_ROOT/data/autodeploy-migrations.applied" || true )"
   [ -n "$applied" ] || applied="none"
   plugin_note="$(cat "$LANE_ROOT/data/autodeploy-plugin.note" 2>/dev/null || printf 'unchanged')"
-  mmx_note="$(cat "$LANE_ROOT/data/autodeploy-mmx-pwa.note" 2>/dev/null || printf 'unchanged')"
   daemon_note="running $(printf '%s' "$(daemon_health_json)" | jq -r '.cli_commit // "unknown"' 2>/dev/null || printf 'unknown')"
   if [ -f "$(daemon_refresh_pending_file)" ]; then
     daemon_note="refresh pending for $(cat "$(daemon_refresh_pending_file)" 2>/dev/null || printf 'unknown') (deferred, no active-task interruption)"
@@ -480,7 +308,6 @@ report() { # $1 = green|red
       printf -- '- CI: [run %s](%s), build %s\n' "$RUN_ID" "${RUN_URL:-n/a}" "${BUILD_TIME:-unknown}"
       printf -- '- migrations applied: %s\n' "$applied"
       printf -- '- health: `/multica/health` commit `%s`, `/multica/healthz` ok\n' "${LANE_COMMIT:-$SHA}"
-      printf -- '- mmx-pwa: %s (manifest MMX, sw.js stamped `%s`)\n' "$mmx_note" "${SHA:0:9}"
       printf -- '- plugin: %s\n' "$plugin_note"
       printf -- '- daemon: %s\n' "$daemon_note"
       printf -- '- DB backup: `%s` (never auto-restored)\n' "${DUMP:-none taken}"
@@ -591,19 +418,7 @@ if [ "$DRY_RUN" = 1 ] && [ "$(release_sha)" = "$SHA" ]; then
 fi
 
 if [ "$(release_sha)" = "$SHA" ]; then
-  # M-451: backend-current does not mean PWA-current (pre-fix deploys never
-  # installed the PWA). Converge the PWA without touching the live backend
-  # release, current symlinks, migrations, or restarts: stage the artifact
-  # to a temp dir, verify brand + stamp, swap mmx-pwa/current, restart only
-  # the PWA unit. Any failure leaves both `current` symlinks and both
-  # previous-release markers exactly as they were.
-  if [ -n "${MMX_PWA_Z_PORT:-}" ] && [ -n "${MMX_PWA_Z_UNIT:-}" ] \
-    && ! assert_mmx_health "$SHA" 2>/dev/null; then
-    step "converge-mmx-pwa"
-    converge_mmx_pwa "$SHA" "$RUN_ID" || fail "mmx-pwa convergence failed"
-  else
-    log "lane z already runs $SHA; backend is current"
-  fi
+  log "lane z already runs $SHA; backend is current"
   # M-301: a previous deploy may have deferred the daemon refresh because a
   # task was running. Complete it now (no interruption) so the daemon advances
   # to the deployed release without a manual restart.
@@ -650,7 +465,6 @@ if [ "$DRY_RUN" = 1 ]; then
   gh api "repos/$AUTODEPLOY_REPO/actions/runs/$RUN_ID/artifacts" \
     --jq '.artifacts[] | "  - \(.name) \(.size_in_bytes / 1048576 | floor) MB"' 2>/dev/null || log "  (artifact list unavailable)"
   log "dry-run: would download to $ART, back up the DB to $AUTODEPLOY_BACKUP_DIR, install releases/${SHA:0:9}, migrate, switch current, restart $MULTICA_BE_Z_UNIT,"
-  log "dry-run: would install mmx-pwa-$SHA to mmx-pwa/releases/${SHA:0:9}, flip mmx-pwa/current, restart ${MMX_PWA_Z_UNIT:-mmx-pwa-z.service}, and assert the MMX brand + sw.js stamp,"
   log "dry-run: would sync the plugin bundle and restart $DSH_Z_WEB_UNIT only if its content changed, then assert health and comment on $(resolve_card "$SHA" || printf 'no card')"
   log "dry-run: disk ${DF_BEFORE}G free (refuse below ${AUTODEPLOY_MIN_FREE_GB}G), keeping $AUTODEPLOY_KEEP_RELEASES releases"
   # M-482: the dry run fails when the migrate target differs from the serving
@@ -674,12 +488,9 @@ fi
 
 step "download"
 PREV_REL="$(readlink -f "$LANE_ROOT/multica-be/current" 2>/dev/null || true)"
-PREV_MMX_REL="$(readlink -f "$LANE_ROOT/mmx-pwa/current" 2>/dev/null || true)"
-rm -rf "$ART"; mkdir -p "$ART/multica-be" "$ART/mmx-pwa"
+rm -rf "$ART"; mkdir -p "$ART/multica-be"
 log "downloading multica-be-$SHA"
 gh run download "$RUN_ID" --repo "$AUTODEPLOY_REPO" -n "multica-be-$SHA" -D "$ART/multica-be"
-log "downloading mmx-pwa-$SHA"
-gh run download "$RUN_ID" --repo "$AUTODEPLOY_REPO" -n "mmx-pwa-$SHA" -D "$ART/mmx-pwa"
 # The plugin bundle is optional: a push that touches nothing under packages/
 # never runs the frontend job, and then the lane's current bundle is correct.
 PLUGIN_PRESENT=0
@@ -692,18 +503,6 @@ step "verify-artifact"
 [ -d "$ART/multica-be/migrations" ] || fail "multica-be artifact has no migrations/"
 ART_SHA="$(jq -r '.sha // empty' "$ART/multica-be/release.json")"
 BUILT_AT="$(jq -r '.builtAt // "unknown"' "$ART/multica-be/release.json")"
-MMX_ART_SHA="$(jq -r '.sha // empty' "$ART/mmx-pwa/release.json" 2>/dev/null || true)"
-[ "$MMX_ART_SHA" = "$SHA" ] || fail "mmx-pwa artifact release.json sha '$MMX_ART_SHA' != run sha '$SHA'"
-MMX_STAND="$(mmx_standalone_root "$ART/mmx-pwa")" \
-  || fail "mmx-pwa artifact has no standalone tree (checked flat and apps/web/.next/standalone layouts)"
-[ -f "$MMX_STAND/apps/web/server.js" ] || fail "mmx-pwa artifact has no standalone/apps/web/server.js"
-# Brand ground truth is the prerendered manifest route body (server chunks
-# embed both brands' literals as source in every build, so a raw grep is not
-# a brand signal).
-grep -q '"id":"/?mmx-install"' "$MMX_STAND/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null \
-  || fail "mmx-pwa artifact manifest is not the MMX brand"
-grep -q "$SHA" "$MMX_STAND/apps/web/public/sw.js" 2>/dev/null || fail "mmx-pwa artifact sw.js is not stamped with $SHA"
-log "mmx-pwa artifact verified: sha $SHA, MMX brand, sw.js stamped"
 log "artifact verified: sha $SHA, built $BUILT_AT"
 
 step "supersede-check"
@@ -741,16 +540,6 @@ cp -a "$ART/multica-be/." "$REL.tmp.$$"
 [ -f "$REL.tmp.$$/release.json" ] || fail "staged backend release has no release.json"
 : > "$REL.tmp.$$/.complete"
 log "backend release staged at $REL.tmp.$$"
-step "install-mmx-pwa"
-# Same staging rule as the backend release (M-451 comment above).
-MMX_REL="$LANE_ROOT/mmx-pwa/releases/$SHA"
-rm -rf "$MMX_REL.tmp.$$"; mkdir -p "$MMX_REL.tmp.$$"
-cp -a "$MMX_STAND/." "$MMX_REL.tmp.$$"
-[ -f "$MMX_REL.tmp.$$/apps/web/server.js" ] || fail "staged mmx-pwa release has no apps/web/server.js"
-grep -q '"id":"/?mmx-install"' "$MMX_REL.tmp.$$/apps/web/.next/server/app/manifest.webmanifest.body" 2>/dev/null || fail "staged mmx-pwa release lost its MMX brand"
-: > "$MMX_REL.tmp.$$/.complete"
-log "mmx-pwa release staged at $MMX_REL.tmp.$$"
-
 step "migrate"
 # Migrate from the STAGED backend tree (identical content to the future
 # release dir): migrations must succeed before any live path moves.
@@ -770,18 +559,16 @@ comm -13 "$MIG_LIST_PRE" "$LANE_ROOT/data/autodeploy-migrations.post" > "$LANE_R
 log "migrations applied: $( [ -s "$LANE_ROOT/data/autodeploy-migrations.applied" ] && paste -sd', ' "$LANE_ROOT/data/autodeploy-migrations.applied" || echo none)"
 
 step "switch"
-# Promote staged dirs to live release dirs first, then flip. Before this
+# Promote the staged dir to the live release dir first, then flip. Before this
 # point nothing live has moved: PREV_* markers are recorded here, and a
 # failure anywhere above leaves current/previous releases untouched.
 # promote_staged never merges into an existing directory (see its contract):
 # a same-SHA retry or rollback-then-redeploy replaces the stale tree instead
 # of nesting inside it, and a failed promotion restores the prior tree.
 promote_staged "$REL" "$REL.tmp.$$" || fail "could not promote backend release $REL"
-promote_staged "$MMX_REL" "$MMX_REL.tmp.$$" || fail "could not promote mmx-pwa release $MMX_REL"
 # The flip is what makes this a switch, so the rollback marker goes on first.
 SWITCHED=1
 printf '%s\n' "$PREV_REL" > "$LANE_ROOT/multica-be/previous-release"
-printf '%s\n' "$PREV_MMX_REL" > "$LANE_ROOT/mmx-pwa/previous-release"
 
 render_backend_unit "$REL" || fail "could not point $MULTICA_BE_Z_UNIT at releases/${SHA:0:9}"
 [ "$(readlink -f "$LANE_ROOT/multica-be/current")" = "$REL" ] || fail "current does not resolve to $REL"
@@ -793,19 +580,6 @@ systemctl --user restart "$MULTICA_BE_Z_UNIT"
 
 step "health"
 assert_health "$SHA" || fail "health check failed after the switch"
-
-step "switch-mmx-pwa"
-# Flip mmx-pwa/current only after the backend is healthy on the new SHA, so
-# a backend failure never leaves the PWA ahead of the API it proxies. The
-# env carries only runtime values (REMOTE_API_URL, bypass, bind): the brand
-# is baked into the artifact at CI build time, never re-selected here.
-ln -sfn "$MMX_REL" "$LANE_ROOT/mmx-pwa/current"
-[ "$(readlink -f "$LANE_ROOT/mmx-pwa/current")" = "$MMX_REL" ] || fail "mmx-pwa current does not resolve to $MMX_REL"
-write_mmx_pwa_env "$SHA" || fail "could not write mmx-pwa env"
-systemctl --user restart "${MMX_PWA_Z_UNIT:?MMX_PWA_Z_UNIT is not set}"
-assert_mmx_health "$SHA" 60 || fail "mmx-pwa health check failed after the switch"
-printf 'updated (mmx-pwa-z restarted to %s)\n' "${SHA:0:9}" > "$LANE_ROOT/data/autodeploy-mmx-pwa.note"
-log "mmx-pwa z -> releases/${SHA:0:9}; restarted and healthy"
 
 step "daemon-refresh"
 # M-301: ordinary autodeploy must refresh the z daemon so session logic becomes

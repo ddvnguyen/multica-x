@@ -40,7 +40,6 @@ unit_release() { # release path the installed backend unit runs, or nothing
 
 prune_releases() {
   prune_release_tree "$LANE_ROOT/multica-be/releases" "$LANE_ROOT/multica-be/current" "$AUTODEPLOY_KEEP_RELEASES" "pruned-backend"
-  prune_release_tree "$LANE_ROOT/mmx-pwa/releases" "$LANE_ROOT/mmx-pwa/current" "$AUTODEPLOY_KEEP_RELEASES" "pruned-mmx-pwa"
 }
 
 prune_release_tree() { # $1 = releases dir, $2 = current symlink, $3 = keep, $4 = log tag

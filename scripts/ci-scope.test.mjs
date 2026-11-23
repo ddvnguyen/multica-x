@@ -88,35 +88,20 @@ test("scheduled and manual runs select every scope without a path-filter result"
     assert.equal(quality_only, "false", "the full frontend build owns quality checks");
   }
 });
-test("push publishes both product artifacts from the frontend-build job", () => {
-  // M-451: a push is a merged SHA the lane deploys from. The backend-only
-  // path is the dangerous one — path filtering would skip frontend-build,
-  // so the push-forced frontend scope (decideScopes) is the guarantee that
-  // BOTH the backend and the MMX PWA artifacts publish for the same SHA.
+test("push publishes the web-dist artifact from the frontend-build job", () => {
+  // A push is a merged SHA the lane deploys from. Path filtering must not
+  // skip frontend-build: the lane pulls web-dist from that run.
   for (const filtered of [filterFiles([]), filterFiles(["server/handlers/issues.go"])]) {
     const outputs = decideScopes("push", filtered);
     assert.equal(outputs.frontend, "true");
     assert.equal(outputs.backend, "true");
   }
-  // Both uploads live in frontend-build (which the push-forced frontend scope
-  // selects) and both are push-gated, never PR-gated.
   const build = jobs["frontend-build"];
   assert.match(build, /^    if: \$\{\{ needs\.changes\.outputs\.frontend == 'true' \}\}$/m);
   const uploads = [...build.matchAll(/^      - name: Upload (\S+) artifact$/gm)].map((m) => m[1]);
-  assert.deepEqual(uploads.sort(), ["mmx-pwa", "web-dist"]);
-  for (const name of uploads) {
-    const block = build.slice(build.indexOf(`- name: Upload ${name} artifact`));
-    assert.match(block, /^        if: github\.event_name != 'pull_request'$/m);
-  }
-  // Order: web-dist uploads BEFORE the MMX staging replaces the .next tree,
-  // and the default tree is verified brand-clean before upload. The staging
-  // runs the shared script (also covered by its own regression test), so the
-  // push-only path is tested, not duplicated.
-  const webDistAt = build.indexOf("- name: Upload web-dist artifact");
-  const mmxStageAt = build.indexOf("bash scripts/build-mmx-pwa-artifact.sh");
-  assert.ok(webDistAt !== -1 && mmxStageAt !== -1 && webDistAt < mmxStageAt);
-  assert.match(build, /MMX_PWA_SHA="\$\{\{ github\.sha \}\}"/);
-  assert.match(build, /Verify default brand before upload/);
+  assert.deepEqual(uploads, ["web-dist"]);
+  const block = build.slice(build.indexOf("- name: Upload web-dist artifact"));
+  assert.match(block, /^        if: github\.event_name != 'pull_request'$/m);
 });
 
 test("missing, malformed and unsupported filter results fail closed", () => {
