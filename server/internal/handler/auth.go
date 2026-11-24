@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -515,38 +513,21 @@ func portalSessionEnabled() (secret, email string) {
 	return secret, email
 }
 
-// isLoopbackPeer reports whether r arrived over the loopback interface. The
-// gateway calls this endpoint from 127.0.0.1/::1 only; anything else is a
-// direct external hit and must be rejected.
-func isLoopbackPeer(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	host = strings.Trim(host, "[]")
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback()
-}
-
-// PortalSession mints a session for the single allowlisted portal email when
-// called by the trusted local gateway (M-551). The gateway holds the secret
-// and calls over loopback after Cloudflare Access / tailnet proved the human;
-// this endpoint never creates users, only logs in the configured one.
+// PortalSession mints a session for the single allowlisted portal email
+// (M-551). Reachability is the access control: this handler is registered
+// ONLY on the dedicated internal listener (MULTICA_PORTAL_LOGIN_ADDR,
+// 127.0.0.1-only publish in compose), never on the public router — public
+// Caddy and the tailnet structurally cannot reach it, so no peer-IP check
+// is needed or trusted here (both arrive SNAT'd behind Caddy anyway).
 //
 // Disabled (404) unless MULTICA_PORTAL_LOGIN_SECRET and
-// MULTICA_PORTAL_LOGIN_EMAIL are both set. Wrong or missing secret and
-// non-loopback peers get 403/404 with no detail. The success path issues
-// the same JWT + cookies as VerifyCode and logs the same shape.
+// MULTICA_PORTAL_LOGIN_EMAIL are both set. A wrong or missing secret gets
+// a 404 with no detail. Never creates users, only logs in the configured
+// one. The success path issues the same JWT + cookies as VerifyCode and
+// logs the same shape.
 func (h *Handler) PortalSession(w http.ResponseWriter, r *http.Request) {
 	secret, email := portalSessionEnabled()
 	if secret == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if !isLoopbackPeer(r) {
 		http.NotFound(w, r)
 		return
 	}
