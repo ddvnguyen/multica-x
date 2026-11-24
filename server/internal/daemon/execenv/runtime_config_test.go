@@ -2779,3 +2779,29 @@ func TestEveryBriefThatTeachesJSONOutputAlsoWarnsAgainstMergingStderr(t *testing
 		}
 	}
 }
+
+// M-353: with the automatic usage write-back gone, the brief's nudge is the
+// only prompt that makes runs persist durable lessons. Desktop prose and
+// quick-create are deliberately left untouched.
+func TestBriefCarriesMemoryNoteNudge(t *testing.T) {
+	t.Parallel()
+	const want = "Persist durable lessons with the `moct` MCP tool `memory_note`"
+
+	for _, ctx := range []TaskContextForEnv{
+		{IssueID: "issue-1"},
+		{ChatSessionID: "chat-1"},
+		{AutopilotRunID: "run-1"},
+	} {
+		if got := buildMetaSkillContent("claude", ctx); !strings.Contains(got, want) {
+			t.Errorf("brief for %+v lost the memory nudge", ctx)
+		}
+	}
+	for _, ctx := range []TaskContextForEnv{
+		{QuickCreatePrompt: "new item"},
+		{IssueID: "issue-1", IsFreebuffDesktop: true},
+	} {
+		if got := buildMetaSkillContent("claude", ctx); strings.Contains(got, want) {
+			t.Errorf("brief for %+v must not carry the memory nudge", ctx)
+		}
+	}
+}

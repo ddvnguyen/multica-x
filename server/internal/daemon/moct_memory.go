@@ -29,7 +29,6 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/moct"
-
 )
 
 // moctMemoryServerName is the name the `moct` MCP server gets in every task's
@@ -379,73 +378,4 @@ func moctMCPConfig(baseURL string, task Task) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return raw, true
-}
-
-// moctRecordUsage writes the per-task usage summary and session_ref back to
-// moct-be as a decision record keyed on the D2 refs. It never blocks the
-// task: a missing seam, a down moct-be or any error is logged as a warning
-// and the caller continues.
-func moctRecordUsage(ctx context.Context, baseURL string, task Task, sessionID string, usage []TaskUsageEntry, logger *slog.Logger) {
-	if strings.TrimSpace(baseURL) == "" {
-		return
-	}
-	if task.WorkspaceID == "" || task.AgentID == "" || task.IssueID == "" {
-		return
-	}
-	if sessionID == "" && len(usage) == 0 {
-		return
-	}
-	client, err := moct.NewClient(moct.Config{BaseURL: baseURL})
-	if err != nil {
-		if logger != nil {
-			logger.Warn("moct: usage write-back skipped; bad base URL", "base_url", baseURL, "error", err)
-		}
-		return
-	}
-	// Build a stable, human-readable usage payload. Only totals and per-model
-	// token counts reach moct-be: record ids, session refs and task ids are
-	// content-scanned on write (schema v8 secret filter), and a raw id is
-	// exactly the high-entropy run it rejects.
-	var totalInput, totalOutput, totalCacheRead, totalCacheWrite int64
-	for _, u := range usage {
-		totalInput += u.InputTokens
-		totalOutput += u.OutputTokens
-		totalCacheRead += u.CacheReadTokens
-		totalCacheWrite += u.CacheWriteTokens
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "totals: input=%d output=%d cache_read=%d cache_write=%d\n", totalInput, totalOutput, totalCacheRead, totalCacheWrite)
-	for _, u := range usage {
-		model := u.Model
-		if u.Provider != "" {
-			model = u.Provider + "/" + u.Model
-		}
-		if strings.TrimSpace(model) == "" {
-			model = "unknown"
-		}
-		fmt.Fprintf(&b, "- %s: input=%d output=%d cache_read=%d cache_write=%d\n", model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
-	}
-	// moct-be whitelists decision attrs to decidedBy/sourceRef/date
-	// (moct src/team-room/memory.ts checkAttrs) and 400s anything else, so
-	// the machine-readable payload lives in the body above — attrs carry
-	// only the two refs moct-be requires.
-	attrs := map[string]any{
-		"decidedBy": moct.ExpertRef(task.AgentID),
-		"sourceRef": moct.IssueRef(task.IssueID),
-	}
-	params := moct.NoteParams{
-		Type:        "decision",
-		Title:       "Usage summary",
-		Body:        b.String(),
-		Attrs:       attrs,
-		Home:        moct.Home{Kind: "task", Ref: moct.IssueRef(task.IssueID)},
-		WorkspaceID: moct.WorkspaceRef(task.WorkspaceID),
-		Actor:       moct.Actor{Kind: "member", ID: moct.ExpertRef(task.AgentID)},
-		ConfirmNew:  true,
-	}
-	if _, err := client.Note(ctx, params); err != nil {
-		if logger != nil {
-			logger.Warn("moct: usage write-back failed", "task_id", task.ID, "error", err)
-		}
-	}
 }
