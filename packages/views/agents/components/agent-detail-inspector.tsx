@@ -772,6 +772,7 @@ function RolePreviewRow({
   if (isLoading || isError || !data) return null;
   return (
     <SettingsRow
+      stacked
       label={t(($) => $.inspector.role_preview_label)}
       description={
         data.role_name

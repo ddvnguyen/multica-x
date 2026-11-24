@@ -295,6 +295,7 @@ export function SettingsRow({
   size,
   align = "center",
   anchor,
+  stacked = false,
 }: {
   label: ReactNode;
   description?: ReactNode;
@@ -305,20 +306,32 @@ export function SettingsRow({
   align?: "center" | "start";
   /** Target for search results and deep links (`?section=<anchor>`). */
   anchor?: string;
+  /**
+   * Stack the label above full-width children instead of the
+   * label/control two-column layout. For long text content (previews,
+   * read-only text) where the 56% control column would squeeze the
+   * text too narrow. Ignored width tiers do not apply when stacked.
+   */
+  stacked?: boolean;
 }) {
   return (
     <div
       {...(anchor ? { [SETTINGS_ANCHOR_ATTR]: anchor } : {})}
       className={cn(
-        "flex min-h-16 scroll-mt-6 gap-4 px-4 py-3.5 transition-colors duration-700 data-[flash=true]:bg-surface-selected sm:justify-between sm:gap-8",
-        size ? "flex-col sm:flex-row" : "flex-row justify-between",
-        align === "center"
-          ? size
-            ? "sm:items-center"
-            : "items-center"
-          : size
-            ? "sm:items-start"
-            : "items-start",
+        "flex min-h-16 scroll-mt-6 px-4 py-3.5 transition-colors duration-700 data-[flash=true]:bg-surface-selected",
+        stacked
+          ? "flex-col gap-2"
+          : cn(
+              "gap-4 sm:justify-between sm:gap-8",
+              size ? "flex-col sm:flex-row" : "flex-row justify-between",
+              align === "center"
+                ? size
+                  ? "sm:items-center"
+                  : "items-center"
+                : size
+                  ? "sm:items-start"
+                  : "items-start",
+            ),
         className,
       )}
     >
@@ -332,9 +345,13 @@ export function SettingsRow({
       </div>
       <div
         className={cn(
-          "shrink-0 sm:w-auto sm:max-w-[56%]",
-          size ? "w-full" : "w-auto max-w-[56%]",
-          size ? SETTINGS_CONTROL_WIDTHS[size] : undefined,
+          stacked
+            ? "w-full max-w-none"
+            : cn(
+                "shrink-0 sm:w-auto sm:max-w-[56%]",
+                size ? "w-full" : "w-auto max-w-[56%]",
+                size ? SETTINGS_CONTROL_WIDTHS[size] : undefined,
+              ),
         )}
       >
         {children}
