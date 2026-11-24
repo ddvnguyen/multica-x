@@ -1,12 +1,12 @@
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DshLayout } from "../src/dsh";
-import { resetIsland, unmountIsland, islandHost } from "../src/client/island";
+import { requestRailEntry, resetIsland, unmountIsland, islandHost } from "../src/client/island";
 import { attachSeat } from "../src/client/seat";
 import { bindShell } from "../src/client/shell";
 import { familyOfRoute } from "../src/client/tabs";
 import { MULTICA_ENTRIES } from "../src/client/index";
-import type { IslandRoute } from "../src/client/navigation";
+import { BOARD_ROUTE, type IslandRoute } from "../src/client/navigation";
 
 /**
  * The island's own window, rendered: one tab strip across the seven views, one
@@ -159,13 +159,22 @@ function shadowText(host: HTMLElement): string {
   return host.shadowRoot?.textContent ?? "";
 }
 
-/** Move the island to the next rail row, the way the shell does. */
+/**
+ * Move the island to the next rail row, the way the shell does.
+ *
+ * `railClick` says whether a rail row was actually pressed: the row records
+ * that intent before the shell mounts its cell (`requestRailEntry`), and a
+ * mount the shell makes on its own (following the active tab's family) must
+ * not look like one (M-552).
+ */
 async function moveSeat(
   from: HTMLElement,
   to: HTMLElement,
   route: IslandRoute,
+  { railClick = true }: { railClick?: boolean } = {},
 ): Promise<void> {
   await act(async () => {
+    if (railClick) requestRailEntry(route);
     from.remove();
     attachSeat(null, route);
     attachSeat(to, route);
@@ -295,4 +304,51 @@ describe("the island's tab strip (M-197)", () => {
     });
     expect(selected.at(-1)).toBe("multica");
   });
+
+  // M-552: a seat mount is not a rail click. The shell follows the strip onto
+  // the issue tab's row, and a cell it re-renders or bounces afterwards used to
+  // replay "this row was clicked", focusing the Agents tab over the reader's
+  // choice. Only the row's own click may do that.
+  it("a re-attached Agents cell does not steal the tab the reader switched to", async () => {
+    stubBackend();
+    bindShell({ layout: fakeLayout().layout, panelOfFamily: PANEL_OF_FAMILY });
+
+    const issues = seatElement();
+    act(() => attachSeat(issues, { view: "issue", issueId: "MUL-1" }));
+    const host = islandHost() as HTMLElement;
+    await settle(() => {
+      expect(shadowText(host)).toContain(ISSUE.title);
+    });
+
+    // Reader picks the Agents rail row: the Agents tab opens.
+    const agents = seatElement();
+    await moveSeat(issues, agents, { view: "agents" });
+    await settle(() => {
+      expect(activeTabName(host)).toBe("Agents");
+    });
+
+    // Then clicks the issue tab in the strip.
+    const issueTab = stripTabs(host).find((tab) => (tab.textContent ?? "").includes("MUL-1"));
+    await act(async () => {
+      issueTab?.click();
+    });
+    await settle(() => {
+      expect(activeTabName(host)).toBe("MUL-1");
+    });
+
+    // The shell follows the strip onto the issues row — no rail click here.
+    const issuesRow = seatElement();
+    await moveSeat(agents, issuesRow, BOARD_ROUTE, { railClick: false });
+    await settle(() => {
+      expect(activeTabName(host)).toBe("MUL-1");
+    });
+
+    // And now a stale/re-rendered Agents cell is mounted again.
+    const agentsAgain = seatElement();
+    await moveSeat(issuesRow, agentsAgain, { view: "agents" }, { railClick: false });
+    await settle(() => {
+      expect(activeTabName(host)).toBe("MUL-1");
+      expect(shadowText(host)).toContain(ISSUE.title);
+    });
+  }, 20000);
 });

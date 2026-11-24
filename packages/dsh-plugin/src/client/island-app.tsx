@@ -86,6 +86,18 @@ import {
  */
 export const ISLAND_VERSION = mmxBuild()?.stamp ?? "dev";
 
+/**
+ * A rail click the island still has to apply (M-552).
+ *
+ * The shell mounts a row's cell without saying why, so the click itself is
+ * recorded by the row (`requestRailEntry`) and handed to the island with the
+ * next attach. `nonce` makes two clicks on the same row distinct events.
+ */
+export interface RailEntryRequest {
+  route: IslandRoute;
+  nonce: number;
+}
+
 export interface IslandAppProps {
   /** Where Base UI portals render, inside the island's shadow root. */
   portalHost: HTMLElement;
@@ -103,6 +115,8 @@ export interface IslandAppProps {
   route?: IslandRoute;
   /** True while a seat holds the island. */
   attached?: boolean;
+  /** A rail click this attach has to apply; absent on every other mount. */
+  railRequest?: RailEntryRequest | null;
 }
 
 /**
@@ -117,11 +131,14 @@ export function IslandBoot({
   portalHost,
   route,
   attached = false,
+  railRequest = null,
 }: {
   portalHost: HTMLElement;
   route?: IslandRoute;
   /** True while a seat holds the island; see `MountIslandOptions.attached`. */
   attached?: boolean;
+  /** A rail click to apply on this attach; see `RailEntryRequest`. */
+  railRequest?: RailEntryRequest | null;
 }) {
   const [config, setConfig] = useState<IslandConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -169,6 +186,7 @@ export function IslandBoot({
       workspaceFolder={config.workspaceFolder}
       route={route}
       attached={attached}
+      railRequest={railRequest}
     />
   );
 }
@@ -182,6 +200,7 @@ export function IslandApp({
   workspaceFolder = "",
   route,
   attached = false,
+  railRequest = null,
 }: IslandAppProps) {
   const storage = useMemo(() => createIslandStorage(), []);
   // The adapter is what the fork's Preferences page reads its Language row
@@ -229,6 +248,7 @@ export function IslandApp({
             workspaceFolder={workspaceFolder}
             route={route}
             attached={attached}
+            railRequest={railRequest}
           />
         </PortalContainerProvider>
       </CoreProvider>
@@ -266,6 +286,7 @@ function WorkspaceGate({
   workspaceFolder,
   route,
   attached,
+  railRequest,
 }: {
   preferredSlug?: string;
   wsPath: string;
@@ -273,6 +294,7 @@ function WorkspaceGate({
   workspaceFolder?: string;
   route?: IslandRoute;
   attached: boolean;
+  railRequest: RailEntryRequest | null;
 }) {
   const { workspaces, ready } = useWorkspaceList();
   const workspace = useMemo(() => {
@@ -338,6 +360,7 @@ function WorkspaceGate({
         workspaceFolder={workspaceFolder}
         route={route}
         attached={attached}
+        railRequest={railRequest}
       />
     </WorkspaceSlugProvider>
   );
@@ -410,6 +433,7 @@ export function IslandPages({
   workspaceFolder = "",
   route: entryRoute = BOARD_ROUTE,
   attached = false,
+  railRequest = null,
 }: {
   slug: string;
   workspaceId: string;
@@ -420,6 +444,8 @@ export function IslandPages({
   route?: IslandRoute;
   /** True while a seat holds the island; the rail only follows a seated tab. */
   attached?: boolean;
+  /** A rail click to apply, recorded by the row itself (M-552). */
+  railRequest?: RailEntryRequest | null;
 }) {
   const storage = useMemo(() => createIslandStorage(), []);
   // One workspace, one tab set (M-173): the persisted key no longer varies by
@@ -443,32 +469,42 @@ export function IslandPages({
     writeProjectScope(storage, next);
   }
 
-  const [entry, setEntry] = useState<string | null>(null);
-
-  // initial tab
+  // A rail click is an event (M-552): the row records it and `attachIsland`
+  // only replays it on the attach it caused, never on a re-attach of the same
+  // cell. Every mount that is not that event leaves the reader's tab alone.
   useEffect(() => {
-    const st = tabsStore.getState();
-    const url = islandPath(slug, entryRoute);
+    if (railRequest === null) return;
+    tabsStore.getState().railEntry(railRequest.route);
+  }, [tabsStore, railRequest]);
+
+  // A deep link is a destination, not a row: it opens (or focuses) its own
+  // tab once per entry, and a re-attach of the same entry changes nothing.
+  const openedEntry = useRef<string | null>(null);
+  useEffect(() => {
+    const key = islandRouteKey(entryRoute);
+    if (openedEntry.current === key) return;
+    openedEntry.current = key;
     const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
-    if (isRailEntry) st.railEntry(entryRoute);
-    else st.openOrFocus(url);
+    const store = tabsStore.getState();
+    // A row with no tab of its own and no tab at all seeds the strip from the
+    // entry: there is nothing of the reader's to change, and a restored session
+    // must not start with an empty strip. A mount that would move an existing
+    // tab of another family stays inert — only a recorded click may do that.
+    if (!isRailEntry) store.openOrFocus(islandPath(slug, entryRoute));
+    else if (store.tabs.length === 0) store.railEntry(entryRoute);
   }, [tabsStore, entryRoute, slug]);
 
-  // rail click handling
-  const requested = islandRouteKey(entryRoute);
-  if (entry !== requested) {
-    setEntry(requested);
-    const st = tabsStore.getState();
-    const url = islandPath(slug, entryRoute);
-    const isRailEntry = !("issueId" in entryRoute || "agentId" in entryRoute || "skillId" in entryRoute) && (entryRoute.query === undefined || entryRoute.query === "");
-    if (isRailEntry) st.railEntry(entryRoute);
-    else st.openOrFocus(url);
-  }
-
-  const tabsState = useStore(tabsStore);
-  const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeId) ?? null;
+  // Only what the page shows: scroll-memento and view-state commits write the
+  // store on every scroll tick, and a whole-store subscription re-rendered the
+  // island (and its page) for each of them (M-552).
+  const activeId = useStore(tabsStore, (s) => s.activeId);
+  const mountGeneration = useStore(tabsStore, (s) => s.mountGeneration);
+  const activeUrl = useStore(
+    tabsStore,
+    (s) => s.tabs.find((t) => t.id === s.activeId)?.url ?? null,
+  );
   const route: IslandRoute =
-    activeTab !== null ? (parseIslandRoute(activeTab.url) ?? entryRoute) : entryRoute;
+    activeUrl !== null ? (parseIslandRoute(activeUrl) ?? entryRoute) : entryRoute;
 
   // The rail and the strip must never disagree (M-197): whatever the active
   // tab shows — after a tab click, Back/Forward across tabs, a closed tab, or
@@ -536,13 +572,12 @@ export function IslandPages({
   // now-stale queries. desktop's Coordinator does the same on generation
   // change.
   const queryClient = useQueryClient();
-  const seenGeneration = useRef(tabsState.mountGeneration);
+  const seenGeneration = useRef(mountGeneration);
   useEffect(() => {
-    const generation = tabsState.mountGeneration;
-    if (generation === seenGeneration.current) return;
-    seenGeneration.current = generation;
+    if (mountGeneration === seenGeneration.current) return;
+    seenGeneration.current = mountGeneration;
     queryClient.invalidateQueries({ type: "active", refetchType: "none" });
-  }, [tabsState.mountGeneration, tabsStore, queryClient]);
+  }, [mountGeneration, queryClient]);
 
   return (
     <ViewStoreProvider store={viewStore}>
@@ -609,9 +644,9 @@ export function IslandPages({
             <ScrollRestorationProvider adapter={restoration}>
             <ErrorBoundary
               resetKeys={[
-                tabsState.activeId ?? "none",
+                activeId ?? "none",
                 islandRouteKey(route),
-                tabsState.mountGeneration,
+                mountGeneration,
               ]}
             >
               {/* The page the active tab mounts into. The key re-mounts the
@@ -621,7 +656,7 @@ export function IslandPages({
                   element, so the strip and rail never pollute a capture. */}
               <div
                 ref={pageRootRef}
-                key={`${tabsState.activeId ?? "none"}:${tabsState.mountGeneration}`}
+                key={`${activeId ?? "none"}:${mountGeneration}`}
                 className="contents"
                 data-island-page-root=""
               >

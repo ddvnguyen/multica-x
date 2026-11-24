@@ -324,7 +324,9 @@ export function apply(ctx: DshClientContext): void {
   );
 
   MULTICA_ENTRIES.forEach((entry, index) => {
-    const railIcon = createRailIcon(createElement, entry.glyph);
+    // The row's own click is what tells the island a rail entry was picked
+    // (M-552); the seat's mount alone no longer replays it.
+    const railIcon = createRailIcon(createElement, entry.glyph, entry.route);
     const seat = createSeatComponent(createElement, {
       panelId: entry.id,
       route: entry.route,
