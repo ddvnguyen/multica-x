@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/portalsession"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/scheduler"
@@ -744,6 +745,13 @@ func main() {
 	if maintenanceErr != nil {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
+	// M-551: dedicated internal listener for the trusted-gateway
+	// auto-login endpoint. Off when MULTICA_PORTAL_LOGIN_ADDR is unset;
+	// rejects non-loopback binds. Never mounted on the public router.
+	portalLoginServer, portalLoginErr := portalsession.NewServer(os.Getenv("MULTICA_PORTAL_LOGIN_ADDR"), h)
+	if portalLoginErr != nil {
+		slog.Error("portal login listener disabled", "error", portalLoginErr)
+	}
 
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
@@ -930,6 +938,10 @@ func main() {
 		}()
 	}
 
+	if portalLoginServer != nil {
+		go portalsession.Start(portalLoginServer)
+	}
+
 	go func() {
 		slog.Info("pprof server starting", "addr", profilingServer.Addr)
 		if err := profilingServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -982,6 +994,14 @@ func main() {
 				os.Exit(1)
 			}
 			apiShutdownCancel()
+			if portalLoginServer != nil {
+				portalCtx, portalCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer portalCancel()
+				if err := portalLoginServer.Shutdown(portalCtx); err != nil {
+					slog.Error("portal login listener shutdown interrupted", "error", err)
+					_ = portalLoginServer.Close()
+				}
+			}
 		},
 		StopOutboundRelay: stopRelay,
 		CancelWorkers:     sweepCancel,

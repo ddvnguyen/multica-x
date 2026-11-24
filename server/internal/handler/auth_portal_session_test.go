@@ -1,17 +1,18 @@
 package handler
 
 // M-551: trusted-gateway auto-login. POST /auth/portal-session mints a
-// session for the single allowlisted email when the local portal gateway
-// presents the shared secret over loopback. Disabled unless
-// MULTICA_PORTAL_LOGIN_SECRET + MULTICA_PORTAL_LOGIN_EMAIL are both set:
-// no users are ever created, and direct external hits see a 404.
+// session for the single allowlisted email when the portal gateway presents
+// the shared secret. Reachability is the access control: the handler is
+// registered ONLY on the dedicated internal listener
+// (MULTICA_PORTAL_LOGIN_ADDR, 127.0.0.1-only), never on the public router.
+// Disabled unless MULTICA_PORTAL_LOGIN_SECRET + MULTICA_PORTAL_LOGIN_EMAIL
+// are both set; no users are ever created.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -213,12 +214,11 @@ func portalTestUser(idByte byte) db.User {
 	}
 }
 
-func portalSessionRequest(secret string, remoteAddr string) *http.Request {
+func portalSessionRequest(secret string) *http.Request {
 	req := testutil.JSONRequest(http.MethodPost, "/auth/portal-session", map[string]string{})
 	if secret != "" {
 		req.Header.Set("X-Portal-Login-Secret", secret)
 	}
-	req.RemoteAddr = remoteAddr
 	return req
 }
 
@@ -244,7 +244,7 @@ func TestPortalSession(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(1)})
 		withEnv(t, "", "")
-		req := portalSessionRequest(secret, "127.0.0.1:5000")
+		req := portalSessionRequest(secret)
 		testutil.Call(t, h.PortalSession, req).Want(http.StatusNotFound)
 	})
 
@@ -252,8 +252,8 @@ func TestPortalSession(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(2)})
 		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest("wrong-secret", "127.0.0.1:5000")).Want(http.StatusNotFound)
-		resp := testutil.Call(t, h.PortalSession, portalSessionRequest("wrong-secret", "127.0.0.1:5000"))
+		testutil.Call(t, h.PortalSession, portalSessionRequest("wrong-secret")).Want(http.StatusNotFound)
+		resp := testutil.Call(t, h.PortalSession, portalSessionRequest("wrong-secret"))
 		if got := portalAuthCookieValue(resp, auth.AuthCookieName); got != "" {
 			t.Fatalf("wrong secret must not set auth cookie, got %q", got)
 		}
@@ -263,28 +263,21 @@ func TestPortalSession(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(3)})
 		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest("", "127.0.0.1:5000")).Want(http.StatusNotFound)
-	})
-
-	t.Run("non_loopback_peer", func(t *testing.T) {
-		h := newTestHandler(Config{})
-		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(4)})
-		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "203.0.113.7:5000")).Want(http.StatusNotFound)
+		testutil.Call(t, h.PortalSession, portalSessionRequest("")).Want(http.StatusNotFound)
 	})
 
 	t.Run("unknown_email", func(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{userErr: pgx.ErrNoRows})
 		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "127.0.0.1:5000")).Want(http.StatusNotFound)
+		testutil.Call(t, h.PortalSession, portalSessionRequest(secret)).Want(http.StatusNotFound)
 	})
 
 	t.Run("happy_path", func(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(5)})
 		withEnv(t, secret, email)
-		resp := testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "127.0.0.1:5000")).Want(http.StatusOK)
+		resp := testutil.Call(t, h.PortalSession, portalSessionRequest(secret)).Want(http.StatusOK)
 		var body LoginResponse
 		resp.JSON(&body)
 		if body.User.Email != email {
@@ -311,18 +304,24 @@ func TestPortalSession(t *testing.T) {
 		}
 	})
 
-	t.Run("loopback_ipv6", func(t *testing.T) {
-		h := newTestHandler(Config{})
-		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(6)})
-		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "[::1]:5000")).Want(http.StatusOK)
+	t.Run("no_peer_check_any_remote_accepted", func(t *testing.T) {
+		// Reachability (internal listener) is the control; the handler
+		// itself must not reject any peer, loopback or not.
+		for _, remote := range []string{"127.0.0.1:5000", "[::1]:5000", "10.89.1.4:5000", "203.0.113.7:5000"} {
+			h := newTestHandler(Config{})
+			h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(6)})
+			withEnv(t, secret, email)
+			req := portalSessionRequest(secret)
+			req.RemoteAddr = remote
+			testutil.Call(t, h.PortalSession, req).Want(http.StatusOK)
+		}
 	})
 
 	t.Run("database_error", func(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{userErr: errors.New("connection refused")})
 		withEnv(t, secret, email)
-		testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "127.0.0.1:5000")).Want(http.StatusInternalServerError)
+		testutil.Call(t, h.PortalSession, portalSessionRequest(secret)).Want(http.StatusInternalServerError)
 	})
 
 	t.Run("temporarily_disabled_email", func(t *testing.T) {
@@ -330,39 +329,16 @@ func TestPortalSession(t *testing.T) {
 		h.Queries = db.New(&portalSessionMockDB{user: portalTestUser(7)})
 		// pdzzer68@embassybase.com is on the temporary emergency denylist.
 		withEnv(t, secret, "pdzzer68@embassybase.com")
-		testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "127.0.0.1:5000")).Want(http.StatusForbidden)
+		testutil.Call(t, h.PortalSession, portalSessionRequest(secret)).Want(http.StatusForbidden)
 	})
 
 	t.Run("never_creates_users", func(t *testing.T) {
 		h := newTestHandler(Config{})
 		h.Queries = db.New(&portalSessionMockDB{userErr: pgx.ErrNoRows})
 		withEnv(t, secret, "nobody-new@example.com")
-		resp := testutil.Call(t, h.PortalSession, portalSessionRequest(secret, "127.0.0.1:5000"))
+		resp := testutil.Call(t, h.PortalSession, portalSessionRequest(secret))
 		if resp.Code != http.StatusNotFound {
 			t.Fatalf("unknown email must 404 (never create), got %d: %s", resp.Code, resp.Body.String())
 		}
 	})
-}
-
-func TestIsLoopbackPeer(t *testing.T) {
-	cases := []struct {
-		remote string
-		want   bool
-	}{
-		{"127.0.0.1:5000", true},
-		{"127.0.0.2:80", true},
-		{"[::1]:5000", true},
-		{"203.0.113.7:5000", false},
-		{"10.0.0.5:5000", false},
-		{"192.168.7.99:5000", false},
-		{"not-an-ip:5000", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		req := httptest.NewRequest(http.MethodPost, "/auth/portal-session", nil)
-		req.RemoteAddr = tc.remote
-		if got := isLoopbackPeer(req); got != tc.want {
-			t.Errorf("isLoopbackPeer(%q) = %v, want %v", tc.remote, got, tc.want)
-		}
-	}
 }
