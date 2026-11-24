@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -30,13 +30,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@multica/ui/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@multica/ui/components/ui/select";
 import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Tabs,
@@ -50,6 +43,7 @@ import { ApiError } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
+  memberListOptions,
   modelTierMembersOptions,
   modelTiersOptions,
   tierRolesOptions,
@@ -71,6 +65,8 @@ import {
   runtimeModelsOptions,
 } from "@multica/core/runtimes";
 import type {
+  AgentRuntime,
+  MemberWithUser,
   ModelTier,
   ModelTierInput,
   ModelTierMember,
@@ -78,6 +74,15 @@ import type {
   TierRole,
 } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { RuntimePicker } from "../../agents/components/inspector/runtime-picker";
+import { ModelPicker } from "../../agents/components/inspector/model-picker";
+import { ThinkingPicker } from "../../agents/components/inspector/thinking-picker";
+import {
+  memberAfterModelChange,
+  memberAfterRuntimeChange,
+  providerForMember,
+  thinkingLevelsForMember,
+} from "./tier-member-options";
 import {
   SettingsCard,
   SettingsReadOnlyNotice,
@@ -94,42 +99,6 @@ import {
 
 /** Existing member positions stay far below this; new rows park here first. */
 const POSITION_SCRATCH_GAP = 1000;
-
-/**
- * Harnesses a tier member may name (M-545). A member's harness is an id the
- * runtime catalog can resolve, never free text: these are the providers the
- * product ships plus whatever this workspace actually runs. A stored value
- * outside the list still appears, so an older row loads and saves unchanged.
- */
-const KNOWN_HARNESSES = [
-  "freebuff",
-  "opencode-go",
-  "opencode-zen",
-  "codebuddy",
-  "claude",
-  "codex",
-  "pi",
-  "omp",
-  "dsh",
-] as const;
-
-function harnessOptions(
-  provider: string,
-  runtimes: Array<{ provider: string }>,
-): string[] {
-  const options: string[] = [];
-  const seen = new Set<string>();
-  const add = (value: string) => {
-    const harness = value.trim();
-    if (!harness || seen.has(harness)) return;
-    seen.add(harness);
-    options.push(harness);
-  };
-  for (const harness of KNOWN_HARNESSES) add(harness);
-  for (const runtime of runtimes) add(runtime.provider);
-  add(provider);
-  return options;
-}
 
 /**
  * `HH:MM` in the viewer's own clock for a cooldown deadline (M-352/M-481), or
@@ -877,6 +846,7 @@ interface DraftMember {
   model: string;
   thinkingLevel: string;
   runtimeId: string;
+  requiresRuntime: boolean;
   providerSlots: string;
   enabled: boolean;
 }
@@ -895,6 +865,7 @@ function draftFromMember(member: ModelTierMember): DraftMember {
     model: member.model,
     thinkingLevel: member.thinking_level ?? "",
     runtimeId: member.runtime_id ?? "",
+    requiresRuntime: false,
     providerSlots: String(member.provider_slots),
     enabled: member.enabled,
   };
@@ -907,6 +878,7 @@ function blankDraftMember(): DraftMember {
     model: "",
     thinkingLevel: "",
     runtimeId: "",
+    requiresRuntime: true,
     // A free provider usually runs one session at a time; the admin can raise
     // it per member (M-481 keeps slots on the member).
     providerSlots: "1",
@@ -1001,6 +973,9 @@ function TierEditorDialog({
 
   // Existing members land after the dialog opens; seed the editable rows once.
   const membersQuery = useQuery(modelTierMembersOptions(wsId, tier?.id ?? ""));
+  const workspaceMembersQuery = useQuery(memberListOptions(wsId));
+  const workspaceMembers = workspaceMembersQuery.data ?? [];
+  const currentMember = useCurrentMember(wsId);
   useEffect(() => {
     if (rows !== null || !tier) return;
     if (!membersQuery.isSuccess) return;
@@ -1075,7 +1050,11 @@ function TierEditorDialog({
 
     for (const [index, row] of draft.entries()) {
       const fields: ModelTierMemberInput = {
-        provider: row.provider.trim(),
+        provider: providerForMember({
+          runtimeId: row.runtimeId,
+          legacyProvider: row.provider,
+          runtimes,
+        }),
         model: row.model.trim(),
         thinking_level: row.thinkingLevel.trim(),
         runtime_id: row.runtimeId,
@@ -1148,7 +1127,14 @@ function TierEditorDialog({
       nextErrors.compact = t(($) => $.tiers.compact_invalid);
     if (rows.length === 0) nextErrors.members = t(($) => $.tiers.members_empty);
     rows.forEach((row, index) => {
-      if (!row.provider.trim() || !row.model.trim())
+      const selectedProvider = runtimes.find(
+        (runtime) => runtime.id === row.runtimeId,
+      )?.provider;
+      if (
+        (!selectedProvider && !row.provider.trim()) ||
+        !row.model.trim() ||
+        (!row.runtimeId && row.requiresRuntime)
+      )
         nextErrors[`member-${row.key}`] = t(($) => $.tiers.member_required);
       const rowSlots = Number(row.providerSlots);
       if (!Number.isInteger(rowSlots) || rowSlots < 1)
@@ -1198,7 +1184,11 @@ function TierEditorDialog({
         const first = rows[0]!;
         const created = await createTier.mutateAsync({
           ...profile,
-          provider: first.provider.trim(),
+          provider: providerForMember({
+            runtimeId: first.runtimeId,
+            legacyProvider: first.provider,
+            runtimes,
+          }),
           model: first.model.trim(),
           runtime_id: first.runtimeId,
           ...(first.thinkingLevel.trim()
@@ -1675,6 +1665,8 @@ function TierEditorDialog({
                     index={index}
                     total={rows.length}
                     runtimes={runtimes}
+                    currentUserId={currentMember.userId}
+                    workspaceMembers={workspaceMembers}
                     pending={pending}
                     error={fieldErrors[`member-${row.key}`]}
                     slotsError={fieldErrors[`member-slots-${row.key}`]}
@@ -1718,18 +1710,14 @@ function TierEditorDialog({
   );
 }
 
-/**
- * One mapping line. The harness is a selector (M-545): a free-text provider
- * said nothing the resolver could act on. The model list comes from the
- * runtime catalog — the bound runtime, or the one runtime whose provider is
- * the chosen harness (discovery stays optional: the field falls back to free
- * text when discovery is offline or the model is custom).
- */
+/** One member line, using the same runtime, model and thinking pickers as agent settings. */
 function MemberRowEditor({
   row,
   index,
   total,
   runtimes,
+  currentUserId,
+  workspaceMembers,
   pending,
   error,
   slotsError,
@@ -1740,7 +1728,9 @@ function MemberRowEditor({
   row: DraftMember;
   index: number;
   total: number;
-  runtimes: Array<{ id: string; name: string; provider: string; status: string }>;
+  runtimes: AgentRuntime[];
+  currentUserId: string | null;
+  workspaceMembers: MemberWithUser[];
   pending: boolean;
   error?: string;
   slotsError?: string;
@@ -1749,34 +1739,63 @@ function MemberRowEditor({
   onRemove: () => void;
 }) {
   const { t } = useT("settings");
-  const [modelCustom, setModelCustom] = useState(false);
-  // A harness that resolves to exactly one workspace runtime gives that
-  // runtime's catalog, so the model is a picker even before a runtime is bound.
-  // Ambiguous providers (several machines) stay free text until one is picked.
-  const catalogRuntimeId = useMemo(() => {
-    if (row.runtimeId) return row.runtimeId;
-    const matches = runtimes.filter((r) => r.provider === row.provider.trim());
-    return matches.length === 1 ? matches[0]!.id : "";
-  }, [row.runtimeId, row.provider, runtimes]);
-  const modelsQuery = useQuery({
-    ...runtimeModelsOptions(catalogRuntimeId || null),
-    enabled: catalogRuntimeId !== "",
-  });
-  const models = useMemo(
-    () => modelsQuery.data?.models ?? [],
-    [modelsQuery.data],
+  const queryClient = useQueryClient();
+  const runtime = runtimes.find((item) => item.id === row.runtimeId) ?? null;
+  const runtimeOnline = runtime?.status === "online";
+  const modelsQuery = useQuery(
+    runtimeModelsOptions(runtimeOnline ? runtime.id : null),
   );
+  const catalog = modelsQuery.data?.supported ? modelsQuery.data.models : null;
+  const thinkingLevels = thinkingLevelsForMember(
+    catalog,
+    row.model,
+    runtime?.provider ?? row.provider,
+  );
+
+  const changeRuntime = async (runtimeId: string) => {
+    const nextRuntime = runtimes.find((item) => item.id === runtimeId);
+    if (!nextRuntime) return;
+    let nextCatalog = null;
+    if (nextRuntime.status === "online") {
+      try {
+        const result = await queryClient.fetchQuery(
+          runtimeModelsOptions(nextRuntime.id),
+        );
+        nextCatalog = result.supported ? result.models : null;
+      } catch {
+        // An unavailable catalog cannot safely invalidate stored values.
+      }
+    }
+    const values = memberAfterRuntimeChange({
+      model: row.model,
+      thinkingLevel: row.thinkingLevel,
+      provider: nextRuntime.provider,
+      catalog: nextCatalog,
+    });
+    onChange({
+      runtimeId,
+      provider: nextRuntime.provider,
+      ...values,
+      requiresRuntime: true,
+    });
+  };
+
+  const changeModel = (model: string) => {
+    const values = memberAfterModelChange({
+      model,
+      thinkingLevel: row.thinkingLevel,
+      provider: runtime?.provider ?? row.provider,
+      catalog,
+    });
+    onChange({ ...values, requiresRuntime: true });
+  };
 
   return (
     <li
       data-testid={`tier-member-row-${index}`}
-      // M-496: the row is its own container, so the one-line layout keys off
-      // the dialog's real width instead of the viewport's. Below 46rem of row
-      // the fields stack two-up and the order badge shares a line with the
-      // move/remove buttons; at or above it every field owns one column.
       className="@container space-y-1 rounded-md border bg-surface-raised/40 px-2 py-2"
     >
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 @[46rem]:grid-cols-[1.25rem_minmax(0,1.35fr)_minmax(0,1.1fr)_6.5rem_minmax(0,8.5rem)_4.5rem_auto]">
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 @[46rem]:grid-cols-[1.25rem_minmax(0,1.15fr)_minmax(0,1.15fr)_minmax(0,1fr)_4.5rem_auto]">
         <span
           aria-hidden
           className="col-start-1 row-start-1 flex h-8 w-5 items-center text-caption text-muted-foreground"
@@ -1784,146 +1803,38 @@ function MemberRowEditor({
         >
           {index + 1}
         </span>
-        <div className="col-start-1 row-start-2 min-w-0 space-y-1 @[46rem]:col-start-2 @[46rem]:row-start-1">
-          <Label htmlFor={`member-provider-${row.key}`} className="text-caption">
-            {t(($) => $.tiers.member_provider_label)}
-          </Label>
-          <select
-            id={`member-provider-${row.key}`}
-            value={row.provider}
-            onChange={(e) => onChange({ provider: e.target.value })}
-            className="h-8 w-full min-w-0 truncate rounded-md border bg-background px-2 text-sm"
-          >
-            <option value="" disabled>
-              {t(($) => $.tiers.member_harness_select)}
-            </option>
-            {harnessOptions(row.provider, runtimes).map((harness) => (
-              <option key={harness} value={harness}>
-                {harness}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="col-start-2 row-start-2 min-w-0 space-y-1 @[46rem]:col-start-3 @[46rem]:row-start-1">
-          <Label htmlFor={`member-model-${row.key}`} className="text-caption">
-            {t(($) => $.tiers.member_model_label)}
-          </Label>
-          {catalogRuntimeId !== "" && !modelCustom && !modelsQuery.isError ? (
-            <Select
-              items={[
-                ...models.map((m) => ({
-                  value: m.id,
-                  label: m.label || m.id,
-                })),
-                { value: "__custom", label: t(($) => $.tiers.model_custom) },
-              ]}
-              value={row.model || "__custom"}
-              onValueChange={(value) => {
-                if (!value) return;
-                if (value === "__custom") {
-                  setModelCustom(true);
-                  return;
-                }
-                onChange({ model: value });
-              }}
-            >
-              <SelectTrigger
-                id={`member-model-${row.key}`}
-                className="w-full min-w-0"
-              >
-                <SelectValue
-                  className="truncate"
-                  placeholder={t(($) => $.tiers.model_placeholder)}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {models.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.label || m.id}
-                  </SelectItem>
-                ))}
-                <SelectItem value="__custom">
-                  {t(($) => $.tiers.model_custom)}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              id={`member-model-${row.key}`}
-              value={row.model}
-              onChange={(e) => onChange({ model: e.target.value })}
-              placeholder={t(($) => $.tiers.member_model_placeholder)}
-            />
-          )}
-        </div>
-        <div className="col-start-1 row-start-3 min-w-0 space-y-1 @[46rem]:col-start-4 @[46rem]:row-start-1">
-          <Label htmlFor={`member-thinking-${row.key}`} className="text-caption">
-            {t(($) => $.tiers.member_thinking_label)}
-          </Label>
-          <Input
-            id={`member-thinking-${row.key}`}
-            value={row.thinkingLevel}
-            onChange={(e) => onChange({ thinkingLevel: e.target.value })}
-            placeholder={t(($) => $.tiers.member_thinking_placeholder)}
+        <div className="col-start-1 row-start-2 min-w-0 @[46rem]:col-start-2 @[46rem]:row-start-1">
+          <RuntimePicker
+            value={row.runtimeId}
+            runtimes={runtimes}
+            members={workspaceMembers}
+            currentUserId={currentUserId}
+            variant="field"
+            onChange={changeRuntime}
           />
         </div>
-        <div className="col-start-2 row-start-3 min-w-0 space-y-1 @[46rem]:col-start-5 @[46rem]:row-start-1">
-          <Label htmlFor={`member-runtime-${row.key}`} className="text-caption">
-            {t(($) => $.tiers.member_runtime_label)}
-          </Label>
-          <Select
-            items={[
-              { value: "__none", label: t(($) => $.tiers.member_runtime_none) },
-              ...runtimes.map((runtime) => ({
-                value: runtime.id,
-                label:
-                  runtime.status === "online"
-                    ? `${runtime.name} · ${runtime.provider}`
-                    : `${runtime.name} · ${t(($) => $.tiers.member_runtime_offline)}`,
-              })),
-            ]}
-            value={row.runtimeId || "__none"}
-            onValueChange={(value) => {
-              if (!value) return;
-              const next = value === "__none" ? "" : value;
-              const runtime = runtimes.find((r) => r.id === next);
-              setModelCustom(false);
-              onChange({
-                runtimeId: next,
-                ...(runtime && !row.provider.trim()
-                  ? { provider: runtime.provider }
-                  : {}),
-              });
-            }}
-          >
-            {/* M-496: the trigger is `w-fit` by default, so a long runtime
-                label grew past its column and covered Slots. Fill the column
-                and let the label clamp. */}
-            <SelectTrigger
-              id={`member-runtime-${row.key}`}
-              className="w-full min-w-0"
-            >
-              <SelectValue
-                className="truncate"
-                placeholder={t(($) => $.tiers.runtime_placeholder)}
-              />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none">
-                {t(($) => $.tiers.member_runtime_none)}
-              </SelectItem>
-              {runtimes.map((runtime) => (
-                <SelectItem key={runtime.id} value={runtime.id}>
-                  {runtime.name} ·{" "}
-                  {runtime.status === "online"
-                    ? runtime.provider
-                    : t(($) => $.tiers.member_runtime_offline)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="col-start-2 row-start-2 min-w-0 @[46rem]:col-start-3 @[46rem]:row-start-1">
+          <ModelPicker
+            runtimeId={runtime?.id ?? null}
+            runtimeOnline={runtimeOnline}
+            value={row.model}
+            variant="field"
+            onChange={changeModel}
+          />
         </div>
-        <div className="col-start-1 row-start-4 min-w-0 space-y-1 @[46rem]:col-start-6 @[46rem]:row-start-1">
+        <div className="col-start-1 row-start-3 min-w-0 @[46rem]:col-start-4 @[46rem]:row-start-1">
+          {thinkingLevels.length > 0 || row.thinkingLevel ? (
+            <ThinkingPicker
+              value={row.thinkingLevel}
+              levels={thinkingLevels}
+              variant="field"
+              onChange={(thinkingLevel) =>
+                onChange({ thinkingLevel, requiresRuntime: true })
+              }
+            />
+          ) : null}
+        </div>
+        <div className="col-start-2 row-start-3 min-w-0 space-y-1 @[46rem]:col-start-5 @[46rem]:row-start-1">
           <Label htmlFor={`member-slots-${row.key}`} className="text-caption">
             {t(($) => $.tiers.member_slots_label)}
           </Label>
@@ -1938,7 +1849,7 @@ function MemberRowEditor({
             onChange={(e) => onChange({ providerSlots: e.target.value })}
           />
         </div>
-        <div className="col-start-2 row-start-1 flex items-start justify-end gap-1 @[46rem]:col-start-7 @[46rem]:justify-start @[46rem]:pt-5">
+        <div className="col-start-2 row-start-1 flex items-start justify-end gap-1 @[46rem]:col-start-6 @[46rem]:justify-start @[46rem]:pt-5">
           <Button
             variant="ghost"
             size="sm"

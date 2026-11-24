@@ -6,6 +6,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { ApiError } from "@multica/core/api";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enSettings from "../../locales/en/settings.json";
+import enAgents from "../../locales/en/agents.json";
+import enCommon from "../../locales/en/common.json";
+import enIssues from "../../locales/en/issues.json";
 
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockUpdate = vi.hoisted(() => vi.fn());
@@ -53,6 +56,26 @@ const member = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+function makeRuntime(id: string, provider: string, name: string) {
+  return {
+    id,
+    workspace_id: "workspace-1",
+    daemon_id: "daemon-1",
+    name,
+    runtime_mode: "local",
+    provider,
+    launch_header: "",
+    status: "online",
+    device_info: `${name}.local · macOS (arm64)`,
+    metadata: {},
+    owner_id: "user-1",
+    visibility: "private",
+    last_seen_at: "2026-11-24T00:00:00Z",
+    created_at: "2026-11-01T00:00:00Z",
+    updated_at: "2026-11-24T00:00:00Z",
+  };
+}
+
 const data = vi.hoisted(() => ({
   tiers: [] as Array<Record<string, unknown>>,
   // Per-role lists (M-498): the tab fetches one role's tiers at a time.
@@ -60,6 +83,7 @@ const data = vi.hoisted(() => ({
   roles: [] as Array<{ key: string; position: number }>,
   members: {} as Record<string, Array<Record<string, unknown>>>,
   runtimes: [] as Array<Record<string, unknown>>,
+  workspaceMembers: [] as Array<Record<string, unknown>>,
   models: [] as Array<{ id: string; label: string }>,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
@@ -73,6 +97,16 @@ const data = vi.hoisted(() => ({
 function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
   const key = options.queryKey ?? [];
   if (key.includes("members")) {
+    if (key[2] === "members") {
+      return {
+        data: data.workspaceMembers,
+        isLoading: false,
+        isSuccess: true,
+        isError: false,
+        isPending: false,
+        refetch: vi.fn(),
+      };
+    }
     const tierId = String(key[3] ?? "");
     return {
       data: data.members[tierId] ?? [],
@@ -108,6 +142,13 @@ function queryResult(options: { queryKey?: ReadonlyArray<unknown> }) {
 vi.mock("@tanstack/react-query", () => ({
   queryOptions: <T,>(options: T) => options,
   useQuery: (options: { queryKey?: ReadonlyArray<unknown> }) => queryResult(options),
+  useQueryClient: () => ({
+    fetchQuery: vi.fn().mockResolvedValue({
+      models: data.models,
+      supported: true,
+    }),
+    invalidateQueries: vi.fn(),
+  }),
   useQueries: ({ queries }: { queries: Array<{ queryKey?: ReadonlyArray<unknown> }> }) =>
     queries.map((query) => queryResult(query)),
 }));
@@ -152,6 +193,11 @@ vi.mock("@multica/core/workspace/mutations", () => ({
 vi.mock("@multica/core/runtimes", () => ({
   runtimeListOptions: () => ({ queryKey: ["runtimes", "workspace-1", "list"] }),
   runtimeModelsOptions: () => ({ queryKey: ["runtimes", "models"] }),
+  deriveRuntimeHealth: (runtime: { status: string }) => runtime.status,
+  isRuntimeUsableForUser: (
+    runtime: { owner_id: string; visibility: string },
+    userId: string | null,
+  ) => runtime.owner_id === userId || runtime.visibility === "public",
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -159,7 +205,12 @@ vi.mock("@multica/core/paths", () => ({
 }));
 
 vi.mock("@multica/core/permissions", () => ({
-  useCurrentMember: () => ({ role: data.role, isLoading: false }),
+  useCurrentMember: () => ({
+    role: data.role,
+    userId: "user-1",
+    member: null,
+    isLoading: false,
+  }),
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -167,7 +218,12 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { TiersTab } from "./tiers-tab";
 
 const TEST_RESOURCES = {
-  en: { settings: enSettings },
+  en: {
+    settings: enSettings,
+    agents: enAgents,
+    common: enCommon,
+    issues: enIssues,
+  },
 };
 
 function Wrapper({ children }: { children: ReactNode }) {
@@ -176,6 +232,28 @@ function Wrapper({ children }: { children: ReactNode }) {
       {children}
     </I18nProvider>
   );
+}
+
+async function chooseRuntimeAndModel(row: HTMLElement, runtimeName: string, modelLabel: string) {
+  const runtimeTrigger = within(row).getAllByRole("button").find((button) =>
+    button.getAttribute("aria-label")?.startsWith("Runtime ·"),
+  );
+  if (!runtimeTrigger) throw new Error("Runtime picker trigger not found");
+  fireEvent.click(runtimeTrigger);
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^${runtimeName}`) }));
+  await waitFor(() => {
+    expect(
+      within(row).getAllByRole("button").some((button) =>
+        button.getAttribute("aria-label")?.startsWith(`Runtime · ${runtimeName}`),
+      ),
+    ).toBe(true);
+  });
+  const modelTrigger = within(row).getAllByRole("button").find((button) =>
+    button.getAttribute("aria-label")?.startsWith("Model ·"),
+  );
+  if (!modelTrigger) throw new Error("Model picker trigger not found");
+  fireEvent.click(modelTrigger);
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(modelLabel) }));
 }
 
 describe("TiersTab", () => {
@@ -194,6 +272,7 @@ describe("TiersTab", () => {
     ];
     data.tiersByRole = {};
     data.runtimes = [];
+    data.workspaceMembers = [];
     data.models = [];
     data.members = {
       "tier-1": [
@@ -528,36 +607,30 @@ describe("TiersTab", () => {
     expect(screen.getByTestId("tier-member-row-0")).toBeInTheDocument();
   });
 
-  it("creates a tier with the profile fields and its first member", async () => {
+  it("creates a tier with the profile fields and runtime-derived provider", async () => {
     mockCreate.mockResolvedValue({ id: "tier-new" });
+    data.runtimes = [makeRuntime("rt-freebuff", "freebuff", "Freebuff")];
+    data.models = [{ id: "deepseek-v4.1-flash", label: "DeepSeek flash" }];
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     const editor = await screen.findByTestId("tier-editor");
     fireEvent.change(editor.querySelector("#tier-name") as HTMLInputElement, {
       target: { value: "flash" },
     });
-    fireEvent.change(screen.getByLabelText("Harness"), {
-      target: { value: "freebuff" },
-    });
-    fireEvent.change(screen.getByLabelText("Model"), {
-      target: { value: "deepseek-v4.1-flash" },
-    });
+    await chooseRuntimeAndModel(screen.getByTestId("tier-member-row-0"), "Freebuff", "DeepSeek flash");
     // "Add tier" was pressed on the Architect tab, so Architect is preselected.
     fireEvent.click(screen.getByTestId("tier-roles-add"));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Engineer" }));
     fireEvent.click(screen.getByTestId("tier-role-auto-pick-switch-engineer"));
     fireEvent.click(screen.getByTestId("tier-quota-add"));
-    fireEvent.click(
-      await screen.findByRole("checkbox", { name: "Quota weekly" }),
-    );
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Quota weekly" }));
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    await waitFor(() => {
-      expect(mockCreate).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     expect(mockCreate.mock.calls[0]![0]).toMatchObject({
       name: "flash",
       provider: "freebuff",
       model: "deepseek-v4.1-flash",
+      runtime_id: "rt-freebuff",
       roles: ["architect", "engineer"],
       auto_pick: true,
       role_settings: [
@@ -568,39 +641,35 @@ describe("TiersTab", () => {
       ctx_max_tokens: 280000,
       compact_at_pct: 75,
     });
-    // is_free is derived from the quota kinds on the server (M-497).
     expect(mockCreate.mock.calls[0]![0]).not.toHaveProperty("is_free");
   });
 
-  it("adds the remaining members of a new tier after the profile", async () => {
+  it("adds remaining members with provider derived from each selected runtime", async () => {
     mockCreate.mockResolvedValue({ id: "tier-new" });
+    data.runtimes = [
+      makeRuntime("rt-freebuff", "freebuff", "Freebuff"),
+      makeRuntime("rt-codebuddy", "codebuddy", "Codebuddy"),
+    ];
+    data.models = [
+      { id: "deepseek-v4.1-flash", label: "DeepSeek flash" },
+      { id: "eng-cb-deepseek", label: "Engineer DeepSeek" },
+    ];
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     const editor = await screen.findByTestId("tier-editor");
     fireEvent.change(editor.querySelector("#tier-name") as HTMLInputElement, {
       target: { value: "flash" },
     });
-    fireEvent.change(screen.getByLabelText("Harness"), {
-      target: { value: "freebuff" },
-    });
-    fireEvent.change(screen.getByLabelText("Model"), {
-      target: { value: "deepseek-v4.1-flash" },
-    });
+    await chooseRuntimeAndModel(screen.getByTestId("tier-member-row-0"), "Freebuff", "DeepSeek flash");
     fireEvent.click(screen.getByRole("button", { name: /add member/i }));
-    fireEvent.change(screen.getAllByLabelText("Harness")[1]!, {
-      target: { value: "codebuddy" },
-    });
-    fireEvent.change(screen.getAllByLabelText("Model")[1]!, {
-      target: { value: "eng-cb-deepseek" },
-    });
+    await chooseRuntimeAndModel(screen.getByTestId("tier-member-row-1"), "Codebuddy", "Engineer DeepSeek");
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    await waitFor(() => {
-      expect(mockCreateMember).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(() => expect(mockCreateMember).toHaveBeenCalledTimes(1));
     expect(mockCreateMember.mock.calls[0]![0]).toMatchObject({
       tierId: "tier-new",
       provider: "codebuddy",
       model: "eng-cb-deepseek",
+      runtime_id: "rt-codebuddy",
       position: 1,
     });
   });
@@ -688,29 +757,29 @@ describe("TiersTab", () => {
     expect(mockUpdate.mock.calls[1]![0]).toHaveProperty("quality", null);
   });
 
-  it("gives each member field its own column and keeps Slots numeric", async () => {
-    data.members = { "tier-1": [member({ id: "member-1" })] };
+  it("shows Runtime, Model, Thinking and Slots without free-text selectors", async () => {
+    data.members = {
+      "tier-1": [
+        member({
+          id: "member-1",
+          provider: "legacy-provider",
+          model: "legacy-model",
+          thinking_level: "legacy-thinking",
+        }),
+      ],
+    };
     data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     const row = await screen.findByTestId("tier-member-row-0");
-    // M-496: the row sizes from its own width, not the viewport's, and every
-    // cell can shrink below its content so a long runtime label cannot spill
-    // over the next column.
-    expect(row.className).toContain("@container");
-    const grid = row.firstElementChild as HTMLElement;
-    expect(grid.className).toContain("@[46rem]:grid-cols-");
-    for (const label of ["Harness", "Model", "Thinking", "Runtime", "Slots"]) {
-      const cell = screen.getByLabelText(label).parentElement;
-      expect(cell?.className).toContain("min-w-0");
-    }
-    // The runtime select fills its column instead of sizing to its label.
-    const runtime = screen.getByLabelText("Runtime");
-    expect(runtime.className).toContain("w-full");
-    expect(runtime.className).toContain("min-w-0");
-    const slots = screen.getByLabelText("Slots") as HTMLInputElement;
-    expect(slots.inputMode).toBe("numeric");
-    expect(slots.value).toBe("1");
+    expect(within(row).queryByText("Harness")).toBeNull();
+    expect(within(row).getByText("Runtime")).toBeInTheDocument();
+    expect(within(row).getByText("Model")).toBeInTheDocument();
+    expect(within(row).getByText("Thinking")).toBeInTheDocument();
+    expect(within(row).getByLabelText("Slots")).toHaveValue("1");
+    expect(within(row).getAllByRole("button")).toHaveLength(6);
+    expect(within(row).getByText("legacy-model")).toBeInTheDocument();
+    expect(within(row).getByText("legacy-thinking")).toBeInTheDocument();
   });
 
   it("rejects a non-slug name before submitting", async () => {
@@ -726,56 +795,34 @@ describe("TiersTab", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("makes the member harness a selector that keeps an unknown stored value", async () => {
+  it("round-trips an unbound legacy member without changing its provider or values", async () => {
     data.members = {
-      "tier-1": [member({ id: "member-1", provider: "acme-harness" })],
+      "tier-1": [
+        member({
+          id: "member-1",
+          provider: "acme-harness",
+          model: "custom-model",
+          thinking_level: "custom-thinking",
+          runtime_id: null,
+        }),
+      ],
     };
     data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     await screen.findByTestId("tier-member-row-0");
-    const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
-    // M-545: no typing — the harness is pickable from the known set.
-    expect(harness.tagName).toBe("SELECT");
-    const values = [...harness.options].map((option) => option.value);
-    expect(values).toContain("freebuff");
-    expect(values).toContain("codebuddy");
-    // A saved harness outside the list still loads and stays selectable.
-    expect(harness.value).toBe("acme-harness");
-    expect(values).toContain("acme-harness");
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(mockUpdateMember).toHaveBeenCalled());
+    expect(mockUpdateMember.mock.calls[0]![0]).toMatchObject({
+      provider: "acme-harness",
+      model: "custom-model",
+      thinking_level: "custom-thinking",
+      runtime_id: "",
+      provider_slots: 1,
+    });
   });
 
-  it("offers workspace runtime providers as harness options", async () => {
-    data.runtimes = [
-      { id: "rt-1", provider: "qwen-local" },
-    ];
-    data.members = { "tier-1": [member({ id: "member-1" })] };
-    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
-    render(<TiersTab />, { wrapper: Wrapper });
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    await screen.findByTestId("tier-member-row-0");
-    const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
-    expect([...harness.options].map((option) => option.value)).toContain(
-      "qwen-local",
-    );
-  });
-
-  it("turns the model into a picker when the harness maps to one runtime", async () => {
-    data.runtimes = [
-      { id: "rt-1", provider: "freebuff", name: "Freebuff", status: "online" },
-    ];
-    data.models = [{ id: "deepseek-v4.1-flash", label: "DeepSeek flash" }];
-    data.members = { "tier-1": [member({ id: "member-1", provider: "freebuff" })] };
-    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
-    render(<TiersTab />, { wrapper: Wrapper });
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    await screen.findByTestId("tier-member-row-0");
-    // The catalog is reachable through the harness alone, so Model is a
-    // selector rather than a free-text field.
-    expect(screen.getByLabelText("Model").tagName).not.toBe("INPUT");
-  });
-
-  it("rejects a member line without a harness or model", async () => {
+  it("rejects a new member line without a runtime or model", async () => {
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));
     const editor = await screen.findByTestId("tier-editor");
@@ -785,7 +832,7 @@ describe("TiersTab", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(
-      await screen.findByText(/Each member needs a harness and a model/i),
+      await screen.findByText(/Each member needs a runtime and a model/i),
     ).toBeInTheDocument();
     expect(mockCreate).not.toHaveBeenCalled();
   });
