@@ -1620,6 +1620,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.With(authVerifyRL).Post("/auth/verify-code", h.VerifyCode)
 	r.With(authRL).Post("/auth/google", h.GoogleLogin)
 	r.Post("/auth/logout", h.Logout)
+	// M-551: trusted-gateway auto-login. The handler 404s unless
+	// MULTICA_PORTAL_LOGIN_SECRET + MULTICA_PORTAL_LOGIN_EMAIL are set, the
+	// peer is loopback, and the secret header matches. Behind authRL like
+	// the other credential-bearing POSTs.
+	r.With(authRL).Post("/auth/portal-session", h.PortalSession)
 
 	// Public API
 	r.Get("/api/config", h.GetConfig)

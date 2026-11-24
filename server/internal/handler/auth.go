@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -489,6 +491,113 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("user logged in", append(logger.RequestAttrs(r), "user_id", uuidToString(user.ID), "email", user.Email)...)
+	writeJSON(w, http.StatusOK, LoginResponse{
+		Token: tokenString,
+		User:  h.userToResponse(user),
+	})
+}
+
+// Portal login secret/allowlist, read from the environment on every call so a
+// secret rotation takes effect without a restart. Both must be set or the
+// endpoint stays disabled (404, same as an unknown path).
+const (
+	portalSessionSecretHeader = "X-Portal-Login-Secret"
+)
+
+// portalSessionEnabled reports whether the trusted-gateway auto-login path is
+// configured. When either variable is empty the endpoint is disabled.
+func portalSessionEnabled() (secret, email string) {
+	secret = strings.TrimSpace(os.Getenv("MULTICA_PORTAL_LOGIN_SECRET"))
+	email = strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_PORTAL_LOGIN_EMAIL")))
+	if secret == "" || email == "" {
+		return "", ""
+	}
+	return secret, email
+}
+
+// isLoopbackPeer reports whether r arrived over the loopback interface. The
+// gateway calls this endpoint from 127.0.0.1/::1 only; anything else is a
+// direct external hit and must be rejected.
+func isLoopbackPeer(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	host = strings.Trim(host, "[]")
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
+}
+
+// PortalSession mints a session for the single allowlisted portal email when
+// called by the trusted local gateway (M-551). The gateway holds the secret
+// and calls over loopback after Cloudflare Access / tailnet proved the human;
+// this endpoint never creates users, only logs in the configured one.
+//
+// Disabled (404) unless MULTICA_PORTAL_LOGIN_SECRET and
+// MULTICA_PORTAL_LOGIN_EMAIL are both set. Wrong or missing secret and
+// non-loopback peers get 403/404 with no detail. The success path issues
+// the same JWT + cookies as VerifyCode and logs the same shape.
+func (h *Handler) PortalSession(w http.ResponseWriter, r *http.Request) {
+	secret, email := portalSessionEnabled()
+	if secret == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !isLoopbackPeer(r) {
+		http.NotFound(w, r)
+		return
+	}
+	presented := r.Header.Get(portalSessionSecretHeader)
+	if presented == "" ||
+		subtle.ConstantTimeCompare([]byte(presented), []byte(secret)) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+
+	if email == "" {
+		writeError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	if auth.IsTemporarilyDisabledUserEmail(email) {
+		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		return
+	}
+
+	user, err := h.Queries.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		if isNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+
+	tokenString, err := h.issueJWT(user)
+	if err != nil {
+		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
+			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+			return
+		}
+		slog.Warn("portal login failed", append(logger.RequestAttrs(r), "error", err, "email", email)...)
+		writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	if err := auth.SetAuthCookies(w, tokenString); err != nil {
+		slog.Warn("failed to set auth cookies", "error", err)
+	}
+
+	if h.CFSigner != nil {
+		for _, cookie := range h.CFSigner.SignedCookies(time.Now().Add(auth.AuthTokenTTL())) {
+			http.SetCookie(w, cookie)
+		}
+	}
+
+	slog.Info("user logged in via portal", append(logger.RequestAttrs(r), "user_id", uuidToString(user.ID), "email", user.Email)...)
 	writeJSON(w, http.StatusOK, LoginResponse{
 		Token: tokenString,
 		User:  h.userToResponse(user),
