@@ -81,16 +81,28 @@ wins on collision).
   signed-out account exits non-zero with a reason, so it shows up as a failed
   account instead of advertising a model it cannot run. Freebuff Desktop picks
   the model itself, so the list is the single entry `freebuff-desktop`.
-- Otherwise it drives the desktop HTTP API and emits codebuddy stream-json on
-  stdout, exit 0 on success.
-- **Task context (M-199):** the bridge prepends `CODEBUDDY.md` only when it
-  creates a thread, including after an expired or invalid resume. The bridge's
-  per-run shim keeps the task-scoped Multica identity available to the agent.
-- **Session rotation (M-199):** a known or resumed thread is reused only when
-  the desktop API reports its creation time as less than four hours ago. A
-  stale thread or one with an unknown creation time is abandoned. The bridge
-  does not scan project threads for idle conversations. It stores the thread
-  ID in account-local `state.json`; state writes are atomic (`renameSync`).
+- **Natural start (M-563):** every newly created thread opens with a seeded
+  honest starter (one of 10 templates, `Multica` + repo named; logged as
+  `starter=<idx>` on stderr; `FREEBUFF_STARTER_SEED` overrides the seed), then
+  a context brief, then the real task as a Mission queue item
+  (`POST /api/thread/:id/queue` with `mission: {prompt, effort}`,
+  `FREEBUFF_MISSION_EFFORT` default 3). Reused threads skip the opener and
+  queue the task directly. Refusal (`prompt_policy_refused`) anywhere is a
+  hard stop: exit 3, no resend, no reword, no retry — stop the session, fail
+  the run, reroute the card to another live runtime.
+- **Thread idle end (M-563):** the poll loop ends the session after 5 idle
+  minutes with no queued work (`FREEBUFF_IDLE_SECS`, default 300; `running`
+  or queued work resets the clock). The Mission receipt decides the run
+  result. Separate from M-254 (engine process close).
+- **Session rotation (M-199, M-563):** a known or resumed thread is reused
+  only when the desktop API reports its creation time as less than two hours
+  ago (was four). A stale thread or one with an unknown creation time is
+  abandoned. The bridge does not scan project threads for idle conversations.
+  It stores the thread ID in account-local `state.json`; state writes are
+  atomic (`renameSync`).
+- Fork PRs: https://github.com/ddvnguyen/freebuff/pull/1 (upstream `proxy.ts`
+  sync, not bridge changes), https://github.com/ddvnguyen/freebuff/pull/8
+  (M-563 bridge flow).
 - **System instruction (M-199):** references `CODEBUDDY.md` only, never
   `AGENTS.md`.
 - Fork PR: https://github.com/ddvnguyen/freebuff/pull/1 (the `proxy.ts` hunks
