@@ -42,6 +42,7 @@ case "$1 $2" in
   'compose -f') printf 'cid-probe-stub\n' ;;
   'exec db-id') printf 'database dump bytes\n' ;;
   'exec cid-probe-stub') exit 0 ;;
+  'logs '*) printf 'GET /healthz 200\n' ;;
   'run --rm') printf 'new daemon binary\n' ;;
   'images --format')
     # Lines look like: <repo> <tag> <date> <time> <tz> UTC. Empty by default

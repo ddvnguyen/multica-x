@@ -4,11 +4,17 @@
 #
 # Rootless podman publishes container ports through per-port `rootlessport`
 # processes. When one dies (or goes stale after an unclean container exit),
-# the container keeps reporting healthy while the host port is dead. This
-# script checks both sides for the backend and the web frontend:
+# the container keeps reporting healthy while the host port is dead. A
+# hung backend is the other failure mode: the process freezes, podman marks
+# the container Unhealthy, and `restart: unless-stopped` never fires because
+# the process never exits. This script heals both, for the backend and the
+# web frontend:
 #
-#   container ok + host dead   = forwarder dead -> restart that container only
-#   container dead             = container unhealthy -> report, do not touch
+#   container ok + host dead   = forwarder dead -> kill stale forwarder pids,
+#                                restart that container only
+#   container dead ×3 ticks    = hung backend -> capture diagnostics (top,
+#                                /proc status, logs, SIGQUIT goroutine dump
+#                                for the backend), then restart it
 #   both ok                    = healthy, nothing to do
 #
 # Restarts are rate-limited (2 per 15 minutes per container) and never happen
@@ -73,7 +79,9 @@ host_ok() { # $1 = url; the host side of a published port
 }
 
 container_ok() { # $1 = container id, $2 = in-container url
-  podman exec "$1" wget -q -O /dev/null "$2" 2>/dev/null
+  # -T 5 --tries=1: a frozen process still holds the socket open while never
+  # answering, so an untimed wget would hang until its 15-minute default.
+  podman exec "$1" wget -q -T 5 --tries=1 -O /dev/null "$2" 2>/dev/null
 }
 
 restart_allowed() { # $1 = service; true when under the rate limit
@@ -99,9 +107,75 @@ record_restart() { # $1 = service
   touch "$STATE_DIR/$1.restart.$(date +%s)"
 }
 
+# Consecutive-tick counter for the hung-container path: a single failed
+# in-container check can be a blip, so the container is only restarted after
+# UNHEALTHY_TICKS failures in a row (a healthy tick resets the count).
+UNHEALTHY_TICKS=3
+
+unhealthy_count() { # $1 = service; prints the consecutive count, 0 if none
+  local f="$STATE_DIR/$1.unhealthy" count
+  [ -f "$f" ] || { printf '0'; return; }
+  count="$(cat "$f" 2>/dev/null || printf '0')"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf '%s' "$count"
+}
+
+bump_unhealthy() { # $1 = service; prints the new consecutive count
+  local count
+  count=$(( $(unhealthy_count "$1") + 1 ))
+  printf '%s' "$count" > "$STATE_DIR/$1.unhealthy"
+  printf '%s' "$count"
+}
+
+clear_unhealthy() { # $1 = service
+  rm -f "$STATE_DIR/$1.unhealthy"
+}
+
+container_pid() { # $1 = container id; host pid of the container init, or nothing
+  podman inspect --format '{{.State.Pid}}' "$1" 2>/dev/null || true
+}
+
+capture_hang() { # $1 = service, $2 = container id; diagnostics BEFORE restart
+  local pid
+  pid="$(container_pid "$2")"
+  [ -n "$pid" ] && [ "$pid" != 0 ] || { log "$1: no container pid; skipping hang capture"; return 0; }
+  log "$1: --- podman top:"; podman top "$2" 2>/dev/null | head -20 || log "(podman top failed)"
+  log "$1: --- /proc/$pid status+wchan:"
+  if [ -r "/proc/$pid/status" ]; then
+    grep -E '^(State|Threads|VmRSS)' "/proc/$pid/status" 2>/dev/null || true
+    printf 'wchan: %s\n' "$(cat "/proc/$pid/wchan" 2>/dev/null || printf unknown)"
+  else
+    log "(cannot read /proc/$pid)"
+  fi
+  log "$1: --- container logs (tail 100):"; podman logs --tail 100 "$2" 2>&1 | tail -100
+  if [ "$1" = backend ]; then
+    # SIGQUIT makes the Go runtime write a goroutine dump to stderr (and
+    # kills the process, which is about to be restarted anyway). The dump
+    # lands at the end of the container log; tail it into the evidence.
+    log "$1: sending SIGQUIT for the goroutine dump"
+    podman kill -s QUIT "$2" 2>/dev/null || log "$1: SIGQUIT failed (already dead?)"
+    sleep 5
+    log "$1: --- container logs after QUIT (tail 100):"; podman logs --tail 100 "$2" 2>&1 | tail -100
+  fi
+}
+
 stale_forwarder_pids() { # $1 = host port; pids of rootlessport listeners on it
   ss -ltnp 2>/dev/null | grep -E ":$1[[:space:]]" \
     | sed -n 's/.*rootlessport",pid=\([0-9][0-9]*\).*/\1/p' || true
+}
+
+restart_container() { # $1 = service, $2 = container id, $3 = host port
+  # A stale forwarder can hold the host port even though it forwards nothing;
+  # a plain restart then fails with "bind: address already in use" and the
+  # container stays down. Kill the exact pids bound to the port first —
+  # never by name alone.
+  local svc="$1" cid="$2" hport="$3" pid
+  for pid in $(stale_forwarder_pids "$hport"); do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    log "$svc: killing stale forwarder pid $pid on :$hport"
+    env kill -9 "$pid" 2>/dev/null || log "$svc: pid $pid already gone"
+  done
+  podman restart "$cid" >/dev/null || { log "$svc: podman restart failed"; return 1; }
 }
 
 capture_evidence() { # $1 = service, $2 = host port; log both sides' state
@@ -126,6 +200,7 @@ probe_service() { # $1 = service, $2 = host port, $3 = host path, $4 = container
   cid="$(container_id "$svc")"
   [ -n "$cid" ] || { log "$svc: no container found; reporting (not restarting unknown state)"; return 1; }
   if container_ok "$cid" "http://127.0.0.1:$cport$cpath"; then
+    clear_unhealthy "$svc"
     if host_ok "http://127.0.0.1:$hport$hpath"; then
       log "$svc: healthy (container ok, host :$hport ok)"
       return 0
@@ -139,19 +214,7 @@ probe_service() { # $1 = service, $2 = host port, $3 = host path, $4 = container
       return 1
     fi
     log "$svc: restarting container $cid (forwarder healing)"
-    # A stale forwarder can hold the host port even though it forwards
-    # nothing; a plain restart then fails with "address already in use" and
-    # the container stays down. The classification above proved this
-    # forwarder useless (container alive, host dead), so kill the exact pids
-    # bound to the port before restarting. Never kills by name alone.
-    for pid in $(stale_forwarder_pids "$hport"); do
-      [[ "$pid" =~ ^[0-9]+$ ]] || continue
-      log "$svc: killing stale forwarder pid $pid on :$hport"
-      # `env` forces a PATH lookup: bare `kill` would hit the shell builtin,
-      # which is untestable with a stub and behaves the same otherwise.
-      env kill -9 "$pid" 2>/dev/null || log "$svc: pid $pid already gone"
-    done
-    podman restart "$cid" >/dev/null || { log "$svc: podman restart failed"; return 1; }
+    restart_container "$svc" "$cid" "$hport" || return 1
     record_restart "$svc"
     sleep 10
     if host_ok "http://127.0.0.1:$hport$hpath"; then
@@ -161,7 +224,27 @@ probe_service() { # $1 = service, $2 = host port, $3 = host path, $4 = container
     log "$svc: still dead after restart; NOT retrying in this tick"
     return 1
   fi
-  log "$svc: CONTAINER UNHEALTHY (in-container check failed); not touching it"
+  count="$(bump_unhealthy "$svc")"
+  log "$svc: CONTAINER UNHEALTHY (in-container check failed, $count/$UNHEALTHY_TICKS consecutive)"
+  [ "$count" -ge "$UNHEALTHY_TICKS" ] || return 1
+  log "$svc: unhealthy for $UNHEALTHY_TICKS consecutive ticks; preparing restart"
+  capture_hang "$svc" "$cid"
+  printf '%s %s container-unhealthy host-port=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$svc" "$hport" >> "$STATE_DIR/probe.log"
+  if [ "$CHECK_ONLY" = 1 ]; then return 1; fi
+  if ! restart_allowed "$svc"; then
+    log "$svc: rate limit reached ($MAX_RESTARTS restarts in $((WINDOW_SECONDS / 60)) min); NOT restarting"
+    return 1
+  fi
+  log "$svc: restarting hung container $cid"
+  restart_container "$svc" "$cid" "$hport" || return 1
+  record_restart "$svc"
+  clear_unhealthy "$svc"
+  sleep 10
+  if container_ok "$cid" "http://127.0.0.1:$cport$cpath"; then
+    log "$svc: revived (in-container check answers after restart)"
+    return 0
+  fi
+  log "$svc: still unhealthy after restart; NOT retrying in this tick"
   return 1
 }
 

@@ -43,12 +43,27 @@ if [ "$1" = "ps" ]; then
   exit 0
 fi
 case "$1 $2" in
-  "exec cid-"*)
+  "exec "*)
+    # Countdown failures apply to the backend only (per-service streaks);
+    # every other exec honors the CONT_OK switch.
+    if [[ "$2" == cid-backend* ]] && [ -n "${CONT_FAIL_FILE:-}" ] && [ -s "$CONT_FAIL_FILE" ]; then
+      n="$(cat "$CONT_FAIL_FILE")"
+      if [ "$n" -gt 0 ]; then printf '%s' "$((n - 1))" > "$CONT_FAIL_FILE"; exit 1; fi
+    fi
     [ "${CONT_OK:-1}" = 1 ] ;;
   "port "*)
     printf '8080/tcp -> 0.0.0.0:4802\n' ;;
   "restart "*)
     printf '%s\n' "$2" >> "$RESTART_LOG" ;;
+  "top "*)
+    printf 'PID USER TIME COMMAND\n4242 root 1:00 server\n' >> "$CALL_LOG" ;;
+  "inspect "*)
+    printf 'inspect %s\n' "$*" >> "$CALL_LOG"
+    printf '4242\n' ;;
+  "kill "*)
+    printf 'kill %s\n' "$*" >> "$CALL_LOG" ;;
+  "logs "*)
+    printf 'fake log line\n' >> "$CALL_LOG" ;;
   *) printf 'unexpected podman call: %s\n' "$*" >&2; exit 90 ;;
 esac
 EOF
@@ -70,8 +85,10 @@ export PORT_PROBE_STATE_DIR="$SANDBOX/state"
 export MULTICA_MAIN_LOCK_FILE="$SANDBOX/deploy.lock"
 export RESTART_LOG="$SANDBOX/restarts.log"
 export KILL_LOG="$SANDBOX/kills.log"
+export CALL_LOG="$SANDBOX/calls.log"
 : > "$RESTART_LOG"
 : > "$KILL_LOG"
+: > "$CALL_LOG"
 
 run() { bash "$SCRIPT" "$STACK_DIR" "$@"; }
 export HOST_BACKEND_OK=1 HOST_FRONTEND_OK=1 CONT_OK=1
@@ -96,12 +113,36 @@ export HOST_BACKEND_OK=1
 : > "$RESTART_LOG"
 : > "$KILL_LOG"
 
-# Container unhealthy: reported, never restarted.
-export CONT_OK=0
+# Container unhealthy once or twice: counted, reported, never restarted.
+# The countdown fails backend execs only, so the frontend stays healthy.
+rm -rf "$PORT_PROBE_STATE_DIR"
+export CONT_FAIL_FILE="$SANDBOX/cont-fails"
+printf '3' > "$CONT_FAIL_FILE"
 rc=0; out="$(run 2>&1)" || rc=$?
 [ "$rc" -ne 0 ]
-[[ "$out" == *"CONTAINER UNHEALTHY"* ]]
+[[ "$out" == *"CONTAINER UNHEALTHY"*1/3* ]]
 test ! -s "$RESTART_LOG"
+rc=0; out="$(run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ]
+[[ "$out" == *"CONTAINER UNHEALTHY"*2/3* ]]
+test ! -s "$RESTART_LOG"
+
+# Third consecutive unhealthy tick: capture diagnostics (top, pid, logs and
+# SIGQUIT for the backend), restart, and verify the revive. The countdown is
+# exhausted, so the post-restart check answers again.
+: > "$CALL_LOG"
+out="$(run 2>&1)"
+[[ "$out" == *"CONTAINER UNHEALTHY"*3/3* ]]
+[[ "$out" == *"podman top"* ]]
+[[ "$out" == *"sending SIGQUIT for the goroutine dump"* ]]
+[[ "$out" == *"revived (in-container check answers after restart)"* ]]
+grep -q 'kill -s QUIT cid-backend' "$CALL_LOG"
+grep -q '^cid-backend$' "$RESTART_LOG"
+grep -q 'container-unhealthy host-port=4802' "$PORT_PROBE_STATE_DIR/probe.log"
+# The restart clears the streak: the next tick is healthy again.
+out="$(run 2>&1)"
+[[ "$out" == *"all sides healthy"* ]]
+unset CONT_FAIL_FILE
 export CONT_OK=1
 
 # Rate limit: two restarts pass, the third tick in the window refuses.

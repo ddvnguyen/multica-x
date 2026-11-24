@@ -342,6 +342,23 @@ log "probing host-side published ports"
 PORT_PROBE_SKIP_LOCK=1 bash "$(dirname "${BASH_SOURCE[0]}")/stack-port-probe.sh" "$STACK_DIR" \
   || die "host-side port probe failed after the switch; see above"
 
+# M-556: a backend that froze right after startup answers neither the host
+# nor the in-container probe, yet "started" fine — prove it is actually
+# serving by requiring a /healthz request in its log within 30s. The compose
+# healthcheck hits :8080/healthz every 5s, so a serving backend always leaves
+# this trace quickly after a switch.
+log "waiting for the backend to log a /healthz request (serving proof)"
+be_cid="$(podman ps -q \
+  --filter "label=com.docker.compose.project=$(basename "$STACK_DIR")" \
+  --filter 'label=com.docker.compose.service=backend' | head -1)"
+[ -n "$be_cid" ] || die "could not find the backend container after the switch"
+served=0
+for _ in $(seq 1 15); do
+  if podman logs --tail 100 "$be_cid" 2>&1 | grep -q 'healthz'; then served=1; break; fi
+  sleep 2
+done
+[ "$served" = 1 ] || die "backend logged no /healthz request within 30s of the switch; not provably serving"
+
 new_binary="$TMPDIR/multica.new"
 podman run --rm --network none --entrypoint cat "$BACKEND_IMAGE" /app/multica > "$new_binary"
 [ -s "$new_binary" ] || die "new daemon binary extraction produced an empty file"
