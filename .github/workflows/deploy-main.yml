@@ -116,24 +116,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: multica-moct
+          fetch-depth: 1
       - name: Check for a successful push run of CI on the SHA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_REF: ${{ inputs.source_ref }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "source_ref is not a SHA; nothing to gate"
-            exit 0
-          fi
-          match="$(gh run list --repo "${{ github.repository }}" --workflow CI \
-            --branch multica-moct --event push --status success --limit 50 \
-            --json headSha --jq -r --arg sha "$SOURCE_REF" \
-            '[.[] | select(.headSha == $sha)] | length')"
-          [[ "$match" =~ ^[0-9]+$ ]] && [ "$match" -ge 1 ] || {
-            echo "::error::no successful CI push run for $SOURCE_REF on multica-moct"; exit 1;
-          }
-          echo "green CI push run confirmed for ${SOURCE_REF:0:9}"
+        run: bash scripts/ci-green-run.sh "${{ github.repository }}" CI multica-moct "${{ inputs.source_ref }}"
 
   deploy:
     name: Deploy Multica stack (drain=${{ inputs.drain_timeout_seconds }}s, force=${{ inputs.force }})

@@ -167,8 +167,13 @@ the health assertion accepts either form of the same commit.
   daemon binary automatically when a deploy fails (`database.dump` is retained,
   never restored automatically). To roll back a good deploy, re-run the
   `Deploy Multica` workflow with `source_ref` set to the previous SHA — that
-  moves the `production` pin too, so lane z follows.
+  moves the `production` pin back too.
 * **Lane z**: binaries only, never the database —
   `rollback.sh` / `rollback.sh --to <sha|path>` / `rollback.sh --list`.
   The DB dump from the failed deploy is for a human to inspect, not to restore
-  automatically.
+  automatically. The compare gate only accepts `ahead`/`identical` targets, so
+  the lane will **not** follow the pin backwards on its own: after a production
+  rollback to an older SHA, run `rollback.sh --to <sha>` on the lane host with
+  that same SHA. Until the next forward release, a lane left ahead of the pin
+  is a known, temporary violation of "one SHA" — the next release re-converges
+  both sides.
