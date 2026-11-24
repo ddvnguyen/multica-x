@@ -13,7 +13,7 @@ WHERE tier_id = $1
 ORDER BY role ASC;
 
 -- name: ListModelTierRoleIdxForTiers :many
-SELECT tier_id, idx FROM model_tier_role
+SELECT tier_id, idx, auto_pick FROM model_tier_role
 WHERE tier_id = ANY(@ids::uuid[]) AND role = @role::text;
 
 -- name: UpsertModelTierRole :one
@@ -22,6 +22,10 @@ VALUES ($1, $2, $3, $4)
 ON CONFLICT (tier_id, role) DO UPDATE
 SET idx = EXCLUDED.idx
 RETURNING *;
+
+-- name: SetModelTierRoleAutoPick :exec
+UPDATE model_tier_role SET auto_pick = $3 WHERE tier_id = $1 AND role = $2;
+
 
 -- name: MaxModelTierRoleIdx :one
 SELECT COALESCE(MAX(idx), -1)::int AS max_idx FROM model_tier_role

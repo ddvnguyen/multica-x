@@ -39,6 +39,9 @@ func tier423Fixture(t *testing.T) *tier423Setup {
 	fx.WorkspaceID = fx.Workspace(t, "t423 ws", fmt.Sprintf("t423-ws-%d", time.Now().UnixNano()))
 	ownerMember := fx.Member(t, fx.WorkspaceID, fx.UserID, "owner")
 	_ = ownerMember
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_tier_role WHERE workspace_id = $1`, util.MustParseUUID(fx.WorkspaceID))
+	})
 	qq := db.New(pool)
 	svc := &TaskService{Queries: qq, TxStarter: pool, Bus: events.New()}
 	return &tier423Setup{qq: qq, svc: svc, wsID: fx.WorkspaceID, fx: fx, pool: pool}
@@ -86,6 +89,26 @@ func (s *tier423Setup) tier(t *testing.T, name string, idx int32, rt pgtype.UUID
 	})
 	if err != nil {
 		t.Fatalf("create tier %s: %v", name, err)
+	}
+	for _, role := range roles {
+		maxIdx, err := s.qq.MaxModelTierRoleIdx(ctx, db.MaxModelTierRoleIdxParams{
+			WorkspaceID: util.MustParseUUID(s.wsID), Role: role,
+		})
+		if err != nil {
+			t.Fatalf("max role index %s: %v", role, err)
+		}
+		if _, err := s.qq.UpsertModelTierRole(ctx, db.UpsertModelTierRoleParams{
+			WorkspaceID: util.MustParseUUID(s.wsID), TierID: row.ID, Role: role, Idx: maxIdx + 1,
+		}); err != nil {
+			t.Fatalf("create role row %s: %v", role, err)
+		}
+		if !row.AutoPick {
+			if err := s.qq.SetModelTierRoleAutoPick(ctx, db.SetModelTierRoleAutoPickParams{
+				TierID: row.ID, Role: role, AutoPick: false,
+			}); err != nil {
+				t.Fatalf("set manual role row %s: %v", role, err)
+			}
+		}
 	}
 	return row
 }
@@ -164,6 +187,28 @@ func TestResolve423_ManualOnlyNeverAutoResolves(t *testing.T) {
 	s.selectTiers(t, only, manual)
 	if _, err := s.svc.resolveAgentTier(context.Background(), only); err != errNoTierCapacity {
 		t.Errorf("manual-only-only resolve err = %v, want errNoTierCapacity", err)
+	}
+}
+
+func TestResolve423_AutoPickIsPerRole(t *testing.T) {
+	s := tier423Fixture(t)
+	rt := s.runtime(t, "t423 rt")
+	engineer := s.agentWithRole(t, "engineer agent", rt, "engineer")
+	architect := s.agentWithRole(t, "architect agent", rt, "architect")
+	mixed := s.tier(t, "shared-role-tier", 0, rt, []string{"engineer", "architect"}, false, i32(75))
+	if err := s.qq.SetModelTierRoleAutoPick(context.Background(), db.SetModelTierRoleAutoPickParams{
+		TierID: mixed.ID, Role: "architect", AutoPick: false,
+	}); err != nil {
+		t.Fatalf("set architect manual-only: %v", err)
+	}
+	s.selectTiers(t, engineer, mixed)
+	s.selectTiers(t, architect, mixed)
+
+	if got := tierName423(t, s, mustResolve423(t, s, engineer).tierID); got != "shared-role-tier" {
+		t.Fatalf("engineer resolved %q, want shared-role-tier", got)
+	}
+	if _, err := s.svc.resolveAgentTier(context.Background(), architect); err != errNoTierCapacity {
+		t.Fatalf("architect auto-resolve err = %v, want errNoTierCapacity", err)
 	}
 }
 

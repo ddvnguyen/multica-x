@@ -4827,6 +4827,12 @@ export const ModelTierSchema = z.object({
   // M-423: defaulted so older backends keep parsing; UI treats missing
   // roles as unconfigured (legacy).
   roles: z.array(z.string()).default([]),
+  // M-550: additive so clients remain compatible with older backends.
+  role_settings: z.array(z.object({
+    role: z.string().default(""),
+    auto_pick: z.boolean().default(true),
+    idx: z.number().int().default(0),
+  })).optional(),
   // M-497: position inside the requested role's list. Present only on
   // role-filtered (?role=) reads and role reorder responses.
   role_idx: z.number().int().optional(),

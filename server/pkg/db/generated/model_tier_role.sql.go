@@ -36,7 +36,7 @@ func (q *Queries) DeleteModelTierRolesNotIn(ctx context.Context, arg DeleteModel
 }
 
 const listModelTierRoleIdxForTiers = `-- name: ListModelTierRoleIdxForTiers :many
-SELECT tier_id, idx FROM model_tier_role
+SELECT tier_id, idx, auto_pick FROM model_tier_role
 WHERE tier_id = ANY($1::uuid[]) AND role = $2::text
 `
 
@@ -46,8 +46,9 @@ type ListModelTierRoleIdxForTiersParams struct {
 }
 
 type ListModelTierRoleIdxForTiersRow struct {
-	TierID pgtype.UUID `json:"tier_id"`
-	Idx    int32       `json:"idx"`
+	TierID   pgtype.UUID `json:"tier_id"`
+	Idx      int32       `json:"idx"`
+	AutoPick bool        `json:"auto_pick"`
 }
 
 func (q *Queries) ListModelTierRoleIdxForTiers(ctx context.Context, arg ListModelTierRoleIdxForTiersParams) ([]ListModelTierRoleIdxForTiersRow, error) {
@@ -59,7 +60,7 @@ func (q *Queries) ListModelTierRoleIdxForTiers(ctx context.Context, arg ListMode
 	items := []ListModelTierRoleIdxForTiersRow{}
 	for rows.Next() {
 		var i ListModelTierRoleIdxForTiersRow
-		if err := rows.Scan(&i.TierID, &i.Idx); err != nil {
+		if err := rows.Scan(&i.TierID, &i.Idx, &i.AutoPick); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -71,7 +72,7 @@ func (q *Queries) ListModelTierRoleIdxForTiers(ctx context.Context, arg ListMode
 }
 
 const listModelTierRolesByTier = `-- name: ListModelTierRolesByTier :many
-SELECT id, workspace_id, tier_id, role, idx, created_at FROM model_tier_role
+SELECT id, workspace_id, tier_id, role, idx, created_at, auto_pick FROM model_tier_role
 WHERE tier_id = $1
 ORDER BY role ASC
 `
@@ -92,6 +93,7 @@ func (q *Queries) ListModelTierRolesByTier(ctx context.Context, tierID pgtype.UU
 			&i.Role,
 			&i.Idx,
 			&i.CreatedAt,
+			&i.AutoPick,
 		); err != nil {
 			return nil, err
 		}
@@ -105,7 +107,7 @@ func (q *Queries) ListModelTierRolesByTier(ctx context.Context, tierID pgtype.UU
 
 const listModelTierRolesByWorkspace = `-- name: ListModelTierRolesByWorkspace :many
 
-SELECT id, workspace_id, tier_id, role, idx, created_at FROM model_tier_role
+SELECT id, workspace_id, tier_id, role, idx, created_at, auto_pick FROM model_tier_role
 WHERE workspace_id = $1
 ORDER BY role ASC, idx ASC, created_at ASC, tier_id ASC
 `
@@ -129,6 +131,7 @@ func (q *Queries) ListModelTierRolesByWorkspace(ctx context.Context, workspaceID
 			&i.Role,
 			&i.Idx,
 			&i.CreatedAt,
+			&i.AutoPick,
 		); err != nil {
 			return nil, err
 		}
@@ -157,12 +160,27 @@ func (q *Queries) MaxModelTierRoleIdx(ctx context.Context, arg MaxModelTierRoleI
 	return max_idx, err
 }
 
+const setModelTierRoleAutoPick = `-- name: SetModelTierRoleAutoPick :exec
+UPDATE model_tier_role SET auto_pick = $3 WHERE tier_id = $1 AND role = $2
+`
+
+type SetModelTierRoleAutoPickParams struct {
+	TierID   pgtype.UUID `json:"tier_id"`
+	Role     string      `json:"role"`
+	AutoPick bool        `json:"auto_pick"`
+}
+
+func (q *Queries) SetModelTierRoleAutoPick(ctx context.Context, arg SetModelTierRoleAutoPickParams) error {
+	_, err := q.db.Exec(ctx, setModelTierRoleAutoPick, arg.TierID, arg.Role, arg.AutoPick)
+	return err
+}
+
 const upsertModelTierRole = `-- name: UpsertModelTierRole :one
 INSERT INTO model_tier_role (workspace_id, tier_id, role, idx)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (tier_id, role) DO UPDATE
 SET idx = EXCLUDED.idx
-RETURNING id, workspace_id, tier_id, role, idx, created_at
+RETURNING id, workspace_id, tier_id, role, idx, created_at, auto_pick
 `
 
 type UpsertModelTierRoleParams struct {
@@ -187,6 +205,7 @@ func (q *Queries) UpsertModelTierRole(ctx context.Context, arg UpsertModelTierRo
 		&i.Role,
 		&i.Idx,
 		&i.CreatedAt,
+		&i.AutoPick,
 	)
 	return i, err
 }

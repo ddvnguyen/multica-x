@@ -37,6 +37,7 @@ func TestSpikeModelFreeRoleEnqueueAndClaim(t *testing.T) {
 		VALUES ($1, 'm501-spike-tier', 0, $2, 'codebuddy', 'm501-spike-model', 1, true, ARRAY['engineer']::text[])
 		RETURNING id
 	`, testWorkspaceID, runtimeID).Scan(&tierID)
+	dbfx.Exec(t, `INSERT INTO model_tier_role (workspace_id, tier_id, role, idx) VALUES ($1, $2, 'engineer', 0)`, testWorkspaceID, tierID)
 	dbfx.Exec(t, `INSERT INTO agent_tier (agent_id, tier_id) VALUES ($1, $2)`, agentID, tierID)
 
 	issueID := dbfx.Issue(t, "m501 spike: model-free role", testutil.Cols{

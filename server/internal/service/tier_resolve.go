@@ -257,9 +257,17 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	if err != nil {
 		return none, err
 	}
+	roleConfig := s.tierRoleConfig(ctx, selections, role)
 	enabled := make([]db.ModelTier, 0, len(selections))
 	for _, sel := range selections {
-		if !sel.Enabled || sel.ManualOnly || !sel.AutoPick {
+		if !sel.Enabled || sel.ManualOnly {
+			continue
+		}
+		if role == "" {
+			if !sel.AutoPick {
+				continue
+			}
+		} else if setting, ok := roleConfig[util.UUIDToString(sel.ID)]; !ok || !setting.autoPick {
 			continue
 		}
 		enabled = append(enabled, sel)
@@ -271,8 +279,7 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	// role (then creation order). Tiers without a row for the role keep
 	// their global idx — legacy tiers with no role match only legacy
 	// agents, for whom no rows exist.
-	roleIdx := s.tierRoleIdx(ctx, enabled, role)
-	idxOf := func(t db.ModelTier) int32 { return effectiveTierIdx(t, roleIdx) }
+	idxOf := func(t db.ModelTier) int32 { return effectiveTierIdx(t, roleConfig) }
 	sort.SliceStable(enabled, func(i, j int) bool {
 		ii, jj := idxOf(enabled[i]), idxOf(enabled[j])
 		if ii != jj {
@@ -296,11 +303,15 @@ func (s *TaskService) resolveAgentTierForIssue(ctx context.Context, agent db.Age
 	return none, errNoTierCapacity
 }
 
-// tierRoleIdx loads the role-specific order for candidate tiers (M-497):
-// tier id → idx for the agent's normalized role. Empty when the agent has
-// no role or no rows exist (legacy): callers fall back to the global idx.
-func (s *TaskService) tierRoleIdx(ctx context.Context, tiers []db.ModelTier, role string) map[string]int32 {
-	out := map[string]int32{}
+type tierRoleConfig struct {
+	idx      int32
+	autoPick bool
+}
+
+// tierRoleConfig loads role order and auto-pick eligibility for candidate
+// tiers. Legacy role-less agents continue using model_tier's global values.
+func (s *TaskService) tierRoleConfig(ctx context.Context, tiers []db.ModelTier, role string) map[string]tierRoleConfig {
+	out := map[string]tierRoleConfig{}
 	canonical := normalizeTierRole(role)
 	if canonical == "" || !tierRoleKeyPattern.MatchString(canonical) || s == nil || s.Queries == nil {
 		return out
@@ -316,16 +327,16 @@ func (s *TaskService) tierRoleIdx(ctx context.Context, tiers []db.ModelTier, rol
 		return out
 	}
 	for _, r := range rows {
-		out[util.UUIDToString(r.TierID)] = r.Idx
+		out[util.UUIDToString(r.TierID)] = tierRoleConfig{idx: r.Idx, autoPick: r.AutoPick}
 	}
 	return out
 }
 
 // effectiveTierIdx is the candidate order key: the role-specific idx when
 // the tier has a row for the agent's role, else the global tier idx.
-func effectiveTierIdx(t db.ModelTier, roleIdx map[string]int32) int32 {
-	if idx, ok := roleIdx[util.UUIDToString(t.ID)]; ok {
-		return idx
+func effectiveTierIdx(t db.ModelTier, roleConfig map[string]tierRoleConfig) int32 {
+	if setting, ok := roleConfig[util.UUIDToString(t.ID)]; ok {
+		return setting.idx
 	}
 	return t.Idx
 }

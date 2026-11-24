@@ -1710,6 +1710,7 @@ type ModelTierRole struct {
 	Role        string             `json:"role"`
 	Idx         int32              `json:"idx"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	AutoPick    bool               `json:"auto_pick"`
 }
 
 type NativeQuestionAnswer struct {

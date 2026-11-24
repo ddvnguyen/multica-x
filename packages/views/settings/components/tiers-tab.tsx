@@ -192,6 +192,7 @@ function TierMemberChip({
 
 function TierRow({
   tier,
+  role,
   members,
   membersLoading,
   position,
@@ -203,6 +204,7 @@ function TierRow({
   movePending,
 }: {
   tier: ModelTier;
+  role: string;
   members: ModelTierMember[];
   membersLoading: boolean;
   position: number;
@@ -216,7 +218,10 @@ function TierRow({
   const { t } = useT("settings");
   const coolingUntil = cooldownClock(tier.cooldown_until);
   // Older backends omit auto_pick; `manual_only` is its complement.
-  const autoPick = tier.auto_pick ?? !tier.manual_only;
+  const autoPick =
+    tier.role_settings?.find((setting) => setting.role === role)?.auto_pick ??
+    tier.auto_pick ??
+    !tier.manual_only;
   // M-493: show which models share this tier profile next to its metadata,
   // so the list no longer looks like one model per tier.
   const modelSummary = [...new Set(members.map((member) => member.model).filter(Boolean))].join(", ");
@@ -743,6 +748,7 @@ export function TiersTab() {
                       <TierRow
                         key={tier.id}
                         tier={tier}
+                        role={activeRole}
                         members={state?.members ?? []}
                         membersLoading={state?.loading ?? false}
                         position={index}
@@ -959,9 +965,25 @@ function TierEditorDialog({
   const [roles, setRoles] = useState<string[]>(
     tier?.roles ?? (defaultRole ? [defaultRole] : []),
   );
-  const [autoPick, setAutoPick] = useState(
-    tier?.auto_pick ?? !(tier?.manual_only ?? false),
+  const [roleAutoPick, setRoleAutoPick] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(
+      (tier?.roles ?? (defaultRole ? [defaultRole] : [])).map((role) => [
+        role,
+        tier?.role_settings?.find((setting) => setting.role === role)?.auto_pick ??
+          tier?.auto_pick ??
+          !(tier?.manual_only ?? false),
+      ]),
+    ),
   );
+  const rolePositions = Object.fromEntries(
+    (tier?.role_settings ?? []).map((setting) => [setting.role, setting.idx]),
+  );
+  const nextRolePosition = Math.max(-1, ...Object.values(rolePositions)) + 1;
+  const positionForRole = (role: string) => {
+    if (rolePositions[role] !== undefined) return rolePositions[role]!;
+    const before = roles.slice(0, roles.indexOf(role));
+    return nextRolePosition + before.filter((item) => rolePositions[item] === undefined).length;
+  };
   const [quotaKinds, setQuotaKinds] = useState<string[]>(
     tier?.quota_kinds ?? [],
   );
@@ -1151,8 +1173,13 @@ function TierEditorDialog({
           : {}),
       enabled,
       roles,
-      // M-481: auto_pick replaces manual_only; the server keeps both in sync.
-      auto_pick: autoPick,
+      role_settings: roles.map((role) => ({
+        role,
+        auto_pick: roleAutoPick[role] ?? tier?.auto_pick ?? true,
+        idx: positionForRole(role),
+      })),
+      // Compatibility for older servers and clients: aggregate enabled roles.
+      auto_pick: roles.some((role) => roleAutoPick[role] ?? tier?.auto_pick ?? true),
       // M-497: is_free is no longer an input — the server derives it from
       // quota_kinds, so the dialog has no Free tier switch.
       quota_kinds: quotaKinds,
@@ -1339,7 +1366,7 @@ function TierEditorDialog({
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-4">
             {/* M-543: the same tag multi-select the quota kinds use. Roles
                 come from the workspace registry, so a custom role is
                 assignable without a code change. */}
@@ -1407,13 +1434,22 @@ function TierEditorDialog({
                           <Checkbox
                             id={`tier-role-${entry}`}
                             checked={roles.includes(entry)}
-                            onCheckedChange={(checked) =>
-                              setRoles((prev) =>
-                                checked === true
-                                  ? [...prev.filter((r) => r !== entry), entry]
-                                  : prev.filter((r) => r !== entry),
-                              )
-                            }
+                            onCheckedChange={(checked) => {
+                              if (checked === true) {
+                                setRoles((prev) => [...prev.filter((r) => r !== entry), entry]);
+                                setRoleAutoPick((prev) => ({
+                                  ...prev,
+                                  [entry]: tier?.auto_pick ?? true,
+                                }));
+                              } else {
+                                setRoles((prev) => prev.filter((r) => r !== entry));
+                                setRoleAutoPick((prev) => {
+                                  const next = { ...prev };
+                                  delete next[entry];
+                                  return next;
+                                });
+                              }
+                            }}
                           />
                           {roleLabel(entry)}
                         </label>
@@ -1426,22 +1462,48 @@ function TierEditorDialog({
                 {t(($) => $.tiers.roles_hint)}
               </p>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="tier-auto-pick">
-                {t(($) => $.tiers.auto_pick_label)}
-              </Label>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="tier-auto-pick"
-                  checked={autoPick}
-                  onCheckedChange={setAutoPick}
-                />
-                <span className="text-caption text-muted-foreground">
-                  {autoPick
-                    ? t(($) => $.tiers.auto_pick_badge)
-                    : t(($) => $.tiers.auto_pick_badge_manual)}
-                </span>
-              </div>
+            <div className="space-y-1.5" data-testid="tier-role-auto-pick-rows">
+              <Label>{t(($) => $.tiers.auto_pick_label)}</Label>
+              {roles.length === 0 ? (
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.tiers.roles_none)}
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {roles.map((role) => {
+                    const autoPick = roleAutoPick[role] ?? tier?.auto_pick ?? true;
+                    const settingId = `tier-role-auto-pick-${role}`;
+                    return (
+                      <div
+                        key={role}
+                        data-testid={`tier-role-setting-${role}`}
+                        className="flex items-center gap-2 rounded-md border px-2 py-1.5"
+                      >
+                        <Label htmlFor={settingId} className="min-w-0 flex-1 truncate">
+                          {roleLabel(role)}
+                        </Label>
+                        <span className="text-caption text-muted-foreground">
+                          #{positionForRole(role)}
+                        </span>
+                        <Switch
+                          id={settingId}
+                          data-testid={`tier-role-auto-pick-switch-${role}`}
+                          aria-label={`${t(($) => $.tiers.auto_pick_label)} ${roleLabel(role)}`}
+                          checked={autoPick}
+                          onCheckedChange={(checked) =>
+                            setRoleAutoPick((prev) => ({ ...prev, [role]: checked }))
+                          }
+                        />
+                        <span className="text-caption text-muted-foreground">
+                          {autoPick
+                            ? t(($) => $.tiers.auto_pick_badge)
+                            : t(($) => $.tiers.auto_pick_badge_manual)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <p className="text-caption text-muted-foreground">
                 {t(($) => $.tiers.auto_pick_hint)}
               </p>

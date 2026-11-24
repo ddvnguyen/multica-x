@@ -70,6 +70,9 @@ type ModelTierResponse struct {
 	// Roles served by this tier (M-423). Empty = legacy/unconfigured: matches
 	// only agents with no role set. M-497: derived from model_tier_role rows.
 	Roles []string `json:"roles"`
+	// RoleSettings adds per-role scheduling state without changing the legacy
+	// roles string array consumed by already-installed clients.
+	RoleSettings []ModelTierRoleSetting `json:"role_settings"`
 	// RoleIdx is this tier's position inside the requested role's list
 	// (M-497). Present only when the list was filtered with ?role=.
 	RoleIdx *int `json:"role_idx,omitempty"`
@@ -94,6 +97,12 @@ type ModelTierResponse struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
+type ModelTierRoleSetting struct {
+	Role     string `json:"role"`
+	AutoPick bool   `json:"auto_pick"`
+	Idx      int    `json:"idx"`
+}
+
 func modelTierToResponse(t db.ModelTier) ModelTierResponse {
 	resp := ModelTierResponse{
 		ID:            uuidToString(t.ID),
@@ -105,6 +114,7 @@ func modelTierToResponse(t db.ModelTier) ModelTierResponse {
 		ProviderSlots: int(t.ProviderSlots),
 		Enabled:       t.Enabled,
 		Roles:         append([]string{}, t.Roles...),
+		RoleSettings:  []ModelTierRoleSetting{},
 		ManualOnly:    t.ManualOnly,
 		AutoPick:      t.AutoPick,
 		QuotaKind:     t.QuotaKind,
@@ -171,39 +181,42 @@ type modelTierInput struct {
 	// Roles is a plain slice with a separate presence flag: an explicit []
 	// clears the set (unconfigured), omitted keeps the value. "null" also
 	// keeps (indistinguishable from omitted by choice, same as cost's "").
-	Roles         []string `json:"roles"`
-	RolesSet      bool     `json:"-"`
-	ManualOnly    *bool    `json:"manual_only"`
-	AutoPick      *bool    `json:"auto_pick"`
-	QuotaKind     *string  `json:"quota_kind"`
-	QuotaKinds    []string `json:"quota_kinds"`
-	QuotaKindsSet bool     `json:"-"`
-	CtxMaxTokens  *int     `json:"ctx_max_tokens"`
-	CompactAtPct  *int     `json:"compact_at_pct"`
+	Roles           []string               `json:"roles"`
+	RolesSet        bool                   `json:"-"`
+	RoleSettings    []ModelTierRoleSetting `json:"role_settings"`
+	RoleSettingsSet bool                   `json:"-"`
+	ManualOnly      *bool                  `json:"manual_only"`
+	AutoPick        *bool                  `json:"auto_pick"`
+	QuotaKind       *string                `json:"quota_kind"`
+	QuotaKinds      []string               `json:"quota_kinds"`
+	QuotaKindsSet   bool                   `json:"-"`
+	CtxMaxTokens    *int                   `json:"ctx_max_tokens"`
+	CompactAtPct    *int                   `json:"compact_at_pct"`
 	// M-497: is_free is no longer an input. It is derived from quota_kinds
 	// (free or free_daily selected) and kept on the column for the old binary.
 }
 
 func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	type alias struct {
-		Name          *string  `json:"name"`
-		Idx           *int     `json:"idx"`
-		RuntimeID     *string  `json:"runtime_id"`
-		Provider      *string  `json:"provider"`
-		Model         *string  `json:"model"`
-		ThinkingLevel *string  `json:"thinking_level"`
-		ServiceTier   *string  `json:"service_tier"`
-		Cost          any      `json:"cost"`
-		Quality       *int     `json:"quality"`
-		ProviderSlots *int     `json:"provider_slots"`
-		Enabled       *bool    `json:"enabled"`
-		Roles         []string `json:"roles"`
-		ManualOnly    *bool    `json:"manual_only"`
-		AutoPick      *bool    `json:"auto_pick"`
-		QuotaKind     *string  `json:"quota_kind"`
-		QuotaKinds    []string `json:"quota_kinds"`
-		CtxMaxTokens  *int     `json:"ctx_max_tokens"`
-		CompactAtPct  *int     `json:"compact_at_pct"`
+		Name          *string                `json:"name"`
+		Idx           *int                   `json:"idx"`
+		RuntimeID     *string                `json:"runtime_id"`
+		Provider      *string                `json:"provider"`
+		Model         *string                `json:"model"`
+		ThinkingLevel *string                `json:"thinking_level"`
+		ServiceTier   *string                `json:"service_tier"`
+		Cost          any                    `json:"cost"`
+		Quality       *int                   `json:"quality"`
+		ProviderSlots *int                   `json:"provider_slots"`
+		Enabled       *bool                  `json:"enabled"`
+		Roles         []string               `json:"roles"`
+		RoleSettings  []ModelTierRoleSetting `json:"role_settings"`
+		ManualOnly    *bool                  `json:"manual_only"`
+		AutoPick      *bool                  `json:"auto_pick"`
+		QuotaKind     *string                `json:"quota_kind"`
+		QuotaKinds    []string               `json:"quota_kinds"`
+		CtxMaxTokens  *int                   `json:"ctx_max_tokens"`
+		CompactAtPct  *int                   `json:"compact_at_pct"`
 	}
 	var a alias
 	if err := json.Unmarshal(data, &a); err != nil {
@@ -230,6 +243,10 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	if raw, ok := probe["roles"]; ok && string(raw) != "null" {
 		in.RolesSet = true
 		in.Roles = a.Roles
+	}
+	if raw, ok := probe["role_settings"]; ok && string(raw) != "null" {
+		in.RoleSettingsSet = true
+		in.RoleSettings = a.RoleSettings
 	}
 	if raw, ok := probe["quota_kinds"]; ok && string(raw) != "null" {
 		in.QuotaKindsSet = true
@@ -416,14 +433,29 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	if in.Enabled != nil {
 		params.Enabled = *in.Enabled
 	}
-	if in.RolesSet {
+	if in.RoleSettingsSet {
+		seen := make(map[string]struct{}, len(in.RoleSettings))
+		roles := make([]string, 0, len(in.RoleSettings))
+		for i := range in.RoleSettings {
+			setting := &in.RoleSettings[i]
+			r := strings.TrimSpace(setting.Role)
+			if !validTierRoleName(r) {
+				return params, nil, errors.New("role_settings roles must be lowercase letters, digits or hyphens, up to 40 chars")
+			}
+			if _, duplicate := seen[r]; duplicate {
+				return params, nil, errors.New("role_settings must not repeat a role")
+			}
+			seen[r] = struct{}{}
+			setting.Role = r
+			roles = append(roles, r)
+		}
+		params.Roles = canonicalTierRoles(roles)
+	} else if in.RolesSet {
 		for _, r := range in.Roles {
 			if !validTierRoleName(r) {
 				return params, nil, errors.New("roles must be lowercase letters, digits or hyphens, up to 40 chars")
 			}
 		}
-		// M-497: store the canonical set (legacy mapped, deduped, sorted) so
-		// model_tier.roles stays derived from the per-role rows.
 		params.Roles = canonicalTierRoles(in.Roles)
 	} else if forCreate {
 		params.Roles = []string{}
@@ -667,52 +699,152 @@ func (h *Handler) ensureTierRole(r *http.Request, wsUUID pgtype.UUID, key string
 	}
 }
 
-// syncTierRoleRows reconciles a tier's model_tier_role rows with its
-// canonical roles (M-497): rows for dropped roles are removed, rows for kept
-// roles are left at their position, and rows for newly added roles are
-// appended at the end of that role's list. Returns the tier's role→idx map.
-func (h *Handler) syncTierRoleRows(r *http.Request, wsUUID pgtype.UUID, tierID pgtype.UUID, roles []string) map[string]int32 {
-	roleIdx := map[string]int32{}
-	// Drop rows for removed roles (empty roles drop every row: the tier
-	// leaves every role list but keeps matching legacy role-less agents).
-	if err := h.Queries.DeleteModelTierRolesNotIn(r.Context(), db.DeleteModelTierRolesNotInParams{
+// syncTierRoleRows reconciles role membership and per-role auto-pick while
+// preserving existing positions and flags omitted by older clients.
+func (h *Handler) syncTierRoleRows(
+	r *http.Request,
+	wsUUID, tierID pgtype.UUID,
+	roles []string,
+	settings []ModelTierRoleSetting,
+	settingsSet bool,
+	legacyAutoPick *bool,
+	defaultAutoPick bool,
+) (bool, error) {
+	ctx := r.Context()
+	current, err := h.Queries.ListModelTierRolesByTier(ctx, tierID)
+	if err != nil {
+		return false, err
+	}
+	byRole := make(map[string]db.ModelTierRole, len(current))
+	for _, row := range current {
+		byRole[row.Role] = row
+	}
+	if err := h.Queries.DeleteModelTierRolesNotIn(ctx, db.DeleteModelTierRolesNotInParams{
 		TierID: tierID, Roles: roles,
 	}); err != nil {
-		slog.WarnContext(r.Context(), "tier role rows: drop failed",
-			"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID), "error", err)
+		return false, err
 	}
+	wanted := make(map[string]bool, len(settings))
+	for _, setting := range settings {
+		wanted[setting.Role] = setting.AutoPick
+	}
+	anyAutoPick := false
 	for _, role := range roles {
 		h.ensureTierRole(r, wsUUID, role)
+		row, exists := byRole[role]
+		if exists {
+			var next *bool
+			if settingsSet {
+				if value, ok := wanted[role]; ok {
+					v := value
+					next = &v
+				}
+			} else if legacyAutoPick != nil {
+				next = legacyAutoPick
+			}
+			if next != nil && row.AutoPick != *next {
+				if err := h.Queries.SetModelTierRoleAutoPick(ctx, db.SetModelTierRoleAutoPickParams{
+					TierID: tierID, Role: role, AutoPick: *next,
+				}); err != nil {
+					return false, err
+				}
+				row.AutoPick = *next
+			}
+		} else {
+			maxIdx, err := h.Queries.MaxModelTierRoleIdx(ctx, db.MaxModelTierRoleIdxParams{
+				WorkspaceID: wsUUID, Role: role,
+			})
+			if err != nil {
+				return false, err
+			}
+			value := defaultAutoPick
+			if settingsSet {
+				if configured, ok := wanted[role]; ok {
+					value = configured
+				}
+			} else if legacyAutoPick != nil {
+				value = *legacyAutoPick
+			}
+			row, err = h.Queries.UpsertModelTierRole(ctx, db.UpsertModelTierRoleParams{
+				WorkspaceID: wsUUID, TierID: tierID, Role: role, Idx: maxIdx + 1,
+			})
+			if err != nil {
+				return false, err
+			}
+			if !value {
+				if err := h.Queries.SetModelTierRoleAutoPick(ctx, db.SetModelTierRoleAutoPickParams{
+					TierID: tierID, Role: role, AutoPick: false,
+				}); err != nil {
+					return false, err
+				}
+				row.AutoPick = false
+			}
+		}
+		anyAutoPick = anyAutoPick || row.AutoPick
 	}
+	// Keep legacy role-less tiers governed by their global flag. The OR
+	// mirror only has meaning when at least one role row exists; writing false
+	// for an empty set would change routing for older role-less agents.
+	if len(roles) == 0 {
+		if legacyAutoPick != nil {
+			return *legacyAutoPick, nil
+		}
+		return defaultAutoPick, nil
+	}
+	if err := h.Queries.SetModelTierAutoPick(ctx, db.SetModelTierAutoPickParams{
+		ID: tierID, AutoPick: anyAutoPick,
+	}); err != nil {
+		return false, err
+	}
+	return anyAutoPick, nil
+}
+
+func tierRoleSettings(rows []db.ModelTierRole) []ModelTierRoleSetting {
+	out := make([]ModelTierRoleSetting, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ModelTierRoleSetting{Role: row.Role, AutoPick: row.AutoPick, Idx: int(row.Idx)})
+	}
+	return out
+}
+
+func (h *Handler) attachTierRoleSettings(tiers []ModelTierResponse, rows []db.ModelTierRole) {
+	byTier := make(map[string][]ModelTierRoleSetting)
+	for _, row := range rows {
+		id := uuidToString(row.TierID)
+		byTier[id] = append(byTier[id], ModelTierRoleSetting{Role: row.Role, AutoPick: row.AutoPick, Idx: int(row.Idx)})
+	}
+	for i := range tiers {
+		if settings, ok := byTier[tiers[i].ID]; ok {
+			tiers[i].RoleSettings = settings
+		}
+	}
+}
+
+func roleAutoPickWeakening(current []db.ModelTierRole, roles []string, settings []ModelTierRoleSetting, settingsSet bool, legacyAutoPick *bool) bool {
+	wantedRoles := make(map[string]bool, len(roles))
 	for _, role := range roles {
-		rows, err := h.Queries.ListModelTierRoleIdxForTiers(r.Context(), db.ListModelTierRoleIdxForTiersParams{
-			Ids: []pgtype.UUID{tierID}, Role: role,
-		})
-		if err == nil && len(rows) > 0 {
-			roleIdx[role] = rows[0].Idx
-			continue
-		}
-		maxIdx, err := h.Queries.MaxModelTierRoleIdx(r.Context(), db.MaxModelTierRoleIdxParams{
-			WorkspaceID: wsUUID, Role: role,
-		})
-		if err != nil {
-			slog.WarnContext(r.Context(), "tier role rows: max idx read failed",
-				"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID),
-				"role", role, "error", err)
-			continue
-		}
-		row, err := h.Queries.UpsertModelTierRole(r.Context(), db.UpsertModelTierRoleParams{
-			WorkspaceID: wsUUID, TierID: tierID, Role: role, Idx: maxIdx + 1,
-		})
-		if err != nil {
-			slog.WarnContext(r.Context(), "tier role rows: append failed",
-				"workspace_id", uuidToString(wsUUID), "tier_id", uuidToString(tierID),
-				"role", role, "error", err)
-			continue
-		}
-		roleIdx[role] = row.Idx
+		wantedRoles[role] = true
 	}
-	return roleIdx
+	wantedSettings := make(map[string]bool, len(settings))
+	for _, setting := range settings {
+		wantedSettings[setting.Role] = setting.AutoPick
+	}
+	for _, row := range current {
+		if !row.AutoPick && !wantedRoles[row.Role] {
+			return true
+		}
+		var next bool
+		var specified bool
+		if settingsSet {
+			next, specified = wantedSettings[row.Role]
+		} else if legacyAutoPick != nil && wantedRoles[row.Role] {
+			next, specified = *legacyAutoPick, true
+		}
+		if specified && !row.AutoPick && next {
+			return true
+		}
+	}
+	return false
 }
 
 // tierRoleIdxMap loads every (tier → idx) in this workspace for one role.
@@ -772,6 +904,12 @@ func (h *Handler) ListModelTiers(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tiers {
 		out = append(out, modelTierToResponse(t))
 	}
+	roleRows, err := h.Queries.ListModelTierRolesByWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list tier role settings")
+		return
+	}
+	h.attachTierRoleSettings(out, roleRows)
 	if roleFilter != "" {
 		roleIdx := h.tierRoleIdxMap(r, wsUUID, roleFilter)
 		filtered := out[:0]
@@ -828,7 +966,7 @@ func (h *Handler) ListTierRoles(w http.ResponseWriter, r *http.Request) {
 	// reads false. The roles list itself stays member-visible and flag-off
 	// callers (Settings Tiers, tier pickers) ignore the new key.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"roles":            out,
+		"roles":           out,
 		"agent_role_type": featureflags.AgentRoleTypeEnabledForWorkspace(r.Context(), h.FeatureFlags, workspaceID),
 	})
 }
@@ -1037,8 +1175,32 @@ func (h *Handler) CreateModelTier(w http.ResponseWriter, r *http.Request) {
 		Enabled:       created.Enabled,
 	})
 	// M-497: new role rows go at the end of each role's list.
-	h.syncTierRoleRows(r, wsUUID, created.ID, created.Roles)
-	writeJSON(w, http.StatusCreated, modelTierToResponse(created))
+	legacyAutoPick := requestedLegacyAutoPick(in)
+	anyAutoPick, err := h.syncTierRoleRows(r, wsUUID, created.ID, created.Roles, in.RoleSettings, in.RoleSettingsSet, legacyAutoPick, params.AutoPick.Bool)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sync tier role settings")
+		return
+	}
+	created.AutoPick, created.ManualOnly = anyAutoPick, !anyAutoPick
+	response := modelTierToResponse(created)
+	rows, err := h.Queries.ListModelTierRolesByTier(r.Context(), created.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load tier role settings")
+		return
+	}
+	response.RoleSettings = tierRoleSettings(rows)
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func requestedLegacyAutoPick(in modelTierInput) *bool {
+	if in.AutoPick != nil {
+		return in.AutoPick
+	}
+	if in.ManualOnly != nil {
+		value := !*in.ManualOnly
+		return &value
+	}
+	return nil
 }
 
 // UpdateModelTier edits a tier (owner/admin). Omitted fields keep their value;
@@ -1082,7 +1244,14 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if caller.Role != "owner" && tierManualProtectionWeakened(existing, params.ManualOnly, in.RolesSet, in.Roles) {
+	currentRoleRows, err := h.Queries.ListModelTierRolesByTier(r.Context(), tierUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load tier role settings")
+		return
+	}
+	rolesSet := in.RolesSet || in.RoleSettingsSet
+	if caller.Role != "owner" && (tierManualProtectionWeakened(existing, params.ManualOnly, rolesSet, params.Roles) ||
+		roleAutoPickWeakening(currentRoleRows, params.Roles, in.RoleSettings, in.RoleSettingsSet, requestedLegacyAutoPick(in))) {
 		writeError(w, http.StatusForbidden, "only the workspace owner can lift manual-only protection")
 		return
 	}
@@ -1140,14 +1309,23 @@ func (h *Handler) UpdateModelTier(w http.ResponseWriter, r *http.Request) {
 			h.syncTierLegacyFromMembers(r, updated)
 		}
 	}
-	// M-497: keep the per-role rows in sync when roles change. Kept roles
-	// hold their position; added roles append at the end of their list.
-	if in.RolesSet {
-		h.syncTierRoleRows(r, wsUUID, tierUUID, updated.Roles)
-		// New rows have no position yet for other roles — reload not needed:
-		// role_idx is only stamped on role-filtered reads.
+	// Keep role membership, per-role settings and the legacy OR mirror in sync
+	// even when an older client omits auto_pick.
+	legacyAutoPick := requestedLegacyAutoPick(in)
+	anyAutoPick, err := h.syncTierRoleRows(r, wsUUID, tierUUID, updated.Roles, in.RoleSettings, in.RoleSettingsSet, legacyAutoPick, updated.AutoPick)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sync tier role settings")
+		return
 	}
-	writeJSON(w, http.StatusOK, modelTierToResponse(updated))
+	updated.AutoPick, updated.ManualOnly = anyAutoPick, !anyAutoPick
+	response := modelTierToResponse(updated)
+	rows, err := h.Queries.ListModelTierRolesByTier(r.Context(), tierUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load tier role settings")
+		return
+	}
+	response.RoleSettings = tierRoleSettings(rows)
+	writeJSON(w, http.StatusOK, response)
 }
 
 // DeleteModelTier removes a tier (owner/admin).
@@ -1306,6 +1484,12 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 			}
 			out = append(out, modelTierToResponse(t))
 		}
+		roleRows, err := h.Queries.ListModelTierRolesByWorkspace(r.Context(), wsUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list tier role settings")
+			return
+		}
+		h.attachTierRoleSettings(out, roleRows)
 		sort.SliceStable(out, func(i, j int) bool {
 			ii, jj := roleIdx[out[i].ID], roleIdx[out[j].ID]
 			if ii != jj {
@@ -1332,6 +1516,12 @@ func (h *Handler) ReorderModelTiers(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tiers {
 		out = append(out, modelTierToResponse(t))
 	}
+	roleRows, err := h.Queries.ListModelTierRolesByWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list tier role settings")
+		return
+	}
+	h.attachTierRoleSettings(out, roleRows)
 	writeJSON(w, http.StatusOK, map[string]any{"tiers": out})
 }
 

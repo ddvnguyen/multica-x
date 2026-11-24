@@ -478,6 +478,22 @@ func (q *Queries) SetAgentTiers(ctx context.Context, agentID pgtype.UUID) (int64
 	return result.RowsAffected(), nil
 }
 
+const setModelTierAutoPick = `-- name: SetModelTierAutoPick :exec
+UPDATE model_tier
+SET auto_pick = $2, manual_only = NOT $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetModelTierAutoPickParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AutoPick bool        `json:"auto_pick"`
+}
+
+func (q *Queries) SetModelTierAutoPick(ctx context.Context, arg SetModelTierAutoPickParams) error {
+	_, err := q.db.Exec(ctx, setModelTierAutoPick, arg.ID, arg.AutoPick)
+	return err
+}
+
 const setModelTierCooldown = `-- name: SetModelTierCooldown :exec
 UPDATE model_tier SET cooldown_until = $2 WHERE id = $1
 `
