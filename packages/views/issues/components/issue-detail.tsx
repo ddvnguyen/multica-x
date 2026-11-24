@@ -4302,10 +4302,10 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
 
               Sticky treatment, bottom edge: opaque bg-background
               under/around the card (its rounded
-              corners would otherwise leak scrolled text), a 16px gradient
-              fade above (exactly the mt-4 gap, so at rest it sits over the
-              page background and is invisible), and pb-4 so the card floats
-              off the viewport edge — with -mb-4 giving the padding back to
+              corners would otherwise leak scrolled text), an 8px gradient
+              fade above (exactly the mt-2 gap, so at rest it sits over the
+              page background and is invisible), and pb-2 so the card floats
+              off the viewport edge — with -mb-2 giving the padding back to
               the column's py-8 so the at-rest layout doesn't shift. */}
           {/* "Jump to latest" (MUL-8324, MUL-8951) floats centered just above the
               composer's top edge. With the sticky composer it rides the
@@ -4321,9 +4321,9 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
             ref={composerRef}
             data-comment-images={commentImageLayout}
             className={cn(
-              "mt-4",
+              "mt-2",
               stickyComposer &&
-                "sticky bottom-0 z-10 -mb-4 bg-background pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-4 before:bg-gradient-to-t before:from-background before:to-transparent",
+                "sticky bottom-0 z-10 -mb-2 bg-background pb-2 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-2 before:bg-gradient-to-t before:from-background before:to-transparent",
             )}
           >
             {/* key={id}: web's /issues/[id] route doesn't remount on
