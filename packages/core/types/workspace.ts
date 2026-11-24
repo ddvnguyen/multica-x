@@ -69,6 +69,8 @@ export interface ModelTier {
   enabled: boolean;
   /** Roles served (M-423). Empty = legacy/unconfigured. */
   roles: string[];
+  /** Per-role ordering and auto-pick state (M-550); optional for older APIs. */
+  role_settings?: ModelTierRoleSetting[];
   /**
    * Position inside the requested role's list (M-497). Present only on
    * role-filtered (?role=) reads and role reorder responses.
@@ -100,6 +102,12 @@ export interface ModelTier {
   updated_at: string;
 }
 
+export interface ModelTierRoleSetting {
+  role: string;
+  auto_pick: boolean;
+  idx: number;
+}
+
 export interface ModelTierInput {
   name?: string;
   idx?: number;
@@ -120,6 +128,8 @@ export interface ModelTierInput {
   provider_slots?: number;
   enabled?: boolean;
   roles?: string[];
+  /** Additive role settings; `roles` remains for older clients. */
+  role_settings?: ModelTierRoleSetting[];
   manual_only?: boolean;
   auto_pick?: boolean;
   quota_kind?: string;

@@ -244,6 +244,29 @@ describe("TiersTab", () => {
     );
   });
 
+  it("shows the auto-pick state for the role tab being viewed", () => {
+    const shared = tier({
+      id: "tier-1",
+      roles: ["architect", "engineer"],
+      auto_pick: true,
+      role_settings: [
+        { role: "architect", auto_pick: true, idx: 0 },
+        { role: "engineer", auto_pick: false, idx: 0 },
+      ],
+    });
+    data.tiersByRole.architect = [shared];
+    data.tiersByRole.engineer = [shared];
+    render(<TiersTab />, { wrapper: Wrapper });
+    expect(screen.getByTestId("tier-auto-pick-tier-1")).toHaveTextContent(
+      "auto-pick",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Engineer" }));
+    expect(screen.getByTestId("tier-auto-pick-tier-1")).toHaveTextContent(
+      "manual only",
+    );
+  });
+
   it("warns in the list when a tier has no members", () => {
     data.members = { "tier-1": [], "tier-2": [] };
     render(<TiersTab />, { wrapper: Wrapper });
@@ -522,6 +545,7 @@ describe("TiersTab", () => {
     // "Add tier" was pressed on the Architect tab, so Architect is preselected.
     fireEvent.click(screen.getByTestId("tier-roles-add"));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Engineer" }));
+    fireEvent.click(screen.getByTestId("tier-role-auto-pick-switch-engineer"));
     fireEvent.click(screen.getByTestId("tier-quota-add"));
     fireEvent.click(
       await screen.findByRole("checkbox", { name: "Quota weekly" }),
@@ -536,6 +560,10 @@ describe("TiersTab", () => {
       model: "deepseek-v4.1-flash",
       roles: ["architect", "engineer"],
       auto_pick: true,
+      role_settings: [
+        { role: "architect", auto_pick: true, idx: 0 },
+        { role: "engineer", auto_pick: false, idx: 1 },
+      ],
       quota_kinds: ["quota_weekly"],
       ctx_max_tokens: 280000,
       compact_at_pct: 75,

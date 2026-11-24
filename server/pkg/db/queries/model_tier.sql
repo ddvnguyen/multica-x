@@ -27,6 +27,11 @@ INSERT INTO model_tier (
 SELECT * FROM model_tier
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: SetModelTierAutoPick :exec
+UPDATE model_tier
+SET auto_pick = $2, manual_only = NOT $2, updated_at = now()
+WHERE id = $1;
+
 -- M-359: explicit `@agent#tier` lookup. Case-insensitive exact match on the
 -- slug-safe name; the idx_model_tier_workspace_name index covers the scan.
 -- name: GetModelTierByNameInWorkspace :one

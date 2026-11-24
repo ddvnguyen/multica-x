@@ -116,6 +116,81 @@ func TestModelTierRoleLists(t *testing.T) {
 	}
 }
 
+func TestModelTierRoleAutoPickAPIAndLegacyOmission(t *testing.T) {
+	newTierTestEnv(t)
+	tier := mustCreateTier(t, map[string]any{
+		"name": "role-autopick", "provider": "p", "model": "m",
+		"role_settings": []map[string]any{
+			{"role": "engineer", "auto_pick": true},
+			{"role": "architect", "auto_pick": true},
+		},
+	})
+	if len(tier.RoleSettings) != 2 {
+		t.Fatalf("created role_settings = %+v, want both roles", tier.RoleSettings)
+	}
+	for _, setting := range tier.RoleSettings {
+		if setting.Idx < 0 {
+			t.Errorf("new role %q idx = %d, want a non-negative role position", setting.Role, setting.Idx)
+		}
+	}
+
+	var updated ModelTierResponse
+	testutil.Call(t, testHandler.UpdateModelTier, withURLParams(newRequest(
+		http.MethodPut, "/x", map[string]any{
+			"role_settings": []map[string]any{
+				{"role": "engineer", "auto_pick": true},
+				{"role": "architect", "auto_pick": false},
+			},
+		}), "id", testWorkspaceID, "tierId", tier.ID)).
+		Want(http.StatusOK).JSON(&updated)
+	if !updated.AutoPick || updated.ManualOnly {
+		t.Fatalf("legacy aggregate = auto_pick %v manual_only %v, want true/false", updated.AutoPick, updated.ManualOnly)
+	}
+	if got := roleAutoPickOf(updated.RoleSettings); !got["engineer"] || got["architect"] {
+		t.Fatalf("updated role settings = %+v, want engineer auto and architect manual", updated.RoleSettings)
+	}
+
+	// An older client can update unrelated tier fields without sending either
+	// role_settings or auto_pick; existing per-role values must survive.
+	testutil.Call(t, testHandler.UpdateModelTier, withURLParams(newRequest(
+		http.MethodPut, "/x", map[string]any{"name": "role-autopick-renamed"}),
+		"id", testWorkspaceID, "tierId", tier.ID)).Want(http.StatusOK)
+	listed, code := listTiersWithRole(t, testUserID, "architect")
+	if code != http.StatusOK || len(listed) != 1 || listed[0].RoleSettings[0].AutoPick {
+		t.Fatalf("architect role list = %+v code %d, want manual-only setting", listed, code)
+	}
+
+	// A legacy client that explicitly sends the former global switch still
+	// applies it to every configured role.
+	testutil.Call(t, testHandler.UpdateModelTier, withURLParams(newRequest(
+		http.MethodPut, "/x", map[string]any{"auto_pick": false}),
+		"id", testWorkspaceID, "tierId", tier.ID)).Want(http.StatusOK)
+	all := listTiersAs(t, testUserID)
+	for _, candidate := range all {
+		if candidate.ID != tier.ID {
+			continue
+		}
+		if candidate.AutoPick || !candidate.ManualOnly {
+			t.Fatalf("legacy mirror after explicit false = auto %v manual %v", candidate.AutoPick, candidate.ManualOnly)
+		}
+		for _, setting := range candidate.RoleSettings {
+			if setting.AutoPick {
+				t.Fatalf("legacy false left role %q auto-pickable", setting.Role)
+			}
+		}
+		return
+	}
+	t.Fatalf("tier %s missing from unfiltered list", tier.ID)
+}
+
+func roleAutoPickOf(settings []ModelTierRoleSetting) map[string]bool {
+	out := make(map[string]bool, len(settings))
+	for _, setting := range settings {
+		out[setting.Role] = setting.AutoPick
+	}
+	return out
+}
+
 // TestModelTierRoleReorderIsolation pins the core promise: reordering one
 // role leaves the other roles' order untouched.
 func TestModelTierRoleReorderIsolation(t *testing.T) {
