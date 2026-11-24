@@ -1,4 +1,4 @@
-import { SEAT_STYLE, attachIsland, detachIsland } from "./island";
+import { SEAT_STYLE, attachIsland, detachIsland, requestRailEntry } from "./island";
 import type { IslandRoute } from "./navigation";
 import { attachDecisionBadge } from "./decisions-badge-store";
 import { attachUnreadBadge } from "./unread-store";
@@ -108,7 +108,34 @@ export type RailGlyph =
  * inline-flex that does not clip) plus the stable ref that keeps the dot
  * painted from `unread-store`. Every other glyph renders exactly as before.
  */
-export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyph) {
+/**
+ * The row's click is the only honest signal that the reader picked it.
+ *
+ * dsh renders this glyph inside its own rail button, so the listener goes on
+ * the button (the glyph's `closest`) and covers the label and keyboard
+ * activation too. `route` is the entry the row opens; `null` keeps a legacy
+ * caller without an entry inert. React 18 renders these components, so no
+ * hooks: the listener is a closure made once per row. See `requestRailEntry`.
+ */
+function createRailIntent(route: IslandRoute | undefined) {
+  let detach: (() => void) | null = null;
+  return (node: Element | null): void => {
+    detach?.();
+    detach = null;
+    if (node === null || route === undefined) return;
+    const button = node.closest("button");
+    if (button === null) return;
+    const onClick = () => requestRailEntry(route);
+    button.addEventListener("click", onClick);
+    detach = () => button.removeEventListener("click", onClick);
+  };
+}
+
+export function createRailIcon(
+  createElement: HostCreateElement,
+  glyph: RailGlyph,
+  route?: IslandRoute,
+) {
   if (glyph === "decisions") {
     let detachBadge: (() => void) | null = null;
     const badgeRef = (node: HTMLElement | null) => {
@@ -119,10 +146,11 @@ export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyp
       detachBadge?.();
       detachBadge = null;
     };
+    const intentRef = createRailIntent(route);
     return function MulticaRailIcon({ size = 16 }: { size?: number }) {
       return createElement(
         "span",
-        { style: INBOX_GLYPH_HOST_STYLE },
+        { ref: intentRef, style: INBOX_GLYPH_HOST_STYLE },
         railSvg(createElement, glyph, size),
         createElement("span", {
           ref: badgeRef,
@@ -135,8 +163,9 @@ export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyp
   }
 
   if (glyph !== "inbox") {
+    const intentRef = createRailIntent(route);
     return function MulticaRailIcon({ size = 16 }: { size?: number }) {
-      return railSvg(createElement, glyph, size);
+      return railSvg(createElement, glyph, size, intentRef);
     };
   }
 
@@ -155,11 +184,16 @@ export function createRailIcon(createElement: HostCreateElement, glyph: RailGlyp
     detachDot?.();
     detachDot = null;
   };
+  const intentRef = createRailIntent(route);
+  const rootRef = (node: HTMLElement | null) => {
+    dotHostRef(node);
+    intentRef(node);
+  };
 
   return function MulticaRailIcon({ size = 16 }: { size?: number }) {
     return createElement(
       "span",
-      { ref: dotHostRef, style: INBOX_GLYPH_HOST_STYLE },
+      { ref: rootRef, style: INBOX_GLYPH_HOST_STYLE },
       railSvg(createElement, glyph, size),
       createElement("span", {
         // The hook-free store paints this node's `display` directly.
@@ -217,10 +251,12 @@ function railSvg(
   createElement: HostCreateElement,
   glyph: RailGlyph,
   size: number,
+  ref?: (node: Element | null) => void,
 ): unknown {
   return createElement(
     "svg",
     {
+      ref,
       width: size,
       height: size,
       viewBox: "0 0 24 24",

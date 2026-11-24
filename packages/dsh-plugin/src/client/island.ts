@@ -1,8 +1,9 @@
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useModalStore } from "../fork";
-import { IslandBoot } from "./island-app";
+import { IslandBoot, type RailEntryRequest } from "./island-app";
 import { BOARD_ROUTE, islandRouteKey, type IslandRoute } from "./navigation";
+import { familyOfRoute } from "./tabs";
 import { restoreShadowFocusGuards } from "./focus-guards";
 import {
   ISLAND_CSS,
@@ -63,6 +64,48 @@ export interface MountIslandOptions {
 }
 
 const handles = new WeakMap<HTMLElement, IslandHandle>();
+
+/**
+ * The reader's last rail click, waiting for the cell it will mount (M-552).
+ *
+ * A rail click is an event, not a state of the shell: dsh renders our icon
+ * inside its own row button and mounts the row's `main` cell, with no callback
+ * that says "the reader picked this row". Inferring it from the mount is what
+ * hijacked the tab strip: any re-attach or bounce of, say, the Agents cell
+ * replayed "Agents rail clicked" and focused the Agents tab over the tab the
+ * reader had switched to. The row's click listener records the intent here,
+ * and only `attachIsland` of the matching family consumes it.
+ *
+ * The TTL is only a safety net against a click that mounts nothing (a row the
+ * shell refuses to select): a stale request must not fire much later.
+ */
+const RAIL_REQUEST_TTL_MS = 5000;
+let railRequest: { route: IslandRoute; family: string; nonce: number; at: number } | null = null;
+let railNonce = 0;
+
+/** The reader clicked (or keyboard-activated) one of this plugin's rail rows. */
+export function requestRailEntry(route: IslandRoute): void {
+  railNonce += 1;
+  railRequest = {
+    route,
+    family: familyOfRoute(route),
+    nonce: railNonce,
+    at: Date.now(),
+  };
+}
+
+/** The pending rail request for `family`, if it is still fresh. */
+function takeRailRequest(family: string): RailEntryRequest | null {
+  const pending = railRequest;
+  if (pending === null) return null;
+  if (Date.now() - pending.at > RAIL_REQUEST_TTL_MS) {
+    railRequest = null;
+    return null;
+  }
+  if (pending.family !== family) return null;
+  railRequest = null;
+  return { route: pending.route, nonce: pending.nonce };
+}
 
 /** The host element of the document's single keep-alive island, once built. */
 let keepAlive: HTMLElement | null = null;
@@ -251,8 +294,10 @@ export function attachIsland(seat: HTMLElement, route: IslandRoute): void {
 
   handle.route = route;
   handle.attached = true;
+  // Only a recorded rail click is replayed — never a mount on its own.
+  const request = takeRailRequest(familyOfRoute(route));
   handle.root.render(
-    createElement(IslandBoot, { portalHost: handle.portalHost, route, attached: true }),
+    createElement(IslandBoot, { portalHost: handle.portalHost, route, attached: true, railRequest: request }),
   );
 }
 

@@ -7,6 +7,7 @@ import {
   isIslandMounted,
   islandHost,
   mountIsland,
+  requestRailEntry,
   resetIsland,
   startIsland,
   unmountIsland,
@@ -931,6 +932,8 @@ describe("mountIsland", () => {
     const configCalls = configRequests();
 
     await act(async () => {
+      // Moving rows is a rail click before it is a mount (M-552).
+      requestRailEntry({ view: "agents" });
       issues.remove();
       attachSeat(null, BOARD_ROUTE);
       attachSeat(agents, { view: "agents" });

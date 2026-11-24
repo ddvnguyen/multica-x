@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachIsland,
   islandHost,
+  requestRailEntry,
   resetIsland,
   unmountIsland,
 } from "../src/client/island";
@@ -134,6 +135,8 @@ describe("tab strip context menus (M-174)", () => {
     });
     // A second family joins the strip with an entry in the window history.
     await act(async () => {
+      // The rail row's click, then the cell the shell mounts for it (M-552).
+      requestRailEntry({ view: "agents" });
       attachIsland(seat, { view: "agents" });
     });
     await settle(() => {
