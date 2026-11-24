@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type * as React from "react";
 import { useStore } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { StoreApi } from "zustand/vanilla";
 import type { TabsState } from "./tabs";
 import { tabLabel } from "./tab-label";
@@ -476,7 +477,18 @@ export function TabBar({
   /** Host integration buttons (M-159 Files/Terminal), at the strip's right end. */
   headerExtras?: React.ReactNode;
 }) {
-  const state = useStore(tabsStore);
+  // Only what the strip draws: a whole-store subscription re-rendered it on
+  // every scroll-memento and view-state write, which happen while the reader
+  // scrolls (M-552).
+  const state = useStore(
+    tabsStore,
+    useShallow((s) => ({
+      tabs: s.tabs,
+      activeId: s.activeId,
+      entries: s.entries,
+      index: s.index,
+    })),
+  );
   const tabs = state.tabs;
   const activeId = state.activeId;
 
@@ -495,7 +507,7 @@ export function TabBar({
   // whether they have somewhere to go is the store's answer, not the active
   // tab's own stack.
   const canGoBack = navigation.canGoBack?.() ?? false;
-  const canGoForward = state.canGoForward();
+  const canGoForward = tabsStore.getState().canGoForward();
 
   // Drag-to-reorder (M-174). The drag lives on the strip, not the pressed
   // tab: once capture engages the browser retargets every pointer event to
