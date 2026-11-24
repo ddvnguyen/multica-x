@@ -17,6 +17,30 @@ EOF
 log() { printf '[deploy-main %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
 
+# One deploy at a time (M-556 option C): a second deploy sees the lock held
+# and aborts instead of racing the switch. This block runs BEFORE argument
+# parsing so "$@" is still whole for the re-exec below.
+#
+# The lock must never be held on an open fd inside this shell: every child
+# (podman, compose, conmon) inherits open fds, and conmon outlives the
+# deploy, so the lock would never free and every later tick/deploy would
+# refuse. Instead flock itself holds the lock and closes the fd on exec
+# (-o), so no descendant can ever inherit it.
+WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
+LOCK_FILE="${MULTICA_MAIN_LOCK_FILE:-$WORKSPACE_ROOT/multica-main-deploy.lock}"
+case "$LOCK_FILE" in "$WORKSPACE_ROOT"/*) ;; *) die "lock file must be under $WORKSPACE_ROOT" ;; esac
+if [ -z "${DEPLOY_MAIN_LOCKED:-}" ]; then
+  export DEPLOY_MAIN_LOCKED=1
+  # set +e: a conflicting lock makes flock exit non-zero, and the code must
+  # read it instead of letting errexit fire first.
+  set +e
+  flock -n -o -E 75 "$LOCK_FILE" bash "$0" "$@"
+  rc=$?
+  set -e
+  [ "$rc" -eq 75 ] && die "another deploy holds the lock ($LOCK_FILE); refusing to run concurrently"
+  exit "$rc"
+fi
+
 if [ "$#" -lt 3 ]; then usage >&2; exit 2; fi
 IMAGE_TAG="$1"
 EXPECTED_COMMIT="$2"
@@ -51,10 +75,8 @@ fi
 
 STACK_DIR="${MULTICA_MAIN_STACK_DIR:-$HOME/.local/share/multica}"
 ENV_FILE="$STACK_DIR/.env"
-WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
 CONTAINERS_ROOT="${MULTICA_MAIN_CONTAINERS_ROOT:-/mnt/containers}"
 BACKUP_ROOT="${MULTICA_MAIN_BACKUP_ROOT:-$WORKSPACE_ROOT/multica-main-backups}"
-LOCK_FILE="${MULTICA_MAIN_LOCK_FILE:-$WORKSPACE_ROOT/multica-main-deploy.lock}"
 PROC_ROOT="${MULTICA_MAIN_PROC_ROOT:-/proc}"
 BACKEND_PORT=""
 FRONTEND_PORT=""
@@ -97,13 +119,6 @@ assert_independent_runner() {
   done
 }
 assert_independent_runner
-
-# One deploy at a time: a second deploy (or the port-probe timer) sees the
-# lock held and aborts/skips instead of racing the switch. The port probe
-# honors this same lock file (M-556 option C).
-case "$LOCK_FILE" in "$WORKSPACE_ROOT"/*) ;; *) die "lock file must be under $WORKSPACE_ROOT" ;; esac
-exec 200>"$LOCK_FILE" || die "could not open lock file $LOCK_FILE"
-flock -n 200 || die "another deploy holds the lock ($LOCK_FILE); refusing to run concurrently"
 
 # A single daemon-status read can fail while the daemon restarts (M-556: "no
 # numeric active_task_count" aborted a release before any change). Retry
