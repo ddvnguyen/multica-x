@@ -6338,9 +6338,10 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot *taskSlotLease)
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
-	// S1-B (M-110): write the usage summary and session_ref back to moct-be.
-	// Never blocking: moct-be down/timeout/5xx logs a warning and continues.
-	moctRecordUsage(finalCtx, d.cfg.MoctBaseURL, task, result.SessionID, result.Usage, taskLog)
+	// M-353: usage/cost telemetry is reported to the server above via
+	// ReportTaskUsage and is deliberately NOT written to MOCT memory. A
+	// "Usage summary" decision on every run flooded the approval queue
+	// (343 of 354 pending records) without ever injecting useful memory.
 	// Step 13 of the memory loop: commit this run's outcome as a durable entry
 	// so the NEXT run's pre-run prepare recalls it instead of starting cold.
 	// Idempotent on the task id and never blocking, like every other seam call.

@@ -1215,6 +1215,20 @@ func writeInlineBlocksPolicy(b *strings.Builder) {
 	b.WriteString("\n**Charts and diagrams:** put them in the text as a fenced `html` or `mermaid` code block — it renders in place (name it with `title=\"...\"` after the language). An attached file, HTML included, shows as a card instead. Theming and sizing: the multica-platform issues reference.\n")
 }
 
+// writeMemoryNudge emits the durable-lesson nudge (M-353). Runs were only
+// ever writing per-run usage summaries to MOCT, which never injected, so
+// without this line the memory tank stays empty even when approval works.
+// Static text, so it stays in the prompt-cache prefix; the `moct` MCP tools
+// themselves are added per run by the daemon. Desktop prose and quick-create
+// are skipped.
+func writeMemoryNudge(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
+	if kind == kindQuickCreate || ctx.IsFreebuffDesktop {
+		return
+	}
+	b.WriteString("## Memory\n\n")
+	b.WriteString("Persist durable lessons with the `moct` MCP tool `memory_note` so future runs can recall them; pending notes need approval before they inject.\n\n")
+}
+
 // writeOutput emits the kind-specific Output section: the always-on delivery
 // invariant plus one per-surface file-delivery policy line per kind.
 func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
@@ -1355,6 +1369,8 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) (string, 
 	if kind.hasIssueContext() && ctx.IssueID != "" {
 		writeSubIssueCreation(&b, ctx)
 	}
+
+	writeMemoryNudge(&b, kind, ctx)
 
 	// Every kind, quick-create included. Quick-create used to be skipped here
 	// and carried its own names-only index in the workdir sidecar instead;
