@@ -17,6 +17,30 @@ EOF
 log() { printf '[deploy-main %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
 
+# One deploy at a time (M-556 option C): a second deploy sees the lock held
+# and aborts instead of racing the switch. This block runs BEFORE argument
+# parsing so "$@" is still whole for the re-exec below.
+#
+# The lock must never be held on an open fd inside this shell: every child
+# (podman, compose, conmon) inherits open fds, and conmon outlives the
+# deploy, so the lock would never free and every later tick/deploy would
+# refuse. Instead flock itself holds the lock and closes the fd on exec
+# (-o), so no descendant can ever inherit it.
+WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
+LOCK_FILE="${MULTICA_MAIN_LOCK_FILE:-$WORKSPACE_ROOT/multica-main-deploy.lock}"
+case "$LOCK_FILE" in "$WORKSPACE_ROOT"/*) ;; *) die "lock file must be under $WORKSPACE_ROOT" ;; esac
+if [ -z "${DEPLOY_MAIN_LOCKED:-}" ]; then
+  export DEPLOY_MAIN_LOCKED=1
+  # set +e: a conflicting lock makes flock exit non-zero, and the code must
+  # read it instead of letting errexit fire first.
+  set +e
+  flock -n -o -E 75 "$LOCK_FILE" bash "$0" "$@"
+  rc=$?
+  set -e
+  [ "$rc" -eq 75 ] && die "another deploy holds the lock ($LOCK_FILE); refusing to run concurrently"
+  exit "$rc"
+fi
+
 if [ "$#" -lt 3 ]; then usage >&2; exit 2; fi
 IMAGE_TAG="$1"
 EXPECTED_COMMIT="$2"
@@ -51,7 +75,6 @@ fi
 
 STACK_DIR="${MULTICA_MAIN_STACK_DIR:-$HOME/.local/share/multica}"
 ENV_FILE="$STACK_DIR/.env"
-WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
 CONTAINERS_ROOT="${MULTICA_MAIN_CONTAINERS_ROOT:-/mnt/containers}"
 BACKUP_ROOT="${MULTICA_MAIN_BACKUP_ROOT:-$WORKSPACE_ROOT/multica-main-backups}"
 PROC_ROOT="${MULTICA_MAIN_PROC_ROOT:-/proc}"
@@ -67,7 +90,7 @@ SWITCH_STARTED=0
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
 
-for cmd in awk cat chmod cp date df find grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
+for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 command -v curl >/dev/null 2>&1 || die "required command not found: curl"
@@ -96,6 +119,22 @@ assert_independent_runner() {
   done
 }
 assert_independent_runner
+
+# A single daemon-status read can fail while the daemon restarts (M-556: "no
+# numeric active_task_count" aborted a release before any change). Retry
+# briefly instead of dying on one bad read.
+daemon_active_count() { # prints the count, or nothing on failure
+  local tries=0 daemon_json count
+  while [ "$tries" -lt 5 ]; do
+    if daemon_json="$(multica daemon status --output json 2>/dev/null)"; then
+      count="$(jq -r '.active_task_count // empty' <<<"$daemon_json" 2>/dev/null || true)"
+      if [[ "$count" =~ ^[0-9]+$ ]]; then printf '%s' "$count"; return 0; fi
+    fi
+    tries=$((tries + 1))
+    sleep 3
+  done
+  return 1
+}
 
 read_env_value() { # $1 = key; prints only a simple KEY=value from the stack env
   awk -F= -v key="$1" '
@@ -205,9 +244,7 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-daemon_json="$(multica daemon status --output json)" || die "could not read daemon status"
-active_count="$(jq -r '.active_task_count // empty' <<<"$daemon_json")"
-[[ "$active_count" =~ ^[0-9]+$ ]] || die "daemon status has no numeric active_task_count"
+active_count="$(daemon_active_count)" || die "could not read numeric active_task_count from daemon status (5 tries)"
 # max-drain-seconds 0 (the CI/CD default, owner directive 2026-11-04) deploys
 # immediately: no wait for active tasks — stopping the daemon below cancels
 # them. A positive value waits for tasks to drain first.
@@ -216,9 +253,7 @@ if [ "$MAX_DRAIN_SECONDS" -gt 0 ]; then
   while [ "$active_count" -gt 0 ] && [ "$SECONDS" -lt "$deadline" ]; do
     log "waiting for $active_count active task(s) to drain"
     sleep 5
-    daemon_json="$(multica daemon status --output json)" || die "could not read daemon status while draining"
-    active_count="$(jq -r '.active_task_count // empty' <<<"$daemon_json")"
-    [[ "$active_count" =~ ^[0-9]+$ ]] || die "daemon status has no numeric active_task_count"
+    active_count="$(daemon_active_count)" || die "could not read daemon status while draining (5 tries)"
   done
   if [ "$active_count" -gt 0 ] && [ "$FORCE" != 1 ]; then
     die "drain timed out with $active_count active task(s); no changes made (pass --force to cancel them)"
@@ -312,6 +347,32 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 [ "$web_ok" = 1 ] || die "web did not return HTTP 200"
+
+# M-556 option C: the host side of each published port must answer, not just
+# the in-container healthchecks. A dead rootlessport forwarder looks healthy
+# from inside while the host port is dead. The probe may restart one
+# forwarder-dead container (rate-limited); it runs with the deploy lock held,
+# so it reports instead of skipping (PORT_PROBE_SKIP_LOCK=1).
+log "probing host-side published ports"
+PORT_PROBE_SKIP_LOCK=1 bash "$(dirname "${BASH_SOURCE[0]}")/stack-port-probe.sh" "$STACK_DIR" \
+  || die "host-side port probe failed after the switch; see above"
+
+# M-556: a backend that froze right after startup answers neither the host
+# nor the in-container probe, yet "started" fine — prove it is actually
+# serving by requiring a /healthz request in its log within 30s. The compose
+# healthcheck hits :8080/healthz every 5s, so a serving backend always leaves
+# this trace quickly after a switch.
+log "waiting for the backend to log a /healthz request (serving proof)"
+be_cid="$(podman ps -q \
+  --filter "label=com.docker.compose.project=$(basename "$STACK_DIR")" \
+  --filter 'label=com.docker.compose.service=backend' | head -1)"
+[ -n "$be_cid" ] || die "could not find the backend container after the switch"
+served=0
+for _ in $(seq 1 15); do
+  if podman logs --tail 100 "$be_cid" 2>&1 | grep -q 'healthz'; then served=1; break; fi
+  sleep 2
+done
+[ "$served" = 1 ] || die "backend logged no /healthz request within 30s of the switch; not provably serving"
 
 new_binary="$TMPDIR/multica.new"
 podman run --rm --network none --entrypoint cat "$BACKEND_IMAGE" /app/multica > "$new_binary"

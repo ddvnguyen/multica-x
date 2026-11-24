@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the host-port probe every 60 s (M-556 option C)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=multica-port-probe.service
+
+[Install]
+WantedBy=timers.target

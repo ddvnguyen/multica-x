@@ -12,6 +12,7 @@ WORKSPACE_ROOT="$SANDBOX/workspace"
 CONTAINERS_ROOT="$SANDBOX/containers"
 mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$STACK_DIR" "$WORKSPACE_ROOT" "$CONTAINERS_ROOT"
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+printf 'services: {}\n' > "$STACK_DIR/compose.yml"
 printf 'old daemon binary\n' > "$HOME_DIR/.local/bin/multica"
 chmod 755 "$HOME_DIR/.local/bin/multica"
 
@@ -37,8 +38,20 @@ case "$1 $2" in
     esac
     ;;
   'ps -q') printf 'ps -q:%s\n' "$PWD" >> "$STUB_LOG"; printf 'db-id\n' ;;
-  'compose up') printf 'compose up\n' >> "$STUB_LOG" ;;
+  'compose up')
+    printf 'compose up\n' >> "$STUB_LOG"
+    # Simulate conmon: a detached child that outlives the deploy and inherits
+    # every open fd. If the deploy holds the lock on an fd, this child keeps
+    # it locked after the script exits and the assertion below fails.
+    if [ "${LEAK_SLEEPER:-0}" = 1 ]; then
+      # Real sleep (not the stubbed one): this child must outlive the deploy.
+      setsid /bin/sleep 30 < /dev/null > /dev/null 2>&1 &
+    fi
+    ;;
+  'compose -f') printf 'cid-probe-stub\n' ;;
   'exec db-id') printf 'database dump bytes\n' ;;
+  'exec cid-probe-stub') exit 0 ;;
+  'logs '*) printf 'GET /healthz 200\n' ;;
   'run --rm') printf 'new daemon binary\n' ;;
   'images --format')
     # Lines look like: <repo> <tag> <date> <time> <tz> UTC. Empty by default
@@ -76,6 +89,7 @@ case "$url" in
     fi
     ;;
   */healthz) printf '{"status":"ok","checks":{"db":"ok","migrations":"ok"}}\n' ;;
+  */login) printf 'ok' ;;
   */) printf '200' ;;
   *) exit 91 ;;
 esac
@@ -94,6 +108,7 @@ export MULTICA_MAIN_CONTAINERS_ROOT="$CONTAINERS_ROOT"
 export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp/multica-main-deploy"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
+export PORT_PROBE_STATE_DIR="$SANDBOX/probe-state"
 export STUB_LOG="$SANDBOX/commands.log"
 export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567
@@ -201,6 +216,33 @@ output="$(run)"
 [[ "$output" == *"mount $WORKSPACE_ROOT has "*' GiB free'* ]]
 [[ "$output" == *"mount $CONTAINERS_ROOT has "*' GiB free'* ]]
 assert test -z "$(ls -A "$MULTICA_MAIN_TMPDIR")"
+
+# The deploy lock is never left held: the compose-up stub starts a detached
+# child (simulating conmon, which outlives the deploy) while LEAK_SLEEPER=1.
+# With the old `exec 200>` + `flock -n 200` pattern that child inherited the
+# lock fd, so the very next flock here failed; with the re-exec + `flock -o`
+# no descendant ever sees the fd.
+LOCK_FILE="$WORKSPACE_ROOT/multica-main-deploy.lock"
+LEAK_SLEEPER=1 run >/dev/null 2>&1
+# The 30s sleeper still runs here; if it inherited the lock the next line fails.
+assert flock -n "$LOCK_FILE" true
+# Reset the fixture: the leak run above is a successful deploy (new tag).
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+
+# A second deploy while the lock is held refuses with a clear message and
+# changes nothing (no re-exec recursion: the child sees DEPLOY_MAIN_LOCKED).
+(
+  exec 202>"$LOCK_FILE"
+  flock -n 202 || exit 1
+  /bin/sleep 30
+) &
+locker=$!
+/bin/sleep 0.5
+err="$(run 2>&1 || true)"
+[[ "$err" == *"another deploy holds the lock"* ]]
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+kill "$locker" 2>/dev/null || true
+wait "$locker" 2>/dev/null || true
 
 # FF_AGENT_ROLE_TYPE survives the MULTICA_IMAGE_TAG rewrite (M-539): the awk
 # update only touches the tag line, so a production flag set in the stack .env
