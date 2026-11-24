@@ -258,8 +258,10 @@ jobs:
           gh api "repos/${{ github.repository }}/git/refs/tags/production" \
             --jq .object.sha >/dev/null 2>&1 && exists=1 || exists=0
           if [ "$exists" = 1 ]; then
+            # -F (typed) so force arrives as a JSON boolean; -f sends the
+            # string "true" and GitHub answers HTTP 422 (M-556).
             gh api --method PATCH "repos/${{ github.repository }}/git/refs/tags/production" \
-              -f sha="$COMMIT" -f force=true >/dev/null
+              -f sha="$COMMIT" -F force=true >/dev/null
           else
             gh api --method POST "repos/${{ github.repository }}/git/refs" \
               -f ref=refs/tags/production -f sha="$COMMIT" >/dev/null
