@@ -623,7 +623,12 @@ describe("comment composers", () => {
     expect(screen.getByTestId("comment-composer-shell")).toHaveTextContent("Leave a comment...");
     activateComposer("comment-composer-shell");
     expect(screen.getByPlaceholderText("Leave a comment...")).toBeInTheDocument();
+    // At rest the box is one line: attach/mic inline, no toolbar row and no
+    // send — the same single line as a thread reply.
     expect(screen.getByRole("button", { name: "Attach file" })).toBeInTheDocument();
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    act(() => screen.getByTestId("editor").focus());
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(container.querySelectorAll("button")).toHaveLength(2);
 
     const shell = screen.getByTestId("drop-zone");
@@ -1552,9 +1557,9 @@ describe.each(["reply", "description"])("annotations in %s drafts", (source) => 
     useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation, note: "" });
     const onSubmit = vi.fn().mockResolvedValue(false);
     renderAnnotatedComposer(onSubmit);
-    // Nothing to send: the comment box keeps a blocked send, a reply rests as one line.
-    if (source === "description") expect(isSendBlocked(screen.getByRole("button", { name: "Send" }) as HTMLButtonElement)).toBe(true);
-    else expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    // Nothing to send: an empty note is not an annotation, so both composers
+    // rest as one line without a send button (the toolbar mounts on intent).
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /1 annotation/ })).not.toBeInTheDocument();
     act(() => { useCommentDraftStore.getState().addAnnotation(draftKey, { ...annotation, note: "New note" }); });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
