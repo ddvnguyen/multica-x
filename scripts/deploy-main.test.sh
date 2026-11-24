@@ -12,6 +12,7 @@ WORKSPACE_ROOT="$SANDBOX/workspace"
 CONTAINERS_ROOT="$SANDBOX/containers"
 mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$STACK_DIR" "$WORKSPACE_ROOT" "$CONTAINERS_ROOT"
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+printf 'services: {}\n' > "$STACK_DIR/compose.yml"
 printf 'old daemon binary\n' > "$HOME_DIR/.local/bin/multica"
 chmod 755 "$HOME_DIR/.local/bin/multica"
 
@@ -38,7 +39,9 @@ case "$1 $2" in
     ;;
   'ps -q') printf 'ps -q:%s\n' "$PWD" >> "$STUB_LOG"; printf 'db-id\n' ;;
   'compose up') printf 'compose up\n' >> "$STUB_LOG" ;;
+  'compose -f') printf 'cid-probe-stub\n' ;;
   'exec db-id') printf 'database dump bytes\n' ;;
+  'exec cid-probe-stub') exit 0 ;;
   'run --rm') printf 'new daemon binary\n' ;;
   'images --format')
     # Lines look like: <repo> <tag> <date> <time> <tz> UTC. Empty by default
@@ -76,6 +79,7 @@ case "$url" in
     fi
     ;;
   */healthz) printf '{"status":"ok","checks":{"db":"ok","migrations":"ok"}}\n' ;;
+  */login) printf 'ok' ;;
   */) printf '200' ;;
   *) exit 91 ;;
 esac
@@ -94,6 +98,7 @@ export MULTICA_MAIN_CONTAINERS_ROOT="$CONTAINERS_ROOT"
 export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp/multica-main-deploy"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
+export PORT_PROBE_STATE_DIR="$SANDBOX/probe-state"
 export STUB_LOG="$SANDBOX/commands.log"
 export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567

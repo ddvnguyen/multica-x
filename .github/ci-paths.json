@@ -106,6 +106,9 @@
   "scripts": [
     "scripts/deploy-main.sh",
     "scripts/deploy-main.test.sh",
+    "scripts/stack-port-probe.sh",
+    "scripts/stack-port-probe.test.sh",
+    "scripts/install-port-probe-timer.sh",
     "scripts/ci-green-run.sh",
     "scripts/ci-green-run.test.sh",
     ".goreleaser.yml",
