@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# scripts/lane-z/autodeploy.sh — pull-based CD for lane z (M-151).
+# scripts/lane-z/autodeploy.sh — pull-based CD for lane z (M-151, M-556).
 #
 # The host pulls; CI never reaches the lane. dsh-z-autodeploy.timer runs this
-# every 60 s as `ddv`. It asks GitHub for the newest SUCCESSFUL push run of CI
-# on multica-moct, compares that head SHA with the release lane z is actually
-# running (`multica-be/current/release.json`), and — only when they differ —
-# downloads that run's artifacts, backs the database up, installs the release,
-# migrates, switches, health-checks, and comments the evidence on the merged
-# PR's card.
+# every 60 s as `ddv`. It asks GitHub for the SHA the `production` tag points
+# at (moved by deploy-main.yml only after production is green on that SHA),
+# and — only when it differs from the release lane z is actually running
+# (`multica-be/current/release.json`) — downloads that SHA's CI artifacts,
+# backs the database up, installs the release, migrates, switches,
+# health-checks, and comments the evidence on the merged PR's card.
+#
+# M-556 (unified release): the lane follows the production pin, never the
+# branch head. A SHA production does not have is never installed, so the two
+# sides cannot drift. A lane z failure is reported and retried; it never rolls
+# back production.
 #
 # No rebuild: every artifact comes from CI. A missing or mismatched artifact is
 # a red report, never a local build.
 #
 # Invariants this script holds:
 #   * one deploy at a time (flock); a tick that loses the lock exits 0 quietly
-#   * newest SHA wins: the newest successful run is re-read after download, so
-#     a superseded SHA is dropped instead of deployed
+#   * pinned SHA wins: the production pin is re-read after download, so a
+#     superseded SHA is dropped instead of deployed
 #   * a SHA that already failed is not retried every minute (data/autodeploy.failed)
 #   * rollback switches binaries only — it NEVER restores the database. A
 #     pg_restore over a live DB silently loses every write since the dump; the
@@ -148,10 +153,14 @@ release_version() {
   jq -r '.version // "unknown"' "$LANE_ROOT/multica-be/current/release.json" 2>/dev/null || printf 'unknown'
 }
 
-newest_green() { # newest successful push run of CI on the branch, as JSON
-  gh run list --repo "$AUTODEPLOY_REPO" --workflow "$AUTODEPLOY_WORKFLOW" \
-    --branch "$AUTODEPLOY_BRANCH" --event push --status success --limit 1 \
-    --json headSha,databaseId,createdAt,updatedAt,url
+release_pin_sha() { # SHA the production tag points at, or empty
+  # M-556: deploy-main.yml moves this tag only after production is green on
+  # the SHA, so the lane follows one release both sides share. Empty when the
+  # tag is missing or unreachable — the tick skips instead of deploying head.
+  # Parsed with jq (not gh --jq) so the shape is identical everywhere gh
+  # answers, including the safety-test mock.
+  gh api "repos/$AUTODEPLOY_REPO/git/ref/tags/${AUTODEPLOY_PIN_REF:-production}" 2>/dev/null \
+    | jq -r '.object.sha // empty' 2>/dev/null || printf ''
 }
 
 run_for_sha() { # $1 = sha; run id of the successful push run for that sha
@@ -396,12 +405,15 @@ if [ -n "$FORCE_SHA" ]; then
   [ -n "$RUN_ID" ] || fail "no successful push run of $AUTODEPLOY_WORKFLOW on $AUTODEPLOY_BRANCH for $SHA"
   RUN_JSON="$(gh run view "$RUN_ID" --repo "$AUTODEPLOY_REPO" --json headSha,url,createdAt,updatedAt,conclusion)"
 else
-  # newest_green returns a one-element list; normalise it to the same object
-  # shape `gh run view` gives, so everything below reads one shape.
-  RUN_JSON="$(newest_green | jq '.[0] // empty')"
-  SHA="$(printf '%s' "$RUN_JSON" | jq -r '.headSha // empty')"
-  [ -n "$SHA" ] || { log "no successful push run found on $AUTODEPLOY_BRANCH"; exit 0; }
-  RUN_ID="$(printf '%s' "$RUN_JSON" | jq -r '.databaseId // empty')"
+  # M-556: follow the production pin, never the branch head. When the pin is
+  # unreachable the lane keeps running its current release — a deploy nobody
+  # can tie to production must not start.
+  PIN_SHA="$(release_pin_sha)"
+  [ -n "$PIN_SHA" ] || { log "production pin unreachable; skipping this tick (lane keeps running $(release_sha))"; exit 0; }
+  SHA="$PIN_SHA"
+  RUN_ID="$(run_for_sha "$SHA")"
+  [ -n "$RUN_ID" ] || { log "no successful push run of $AUTODEPLOY_WORKFLOW for pinned $SHA yet; skipping this tick"; exit 0; }
+  RUN_JSON="$(gh run view "$RUN_ID" --repo "$AUTODEPLOY_REPO" --json headSha,url,createdAt,updatedAt,conclusion)"
 fi
 RUN_URL="$(printf '%s' "$RUN_JSON" | jq -r '.url // empty')"
 RUN_STARTED="$(printf '%s' "$RUN_JSON" | jq -r '.createdAt // empty')"
@@ -459,7 +471,7 @@ fi
 
 ART="$LANE_ROOT/artifacts/$SHA"
 if [ "$DRY_RUN" = 1 ]; then
-  log "dry-run: newest green run on $AUTODEPLOY_BRANCH is ${SHA:0:9} (run $RUN_ID, $RUN_URL)"
+  log "dry-run: production pin is ${SHA:0:9} (run $RUN_ID, $RUN_URL)"
   log "dry-run: lane z runs $(release_sha) ($(release_version))"
   log "dry-run: artifacts in run $RUN_ID:"
   gh api "repos/$AUTODEPLOY_REPO/actions/runs/$RUN_ID/artifacts" \
@@ -507,9 +519,9 @@ log "artifact verified: sha $SHA, built $BUILT_AT"
 
 step "supersede-check"
 if [ -z "$FORCE_SHA" ]; then
-  NOW_NEWEST="$(newest_green | jq -r '.[0].headSha // empty')"
-  if [ "$NOW_NEWEST" != "$SHA" ]; then
-    log "a newer green SHA ($NOW_NEWEST) landed while downloading; dropping $SHA for the next tick"
+  NOW_PINNED="$(release_pin_sha)"
+  if [ "$NOW_PINNED" != "$SHA" ]; then
+    log "production pin moved (${SHA:0:9} -> ${NOW_PINNED:0:9}) while downloading; dropping $SHA for the next tick"
     rm -rf "$ART"
     exit 0
   fi

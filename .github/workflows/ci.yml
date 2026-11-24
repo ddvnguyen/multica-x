@@ -1272,6 +1272,9 @@ jobs:
       - name: Test main deploy script with stubbed host commands
         run: bash scripts/deploy-main.test.sh
 
+      - name: Test release SHA green-CI gate with stubbed gh
+        run: bash scripts/ci-green-run.test.sh
+
       - name: Test build output naming
         run: bash scripts/makefile-build.test.sh
 

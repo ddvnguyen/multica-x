@@ -18,6 +18,7 @@ AUTODEPLOY_WEBHOOK_FILE="$TEST_LANE_ROOT/webhook"
 AUTODEPLOY_REPO=ddvnguyen/multica-x
 AUTODEPLOY_BRANCH=multica-moct
 AUTODEPLOY_WORKFLOW=CI
+AUTODEPLOY_PIN_REF=production
 AUTODEPLOY_MIN_FREE_GB=0
 AUTODEPLOY_KEEP_RELEASES=5
 AUTODEPLOY_BACKUP_KEEP_COUNT=10
@@ -41,6 +42,10 @@ case "$1 $2" in
     ;;
   "api "*)
     case "${2:-}" in
+      repos/*/git/ref/tags/*)
+        [ "${TEST_PIN_FAIL:-0}" = 0 ] || exit 1
+        printf '{"object":{"sha":"%s"}}\n' "$TEST_TARGET_SHA"
+        ;;
       repos/*/compare/*)
         [ "${TEST_COMPARE_ERROR:-0}" = 0 ] || exit 1
         printf '{"status":"%s"}\n' "$TEST_COMPARE_STATUS"
@@ -115,11 +120,22 @@ grep -q 'could not compare target .*; skipping' "$SANDBOX/compare-error.log"
 test ! -e "$TEST_LANE_ROOT/data/autodeploy.failed"
 export TEST_COMPARE_ERROR=0
 
+# M-556: an unreachable production pin is a clean skip — the lane keeps its
+# current release and never installs a SHA production does not have.
+new_lane pin-unreachable
+export TEST_PIN_FAIL=1
+"$SANDBOX/bin/autodeploy.sh" --dry-run > "$SANDBOX/pin-unreachable.log" 2>&1
+grep -q 'production pin unreachable; skipping' "$SANDBOX/pin-unreachable.log"
+test ! -e "$TEST_LANE_ROOT/data/autodeploy.failed"
+test -z "$(find "$TEST_LANE_ROOT/backups" -type f -print -quit)"
+test -z "$(find "$TEST_LANE_ROOT/reports" -type f -print -quit 2>/dev/null || true)"
+export TEST_PIN_FAIL=0
+
 # A descendant target reaches dry-run planning and still touches no live service.
 new_lane ahead
 export TEST_COMPARE_STATUS=ahead
 "$SANDBOX/bin/autodeploy.sh" --dry-run > "$SANDBOX/ahead.log" 2>&1
-grep -q 'dry-run: newest green run' "$SANDBOX/ahead.log"
+grep -q 'dry-run: production pin is' "$SANDBOX/ahead.log"
 grep -q 'dry-run: would download' "$SANDBOX/ahead.log"
 test ! -e "$TEST_LANE_ROOT/data/autodeploy-comment.md"
 test -z "$(find "$TEST_LANE_ROOT/backups" -type f -print -quit)"
