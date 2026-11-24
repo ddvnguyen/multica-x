@@ -158,6 +158,36 @@ rc=0; out="$(run 2>&1)" || rc=$?
 test "$(grep -c '^cid-backend$' "$RESTART_LOG")" -eq 2
 unset STUCK
 
+# Restart-path recheck: the lock is free at tick start, but a deploy grabs it
+# before the restart. A counting flock stub makes the first probe (tick
+# start) pass and the second (pre-restart) see the lock held: the tick must
+# classify and capture, then refuse to restart or kill.
+rm -rf "$PORT_PROBE_STATE_DIR"
+: > "$RESTART_LOG"; : > "$KILL_LOG"
+mkdir -p "$SANDBOX/flockstub"
+cat > "$SANDBOX/flockstub/flock" <<'EOF'
+#!/usr/bin/env bash
+# First probe in a tick passes (lock free); every later probe in the same
+# tick sees the lock held (a deploy grabbed it mid-tick).
+n=0; [ -f "$FLOCK_COUNT" ] && n="$(cat "$FLOCK_COUNT")"
+printf '%s' "$((n + 1))" > "$FLOCK_COUNT"
+[ "$n" -eq 0 ]
+EOF
+chmod +x "$SANDBOX/flockstub/flock"
+export FLOCK_COUNT="$SANDBOX/flockcount"; rm -f "$FLOCK_COUNT"
+OLD_PATH="$PATH"
+export PATH="$SANDBOX/flockstub:$PATH"
+export HOST_BACKEND_OK=0 CONT_OK=1
+rc=0; out="$(run 2>&1)" || rc=$?
+export PATH="$OLD_PATH"
+[ "$rc" -ne 0 ]
+[[ "$out" == *"FORWARDER DEAD"* ]]
+[[ "$out" == *"NOT restarting mid-deploy"* ]]
+test ! -s "$RESTART_LOG"
+test ! -s "$KILL_LOG"
+export HOST_BACKEND_OK=1
+unset FLOCK_COUNT
+
 # Lock held by a deploy: the tick skips quietly, exit 0, no checks.
 (
   exec 201>"$MULTICA_MAIN_LOCK_FILE"

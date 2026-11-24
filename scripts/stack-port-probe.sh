@@ -165,6 +165,13 @@ stale_forwarder_pids() { # $1 = host port; pids of rootlessport listeners on it
 }
 
 restart_container() { # $1 = service, $2 = container id, $3 = host port
+  local svc="$1" cid="$2" hport="$3" pid
+  # Re-test the lock immediately before acting: a deploy may have started
+  # since the tick began. Never restart mid-deploy.
+  if deploy_locked; then
+    log "$svc: deploy lock held; NOT restarting mid-deploy"
+    return 1
+  fi
   # A stale forwarder can hold the host port even though it forwards nothing;
   # a plain restart then fails with "bind: address already in use" and the
   # container stays down. Kill the exact pids bound to the port first —
@@ -249,15 +256,24 @@ probe_service() { # $1 = service, $2 = host port, $3 = host path, $4 = container
 }
 
 # A deploy owns the stack while it holds this lock. The timer must never
-# restart a container mid-deploy; it skips the tick instead. deploy-main.sh
-# invokes the probe with PORT_PROBE_SKIP_LOCK=1 because it holds the lock
-# itself and wants the verdict, not the skip.
-if [ "${PORT_PROBE_SKIP_LOCK:-0}" != 1 ]; then
-  exec 200>"$LOCK_FILE" 2>/dev/null || die "cannot open lock file $LOCK_FILE"
-  if ! flock -n 200 2>/dev/null; then
-    log "deploy lock held; skipping this tick"
-    exit 0
+# restart a container mid-deploy. The probe never holds the lock itself —
+# holding it across the tick would leak the fd into restarted containers
+# (conmon outlives the probe) and would randomly fail deploys that land
+# mid-tick. Instead it tests the lock at tick start and re-tests
+# immediately before every restart, skipping whenever a deploy holds it.
+# deploy-main.sh invokes the probe with PORT_PROBE_SKIP_LOCK=1 because it
+# holds the lock itself and wants the verdict, not the skip.
+deploy_locked() { # true when a deploy currently holds the lock
+  [ "${PORT_PROBE_SKIP_LOCK:-0}" != 1 ] || return 1
+  if flock -n "$LOCK_FILE" true 2>/dev/null; then
+    return 1
   fi
+  return 0
+}
+
+if deploy_locked; then
+  log "deploy lock held; skipping this tick"
+  exit 0
 fi
 
 BACKEND_PORT="$(read_env BACKEND_PORT 3702)"
