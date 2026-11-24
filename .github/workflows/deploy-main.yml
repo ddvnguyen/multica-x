@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       source_ref:
-        description: Source branch or single-component tag (multica-moct or refs/tags/<tag>)
+        description: Source branch, single-component tag (multica-moct or refs/tags/<tag>), or full 40-char commit SHA for a unified release (M-556)
         required: true
         default: multica-moct
         type: string
@@ -51,7 +51,14 @@ jobs:
     runs-on: [self-hosted, linux, x64, multica-main]
     timeout-minutes: 2
     steps:
+      - name: Checkout branch head for comparison
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: multica-moct
+          fetch-depth: 0
+          fetch-tags: true
       - name: Reject disallowed dispatch ref and invalid inputs
+        id: resolve
         env:
           DISPATCH_REF: ${{ github.ref }}
           SOURCE_REF: ${{ inputs.source_ref }}
@@ -64,7 +71,23 @@ jobs:
           [[ "$DISPATCH_REF" == "refs/heads/multica-moct" || "$DISPATCH_REF" =~ ^refs/tags/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
             echo "::error::dispatch only from multica-moct or a tag"; exit 1;
           }
-          if [[ "$SOURCE_REF" != "multica-moct" ]]; then
+          # M-556: a unified release pins one SHA for production and lane z.
+          # source_ref accepts multica-moct, a tag, or a full 40-char commit
+          # SHA (release mode: the exact SHA Lead approved).
+          if [[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            git cat-file -e "$SOURCE_REF^{commit}" 2>/dev/null || {
+              echo "::error::source_ref SHA not found on multica-moct"; exit 1;
+            }
+            # The release SHA must already sit on multica-moct history so a
+            # foreign commit can never ship: it has to be merged first, which
+            # is what ran green CI on the branch. (The green-run gate itself
+            # lives in the green-ci job on ubuntu-latest, where gh is
+            # preinstalled; the self-hosted pool is not assumed to have it.)
+            git merge-base --is-ancestor "$SOURCE_REF" HEAD || {
+              echo "::error::source_ref SHA is not an ancestor of multica-moct; merge it first"; exit 1;
+            }
+            printf 'commit=%s\n' "$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          elif [[ "$SOURCE_REF" != "multica-moct" ]]; then
             [[ "$SOURCE_REF" =~ ^refs/tags/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
               echo "::error::source_ref must be multica-moct or refs/tags/<tag>"; exit 1;
             }
@@ -82,14 +105,47 @@ jobs:
             echo "::error::dry_run requires image_source=staged so it does not build or mutate host images"; exit 1
           fi
 
-  deploy:
-    name: Deploy Multica stack (drain=${{ inputs.drain_timeout_seconds }}s, force=${{ inputs.force }})
+  # M-556: a SHA release ships only with a green CI push run on multica-moct —
+  # otherwise lane z has no artifacts to install for it. Pull-request runs do
+  # not count (they publish no artifacts). Runs on ubuntu-latest, where gh is
+  # preinstalled. Branch/tag dispatches keep the previous behavior (no gate).
+  green-ci:
+    name: Require green CI on the release SHA
     needs: validate
     if: ${{ needs.validate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check for a successful push run of CI on the SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "source_ref is not a SHA; nothing to gate"
+            exit 0
+          fi
+          match="$(gh run list --repo "${{ github.repository }}" --workflow CI \
+            --branch multica-moct --event push --status success --limit 50 \
+            --json headSha --jq -r --arg sha "$SOURCE_REF" \
+            '[.[] | select(.headSha == $sha)] | length')"
+          [[ "$match" =~ ^[0-9]+$ ]] && [ "$match" -ge 1 ] || {
+            echo "::error::no successful CI push run for $SOURCE_REF on multica-moct"; exit 1;
+          }
+          echo "green CI push run confirmed for ${SOURCE_REF:0:9}"
+
+  deploy:
+    name: Deploy Multica stack (drain=${{ inputs.drain_timeout_seconds }}s, force=${{ inputs.force }})
+    needs: [validate, green-ci]
+    if: ${{ needs.validate.result == 'success' && needs.green-ci.result == 'success' }}
     runs-on: [self-hosted, linux, x64, multica-main]
     timeout-minutes: 180
     environment:
       name: main-prod
+    outputs:
+      commit: ${{ steps.buildmeta.outputs.commit }}
+      image_tag: ${{ inputs.image_tag }}
     env:
       TMPDIR: /mnt/workspace/tmp/multica-main-actions
     steps:
@@ -183,3 +239,45 @@ jobs:
           if [[ "$FORCE" == "true" ]]; then args+=(--force); fi
           if [[ "$DRY_RUN" == "true" ]]; then args+=(--dry-run); fi
           bash scripts/deploy-main.sh "${args[@]}"
+
+  # M-556: one release = one SHA. After production is green on the new SHA,
+  # move the `production` tag to it. Lane z autodeploy follows this tag —
+  # never the branch head — so both sides converge on the same commit.
+  # A lane z failure never rolls back production: this job already succeeded,
+  # and the lane retries the pinned SHA on its own timer. Rollback is a new
+  # release run with the previous SHA (production rollback itself is
+  # unchanged: deploy-main.sh restores .env + daemon binary on failure).
+  pin-production:
+    name: Pin production tag for lane z
+    needs: [validate, deploy]
+    if: ${{ needs.deploy.result == 'success' && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Move production tag to the deployed commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT: ${{ needs.deploy.outputs.commit }}
+          IMAGE_TAG: ${{ needs.deploy.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "::error::no deployed commit to pin"; exit 1; }
+          gh api "repos/${{ github.repository }}/git/refs/tags/production" \
+            --jq .object.sha >/dev/null 2>&1 && exists=1 || exists=0
+          if [ "$exists" = 1 ]; then
+            gh api --method PATCH "repos/${{ github.repository }}/git/refs/tags/production" \
+              -f sha="$COMMIT" -f force=true >/dev/null
+          else
+            gh api --method POST "repos/${{ github.repository }}/git/refs" \
+              -f ref=refs/tags/production -f sha="$COMMIT" >/dev/null
+          fi
+          {
+            printf '### Unified release\n\n'
+            printf -- '- Production: `%s` at commit `%s`\n' "$IMAGE_TAG" "$COMMIT"
+            printf -- '- Lane z pin: tag `production` now points at `%s`\n' "$COMMIT"
+            printf -- '- Lane z picks the pin up within ~60s (autodeploy timer).\n'
+            printf -- '- Verify: `/health` commit on :3702 and `:4390 /multica/health` must match.\n'
+            printf -- '- Rollback: re-run this workflow with the previous SHA; production rollback itself is unchanged.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

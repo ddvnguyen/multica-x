@@ -1,9 +1,20 @@
-# Lane z auto-deploy (M-151)
+# Lane z auto-deploy (M-151, M-556 unified release)
 
 Pull-based CD for lane z (`dsh-z`). CI never reaches the lane and nothing is
 exposed inbound: a `systemd --user` timer on the lane host asks GitHub for the
-newest **successful** push run of `CI` on `multica-moct`, and installs it when
-that head SHA differs from the release the lane is running.
+SHA the **`production` tag** points at — moved by `deploy-main.yml` only after
+production is green on that SHA — and installs it when that pinned SHA differs
+from the release the lane runs. The lane never follows the branch head, so a
+SHA production does not have is never installed and the two sides cannot drift.
+
+One release = one SHA (M-556): Lead dispatches `Deploy Multica` with
+`source_ref` set to the full 40-char SHA (which must already be merged on
+`multica-moct` with a green CI push run). The workflow deploys production
+first, then moves the `production` tag; the lane picks the pin up within ~60s.
+A lane z failure is reported and retried on its own timer — it never fails or
+rolls back production. Rollback is a new release run with the previous SHA
+(see below); there is deliberately no per-merge production deploy, because a
+production deploy cancels running agent tasks after the drain timeout.
 
 Every tick is one script, one lock, one log file:
 
@@ -77,15 +88,20 @@ rollback.sh --list                  # releases on disk, newest first
   local build.
 * **One deploy at a time.** `flock` on `data/autodeploy.lock`; a tick that
   loses the lock exits 0 without touching anything.
+* **The production pin is the only target.** The tick resolves
+  `repos/<repo>/git/ref/tags/<AUTODEPLOY_PIN_REF>` (`production`) and deploys
+  exactly that SHA. When the pin is unreachable the tick skips without touching
+  anything; when the pinned SHA has no green CI push run (no artifacts) yet it
+  also skips and retries next tick. `--sha` still overrides the pin for drills.
+* **Pinned SHA wins.** The pin is re-read after the download, so a SHA
+  superseded by a newer release mid-download is dropped for the next tick
+  instead of deployed.
 * **Targets only move forward.** Before inspecting artifacts, the target is
   compared with the running release through GitHub's compare API. Only
   `ahead` or `identical` is accepted; a behind, diverged, unknown, or failed
   comparison skips the tick without a dump or report. A target SHA that fails
   deployment is recorded in `data/autodeploy.failed` and is not retried on
   every tick. A successful deploy clears the marker.
-* **Newest SHA wins.** The newest green run is re-read after the download, so a
-  commit superseded mid-download is dropped for the next tick instead of
-  deployed.
 * **The database is backed up, never restored automatically.** `pg_dump -Fc`
   runs before any migration and its path goes into the evidence comment.
   Rolling back flips binaries only: `pg_restore` over a live database silently
@@ -129,10 +145,13 @@ the health assertion accepts either form of the same commit.
 
 * Logs: `$AUTODEPLOY_LOG_DIR/YYYYMMDDTHHMMSSZ.log`, one per tick, including the
   skipped ones.
-* `lane z already runs <sha>; nothing to do` — normal, the newest green run is
+* `production pin unreachable; skipping` — the tag is missing or the API call
+  failed. The lane keeps running its current release; fix the tag (re-run the
+  release workflow) instead of forcing a SHA.
+* `no successful push run ... for pinned <sha> yet` — the pin moved before CI
+  published artifacts. The tick retries on its own; do not force it.
+* `lane z already runs <sha>; nothing to do` — normal, the pinned SHA is
   already deployed.
-* `no successful push run found` — CI on `multica-moct` has no green push run
-  yet; a pull-request run does not count.
 * `no reporter webhook at ...` — `$AUTODEPLOY_WEBHOOK_FILE` is missing or empty.
   Rewrite the URL from `multica autopilot get <id> --show-secrets` (it is a
   credential: `chmod 600`, never commit it).
@@ -141,3 +160,15 @@ the health assertion accepts either form of the same commit.
 * `no merged PR with an M-NNN reference` — the commit came from a push with no
   PR; the deploy is still valid, there is just no card to report on.
 * Stop the timer while debugging: `systemctl --user stop dsh-z-autodeploy.timer`.
+
+## Rollback
+
+* **Production** (unchanged): `deploy-main.sh` restores `.env` and the old
+  daemon binary automatically when a deploy fails (`database.dump` is retained,
+  never restored automatically). To roll back a good deploy, re-run the
+  `Deploy Multica` workflow with `source_ref` set to the previous SHA — that
+  moves the `production` pin too, so lane z follows.
+* **Lane z**: binaries only, never the database —
+  `rollback.sh` / `rollback.sh --to <sha|path>` / `rollback.sh --list`.
+  The DB dump from the failed deploy is for a human to inspect, not to restore
+  automatically.
