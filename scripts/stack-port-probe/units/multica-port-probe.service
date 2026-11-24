@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe host-side published ports of the production stack (M-556 option C)
+
+[Service]
+Type=oneshot
+ExecStart=__BIN_DIR__/stack-port-probe.sh
+# The probe restarts at most one forwarder-dead container per service; the
+# journal of this unit is the evidence trail. State (rate-limit markers,
+# probe.log) lives under $PORT_PROBE_STATE_DIR.
+Nice=10
