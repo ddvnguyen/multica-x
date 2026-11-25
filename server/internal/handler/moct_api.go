@@ -15,17 +15,20 @@ import (
 
 // ProxyMoct forwards the closed MOCT read/approval allow-list after resolving
 // the caller's workspace membership. Scope and actor values are never accepted
-// from the browser. Purge is human-only on top of owner/admin: agent task
-// tokens are refused even when the agent's owner is an admin (M-570), because
-// moct-be itself reserves purge for the human and delete must stay deliberate.
+// from the browser. Create and purge are human-only on top of owner/admin:
+// agent task tokens bind X-User-ID to the runtime owner's user, so a member
+// check alone would let an agent file human-authored notes that skip the
+// approval gate — the machine credential is refused even when the agent's
+// owner is an admin (M-570). moct-be itself reserves purge for the human,
+// and delete must stay deliberate.
 func (h *Handler) ProxyMoct(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
 		return
 	}
-	if isMachineCredentialActor(r) && isMoctPurgeRequest(r) {
-		writeError(w, http.StatusForbidden, "deleting memory needs a human member with owner or admin role")
+	if isMachineCredentialActor(r) && (isMoctPurgeRequest(r) || isMoctCreateRequest(r)) {
+		writeError(w, http.StatusForbidden, "memory writes need a human member with owner or admin role")
 		return
 	}
 	identity := moctapi.Identity{WorkspaceID: workspaceID, ActorID: uuidToString(member.UserID), Admin: isWorkspaceAdmin(member)}
@@ -80,6 +83,22 @@ func isMoctPurgeRequest(r *http.Request) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// isMoctCreateRequest reports whether r targets the memory create route. The
+// match mirrors moctapi.match so the human-only gate cannot drift from the
+// route it guards.
+func isMoctCreateRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	segments := splitMoctPath(r.URL.Path)
+	for i := 0; i+2 < len(segments); i++ {
+		if segments[i] == "team" && segments[i+1] == "v1" && segments[i+2] == "memory" && i+3 == len(segments) {
+			return true
 		}
 	}
 	return false

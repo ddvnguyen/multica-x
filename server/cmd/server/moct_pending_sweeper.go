@@ -147,9 +147,15 @@ func sweepMoctPendingWorkspace(ctx context.Context, queries *db.Queries, bus *ev
 				_ = item
 			}
 		}
-		// The gate is stamped when at least one manager heard: a workspace
-		// whose managers all left still re-announces next round rather than
-		// silently dropping the record.
+		// The gate is stamped only when at least one manager heard: a failed
+		// round leaves the record unmarked so the next round retries instead
+		// of never re-announcing a still-pending record.
+		if !emitted {
+			slog.Warn("moct pending sweeper: no manager heard, record stays unannounced",
+				"workspace_id", util.UUIDToString(workspaceID),
+				"record_id", record.ID)
+			continue
+		}
 		if rows, err := queries.MarkMoctPendingNotified(ctx, db.MarkMoctPendingNotifiedParams{
 			WorkspaceID: workspaceID,
 			RecordID:    record.ID,
@@ -157,7 +163,7 @@ func sweepMoctPendingWorkspace(ctx context.Context, queries *db.Queries, bus *ev
 			slog.Warn("moct pending sweeper: stamp failed",
 				"workspace_id", util.UUIDToString(workspaceID),
 				"record_id", record.ID, "error", err)
-		} else if rows > 0 && emitted {
+		} else if rows > 0 {
 			notified++
 		}
 		seen[record.ID] = true

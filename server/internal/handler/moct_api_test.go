@@ -96,3 +96,27 @@ func TestIsMoctPurgeRequest(t *testing.T) {
 		})
 	}
 }
+
+// M-570: agent task tokens bind X-User-ID to the runtime owner's user, so
+// create-note needs the same machine-credential gate as purge — otherwise an
+// agent files human-authored notes that skip the approval gate.
+func TestIsMoctCreateRequest(t *testing.T) {
+	ws := "11111111-1111-4111-8111-111111111111"
+	collection := "/api/workspaces/" + ws + "/moct/team/v1/memory"
+	for _, tc := range []struct {
+		name, method, path string
+		want               bool
+	}{
+		{"create matches", http.MethodPost, collection, true},
+		{"get list is not create", http.MethodGet, collection, false},
+		{"get subpath is not create", http.MethodPost, collection + "/get", false},
+		{"purge is not create", http.MethodPost, collection + "/mem_1/purge", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			if got := isMoctCreateRequest(req); got != tc.want {
+				t.Fatalf("isMoctCreateRequest(%s %s) = %v, want %v", tc.method, tc.path, got, tc.want)
+			}
+		})
+	}
+}
