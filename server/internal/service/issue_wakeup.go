@@ -856,6 +856,10 @@ func (s *IssueWakeupService) runDispatch(ctx context.Context, w db.IssueWakeup, 
 		// After the dispatch committed, never inside it: dispatch holds row
 		// locks under a two-second budget, and a shadow call must not be able to
 		// spend any of it.
+		//
+		// Only a dispatch that succeeded is observed, so the table holds one row
+		// per run that will start. A failed dispatch started no run, and asking
+		// what that run would have done answers nothing.
 		shadow.Assess(snapshot)
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
