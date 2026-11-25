@@ -3389,6 +3389,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// leader's status moves by it (MUL-8145).
 		legacyRuntimeRules := !requestHasClientCapability(r, protocol.DaemonCapabilityWorkflowStatusRulesV1)
 		projectWorkflow := h.claimProjectWorkflow(r.Context(), issue, task, legacyRuntimeRules)
+		if records, err := h.Queries.ListCurrentIssueDecisionRecords(r.Context(), db.ListCurrentIssueDecisionRecordsParams{
+			WorkspaceID: issue.WorkspaceID,
+			IssueID:     issue.ID,
+		}); err != nil {
+			slog.Warn("task claim: failed to load current issue decisions for prompt injection",
+				"task_id", uuidToString(task.ID), "issue_id", uuidToString(issue.ID), "error", err)
+		} else {
+			for _, record := range records {
+				resp.DecisionRecords = append(resp.DecisionRecords, TaskDecisionRecordData{
+					ID: uuidToString(record.ID), Decided: record.Decided, Rationale: record.Rationale,
+				})
+			}
+		}
 		leaderWorkflow := leaderNoWorkflow
 		if projectWorkflow != nil {
 			leaderWorkflow = leaderWorkflowCurrentDaemon

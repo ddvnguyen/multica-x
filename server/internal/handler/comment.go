@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1439,11 +1440,13 @@ func keepRootConnected(byID map[string]db.Comment) []db.Comment {
 }
 
 type CreateCommentRequest struct {
-	Content          string   `json:"content"`
-	Type             string   `json:"type"`
-	ParentID         *string  `json:"parent_id"`
-	AttachmentIDs    []string `json:"attachment_ids"`
-	SuppressAgentIDs []string `json:"suppress_agent_ids"`
+	Content            string   `json:"content"`
+	Type               string   `json:"type"`
+	ParentID           *string  `json:"parent_id"`
+	RecordAsDecision   bool     `json:"record_as_decision"`
+	SupersedesRecordID *string  `json:"supersedes_record_id"`
+	AttachmentIDs      []string `json:"attachment_ids"`
+	SuppressAgentIDs   []string `json:"suppress_agent_ids"`
 	// SteerTaskIDs are the running turns the author chose to add this comment
 	// to, instead of starting a follow-up run for their agents. A turn that
 	// has ended, or cannot take additional input, is never swapped for another
@@ -1740,6 +1743,28 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	var supersedesRecordID pgtype.UUID
+	if req.SupersedesRecordID != nil && !req.RecordAsDecision {
+		writeError(w, http.StatusBadRequest, "supersedes_record_id requires record_as_decision")
+		return
+	}
+	if req.RecordAsDecision {
+		if authorType != "member" {
+			writeError(w, http.StatusForbidden, "only human actors can record decisions")
+			return
+		}
+		firstLine := strings.SplitN(req.Content, "\n", 2)[0]
+		if strings.TrimSpace(firstLine) == "" {
+			writeError(w, http.StatusBadRequest, "decision must start with a non-empty first line")
+			return
+		}
+		if req.SupersedesRecordID != nil {
+			supersedesRecordID, ok = parseUUIDOrBadRequest(w, *req.SupersedesRecordID, "supersedes_record_id")
+			if !ok {
+				return
+			}
+		}
+	}
 
 	// A running turn receives text only, so a comment that carries files is
 	// always a normal trigger. A member's explicit skill selection is the
@@ -1915,7 +1940,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	var created db.CreateCommentRow
 	var err error
-	if len(attachmentIDs) > 0 {
+	if len(attachmentIDs) > 0 || req.RecordAsDecision {
 		// A comment and the attachments it was posted with are one visible
 		// change, and one database outcome. Committing the comment first leaves
 		// a window in which it can gain a reply and be deleted into a
@@ -1938,6 +1963,20 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		defer tx.Rollback(r.Context())
 		qtx := h.Queries.WithTx(tx)
+		if req.RecordAsDecision && supersedesRecordID.Valid {
+			belongs, checkErr := qtx.IssueDecisionRecordExists(r.Context(), db.IssueDecisionRecordExistsParams{
+				ID: supersedesRecordID, WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+			})
+			if checkErr != nil {
+				slog.Warn("validate superseded decision failed", append(logger.RequestAttrs(r), "error", checkErr, "issue_id", issueID)...)
+				writeError(w, http.StatusInternalServerError, "failed to validate superseded decision")
+				return
+			}
+			if !belongs {
+				writeError(w, http.StatusBadRequest, "supersedes_record_id is not a decision on this issue")
+				return
+			}
+		}
 		var unboundIDs []pgtype.UUID
 		unboundIDs, err = qtx.LockUnboundAttachmentsForCommentLink(r.Context(), db.LockUnboundAttachmentsForCommentLinkParams{
 			WorkspaceID:   issue.WorkspaceID,
@@ -1962,6 +2001,18 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 				AttachmentIds: attachmentIDs,
 			})
 		}
+		if err == nil && req.RecordAsDecision {
+			parts := strings.SplitN(req.Content, "\n", 2)
+			rationale := ""
+			if len(parts) == 2 {
+				rationale = strings.TrimSpace(parts[1])
+			}
+			err = qtx.CreateIssueDecisionRecord(r.Context(), db.CreateIssueDecisionRecordParams{
+				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+				CommentID: created.ID, Decided: strings.TrimSpace(parts[0]), Rationale: rationale,
+				SupersedesID: supersedesRecordID, SourceKind: "comment", ActorID: parseUUID(authorID),
+			})
+		}
 		if err == nil {
 			err = tx.Commit(r.Context())
 		}
@@ -1976,6 +2027,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if req.RecordAsDecision && errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "issue_decision_record_supersedes_idx" {
+			writeError(w, http.StatusBadRequest, "supersedes_record_id has already been replaced")
+			return
+		}
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return

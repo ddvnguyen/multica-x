@@ -1920,6 +1920,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// plan read: the old text is already the member's to see.
 					r.Get("/plans/{planId}/revisions/{revision}", h.GetPlanRevision)
 					r.Get("/issues/{issueId}/ask-plan", h.GetIssueAskPlan)
+					r.Get("/issues/{issueId}/decision-records", h.ListIssueDecisionRecords)
 					r.With(handler.RequireHumanActor).Post("/issues/{issueId}/decision-response", h.DecisionResponse)
 					r.Get("/decisions", h.ListDecisions)
 					r.Get("/decisions/{kind}/{sourceId}", h.GetDecisionDetail)

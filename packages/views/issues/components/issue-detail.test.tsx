@@ -352,6 +352,7 @@ const mockApiObj = vi.hoisted(() => ({
   deleteIssue: vi.fn(),
   updateIssue: vi.fn(),
   listIssueSubscribers: vi.fn().mockResolvedValue([]),
+  listIssueDecisionRecords: vi.fn().mockResolvedValue([]),
   subscribeToIssue: vi.fn().mockResolvedValue(undefined),
   unsubscribeFromIssue: vi.fn().mockResolvedValue(undefined),
   unsubscribeFromIssueSubtree: vi.fn().mockResolvedValue(undefined),
@@ -862,6 +863,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listComments.mockResolvedValue([]);
     mockApiObj.listIssueReactions.mockResolvedValue([]);
     mockApiObj.listIssueSubscribers.mockResolvedValue([]);
+    mockApiObj.listIssueDecisionRecords.mockResolvedValue([]);
     mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
     mockApiObj.getChildIssueProgress.mockResolvedValue({ progress: [] });
     mockApiObj.getAgentTaskSnapshot.mockResolvedValue([]);
@@ -1249,6 +1251,21 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByTestId("title-editor")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("rich-text-editor")).toHaveLength(1);
     expect(contentEditorMounts.count).toBe(1);
+  });
+
+  it("shows replaced Owner decisions dimmed and names the replacement", async () => {
+    mockApiObj.listIssueDecisionRecords.mockResolvedValue([
+      { id: "decision-old", issue_id: "issue-1", comment_id: "comment-old", decided: "Deploy Friday", rationale: "Initial plan", supersedes_id: null, superseded_by_id: "decision-new", source_kind: "comment", actor_id: "user-1", created_at: "2026-11-01T00:00:00Z" },
+      { id: "decision-new", issue_id: "issue-1", comment_id: "comment-new", decided: "Deploy Monday", rationale: "Updated plan", supersedes_id: "decision-old", superseded_by_id: null, source_kind: "comment", actor_id: "user-1", created_at: "2026-11-02T00:00:00Z" },
+    ]);
+    renderIssueDetail();
+
+    const heading = await screen.findByRole("heading", { name: "Owner decisions" });
+    expect(heading).toBeInTheDocument();
+    expect(screen.getByText("Deploy Friday")).toBeInTheDocument();
+    expect(screen.getByText("Deploy Monday")).toBeInTheDocument();
+    expect(screen.getByText("Superseded by “Deploy Monday”")).toBeInTheDocument();
+    expect(screen.getByText("Deploy Friday").closest("li")).toHaveClass("opacity-50");
   });
 
   it("reconciles a cached list snapshot so source context appears on first entry", async () => {
