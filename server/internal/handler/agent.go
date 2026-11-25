@@ -390,6 +390,14 @@ type TaskProjectWorkflowData struct {
 	stepMoved bool
 }
 
+// TaskDecisionRecordData is the current Owner-authored decision context for
+// an issue task. It mirrors the CLI's current decision read response.
+type TaskDecisionRecordData struct {
+	ID        string `json:"id"`
+	Decided   string `json:"decided"`
+	Rationale string `json:"rationale"`
+}
+
 // ClaimParentIssue points a sub-issue's run at its parent issue, where the
 // discussion that produced the sub-issue lives. Identifier is empty when the
 // workspace prefix could not be loaded; the daemon then names the parent by ID.
@@ -468,6 +476,7 @@ type AgentTaskResponse struct {
 	// ProjectWorkflow is the issue's project workflow, when it has one other
 	// than the Default (MUL-7420). Absent keeps the brief unchanged.
 	ProjectWorkflow    *TaskProjectWorkflowData `json:"project_workflow,omitempty"`
+	DecisionRecords    []TaskDecisionRecordData `json:"decision_records,omitempty"`
 	ThreadName         string                   `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
 	Status             string                   `json:"status"`
 	Priority           int32                    `json:"priority"`
