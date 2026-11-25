@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/moctapi"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dshsession"
 )
 
 // ProxyMoct forwards the closed MOCT read/approval allow-list after resolving
@@ -130,11 +131,25 @@ func (h *Handler) GetTaskMemoryReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	memory := memoryReportPart(task.Result)
-	// M-132 E3: the on-demand memory tools this run called, from its own stored
-	// transcript. A failed read is reported as unavailable, never as "no calls".
+	// M-578 (M-132 E3 revalidation): on dsh-sunk runs the daemon reports only
+	// `question` rows, so the row transcript carries no tool calls — the run's
+	// own session store is the transcript. Read it the same way the run
+	// dialog does and translate to tool rows before extracting memory calls;
+	// a failed read stays unavailable, never "no calls".
 	tools := memoryToolsReport{Available: false, Calls: []memoryToolCall{}}
-	if rows, err := h.Queries.ListTaskMessages(r.Context(), task.ID); err == nil {
-		tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(rows)}
+	if h.dshSessionStore != "" {
+		workDir := ""
+		if task.WorkDir.Valid {
+			workDir = strings.TrimSpace(task.WorkDir.String)
+		}
+		if events, err := dshsession.ReadTranscript(h.dshSessionStore, workDir, task.SessionID.String); err == nil {
+			tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(dshEntriesToTaskMessages(dshsession.Translate(events)))}
+		}
+	}
+	if !tools.Available {
+		if rows, err := h.Queries.ListTaskMessages(r.Context(), task.ID); err == nil {
+			tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(rows)}
+		}
 	}
 	writeJSON(w, http.StatusOK, struct {
 		TaskID      string            `json:"task_id"`

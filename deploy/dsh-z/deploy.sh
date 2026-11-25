@@ -214,6 +214,12 @@ umask 077
   # it. dsh-z.env (lane-z only) is the single source of truth; default to true
   # so a stale/partial env cannot silently turn the Role subtype back off.
   echo "FF_AGENT_ROLE_TYPE=${FF_AGENT_ROLE_TYPE:-true}"
+  # M-578: dsh session seam (M-132 E1/E3 revalidation). These two are the only
+  # operator-facing dsh knobs the server reads; dsh-z.env (lane-z only) is the
+  # single source of truth and they default to empty (no link, legacy rows) so
+  # a stale/partial env cannot point the lane at the wrong dsh app or store.
+  echo "MULTICA_DSH_WEB_URL=${MULTICA_DSH_WEB_URL:-}"
+  echo "MULTICA_DSH_SESSION_STORE=${MULTICA_DSH_SESSION_STORE:-}"
 } > "$LANE_ROOT/multica-be/env"
 umask 022
 grep -q '^FF_AGENT_ROLE_TYPE=' "$LANE_ROOT/multica-be/env" \
