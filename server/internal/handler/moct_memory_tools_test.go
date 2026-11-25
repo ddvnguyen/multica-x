@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dshsession"
 )
 
 func text(v string) pgtype.Text { return pgtype.Text{String: v, Valid: v != ""} }
@@ -133,5 +134,23 @@ func TestMemoryToolName(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Fatalf("memoryToolName(%q) = (%q, %v), want (%q, %v)", tc.tool, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+func TestDshEntriesToTaskMessagesKeepsMemoryCalls(t *testing.T) {
+	entries := []dshsession.Entry{
+		{Seq: 1, Type: "text", Content: "hello from dsh"},
+		{Seq: 2, Type: "tool_use", Tool: "mcp__moct__memory_search", CallID: "call_1", Input: `{"q":"tier"}`},
+		{Seq: 3, Type: "tool_result", CallID: "call_1", Output: `{"records":[]}`},
+		{Seq: 4, Type: "tool_use", Tool: "Bash", CallID: "call_2", Input: `{"command":"ls"}`},
+		{Seq: 5, Type: "thinking", Content: "considering"},
+	}
+	rows := dshEntriesToTaskMessages(entries)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 2 tool_use + 1 tool_result", len(rows))
+	}
+	calls := memoryToolCalls(rows)
+	if len(calls) != 1 || calls[0].Name != "memory_search" || !calls[0].HasResult {
+		t.Fatalf("calls = %+v, want the one memory_search with its result", calls)
 	}
 }

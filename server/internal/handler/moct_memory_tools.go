@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dshsession"
 )
 
 // memoryToolNames are the three on-demand MOCT memory tools the daemon adds to
@@ -107,6 +109,35 @@ func memoryToolCalls(rows []db.TaskMessage) []memoryToolCall {
 		calls = append(calls, call)
 	}
 	return calls
+}
+
+// dshEntriesToTaskMessages converts translated dsh session entries to the
+// task-message row shape memoryToolCalls reads, so the on-demand memory
+// report covers dsh-sunk runs whose daemon reports no tool rows (M-578).
+// Only tool_use/tool_result entries convert; text, thinking, error and
+// question rows never reach memoryToolCalls.
+func dshEntriesToTaskMessages(entries []dshsession.Entry) []db.TaskMessage {
+	rows := make([]db.TaskMessage, 0, len(entries))
+	for _, e := range entries {
+		switch e.Type {
+		case "tool_use":
+			rows = append(rows, db.TaskMessage{
+				Seq:    int32(e.Seq),
+				Type:   "tool_use",
+				Tool:   pgtype.Text{String: e.Tool, Valid: e.Tool != ""},
+				CallID: pgtype.Text{String: e.CallID, Valid: e.CallID != ""},
+				Input:  []byte(e.Input),
+			})
+		case "tool_result":
+			rows = append(rows, db.TaskMessage{
+				Seq:    int32(e.Seq),
+				Type:   "tool_result",
+				CallID: pgtype.Text{String: e.CallID, Valid: e.CallID != ""},
+				Output: pgtype.Text{String: e.Output, Valid: e.Output != ""},
+			})
+		}
+	}
+	return rows
 }
 
 // memoryResultText bounds one stored text for the response and reports whether
