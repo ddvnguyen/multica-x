@@ -1661,6 +1661,12 @@ type MemberDelegationDay struct {
 	ActivityDate pgtype.Date `json:"activity_date"`
 }
 
+type MoctPendingNotified struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecordID    string             `json:"record_id"`
+	NotifiedAt  pgtype.Timestamptz `json:"notified_at"`
+}
+
 type ModelTier struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -14,11 +15,17 @@ import (
 
 // ProxyMoct forwards the closed MOCT read/approval allow-list after resolving
 // the caller's workspace membership. Scope and actor values are never accepted
-// from the browser.
+// from the browser. Purge is human-only on top of owner/admin: agent task
+// tokens are refused even when the agent's owner is an admin (M-570), because
+// moct-be itself reserves purge for the human and delete must stay deliberate.
 func (h *Handler) ProxyMoct(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 	if !ok {
+		return
+	}
+	if isMachineCredentialActor(r) && isMoctPurgeRequest(r) {
+		writeError(w, http.StatusForbidden, "deleting memory needs a human member with owner or admin role")
 		return
 	}
 	identity := moctapi.Identity{WorkspaceID: workspaceID, ActorID: uuidToString(member.UserID), Admin: isWorkspaceAdmin(member)}
@@ -48,6 +55,45 @@ func (h *Handler) ProxyMoct(w http.ResponseWriter, r *http.Request) {
 		rest = rest[len(prefix):]
 	}
 	moctapi.New(os.Getenv("MOCT_BASE_URL")).Serve(w, r, identity, rest)
+}
+
+// isMoctPurgeRequest reports whether r targets the memory purge route. The
+// match mirrors moctapi.match so the human-only gate cannot drift from the
+// route it guards.
+func isMoctPurgeRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	segments := splitMoctPath(r.URL.Path)
+	for i := 0; i+4 < len(segments); i++ {
+		if segments[i] == "team" && segments[i+1] == "v1" && segments[i+2] == "memory" && segments[i+4] == "purge" {
+			id := segments[i+3]
+			if len(id) >= 1 && len(id) <= 64 {
+				ok := true
+				for _, c := range id {
+					if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+						ok = false
+						break
+					}
+				}
+				if ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func splitMoctPath(p string) []string {
+	raw := strings.Split(strings.Trim(p, "/"), "/")
+	out := raw[:0]
+	for _, s := range raw {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // GetTaskMemoryReport returns the persisted memory part of a run's initial

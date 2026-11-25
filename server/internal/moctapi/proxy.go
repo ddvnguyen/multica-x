@@ -143,7 +143,130 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, identity Identity,
 		body, _ = json.Marshal(input)
 		method = http.MethodPost
 		target = "/team/v1/memory/get?" + query.Encode()
-	case "versions", "approve", "retract":
+	case "create":
+		if !identity.Admin {
+			writeError(w, http.StatusForbidden, "adding a memory note needs a workspace owner or admin")
+			return
+		}
+		data, err := readBody(r)
+		if err != nil {
+			writeError(w, err.status, err.message)
+			return
+		}
+		var input struct {
+			Type     string         `json:"type"`
+			Title    string         `json:"title"`
+			Body     string         `json:"body"`
+			Attrs    map[string]any `json:"attrs,omitempty"`
+			HomeKind string         `json:"homeKind"`
+			HomeRef  string         `json:"homeRef"`
+		}
+		if json.Unmarshal(data, &input) != nil {
+			writeError(w, 400, "title, body, type and home are required")
+			return
+		}
+		noteType := strings.TrimSpace(input.Type)
+		switch noteType {
+		case "decision", "rule", "how_to_work":
+		default:
+			writeError(w, 400, "type must be decision, rule or how_to_work")
+			return
+		}
+		if strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Body) == "" {
+			writeError(w, 400, "title, body, type and home are required")
+			return
+		}
+		if len(input.Title) > 500 || len(input.Body) > 20000 {
+			writeError(w, 400, "title must be at most 500 characters and body at most 20000")
+			return
+		}
+		homeKind := strings.TrimSpace(input.HomeKind)
+		homeRef := strings.TrimSpace(input.HomeRef)
+		if homeKind == "" || homeRef == "" {
+			if homeKind == "" && homeRef == "" {
+				homeKind = "team"
+				homeRef = "multica:ws:" + identity.WorkspaceID
+			} else {
+				writeError(w, 400, "title, body, type and home are required")
+				return
+			}
+		}
+		switch homeKind {
+		case "team":
+			if homeRef != "multica:ws:"+identity.WorkspaceID {
+				writeError(w, http.StatusNotFound, "no such home in this workspace")
+				return
+			}
+		case "task":
+			issueID, ok := strings.CutPrefix(homeRef, "multica:issue:")
+			if !ok || !uuid.MatchString(issueID) {
+				writeError(w, 400, "task home must be a multica:issue ref")
+				return
+			}
+			if noteType == "decision" {
+				if input.Attrs == nil {
+					writeError(w, 400, "a decision needs its decidedBy and sourceRef attributes")
+					return
+				}
+				decidedBy, _ := input.Attrs["decidedBy"].(string)
+				sourceRef, _ := input.Attrs["sourceRef"].(string)
+				if strings.TrimSpace(decidedBy) == "" || strings.TrimSpace(sourceRef) == "" {
+					writeError(w, 400, "a decision needs its decidedBy and sourceRef attributes")
+					return
+				}
+			}
+			if noteType != "decision" {
+				writeError(w, 400, "an issue home takes a decision only")
+				return
+			}
+		case "channel":
+			projectID, ok := strings.CutPrefix(homeRef, "multica:project:")
+			if !ok || !uuid.MatchString(projectID) {
+				writeError(w, 400, "channel home must be a multica:project ref")
+				return
+			}
+			if noteType != "decision" && noteType != "rule" && noteType != "how_to_work" {
+				writeError(w, 400, "a project home takes a decision, rule or how_to_work")
+				return
+			}
+			if noteType == "rule" && !validRuleLevel(input.Attrs) {
+				writeError(w, 400, "a rule needs attrs.level must or should")
+				return
+			}
+		default:
+			writeError(w, 400, "homeKind must be team, task or channel")
+			return
+		}
+		if homeKind == "team" {
+			switch noteType {
+			case "rule":
+				if !validRuleLevel(input.Attrs) {
+					writeError(w, 400, "a rule needs attrs.level must or should")
+					return
+				}
+			case "how_to_work":
+				writeError(w, 400, "how_to_work cannot live in the workspace home; file it on a project")
+				return
+			case "decision":
+				writeError(w, 400, "a decision needs an issue home")
+				return
+			}
+		}
+		payload := map[string]any{
+			"type":        noteType,
+			"title":       strings.TrimSpace(input.Title),
+			"body":        input.Body,
+			"home":        map[string]string{"kind": homeKind, "ref": homeRef},
+			"workspaceId": "multica:ws:" + identity.WorkspaceID,
+			"actor":       map[string]string{"kind": "human", "id": "multica:user:" + identity.ActorID},
+		}
+		if len(input.Attrs) > 0 {
+			payload["attrs"] = input.Attrs
+		}
+		body, _ = json.Marshal(payload)
+		method = http.MethodPost
+		target = "/team/v1/memory?" + query.Encode()
+	case "versions", "approve", "retract", "purge":
 		found, wsID, err := p.lookup(r.Context(), identity, route.id)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "memory lookup failed")
@@ -163,48 +286,65 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, identity Identity,
 				return
 			}
 			if !identity.Admin {
-				writeError(w, http.StatusForbidden, "approving memory needs a workspace owner or admin")
+				if route.kind == "purge" {
+					writeError(w, http.StatusForbidden, "deleting memory needs a workspace owner or admin")
+				} else {
+					writeError(w, http.StatusForbidden, "approving memory needs a workspace owner or admin")
+				}
 				return
 			}
-			data, err := readBody(r)
-			if err != nil {
-				writeError(w, err.status, err.message)
-				return
+			if route.kind == "purge" {
+				body, _ = json.Marshal(map[string]any{"actor": map[string]string{"kind": "human", "id": "multica:user:" + identity.ActorID}})
+			} else {
+				data, err := readBody(r)
+				if err != nil {
+					writeError(w, err.status, err.message)
+					return
+				}
+				var input struct {
+					BaseVersion int    `json:"baseVersion"`
+					Reason      string `json:"reason"`
+				}
+				if json.Unmarshal(data, &input) != nil || input.BaseVersion < 1 {
+					writeError(w, 400, "baseVersion must be the version you were shown")
+					return
+				}
+				if len(input.Reason) > 500 {
+					writeError(w, 400, "reason must be a string of at most 500 characters")
+					return
+				}
+				payload := map[string]any{"baseVersion": input.BaseVersion, "actor": map[string]string{"kind": "human", "id": "multica:user:" + identity.ActorID}}
+				if strings.TrimSpace(input.Reason) != "" {
+					payload["reason"] = strings.TrimSpace(input.Reason)
+				}
+				body, _ = json.Marshal(payload)
 			}
-			var input struct {
-				BaseVersion int    `json:"baseVersion"`
-				Reason      string `json:"reason"`
-			}
-			if json.Unmarshal(data, &input) != nil || input.BaseVersion < 1 {
-				writeError(w, 400, "baseVersion must be the version you were shown")
-				return
-			}
-			if len(input.Reason) > 500 {
-				writeError(w, 400, "reason must be a string of at most 500 characters")
-				return
-			}
-			payload := map[string]any{"baseVersion": input.BaseVersion, "actor": map[string]string{"kind": "human", "id": "multica:user:" + identity.ActorID}}
-			if strings.TrimSpace(input.Reason) != "" {
-				payload["reason"] = strings.TrimSpace(input.Reason)
-			}
-			body, _ = json.Marshal(payload)
 		}
 		method = http.MethodGet
 		if route.kind != "versions" {
 			method = http.MethodPost
 		}
 		target = "/team/v1/memory/" + url.PathEscape(route.id)
-		if route.kind != "versions" {
-			target += "/" + route.kind
-		}
 		if route.kind == "versions" {
 			target += "/versions"
+		} else {
+			target += "/" + route.kind
 		}
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	p.relay(w, r, method, target, body)
+}
+
+// validRuleLevel reports whether attrs carries the level moct-be requires on
+// a rule: must or should, nothing else.
+func validRuleLevel(attrs map[string]any) bool {
+	if attrs == nil {
+		return false
+	}
+	level, _ := attrs["level"].(string)
+	return level == "must" || level == "should"
 }
 
 type matchedRoute struct{ kind, id string }
@@ -222,6 +362,9 @@ func match(method, path string) (matchedRoute, int) {
 	if len(parts) == 3 && parts[0] == "team" && parts[1] == "v1" && parts[2] == "memory" {
 		if get {
 			return matchedRoute{kind: "list"}, 0
+		}
+		if post {
+			return matchedRoute{kind: "create"}, 0
 		}
 		return matchedRoute{}, 404
 	}
@@ -254,6 +397,11 @@ func match(method, path string) (matchedRoute, int) {
 		case "retract":
 			if post {
 				return matchedRoute{kind: "retract", id: parts[3]}, 0
+			}
+			return matchedRoute{}, 405
+		case "purge":
+			if post {
+				return matchedRoute{kind: "purge", id: parts[3]}, 0
 			}
 			return matchedRoute{}, 405
 		}
