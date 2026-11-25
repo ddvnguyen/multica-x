@@ -50,7 +50,7 @@ die() { log "ERROR: $*"; exit 1; }
 [ -d "$STACK_DIR" ] || die "stack directory not found: $STACK_DIR"
 [ -f "$STACK_DIR/.env" ] || die "stack environment file not found: $STACK_DIR/.env"
 [ -f "$STACK_DIR/compose.yml" ] || die "compose file not found: $STACK_DIR/compose.yml"
-for cmd in awk curl jq podman systemd-run; do
+for cmd in awk curl jq podman; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 
@@ -197,14 +197,18 @@ restart_container() { # $1 = service, $2 = container id, $3 = host port
   if podman restart "$cid" >/dev/null 2>&1 && container_running "$cid"; then
     return 0
   fi
-  log "$svc: restart failed or container still stopped; recreating via systemd"
+  log "$svc: restart failed or container still stopped; recreating via compose up"
   recreate_container "$svc" "$cid" || return 1
 }
 
-# Last-resort heal: remove the stuck container and bring it back through a
-# transient systemd unit, like the deploy does — detached from any job shell
-# so no runner can reap it. Only backend/frontend ever reach here; postgres
-# and redis are never touched.
+# Last-resort heal: remove the stuck container and bring it back with a
+# scoped `compose up`. This runs from the probe's own environment — the 60s
+# timer (clean manager env) or deploy-main.sh (which clears
+# RUNNER_TRACKING_ID) — never from a runner job, so conmon carries no job
+# id for the reaper to match. (A transient systemd-run unit was tried and
+# rejected: on this host it takes conmon down with it when the unit exits.)
+# Only backend/frontend ever reach here; postgres and redis are never
+# touched.
 recreate_container() { # $1 = service, $2 = container id
   local svc="$1" cid="$2"
   case "$svc" in
@@ -212,10 +216,9 @@ recreate_container() { # $1 = service, $2 = container id
     *) log "$svc: refusing to recreate (not backend/frontend)"; return 1 ;;
   esac
   podman rm -f "$cid" >/dev/null 2>&1 || log "$svc: rm failed (continuing)"
-  systemd-run --user --collect --wait --working-directory="$STACK_DIR" \
-    podman compose up -d "$svc" >/dev/null 2>&1 \
-    || { log "$svc: systemd compose up failed"; return 1; }
-  log "$svc: recreated via systemd"
+  (cd "$STACK_DIR" && podman compose up -d "$svc") >/dev/null 2>&1 \
+    || { log "$svc: compose up failed"; return 1; }
+  log "$svc: recreated via compose up"
 }
 
 capture_evidence() { # $1 = service, $2 = host port; log both sides' state
