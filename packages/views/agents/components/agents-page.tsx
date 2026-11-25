@@ -17,6 +17,8 @@ import {
   agentRunCounts30dOptions,
   effectiveAccessScope,
   isAgentRuntimeBound,
+  isRoleAgent,
+  useAgentRoleTypeEnabled,
   useWorkspaceActivityMap,
   useWorkspacePresenceMap,
   VISIBILITY_TOOLTIP,
@@ -165,6 +167,12 @@ export function rowMatchesFilters(
   ) {
     return false;
   }
+  if (
+    (filters.types?.length ?? 0) > 0 &&
+    !filters.types.includes(isRoleAgent(row.agent) ? "role" : "agent")
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -256,12 +264,38 @@ function NameCell({ row }: { row: AgentListRow }) {
   );
 }
 
+// M-567: the Type column is only rendered while the flag is on, so this cell
+// can read the discriminator directly without its own flag probe.
+function TypeCell({ row }: { row: AgentListRow }) {
+  const { t } = useT("agents");
+  return (
+    <CollectionTag>
+      {isRoleAgent(row.agent)
+        ? t(($) => $.row.role)
+        : t(($) => $.inspector.type_agent)}
+    </CollectionTag>
+  );
+}
+
 // Availability dot + label, with the workload folded in as a suffix
 // ("Online · 2 tasks") — a 0-2 integer doesn't earn its own column.
 function StatusCell({ row }: { row: AgentListRow }) {
   const { t } = useT("agents");
+  const roleTypeEnabled = useAgentRoleTypeEnabled(useWorkspaceId() ?? "");
   const { agent, presence } = row;
   if (agent.archived_at) return <span>{t(($) => $.row.archived)}</span>;
+  // Roles are model-free: the tier resolver stamps runtime and model onto
+  // each task, so an unbound Role is healthy, not "Needs a runtime" (M-567).
+  if (roleTypeEnabled && isRoleAgent(agent)) {
+    return (
+      <>
+        <CollectionTag>{t(($) => $.row.role)}</CollectionTag>
+        <span className="min-w-0 truncate text-caption text-muted-foreground">
+          {agent.tier_role || t(($) => $.row.role_tier_none)}
+        </span>
+      </>
+    );
+  }
   if (!isAgentRuntimeBound(agent)) {
     return (
       <>
@@ -332,6 +366,12 @@ export function AccessCell({ row }: { row: AgentListRow }) {
 
 function RuntimeCell({ row }: { row: AgentListRow }) {
   const { t } = useT("agents");
+  const roleTypeEnabled = useAgentRoleTypeEnabled(useWorkspaceId() ?? "");
+  if (roleTypeEnabled && isRoleAgent(row.agent)) {
+    // The tier role is already shown in the Status cell; a Role has no
+    // runtime of its own, so there is nothing to repeat here.
+    return <CollectionEmptyValue />;
+  }
   if (!isAgentRuntimeBound(row.agent)) {
     return (
       <span className="truncate text-amber-600 dark:text-amber-400">
@@ -381,6 +421,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
   const { t } = useT("agents");
   const locale = useLocale();
   const wsId = useWorkspaceId();
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId ?? "");
   const paths = useWorkspacePaths();
   const handleSidePreviewClick = useSidePreviewTargetClick();
   const navigation = useNavigation();
@@ -575,6 +616,17 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
         sortKey: "name",
         cell: (row) => <NameCell row={row} />,
       },
+      ...(roleTypeEnabled
+        ? [
+            {
+              key: "type" as const,
+              header: t(($) => $.columns.type),
+              width: 120,
+              hideable: true,
+              cell: (row: AgentListRow) => <TypeCell row={row} />,
+            },
+          ]
+        : []),
       {
         key: "status",
         // Sized for the worst case "Online · 2 tasks".
@@ -647,7 +699,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
         ),
       },
     ],
-    [t, locale],
+    [t, locale, roleTypeEnabled],
   );
 
   const sort: CollectionSort = {
@@ -718,6 +770,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
               onToggleFilter={toggleFilter}
               allRows={scopeRows}
               members={members}
+              showTypeFilter={roleTypeEnabled}
             />
             <CollectionSearch
               value={search}

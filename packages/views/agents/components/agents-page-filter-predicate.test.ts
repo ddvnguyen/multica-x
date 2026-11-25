@@ -257,3 +257,19 @@ describe("matchesAgentSearch", () => {
     expect(matchesAgentSearch(chinese, "fabu")).toBe(false);
   });
 });
+
+describe("agent type filter (M-567)", () => {
+  it("filters Agents and Roles by subtype", () => {
+    const plain = makeRow();
+    const role = makeRow({ subtype: "role", runtime_id: "" });
+    expect(rowMatchesFilters(plain, { ...EMPTY_AGENT_FILTERS, types: ["agent"] })).toBe(true);
+    expect(rowMatchesFilters(plain, { ...EMPTY_AGENT_FILTERS, types: ["role"] })).toBe(false);
+    expect(rowMatchesFilters(role, { ...EMPTY_AGENT_FILTERS, types: ["role"] })).toBe(true);
+    expect(rowMatchesFilters(role, { ...EMPTY_AGENT_FILTERS, types: ["agent"] })).toBe(false);
+  });
+
+  it("treats a legacy row without the persisted dimension as unfiltered", () => {
+    const plain = makeRow();
+    expect(rowMatchesFilters(plain, { ...EMPTY_AGENT_FILTERS, types: undefined } as unknown as AgentListFilters)).toBe(true);
+  });
+});

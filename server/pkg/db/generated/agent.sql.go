@@ -2599,6 +2599,22 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countActiveTasksForAgent = `-- name: CountActiveTasksForAgent :one
+SELECT count(*) FROM agent_task_queue
+WHERE agent_id = $1
+  AND status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory', 'blocked')
+`
+
+// M-567: a subtype conversion would change the composition and runtime
+// routing of work already in flight, so it is refused while any non-terminal
+// task exists. Keeps the same status set as the cancel/termination queries.
+func (q *Queries) CountActiveTasksForAgent(ctx context.Context, agentID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTasksForAgent, agentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
 SELECT count(*)
 FROM agent_task_queue
@@ -6698,6 +6714,47 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 			&i.ImplementsRoleID,
 			&i.TierRole,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentsImplementingRole = `-- name: ListAgentsImplementingRole :many
+SELECT id, name FROM agent
+WHERE implements_role_id = $1
+  AND id <> $2
+  AND archived_at IS NULL
+ORDER BY name
+`
+
+type ListAgentsImplementingRoleParams struct {
+	RoleID         pgtype.UUID `json:"role_id"`
+	ExcludeAgentID pgtype.UUID `json:"exclude_agent_id"`
+}
+
+type ListAgentsImplementingRoleRow struct {
+	ID   pgtype.UUID `json:"id"`
+	Name string      `json:"name"`
+}
+
+// M-567: the dependents that must be unlinked before a Role can be converted
+// back into a plain Agent. Archived rows are excluded — they hold no live
+// link the user needs to undo — and the converting row excludes itself.
+func (q *Queries) ListAgentsImplementingRole(ctx context.Context, arg ListAgentsImplementingRoleParams) ([]ListAgentsImplementingRoleRow, error) {
+	rows, err := q.db.Query(ctx, listAgentsImplementingRole, arg.RoleID, arg.ExcludeAgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentsImplementingRoleRow{}
+	for rows.Next() {
+		var i ListAgentsImplementingRoleRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

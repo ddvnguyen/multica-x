@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -2062,8 +2063,10 @@ type UpdateAgentRequest struct {
 	// tri-state as ThinkingLevel: omitted preserves, empty clears (legacy
 	// unfiltered), non-empty sets (validated against the role vocabulary).
 	Role *string `json:"role"`
-	// Subtype is immutable in slice 1: when present it must equal the stored
-	// subtype. Switching between Agent and Role is a later slice.
+	// Subtype switches an Agent to an Agent-Role and back (M-567). The
+	// conversion is guarded server-side: no live tasks, no Role dependents
+	// when converting Role → Agent, and Agent → Role drops its own Role
+	// link. A same-type value is an accepted no-op.
 	Subtype *string `json:"subtype"`
 	// ImplementsRoleID is tri-state: omitted preserves, empty/null clears the
 	// link, non-empty links this Agent to a Role in the same workspace.
@@ -2267,6 +2270,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if !h.canManageAgent(w, r, existing) {
 		return
 	}
+	// Resolved once: the subtype conversion writes its own activity row inside
+	// the update transaction, and the response broadcast reuses the same actor.
+	userID := requestUserID(r)
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(existing.WorkspaceID))
 
 	var req UpdateAgentRequest
 	rawFields, err := decodeJSONBodyWithRawFields(r.Body, &req)
@@ -2297,15 +2304,26 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Subtype != nil && *req.Subtype != existing.Subtype {
-		writeError(w, http.StatusBadRequest, "subtype is immutable; create a new Role instead of converting an existing agent")
-		return
+	// M-567: subtype is now a guarded conversion rather than an immutable
+	// field. Validate the target value here; the stateful guards (live tasks
+	// and Role dependents) run inside the update transaction below so nothing
+	// can enqueue between the check and the write. A same-type value is an
+	// accepted no-op.
+	targetSubtype := existing.Subtype
+	subtypeChange := false
+	if req.Subtype != nil {
+		if *req.Subtype != "agent" && *req.Subtype != "role" {
+			writeError(w, http.StatusBadRequest, "subtype must be agent or role")
+			return
+		}
+		targetSubtype = *req.Subtype
+		subtypeChange = targetSubtype != existing.Subtype
 	}
 	// Tri-state handling keys off raw field presence: a JSON null decodes to
 	// a nil pointer but still means "clear the column".
 	var tierRoleValue, implementsRoleValue string
 	if hasField(rawFields, "tier_role") {
-		if existing.Subtype != "role" {
+		if targetSubtype != "role" {
 			writeError(w, http.StatusBadRequest, "tier_role is only valid on a Role")
 			return
 		}
@@ -2322,18 +2340,22 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasField(rawFields, "implements_role_id") {
-		if existing.Subtype == "role" {
-			writeError(w, http.StatusBadRequest, "a Role cannot implement another Role")
-			return
-		}
 		if isExplicitClear(rawFields, "implements_role_id") {
 			shouldClearImplementsRole = true
-		} else if req.ImplementsRoleID == nil {
-			writeError(w, http.StatusBadRequest, "implements_role_id must be a Role id or null")
-			return
-		} else if !h.requireRoleManager(w, r, uuidToString(existing.WorkspaceID)) {
-			return
 		} else {
+			// The target subtype matters here: a Role cannot implement a
+			// Role, but a Role converting back to an Agent may link one.
+			if targetSubtype == "role" {
+				writeError(w, http.StatusBadRequest, "a Role cannot implement another Role")
+				return
+			}
+			if req.ImplementsRoleID == nil {
+				writeError(w, http.StatusBadRequest, "implements_role_id must be a Role id or null")
+				return
+			}
+			if !h.requireRoleManager(w, r, uuidToString(existing.WorkspaceID)) {
+				return
+			}
 			implementsRoleValue = *req.ImplementsRoleID
 		}
 	}
@@ -2874,72 +2896,147 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Only binding writes need this transaction. Hold the same runtime lock as
-	// revocation until the new binding commits; a preflight-only check is stale
-	// as soon as a public runtime becomes private.
+	// Runtime binding and subtype conversion both need a transaction. Hold the
+	// runtime lock until commit (a preflight-only check is stale as soon as a
+	// public runtime becomes private) and hold the agent row FOR UPDATE across
+	// the conversion guards so a concurrent enqueue cannot slip a task in.
 	updateQueries := h.Queries
-	var bindingTx pgx.Tx
+	var updateTx pgx.Tx
 	// Set when queued/deferred rows were re-stamped, so the new runtime's daemon
 	// is woken after commit instead of waiting out its empty-claim cache.
 	var pendingMovedTo pgtype.UUID
-	if req.RuntimeID != nil {
-		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
-		if !ok {
-			return
-		}
-		bindingTx, err = h.TxStarter.Begin(r.Context())
+	if req.RuntimeID != nil || subtypeChange {
+		updateTx, err = h.TxStarter.Begin(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to start agent binding transaction")
+			writeError(w, http.StatusInternalServerError, "failed to start agent update transaction")
 			return
 		}
-		defer bindingTx.Rollback(r.Context())
-		updateQueries = h.Queries.WithTx(bindingTx)
-		if _, err := updateQueries.LockWorkspaceForChatSessionCreate(r.Context(), existing.WorkspaceID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeError(w, http.StatusNotFound, "workspace not found")
-			} else {
-				writeError(w, http.StatusInternalServerError, "failed to lock workspace")
-			}
-			return
-		}
-		runtime, err := updateQueries.LockAgentRuntimeForAccessChange(r.Context(), params.RuntimeID)
-		if err != nil || runtime.WorkspaceID != existing.WorkspaceID {
-			writeError(w, http.StatusBadRequest, "invalid runtime_id")
-			return
-		}
-		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
-			return
-		}
-		if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
-			writeError(w, http.StatusForbidden, "the agent owner does not have access to this runtime")
-			return
-		}
-		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
+		defer updateTx.Rollback(r.Context())
+		updateQueries = h.Queries.WithTx(updateTx)
 
-		// Runtime row, then agent row: the order teardown and revocation use.
-		// FOR UPDATE waits out an enqueue holding the agent FOR KEY SHARE, so its
-		// row is committed with the old runtime before the re-stamp below sees it.
-		locked, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to lock agent")
-			return
-		}
-		if locked.RuntimeID != runtime.ID {
-			reassignment, err := updateQueries.ReassignPendingAgentTasksToRuntime(r.Context(), db.ReassignPendingAgentTasksToRuntimeParams{
-				AgentID:      existing.ID,
-				NewRuntimeID: runtime.ID,
-			})
+		if req.RuntimeID != nil {
+			member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
+			if !ok {
+				return
+			}
+			if _, err := updateQueries.LockWorkspaceForChatSessionCreate(r.Context(), existing.WorkspaceID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					writeError(w, http.StatusNotFound, "workspace not found")
+				} else {
+					writeError(w, http.StatusInternalServerError, "failed to lock workspace")
+				}
+				return
+			}
+			runtime, err := updateQueries.LockAgentRuntimeForAccessChange(r.Context(), params.RuntimeID)
+			if err != nil || runtime.WorkspaceID != existing.WorkspaceID {
+				writeError(w, http.StatusBadRequest, "invalid runtime_id")
+				return
+			}
+			if !canUseRuntimeForAgent(member, runtime) {
+				writeError(w, http.StatusForbidden, "this runtime is private; ask its owner to grant you access before moving agents onto it")
+				return
+			}
+			if runtime.Visibility == "private" && !service.RuntimeAllowsUser(runtime, existing.OwnerID) {
+				writeError(w, http.StatusForbidden, "the agent owner does not have access to this runtime")
+				return
+			}
+			params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
+
+			// Runtime row, then agent row: the order teardown and revocation use.
+			// FOR UPDATE waits out an enqueue holding the agent FOR KEY SHARE, so its
+			// row is committed with the old runtime before the re-stamp below sees it.
+			locked, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
 			if err != nil {
-				slog.Warn("update agent: reassign pending tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-				writeError(w, http.StatusInternalServerError, "failed to move queued tasks to the new runtime")
+				writeError(w, http.StatusInternalServerError, "failed to lock agent")
 				return
 			}
-			if !reassignment.FenceOk {
-				writeError(w, http.StatusConflict, "the agent or runtime was removed while switching runtimes")
+			if locked.RuntimeID != runtime.ID {
+				reassignment, err := updateQueries.ReassignPendingAgentTasksToRuntime(r.Context(), db.ReassignPendingAgentTasksToRuntimeParams{
+					AgentID:      existing.ID,
+					NewRuntimeID: runtime.ID,
+				})
+				if err != nil {
+					slog.Warn("update agent: reassign pending tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+					writeError(w, http.StatusInternalServerError, "failed to move queued tasks to the new runtime")
+					return
+				}
+				if !reassignment.FenceOk {
+					writeError(w, http.StatusConflict, "the agent or runtime was removed while switching runtimes")
+					return
+				}
+				pendingMovedTo = runtime.ID
+			}
+		}
+
+		if subtypeChange {
+			// FOR UPDATE conflicts with the enqueue path's FOR KEY SHARE, so
+			// the active-task count below cannot go stale before the write.
+			locked, err := updateQueries.GetAgentForUpdate(r.Context(), existing.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to lock agent")
 				return
 			}
-			pendingMovedTo = runtime.ID
+			if locked.Subtype != existing.Subtype {
+				writeError(w, http.StatusConflict, "the agent type changed while this request was in flight; retry")
+				return
+			}
+			activeTasks, err := updateQueries.CountActiveTasksForAgent(r.Context(), existing.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to count active agent tasks")
+				return
+			}
+			if activeTasks > 0 {
+				writeError(w, http.StatusConflict, "wait for runs to finish before changing the agent type")
+				return
+			}
+			if targetSubtype == "agent" {
+				dependents, err := updateQueries.ListAgentsImplementingRole(r.Context(), db.ListAgentsImplementingRoleParams{
+					RoleID:         existing.ID,
+					ExcludeAgentID: existing.ID,
+				})
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load Role dependents")
+					return
+				}
+				if len(dependents) > 0 {
+					names := make([]string, 0, len(dependents))
+					for _, dependent := range dependents {
+						names = append(names, dependent.Name)
+					}
+					writeError(w, http.StatusConflict, fmt.Sprintf("%d agents implement this Role; unlink them first: %s", len(dependents), strings.Join(names, ", ")))
+					return
+				}
+			} else if locked.ImplementsRoleID.Valid {
+				// The new Role cannot itself implement a Role. Clear the link
+				// inside the transaction: the agent_implements_role_check
+				// constraint is evaluated by the UPDATE below, so a post-commit
+				// clear would be too late. The UI's confirm text spells this
+				// out before the user submits.
+				if _, err := updateQueries.ClearAgentImplementsRole(r.Context(), existing.ID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to clear the Role link")
+					return
+				}
+			}
+			// Exactly one activity row per conversion, in the same tx.
+			details, _ := json.Marshal(map[string]any{
+				"agent_id":    uuidToString(existing.ID),
+				"agent_name":  existing.Name,
+				"from_subtype": existing.Subtype,
+				"to_subtype":  targetSubtype,
+			})
+			if _, err := updateQueries.CreateActivity(r.Context(), db.CreateActivityParams{
+				ID:          dbid.NewV7(),
+				WorkspaceID: existing.WorkspaceID,
+				IssueID:     pgtype.UUID{}, // agent type changes are not tied to an issue
+				ActorType:   pgtype.Text{String: actorType, Valid: true},
+				ActorID:     parseUUID(actorID),
+				Action:      "agent_type_changed",
+				Details:     details,
+			}); err != nil {
+				slog.Warn("agent type change activity write failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+				writeError(w, http.StatusInternalServerError, "failed to record agent type change")
+				return
+			}
 		}
 	}
 	updated, err := updateQueries.UpdateAgent(r.Context(), params)
@@ -2964,9 +3061,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if bindingTx != nil {
-		if err := bindingTx.Commit(r.Context()); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to commit agent binding")
+	if updateTx != nil {
+		if err := updateTx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to commit agent update")
 			return
 		}
 		if pendingMovedTo.Valid {
@@ -3113,9 +3210,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
 		return
 	}
-	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
-	userID := requestUserID(r)
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
+	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID), "subtype_change", subtypeChange)...)
 	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 	redactAgentResponseForActor(&resp, actorType)
 	// Workspace admins / non-owner members pass canManageAgent for legitimate

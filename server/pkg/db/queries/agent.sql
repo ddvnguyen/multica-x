@@ -224,6 +224,24 @@ UPDATE agent SET tier_role = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
+-- name: ListAgentsImplementingRole :many
+-- M-567: the dependents that must be unlinked before a Role can be converted
+-- back into a plain Agent. Archived rows are excluded — they hold no live
+-- link the user needs to undo — and the converting row excludes itself.
+SELECT id, name FROM agent
+WHERE implements_role_id = @role_id
+  AND id <> sqlc.arg('exclude_agent_id')
+  AND archived_at IS NULL
+ORDER BY name;
+
+-- name: CountActiveTasksForAgent :one
+-- M-567: a subtype conversion would change the composition and runtime
+-- routing of work already in flight, so it is refused while any non-terminal
+-- task exists. Keeps the same status set as the cancel/termination queries.
+SELECT count(*) FROM agent_task_queue
+WHERE agent_id = $1
+  AND status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory', 'blocked');
+
 -- name: ClearAgentServiceTier :one
 -- Explicit NULL-clear for service_tier. COALESCE-based UpdateAgent cannot
 -- set the column back to NULL, so the API routes "Runtime default" here.

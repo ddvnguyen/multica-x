@@ -756,8 +756,8 @@ export interface Agent {
   role?: string;
   /**
    * Additive agent|role discriminator (M-501). Empty/undefined = legacy
-   * `agent`; the backend defaults it on read. Never sent on update —
-   * subtype is immutable (create a new Role instead of converting).
+   * `agent`; the backend defaults it on read. M-567 lets the UI switch it
+   * through `UpdateAgentRequest.subtype` (guarded server-side).
    */
   subtype?: string;
   /**
@@ -1023,10 +1023,17 @@ export interface UpdateAgentRequest {
   implements_role_id?: string | null;
   /**
    * A Role's tier-role selection (M-499). Tri-state: omitted = keep,
-   * non-empty = set (registry slug), null = clear. Role-only (backend 400
-   * on Agents). Subtype itself is intentionally absent: it is immutable.
+   * non-empty = set (registry slug), null = clear. When converting an Agent
+   * to a Role, send it together with `subtype: "role"`; converting back keeps
+   * the stored value but ignores it until switched again (M-567).
    */
   tier_role?: string | null;
+  /**
+   * M-567: switch between `agent` and `role`. Same-type values are no-ops.
+   * Agent → Role clears `implements_role_id`; Role → Agent is refused while
+   * other Agents implement it or the agent has active tasks (409).
+   */
+  subtype?: "agent" | "role";
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change

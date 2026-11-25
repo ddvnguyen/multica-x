@@ -81,6 +81,7 @@
   },
   "columns": {
     "agent": "Agent",
+    "type": "Type",
     "status": "Status",
     "workload": "Workload",
     "runtime": "Runtime",
@@ -95,6 +96,8 @@
   "row": {
     "you": "You",
     "archived": "Archived",
+    "role": "Role",
+    "role_tier_none": "All roles",
     "needs_runtime": "Needs a runtime",
     "no_description": "No description",
     "fallback_runtime_cloud": "Cloud",
@@ -189,6 +192,17 @@
   "inspector": {
     "section_profile": "Profile",
     "section_execution": "Execution",
+    "prop_type": "Agent Type",
+    "type_agent": "Agent",
+    "type_agent_role": "Agent-Role",
+    "type_change_title": "Change agent type",
+    "type_to_role_confirm": "Convert this Agent into an Agent-Role? Its Implements Role link will be cleared. Runtime, model and thinking stay stored but inactive, so switching back restores them.",
+    "type_to_agent_confirm": "Convert this Agent-Role back into an Agent? It shows \"Needs a runtime\" until a runtime is picked. Its tier role stays stored but inactive.",
+    "type_to_agent_blocked": "{{count}} agents implement this Role; unlink them first",
+    "type_active_note": "Runtime, model and thinking stay stored but inactive while this agent is a Role.",
+    "role_inherited_by": "Inherited by",
+    "role_inherited_by_hint": "Agents implementing this Role",
+    "role_inherited_none": "No agents implement this Role",
     "qoder_execution_note": "Model, tools and skills are set on the agent in Qoder Cloud Agents.",
     "section_access": "Access",
     "section_properties": "Properties",
@@ -1196,6 +1210,7 @@
   },
   "toolbar": {
     "section_availability": "Availability",
+    "section_type": "Type",
     "section_access": "Access",
     "section_runtime": "Runtime",
     "section_owner": "Owner",
