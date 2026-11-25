@@ -91,6 +91,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_decision_record":              workspaceDelete,
 	"issue_wakeup":                       workspaceDelete,
 	"issue_wakeup_receipt":               workspaceDelete,
+	"jev_shadow_decision":                workspaceDelete,
 	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,

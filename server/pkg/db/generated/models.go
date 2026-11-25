@@ -1545,6 +1545,24 @@ type IssueWorkflow struct {
 	ContinueUnfinished bool               `json:"continue_unfinished"`
 }
 
+type JevShadowDecision struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	DecisionPoint string             `json:"decision_point"`
+	SubjectType   string             `json:"subject_type"`
+	SubjectID     pgtype.UUID        `json:"subject_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	QuestionKey   string             `json:"question_key"`
+	Answer        []byte             `json:"answer"`
+	Threshold     pgtype.Float4      `json:"threshold"`
+	Verdict       pgtype.Text        `json:"verdict"`
+	Model         pgtype.Text        `json:"model"`
+	Usage         []byte             `json:"usage"`
+	LatencyMs     pgtype.Int4        `json:"latency_ms"`
+	ErrorKind     pgtype.Text        `json:"error_kind"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

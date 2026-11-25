@@ -825,18 +825,42 @@ func (s *IssueWakeupService) finishTick(ctx context.Context, workspaceIDs []pgty
 // dispatchFromTick dispatches one rule for a scheduler pass and records the
 // outcome on the rule.
 func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWakeup) []error {
-	var errs []error
 	// Outcome writes must not turn a busy rule row into another batch-wide
 	// wait. Use the batch context, not dispatch's expired per-rule context.
 	dispatch := s.dispatch
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
+	return s.runDispatch(ctx, w, dispatch)
+}
+
+// runDispatch is dispatchFromTick with the dispatch itself supplied. The shadow
+// hook sits in this function, so a test can hold the dispatch's outcome still —
+// success or failure — and prove the observation changes neither the errors this
+// returns nor whether the dispatch happened.
+func (s *IssueWakeupService) runDispatch(ctx context.Context, w db.IssueWakeup, dispatch func(context.Context, db.IssueWakeup) error) []error {
+	var errs []error
+	// Jev shadow mode (M-580) observes this dispatch without touching it: the
+	// card is read before the run starts, so the answer predicts the run, and
+	// the answer is logged afterwards from a bounded worker pool. Off by
+	// default, and when off both calls are nil-safe no-ops, so the dispatch
+	// below is byte-for-byte what it was before this hook existed.
+	shadow := s.jevShadow()
+	snapshot := shadow.Snapshot(ctx, w)
 	if err := dispatch(ctx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
 		cancel()
+	} else {
+		// After the dispatch committed, never inside it: dispatch holds row
+		// locks under a two-second budget, and a shadow call must not be able to
+		// spend any of it.
+		//
+		// Only a dispatch that succeeded is observed, so the table holds one row
+		// per run that will start. A failed dispatch started no run, and asking
+		// what that run would have done answers nothing.
+		shadow.Assess(snapshot)
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
 	// monopolize the batches. Only scan order depends on this write: dispatch
@@ -850,6 +874,15 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	}
 	cancel()
 	return errs
+}
+
+// jevShadow returns the shadow this service observes dispatches with, or nil.
+// Nil is the default and means the observation does not exist.
+func (s *IssueWakeupService) jevShadow() *JevShadow {
+	if s == nil || s.Tasks == nil {
+		return nil
+	}
+	return s.Tasks.JevShadow
 }
 
 // logTick reports one global pass: how many rules each lane visited, how long
