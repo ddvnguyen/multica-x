@@ -54,41 +54,47 @@ async function listReads(page: Page): Promise<URLSearchParams[]> {
 test("the Memory entry lists, filters, decides and versions through the seam", async ({
   page,
 }, testInfo) => {
+  // A tall window: the evidence shots must read at least 1300px high.
+  await page.setViewportSize({ width: 1440, height: 1600 });
   await page.goto("/memory.html");
 
-  // 1. The page opens on the queue that needs a human: pending only.
+  // 1. The page opens on the whole memory: every status, moct's own default.
   await expect(page.getByText(PENDING_RULE)).toBeVisible();
-  await expect(page.getByText("Waiting for approval").first()).toBeVisible();
-  await expect(page.getByText("2 of 2 records")).toBeVisible();
-  // The decided record is not in the pending queue.
-  await expect(page.getByText(ACTIVE_CONVENTION)).toHaveCount(0);
+  await expect(page.getByText(ACTIVE_CONVENTION)).toBeVisible();
+  await expect(page.getByText("5 of 5 records")).toBeVisible();
   const first = await listReads(page);
   expect(first).toHaveLength(1);
-  expect(first[0]?.get("status")).toBe("pending");
+  expect(first[0]?.get("status")).toBe("all");
   expect(first[0]?.get("limit")).toBe("20");
-  expect(page.getByText("Reachable")).toBeVisible();
+  await expect(page.getByText("Reachable")).toBeVisible();
 
-  // The evidence is the queue itself, so the shot is taken where the records
-  // are, not at the top of the page.
+  // The evidence is the whole memory itself, so the shot is taken where the
+  // records are, not at the top of the page.
   await page.getByText(PENDING_RULE).scrollIntoViewIfNeeded();
   await shot(page, testInfo, "memory-pending-desktop");
 
-  // 2. The status filter reaches moct and comes back with the whole memory.
+  // 2. The queue that needs a human is one choice away: pending only.
   await page.getByRole("combobox", { name: "Status" }).click();
-  await page.getByRole("option", { name: "All" }).click();
-  await expect(page.getByText(ACTIVE_CONVENTION)).toBeVisible();
-  await expect(page.getByText("5 of 5 records")).toBeVisible();
+  await page.getByRole("option", { name: "Waiting for approval" }).click();
+  await expect(page.getByText(PENDING_RULE)).toBeVisible();
+  // The decided record is not in the pending queue.
+  await expect(page.getByText(ACTIVE_CONVENTION)).toHaveCount(0);
+  await expect(page.getByText("2 of 2 records")).toBeVisible();
   const filtered = await listReads(page);
   expect(filtered).toHaveLength(2);
-  expect(filtered[1]?.get("status")).toBe("all");
+  expect(filtered[1]?.get("status")).toBe("pending");
 
-  // 3. The type filter is a moct parameter too, and the count follows it.
-  await page.getByRole("combobox", { name: "Type" }).click();
+  // Back to the whole memory before narrowing by type.
+  await page.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: "All" }).click();
+  await expect(page.getByText("5 of 5 records")).toBeVisible();
+  await page.getByRole("combobox", { name: "Type", exact: true }).click();
   await page.getByRole("option", { name: "Decision" }).click();
   await expect(page.getByText(PENDING_RULE)).toHaveCount(0);
   await expect(page.getByText("M-103 acceptance run", { exact: true })).toBeVisible();
   await expect(page.getByText("2 of 2 records")).toBeVisible();
-  expect((await listReads(page))[2]?.get("types")).toBe("decision");
+  const typed = await listReads(page);
+  expect(typed[typed.length - 1]?.get("types")).toBe("decision");
 
   // 4. Search is submitted, not typed at: one request per submit.
   const before = (await listReads(page)).length;
@@ -135,7 +141,46 @@ test("the Memory entry lists, filters, decides and versions through the seam", a
   await expect(page.getByText("M-103 acceptance run", { exact: true })).toBeVisible();
   await expect(page.getByText("1 of 1 records")).toBeVisible();
 
-  // 8. The narrow panel the shell can hand this page on a phone-sized window:
+  // 8. The Owner files a note from the same screen: title, body, type and the
+  //    workspace home, and the row renders saved and active at once.
+  await page.getByLabel("Note title").fill("Keep main green");
+  await page.getByLabel("Note body").fill("Suite before push");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await page.getByRole("button", { name: "Confirm save note" }).click();
+  await expect(page.getByText("Saved. It is active now — a human note needs no approval.")).toBeVisible();
+  const created = (await callsTo(page, `${MOCT_API}/team/v1/memory`)).filter(
+    (call) => call.method === "POST" && call.url === `${MOCT_API}/team/v1/memory`,
+  );
+  expect(created).toHaveLength(1);
+  expect(created[0]?.body).toEqual({
+    type: "rule",
+    title: "Keep main green",
+    body: "Suite before push",
+    homeKind: "team",
+    homeRef: "",
+    attrs: { level: "must" },
+  });
+
+  // 9. Deleting is permanent and says so: the confirm names retract as the
+  //    way back, and the row leaves the list on the purge answer. The list is
+  //    still narrowed to decisions matching "acceptance", so clear both first.
+  await page.getByRole("combobox", { name: "Type", exact: true }).click();
+  await page.getByRole("option", { name: "Any type" }).click();
+  await page.getByLabel("Search memory").fill("");
+  await page.getByLabel("Records").getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Open Keep main green" }).click();
+  await expect(page.getByText(/Purged text is gone and cannot be restored/)).toBeVisible();
+  await page.getByRole("button", { name: "Delete Keep main green" }).click();
+  await page.getByRole("button", { name: "Delete Keep main green permanently" }).click();
+  const purged = (await callsTo(page, `${MOCT_API}/team/v1/memory/mem_created_6/purge`)).filter(
+    (call) => call.method === "POST",
+  );
+  expect(purged).toHaveLength(1);
+  // Back on the list with the row dropped, not lingering as purged.
+  await expect(page.getByText("5 of 5 records")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Keep main green" })).toHaveCount(0);
+
+  // 10. The narrow panel the shell can hand this page on a phone-sized window:
   //    the record list, its count and the way into a record all stay usable.
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByLabel("Records").getByRole("button", { name: "Search" })).toBeVisible();

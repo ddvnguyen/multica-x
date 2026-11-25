@@ -255,6 +255,12 @@ function byId(id: string, rest: string, method: string): { status: number; body:
     });
     return { status: 200, body: recordWire(record) };
   }
+  if (rest === "purge") {
+    // moct-be's purge keeps the row with its text gone: status purged, and
+    // the row leaves every listing the page refreshes from here on.
+    records.splice(records.indexOf(record), 1);
+    return { status: 200, body: { ...(recordWire(record) as Record<string, unknown>), status: "purged" } };
+  }
   return { status: 404, body: { ok: false, error: "not found" } };
 }
 
@@ -318,6 +324,34 @@ function answer(url: string, method: string, body: unknown): { status: number; b
   }
   if (path === "/moct/team/v1/memory" && method === "GET") {
     return { status: 200, body: search(parsed.searchParams) };
+  }
+  if (path === "/moct/team/v1/memory" && method === "POST") {
+    // The Owner's note: moct-be files a human write active at once.
+    const input = (body ?? {}) as { type?: unknown; title?: unknown; body?: unknown };
+    const created: FakeRecord = {
+      id: `mem_created_${records.length + 1}`,
+      workspaceId: WS,
+      type: typeof input.type === "string" ? input.type : "rule",
+      title: typeof input.title === "string" ? input.title : "Untitled note",
+      body: typeof input.body === "string" ? input.body : "",
+      attrs: {},
+      home: { kind: "team", ref: WS },
+      tags: [{ kind: "team", ref: WS }],
+      priority: 60,
+      pinned: false,
+      status: "active",
+      flag: null,
+      version: 1,
+      tokens: 10,
+      authorKind: "human",
+      authorId: "multica:user:user-1",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      useCount: 0,
+      lastUsedAt: null,
+    };
+    records.push(created);
+    return { status: 201, body: { record: recordWire(created) } };
   }
   if (path === "/moct/team/v1/memory/get") {
     const ids = (body as { ids?: string[] } | null)?.ids ?? [];
