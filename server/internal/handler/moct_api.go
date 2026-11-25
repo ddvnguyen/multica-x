@@ -142,8 +142,15 @@ func (h *Handler) GetTaskMemoryReport(w http.ResponseWriter, r *http.Request) {
 		if task.WorkDir.Valid {
 			workDir = strings.TrimSpace(task.WorkDir.String)
 		}
-		if events, err := dshsession.ReadTranscript(h.dshSessionStore, workDir, task.SessionID.String); err == nil {
+		// Private daemon roots nest runtime/agent above the project key, so a
+		// workdir-pinned path misses there — same fallback the run dialog
+		// relies on via ReadTranscript's empty-cwd scan.
+		if events, err := dshsession.ReadTranscript(h.dshSessionStore, "", task.SessionID.String); err == nil {
 			tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(dshEntriesToTaskMessages(dshsession.Translate(events)))}
+		} else if workDir != "" {
+			if events, err := dshsession.ReadTranscript(h.dshSessionStore, workDir, task.SessionID.String); err == nil {
+				tools = memoryToolsReport{Available: true, Calls: memoryToolCalls(dshEntriesToTaskMessages(dshsession.Translate(events)))}
+			}
 		}
 	}
 	if !tools.Available {
