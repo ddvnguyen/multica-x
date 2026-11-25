@@ -763,6 +763,11 @@ func main() {
 	// that cache's version, so an idle runtime could keep returning an empty
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
+	// Jev shadow mode (M-574 A4): observes wakeup dispatches on sweepCtx, so the
+	// pool stops with the rest of the background workers. Off unless
+	// MULTICA_JEV_SHADOW and a key both resolve; nil otherwise, which every
+	// call site treats as "no observation".
+	taskSvc.JevShadow = service.StartJevShadow(sweepCtx, pool, slog.Default())
 	registerAutopilotListeners(bus, autopilotSvc)
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP

@@ -57,6 +57,11 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// JevShadow logs a Jev answer next to a wakeup dispatch (M-574 A4).
+	// Optional and off by default: nil means the observation does not exist,
+	// so a dispatch takes exactly the path it took before this field did.
+	// Wired in main.go only when MULTICA_JEV_SHADOW and a key both resolve.
+	JevShadow *JevShadow
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
