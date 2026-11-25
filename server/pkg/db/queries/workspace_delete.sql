@@ -650,6 +650,8 @@ DELETE FROM comment WHERE comment.workspace_id = $1;
 -- name: DeleteWorkspaceIssueRoots :exec
 WITH deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
+), deleted_jev_shadow_decisions AS (
+ DELETE FROM jev_shadow_decision WHERE workspace_id = $1
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
 ),
