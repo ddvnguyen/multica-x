@@ -850,6 +850,12 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+-- M-570: the pending-announcement gate is workspace-scoped and carries no
+-- history worth keeping past the workspace itself.
+deleted_moct_pending AS (
+    DELETE FROM moct_pending_notified
+    WHERE moct_pending_notified.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;
