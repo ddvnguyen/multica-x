@@ -6,12 +6,15 @@ import {
   homeName,
   MEMORY_DEFAULT_FILTERS,
   type MemoryRecord,
+  memoryCreatePath,
   memoryDecisionPath,
   memoryGetPath,
   memoryListPath,
+  memoryPurgePath,
   memoryVersionsPath,
   MoctMemoryTab,
   parseMemoryGet,
+  parseMemoryNote,
   parseMemoryPage,
   parseMemoryRecord,
   parseMemoryVersions,
@@ -232,15 +235,25 @@ describe("parsers", () => {
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({ version: 2, action: "approve", status: "active", reason: "ok" });
   });
+
+  it("reads a note envelope, and tells a held write from a record", () => {
+    const written = parseMemoryNote({ record: { id: "mem_9", type: "rule" } });
+    expect(written?.held).toBe(false);
+    expect(written?.record?.id).toBe("mem_9");
+    // Held for confirmation: no record, and the page must say so.
+    const held = parseMemoryNote({ record: null, nearMatches: [{ id: "mem_1" }] });
+    expect(held).toEqual({ record: null, held: true });
+    expect(parseMemoryNote({ ok: true })).toBeNull();
+  });
 });
 
 describe("paths", () => {
   it("asks moct for the page and the filters it was given", () => {
     expect(memoryListPath(MEMORY_DEFAULT_FILTERS, null, CONNECTION)).toBe(
-      `/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?limit=20&status=pending`,
+      `/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?limit=20&status=all`,
     );
     const filtered = memoryListPath(
-      { q: "  card.tsx ", type: "rule", status: "all", home: "expert", agent: AGENT_ID },
+      { q: "  card.tsx ", type: "rule", status: "pending", home: "expert", agent: AGENT_ID },
       "20",
       CONNECTION,
     );
@@ -248,19 +261,21 @@ describe("paths", () => {
     expect(query.get("q")).toBe("card.tsx");
     expect(query.get("types")).toBe("rule");
     expect(query.get("homes")).toBe("expert");
-    expect(query.get("status")).toBe("all");
+    expect(query.get("status")).toBe("pending");
     expect(query.get("cursor")).toBe("20");
     // The agent filter is the page's own: moct never sees it.
     expect(query.get("agent")).toBeNull();
     expect(filtered.startsWith(`/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory?`)).toBe(true);
   });
 
-  it("addresses one record's reads and its two decisions", () => {
+  it("addresses one record's reads, its two decisions, and its delete", () => {
     const base = `/multica/api/workspaces/${WORKSPACE_ID}/moct/team/v1/memory`;
     expect(memoryVersionsPath("mem_1", CONNECTION)).toBe(`${base}/mem_1/versions`);
     expect(memoryGetPath(CONNECTION)).toBe(`${base}/get`);
+    expect(memoryCreatePath(CONNECTION)).toBe(base);
     expect(memoryDecisionPath("mem_1", "approve", CONNECTION)).toBe(`${base}/mem_1/approve`);
     expect(memoryDecisionPath("mem_1", "retract", CONNECTION)).toBe(`${base}/mem_1/retract`);
+    expect(memoryPurgePath("mem_1", CONNECTION)).toBe(`${base}/mem_1/purge`);
     expect(memoryVersionsPath("mem 1/../x", CONNECTION)).toBe(`${base}/mem%201%2F..%2Fx/versions`);
   });
 });
@@ -337,7 +352,7 @@ describe("MoctMemoryTab", () => {
     return calls.filter((call) => call.url.includes("/moct/team/v1/memory?"));
   }
 
-  it("opens on the queue that needs a human", async () => {
+  it("opens on the whole memory, not the waiting queue", async () => {
     renderPage({
       "GET /moct/team/v1/memory": ok({
         results: [record({ id: "mem_1" }), record({ id: "mem_2", title: "Never force-push" })],
@@ -347,10 +362,10 @@ describe("MoctMemoryTab", () => {
     });
 
     await waitFor(() => expect(screen.getByText("Never force-push")).toBeInTheDocument());
-    // One read, of pending records, at the seam's own page size.
+    // One read, of every status, at the seam's own page size.
     expect(listCalls()).toHaveLength(1);
     const query = new URLSearchParams(listCalls()[0]!.url.split("?")[1]);
-    expect(query.get("status")).toBe("pending");
+    expect(query.get("status")).toBe("all");
     expect(query.get("limit")).toBe("20");
     expect(query.get("cursor")).toBeNull();
     expect(screen.getByText("2 of 2 records")).toBeInTheDocument();
@@ -360,12 +375,10 @@ describe("MoctMemoryTab", () => {
     expect(screen.getByText("1 waiting for approval")).toBeInTheDocument();
   });
 
-  it("says nothing is waiting rather than showing an empty list", async () => {
+  it("says nothing matches rather than showing an empty list", async () => {
     renderPage({ "GET /moct/team/v1/memory": ok({ results: [], total: 0, nextCursor: null }) });
 
-    expect(
-      await screen.findByText("Nothing is waiting for approval. Choose All to read the whole memory."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("No record matches these filters.")).toBeInTheDocument();
     expect(screen.getByText("0 of 0 records")).toBeInTheDocument();
   });
 
@@ -389,7 +402,7 @@ describe("MoctMemoryTab", () => {
     await waitFor(() => expect(listCalls()).toHaveLength(2));
     expect(new URLSearchParams(listCalls()[1]!.url.split("?")[1]).get("q")).toBe("push");
     // The status filter is still the one the reader opened the page with.
-    expect(new URLSearchParams(listCalls()[1]!.url.split("?")[1]).get("status")).toBe("pending");
+    expect(new URLSearchParams(listCalls()[1]!.url.split("?")[1]).get("status")).toBe("all");
   });
 
   it("pages with the cursor and never repeats a record that moved pages", async () => {
@@ -600,9 +613,97 @@ describe("MoctMemoryTab", () => {
     });
 
     expect(await screen.findByText("moct-be is unreachable")).toBeInTheDocument();
-    expect(screen.queryByText("Nothing is waiting for approval. Choose All to read the whole memory.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No record matches these filters.")).not.toBeInTheDocument();
     // Retry is the reader's way back; the seam is asked again.
     fireEvent.click(screen.getByRole("button", { name: "Retry loading the records" }));
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(1));
+  });
+
+  it("files an owner note with the server-authored home, and shows it saved", async () => {
+    renderPage({
+      "GET /moct/team/v1/memory": ok({ results: [], total: 0, nextCursor: null }),
+      // moct-be's answer is the `{record}` envelope, active at once for a human.
+      "POST /moct/team/v1/memory": ok({ record: record({ id: "mem_9", type: "rule", status: "active" }) }),
+    });
+
+    expect(await screen.findByText("No record matches these filters.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Note title"), { target: { value: "Keep main green" } });
+    fireEvent.change(screen.getByLabelText("Note body"), { target: { value: "Suite before push" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm save note" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Saved. It is active now — a human note needs no approval.")).toBeInTheDocument(),
+    );
+    const created = calls.find((call) => call.url === "/moct/team/v1/memory" && call.method === "POST");
+    // The browser chooses type, home and text; the actor and workspace are the server's.
+    expect(created?.body).toEqual({
+      type: "rule",
+      title: "Keep main green",
+      body: "Suite before push",
+      homeKind: "team",
+      homeRef: "",
+      attrs: { level: "must" },
+    });
+  });
+
+  it("shows the secret filter's refusal word for word", async () => {
+    renderPage({
+      "GET /moct/team/v1/memory": ok({ results: [], total: 0, nextCursor: null }),
+      "POST /moct/team/v1/memory": () => ({
+        body: { ok: false, code: "SECRET_DETECTED", error: "content looks like a credential (rule: aws-access-key)" },
+        status: 422,
+      }),
+    });
+
+    expect(await screen.findByText("No record matches these filters.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Note title"), { target: { value: "sk test" } });
+    fireEvent.change(screen.getByLabelText("Note body"), { target: { value: "AKIAIOSFODNN7EXAMPLE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm save note" }));
+
+    expect(await screen.findByText("content looks like a credential (rule: aws-access-key)")).toBeInTheDocument();
+  });
+
+  it("deletes a record only after a confirm that names retract as the way back", async () => {
+    renderPage({
+      "GET /moct/team/v1/memory": ok({
+        results: [record({ id: "mem_1", status: "active" })],
+        total: 1,
+        nextCursor: null,
+      }),
+      "POST /moct/team/v1/memory/mem_1/purge": ok(record({ id: "mem_1", status: "purged", version: 2 })),
+    });
+
+    await waitFor(() => expect(screen.getByText("Always run the package suite")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Open Always run the package suite" }));
+    // The confirm states permanence and offers retract as the reversible path.
+    expect(
+      await screen.findByText(/Purged text is gone and cannot be restored — retract instead/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Always run the package suite" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Always run the package suite permanently" }));
+
+    const purged = calls.find((call) => call.url === "/moct/team/v1/memory/mem_1/purge");
+    expect(purged?.method).toBe("POST");
+    expect(purged?.body).toEqual({});
+  });
+
+  it("reports a held write as held, and files nothing", async () => {
+    renderPage({
+      "GET /moct/team/v1/memory": ok({ results: [], total: 0, nextCursor: null }),
+      // moct-be held the duplicate: record null, nothing written.
+      "POST /moct/team/v1/memory": ok({ record: null, nearMatches: [{ id: "mem_0" }] }),
+    });
+
+    expect(await screen.findByText("No record matches these filters.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Note title"), { target: { value: "Keep main green" } });
+    fireEvent.change(screen.getByLabelText("Note body"), { target: { value: "Suite before push" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save note" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm save note" }));
+
+    expect(
+      await screen.findByText("moct-be held the note as a near-duplicate and wrote nothing. Change the title and save again."),
+    ).toBeInTheDocument();
   });
 });
