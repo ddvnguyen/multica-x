@@ -188,6 +188,41 @@ func TestReadTranscriptScansWithoutCwd(t *testing.T) {
 	}
 }
 
+func TestReadTranscriptScansNestedPrivateRoot(t *testing.T) {
+	store := t.TempDir()
+	writeSession(t, store, "/some/other/project", "session-x", strings.Split(sampleLog, "\n"), true)
+	// Private daemon roots nest runtime/agent above the project key:
+	// <store>/<runtimeID>/<agentID>/<project>/<sessionID>.
+	var src string
+	filepath.Walk(store, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && filepath.Base(p) == "session-x" {
+			src = p
+		}
+		return nil
+	})
+	if src == "" {
+		t.Fatal("fixture session not written")
+	}
+	rel, err := filepath.Rel(store, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(store, "runtime-1", "agent-1", rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadTranscript(store, "", "session-x")
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if len(events) < 6 {
+		t.Fatalf("nested scan found %d events", len(events))
+	}
+}
+
 // A live session can be observed mid-append; a truncated final frame must
 // fail soft — the readable prefix, or a clean error the caller renders as
 // "no transcript yet" — never a panic or an empty non-error.

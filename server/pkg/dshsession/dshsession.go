@@ -154,22 +154,41 @@ func ReadTranscript(storeRoot, cwd, sessionID string) ([]Event, error) {
 }
 
 // scanForSession looks for <storeRoot>/<any project>/<sessionID> and returns
-// the first match. Session ids are unique per store in practice; if one ever
-// appears under two project keys the first readdir order wins, which is
-// acceptable for a read-only viewer.
+// the first match. Private daemon roots nest one level deeper
+// (<profile>/dsh-sessions/<runtimeID>/<agentID>/<project>/<sessionID>), so
+// the scan descends two levels. Session ids are unique per store in practice;
+// if one ever appears twice the first readdir order wins, which is acceptable
+// for a read-only viewer.
 func scanForSession(storeRoot, sessionID string) (string, error) {
-	projects, err := os.ReadDir(storeRoot)
-	if err != nil {
+	if _, err := os.ReadDir(storeRoot); err != nil {
 		return "", fmt.Errorf("read dsh session store: %w", err)
 	}
-	for _, p := range projects {
-		if !p.IsDir() {
-			continue
+	var descend func(dir string, depth int) string
+	descend = func(dir string, depth int) string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return ""
 		}
-		dir := filepath.Join(storeRoot, p.Name(), sessionID)
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-			return dir, nil
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			candidate := filepath.Join(dir, e.Name(), sessionID)
+			if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+				return candidate
+			}
+			if depth > 0 {
+				if found := descend(filepath.Join(dir, e.Name()), depth-1); found != "" {
+					return found
+				}
+			}
 		}
+		return ""
+	}
+	// Depth 2 covers <runtimeID>/<agentID>/<project>/<sessionID> under a
+	// private root; the shared <project>/<sessionID> layout needs none.
+	if found := descend(storeRoot, 2); found != "" {
+		return found, nil
 	}
 	return "", nil
 }
