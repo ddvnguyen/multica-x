@@ -6,7 +6,9 @@ import {
   AgentMemoryTab,
   agentListPath,
   createAgentMemorySections,
+  inheritedListPath,
   pendingListPath,
+  roleListPath,
 } from "./agent-memory";
 import type { MoctConnection } from "./seam";
 
@@ -28,6 +30,7 @@ import type { MoctConnection } from "./seam";
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+const ROLE_ID = "44444444-4444-4444-8444-444444444444";
 
 const CONNECTION: MoctConnection = {
   apiBasePath: "/multica",
@@ -188,8 +191,32 @@ function store() {
       status: "active",
       tokens: 31,
     }),
+    // A workspace record every agent inherits through the team bucket.
+    mem_team_rule: record({
+      id: "mem_team_rule",
+      title: "Workspace ships main and lane together",
+      type: "rule",
+      home: { kind: "team", ref: "multica:ws:" + WORKSPACE_ID },
+      tags: [{ kind: "team", ref: "multica:ws:" + WORKSPACE_ID }],
+      authorId: "multica:user:owner",
+      authorKind: "human",
+      status: "active",
+      tokens: 7,
+      version: 2,
+    }),
+    // A Role's decided record: narrowed out of the ledger, inherited when the
+    // agent implements that Role.
+    mem_role_rule: record({
+      id: "mem_role_rule",
+      title: "Roles approve their own workers",
+      home: { kind: "expert", ref: agentRef(ROLE_ID) },
+      tags: [{ kind: "expert", ref: agentRef(ROLE_ID) }],
+      authorId: agentRef(ROLE_ID),
+      status: "active",
+      tokens: 11,
+      version: 2,
+    }),
   };
-
   function page(status: string, home: string | null, cursor: string | null) {
     const matches = Object.values(records).filter(
       (entry) =>
@@ -222,6 +249,7 @@ function store() {
     },
     pendingPage: (cursor: string | null) => page("pending", null, cursor),
     ledgerPage: (cursor: string | null) => page("all", "expert", cursor),
+    inheritedPage: (cursor: string | null) => page("all", "team", cursor),
   };
 }
 
@@ -242,6 +270,9 @@ function routes(seam: ReturnType<typeof store>): Record<string, Responder> {
       if (query.get("status") === "all" && query.get("homes") === "expert") {
         return { body: seam.ledgerPage(query.get("cursor")) };
       }
+      if (query.get("status") === "all" && query.get("homes") === "team") {
+        return { body: seam.inheritedPage(query.get("cursor")) };
+      }
       return { status: 400, body: { ok: false, error: `unexpected read ${call.url}` } };
     },
     "POST /moct/team/v1/memory/mem_pending_agent/approve": (call) =>
@@ -253,8 +284,8 @@ function routes(seam: ReturnType<typeof store>): Record<string, Responder> {
   };
 }
 
-function renderTab(connection: MoctConnection = CONNECTION) {
-  return render(<AgentMemoryTab agentId={AGENT_ID} connection={connection} />);
+function renderTab(connection: MoctConnection = CONNECTION, roleId?: string) {
+  return render(<AgentMemoryTab agentId={AGENT_ID} roleId={roleId} connection={connection} />);
 }
 
 /** The list reads the tab made once it has settled, queries as sent. */
@@ -275,6 +306,14 @@ describe("paths the tab reads", () => {
     expect(ledger.get("homes")).toBe("expert");
     // The agent narrowing is the page's own: moct never sees it.
     expect(ledger.get("agent")).toBeNull();
+    // Inheritance reads the team homes every agent receives, and the
+    // implemented Role's expert homes through the same read.
+    const inherited = new URLSearchParams(inheritedListPath(null, CONNECTION).split("?")[1]);
+    expect(inherited.get("status")).toBe("all");
+    expect(inherited.get("homes")).toBe("team");
+    const role = new URLSearchParams(roleListPath(null, CONNECTION).split("?")[1]);
+    expect(role.get("status")).toBe("all");
+    expect(role.get("homes")).toBe("expert");
   });
 
   it("hands one section to the pane, beside Settings, labelled Memory", () => {
@@ -330,7 +369,7 @@ describe("the tab on a wired plane", () => {
     stubSeam(routes(seam));
     renderTab();
 
-    await screen.findByText("3 of the 5 records loaded (5 in total)");
+    await screen.findByText("3 of the 6 records loaded (6 in total)");
     // moct's vocabulary first; an unknown type is shown as it was sent.
     expect(recordGroup("rule")).not.toBeNull();
     expect(recordGroup("zeta_custom")).not.toBeNull();
@@ -349,13 +388,15 @@ describe("the tab on a wired plane", () => {
     stubSeam(routes(seam));
     renderTab();
 
-    await screen.findByText("3 of the 5 records loaded (5 in total)");
-    // Queue 12 + 8; ledger 12 + 30 + 5. Another agent's rows stay out.
-    expect(screen.getByText("67 tokens")).toBeInTheDocument();
+    await screen.findByText("3 of the 6 records loaded (6 in total)");
+    // Queue 12 + 8; ledger 12 + 30 + 5; inherited 7. Another agent's rows stay out.
+    expect(screen.getByText("74 tokens")).toBeInTheDocument();
     // The cap is the seam's answer, not a local figure.
     expect(screen.getByText("500 tokens")).toBeInTheDocument();
     // And it says what the spend is made of, honestly.
-    expect(screen.getByText("2 pending · 3 filed, narrowed to this agent")).toBeInTheDocument();
+    expect(
+      screen.getByText("2 pending · 3 filed, narrowed to this agent · 1 workspace · 0 role"),
+    ).toBeInTheDocument();
   });
 
   it("approves with the version it was shown and moves the record out of the queue", async () => {
@@ -432,7 +473,7 @@ describe("the tab on a wired plane", () => {
     expect(await screen.findByText("Nothing is waiting for approval.")).toBeInTheDocument();
     // The ledger is untouched by the queue's emptiness.
     await waitFor(() => expect(ledgerRow("mem_rule_active")).not.toBeNull());
-    expect(screen.getByText("3 of the 5 records loaded (5 in total)")).toBeInTheDocument();
+    expect(screen.getByText("3 of the 6 records loaded (6 in total)")).toBeInTheDocument();
   });
 
   it("shows a cross-agent answer as absent, not as silence, and never leaks the other rows", async () => {
@@ -451,6 +492,31 @@ describe("the tab on a wired plane", () => {
     ).toBeInTheDocument();
     // The other agent's row is still not rendered — the absence is stated, not leaked.
     expect(pendingRow("mem_pending_other")).toBeNull();
+  });
+
+  it("inherits the workspace records every run receives, without naming them", async () => {
+    const seam = store();
+    stubSeam(routes(seam));
+    renderTab();
+
+    // The team-homed workspace record renders once, under Inherited.
+    await waitFor(() =>
+      expect(document.querySelector('[data-agent-inherited="rule"]')).not.toBeNull(),
+    );
+    expect(document.querySelectorAll('[data-agent-record="mem_team_rule"]')).toHaveLength(1);
+    // The Role's record stays out until the agent implements that Role.
+    expect(document.querySelector('[data-agent-role="rule"]')).toBeNull();
+  });
+
+  it("inherits the implemented Role's expert scope, and nothing of another Role's", async () => {
+    const seam = store();
+    stubSeam(routes(seam));
+    renderTab(CONNECTION, ROLE_ID);
+
+    await waitFor(() => expect(document.querySelector('[data-agent-role="rule"]')).not.toBeNull());
+    // The Role's record renders once, under Inherited — never twice.
+    expect(document.querySelectorAll('[data-agent-record="mem_role_rule"]')).toHaveLength(1);
+    expect(document.querySelector('[data-agent-inherited="rule"]')).not.toBeNull();
   });
 });
 

@@ -64,6 +64,20 @@ export function agentListPath(cursor: string | null, connection: MoctConnection)
   return memoryListPath({ q: "", type: "", status: "all", home: "expert", agent: "" }, cursor, connection);
 }
 
+/**
+ * The inherited read: `status=all` on team homes, the workspace records every
+ * agent's run injects through the team bucket. No narrowing — a workspace
+ * record is every agent's inheritance, not one agent's filing.
+ */
+export function inheritedListPath(cursor: string | null, connection: MoctConnection): string {
+  return memoryListPath({ q: "", type: "", status: "all", home: "team", agent: "" }, cursor, connection);
+}
+
+/** The Role read: the same expert-homes read, narrowed to the Role's ref. */
+export function roleListPath(cursor: string | null, connection: MoctConnection): string {
+  return memoryListPath({ q: "", type: "", status: "all", home: "expert", agent: "" }, cursor, connection);
+}
+
 function mergeRecords(
   current: readonly MemoryRecord[],
   added: readonly MemoryRecord[],
@@ -301,25 +315,35 @@ function decisionNotice(verb: "approve" | "retract", title: string): string {
 
 export function AgentMemoryTab({
   agentId,
+  roleId,
   connection,
 }: {
   agentId: string;
+  /** The Role this agent implements, when it does — its knowledge inherits too. */
+  roleId?: string | null;
   connection: MoctConnection;
 }) {
   const ref = agentRef(agentId);
+  const roleRef = roleId === undefined || roleId === null || roleId === "" ? null : agentRef(roleId);
   const canManage = connection.canManageMemory;
   const directory = useMemoryDirectory(connection.workspaceId, connection.workspaceSlug, connection.apiBasePath);
   const [reloadKey, setReloadKey] = useState(0);
   const overdue = useCallback(() => setReloadKey((current) => current + 1), []);
 
-const wired = connection.problem === null;
-const pendingPath = useCallback((cursor: string | null) => pendingListPath(cursor, connection), [connection]);
-const agentPath = useCallback((cursor: string | null) => agentListPath(cursor, connection), [connection]);
-const pending = useMemoryPages(pendingPath, true, wired, reloadKey);
-const ledger = useMemoryPages(agentPath, false, wired, reloadKey);
-// Stable across reads: a decision patches one record in either list.
+  const wired = connection.problem === null;
+  const pendingPath = useCallback((cursor: string | null) => pendingListPath(cursor, connection), [connection]);
+  const agentPath = useCallback((cursor: string | null) => agentListPath(cursor, connection), [connection]);
+  const inheritedPath = useCallback((cursor: string | null) => inheritedListPath(cursor, connection), [connection]);
+  const rolePath = useCallback((cursor: string | null) => roleListPath(cursor, connection), [connection]);
+  const pending = useMemoryPages(pendingPath, true, wired, reloadKey);
+  const ledger = useMemoryPages(agentPath, false, wired, reloadKey);
+  const inherited = useMemoryPages(inheritedPath, false, wired, reloadKey);
+  const role = useMemoryPages(rolePath, false, wired && roleRef !== null, reloadKey);
+// Stable across reads: a decision patches one record in every list.
 const replacePending = pending.replaceRecord;
 const replaceLedger = ledger.replaceRecord;
+const replaceInherited = inherited.replaceRecord;
+const replaceRole = role.replaceRecord;
   const [usage, reloadUsage] = useSeamRead(moctUsagePath(connection), parseMoctUsage, wired);
 
   // One reload answers every read: this section speaks for one plane, so a
@@ -340,6 +364,13 @@ const replaceLedger = ledger.replaceRecord;
   const shownRecords = useMemo(
     () => ledger.records.filter((record) => recordNamesAgent(record, ref)),
     [ledger.records, ref],
+  );
+  // What the agent's runs receive without naming it: every workspace record
+  // through the team bucket, plus the implemented Role's expert scope.
+  const shownInherited = useMemo(() => inherited.records, [inherited.records]);
+  const shownRole = useMemo(
+    () => (roleRef === null ? [] : role.records.filter((record) => recordNamesAgent(record, roleRef))),
+    [role.records, roleRef],
   );
 
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -365,23 +396,30 @@ const replaceLedger = ledger.replaceRecord;
         const decided = answer.parsed;
         replacePending(decided);
         replaceLedger(decided);
+        replaceInherited(decided);
+        replaceRole(decided);
         setNotice(decisionNotice(verb, decided.title ?? "Untitled record"));
       } finally {
         setBusyId(null);
       }
     },
-    // Both reads outlive every decision here; replace is stable per read.
-    [replacePending, replaceLedger, connection],
+    // Every read outlives every decision here; replace is stable per read.
+    [replacePending, replaceLedger, replaceInherited, replaceRole, connection],
   );
 
   const ledgerGroups = useMemo(() => groupByType(shownRecords), [shownRecords]);
+  const inheritedGroups = useMemo(() => groupByType(shownInherited), [shownInherited]);
+  const roleGroups = useMemo(() => groupByType(shownRole), [shownRole]);
 
   // The cap is the seam's answer; the spend side is what this page has actually
   // loaded, which is honest about being page-bounded rather than a server sum.
   const loadedTokens = useMemo(
     () =>
-      [...shownPending, ...shownRecords].reduce((sum, record) => sum + record.tokens, 0),
-    [shownPending, shownRecords],
+      [...shownPending, ...shownRecords, ...shownInherited, ...shownRole].reduce(
+        (sum, record) => sum + record.tokens,
+        0,
+      ),
+    [shownPending, shownRecords, shownInherited, shownRole],
   );
 
   if (connection.problem !== null) {
@@ -561,6 +599,111 @@ const replaceLedger = ledger.replaceRecord;
       </SettingsSection>
 
       <SettingsSection
+        title="Inherited"
+        description="What this agent's runs receive without naming it: every workspace record through the team bucket, plus the implemented Role's expert scope when it implements one. Grouped the same way as the records above."
+        action={<RefreshButton onClick={reloadAll} />}
+      >
+        {inherited.state === "loading" || (roleRef !== null && role.state === "loading") ? (
+          <SettingsCard>
+            <SettingsRow label="Inherited">
+              <Status value="Loading…" />
+            </SettingsRow>
+          </SettingsCard>
+        ) : inherited.state === "error" ? (
+          <SettingsCard>
+            <SettingsRow label="Inherited">
+              <span className="flex items-center gap-2">
+                <Failure message={inherited.failure ?? "the server did not answer"} />
+                <ActionButton label="Retry loading the inherited records" onClick={reloadAll}>
+                  Retry
+                </ActionButton>
+              </span>
+            </SettingsRow>
+          </SettingsCard>
+        ) : roleRef !== null && role.state === "error" ? (
+          <SettingsCard>
+            <SettingsRow label="Inherited">
+              <span className="flex items-center gap-2">
+                <Failure message={role.failure ?? "the server did not answer"} />
+                <ActionButton label="Retry loading the inherited records" onClick={reloadAll}>
+                  Retry
+                </ActionButton>
+              </span>
+            </SettingsRow>
+          </SettingsCard>
+        ) : shownInherited.length === 0 && shownRole.length === 0 ? (
+          <SettingsCard>
+            <SettingsRow label="Inherited">
+              <Status
+                value={
+                  roleRef === null
+                    ? "No workspace record to inherit, and this agent implements no Role."
+                    : "Nothing inherited from the workspace or the implemented Role."
+                }
+              />
+            </SettingsRow>
+          </SettingsCard>
+        ) : (
+          <>
+            {inheritedGroups.map(([type, group]) => (
+              <div key={`inherited-${type}`} data-agent-inherited-group={type}>
+                <SettingsCard>
+                  <SettingsRow label={`${typeLabel(type)} · workspace`}>
+                    <Status value={`${group.length} ${group.length === 1 ? "record" : "records"}`} />
+                  </SettingsRow>
+                  <ul data-agent-inherited={type} className="divide-y divide-surface-border">
+                    {group.map((record) => (
+                      <li key={record.id}>
+                        <RecordRow record={record} directory={directory} />
+                      </li>
+                    ))}
+                  </ul>
+                </SettingsCard>
+              </div>
+            ))}
+            {roleRef !== null &&
+              roleGroups.map(([type, group]) => (
+                <div key={`role-${type}`} data-agent-role-group={type}>
+                  <SettingsCard>
+                    <SettingsRow label={`${typeLabel(type)} · role`}>
+                      <Status value={`${group.length} ${group.length === 1 ? "record" : "records"}`} />
+                    </SettingsRow>
+                    <ul data-agent-role={type} className="divide-y divide-surface-border">
+                      {group.map((record) => (
+                        <li key={record.id}>
+                          <RecordRow record={record} directory={directory} />
+                        </li>
+                      ))}
+                    </ul>
+                  </SettingsCard>
+                </div>
+              ))}
+          </>
+        )}
+        <SettingsCard>
+          <SettingsRow label="Count">
+            <span className="flex items-center gap-2">
+              {inherited.total === null ? null : (
+                <Status value={`${shownInherited.length} workspace records`} />
+              )}
+              {roleRef !== null && role.total !== null ? (
+                <Status value={`${shownRole.length} role records`} />
+              ) : null}
+              {inherited.cursor === null ? null : (
+                <ActionButton
+                  label="Load more inherited records"
+                  disabled={inherited.moving}
+                  onClick={() => void inherited.loadMore()}
+                >
+                  Load more
+                </ActionButton>
+              )}
+            </span>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection
         title="Inject budget"
         description="The always-load cap moct reports, beside what the records this page has loaded spend. The spend is computed from the loaded page, not a per-agent server figure."
       >
@@ -578,7 +721,7 @@ const replaceLedger = ledger.replaceRecord;
           </SettingsRow>
           <SettingsRow
             label="Loaded records"
-            description={`${shownPending.length} pending · ${shownRecords.length} filed, narrowed to this agent`}
+            description={`${shownPending.length} pending · ${shownRecords.length} filed, narrowed to this agent · ${shownInherited.length} workspace · ${shownRole.length} role`}
           >
             <Status value={`${loadedTokens} tokens`} />
           </SettingsRow>
@@ -603,7 +746,13 @@ export function createAgentMemorySections(connection: MoctConnection): ExtraAgen
     {
       id: "memory",
       label: "Memory",
-      render: (agent) => <AgentMemoryTab agentId={agent.id} connection={connection} />,
+      render: (agent) => (
+        <AgentMemoryTab
+          agentId={agent.id}
+          roleId={agent.implements_role_id ?? null}
+          connection={connection}
+        />
+      ),
     },
   ];
 }
