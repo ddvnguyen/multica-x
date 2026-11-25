@@ -867,6 +867,12 @@ deleted_share_links AS (
 deleted_moct_pending AS (
     DELETE FROM moct_pending_notified
     WHERE moct_pending_notified.workspace_id = $1
+),
+-- M-567 agent-role rows name agents outside the workspace; the manifest owns
+-- the decision, the workspace library rows delete with their workspace.
+deleted_workspace_mcp_servers AS (
+    DELETE FROM workspace_mcp_server
+    WHERE workspace_mcp_server.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

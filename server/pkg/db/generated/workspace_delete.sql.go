@@ -108,6 +108,10 @@ deleted_share_links AS (
 deleted_moct_pending AS (
     DELETE FROM moct_pending_notified
     WHERE moct_pending_notified.workspace_id = $1
+),
+deleted_workspace_mcp_servers AS (
+    DELETE FROM workspace_mcp_server
+    WHERE workspace_mcp_server.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
@@ -115,6 +119,8 @@ WHERE workspace_invitation.workspace_id = $1
 
 // M-570: the pending-announcement gate is workspace-scoped and carries no
 // history worth keeping past the workspace itself.
+// M-567 agent-role rows name agents outside the workspace; the manifest owns
+// the decision, the workspace library rows delete with their workspace.
 func (q *Queries) DeleteWorkspaceAdministration(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAdministration, workspaceID)
 	return err

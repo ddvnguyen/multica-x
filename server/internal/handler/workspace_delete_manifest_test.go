@@ -125,6 +125,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"tier_role":                          workspaceDelete,
 	"agent_mcp_server":                   workspaceDelete,
 	"moct_pending_notified":              workspaceDelete,
+	"workspace_mcp_server":               workspaceDelete,
 	"workspace_account":                  workspaceDelete,
 	"notification_preference":            workspaceDelete,
 	"personal_access_token":              workspaceDeleteKeep,
