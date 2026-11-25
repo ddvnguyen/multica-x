@@ -68,6 +68,8 @@ case "$1 $2" in
     printf 'kill %s\n' "$*" >> "$CALL_LOG" ;;
   "logs "*)
     printf 'fake log line\n' >> "$CALL_LOG" ;;
+  "compose up")
+    printf 'compose %s\n' "$*" >> "$CALL_LOG" ;;
   "rm "*)
     printf 'rm %s\n' "$*" >> "$CALL_LOG" ;;
   *) printf 'unexpected podman call: %s\n' "$*" >&2; exit 90 ;;
@@ -85,11 +87,7 @@ cat > "$STUB_BIN/kill" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$KILL_LOG"
 EOF
-cat > "$STUB_BIN/systemd-run" <<'EOF'
-#!/usr/bin/env bash
-printf 'systemd-run %s\n' "$*" >> "$CALL_LOG"
-EOF
-chmod 755 "$STUB_BIN/curl" "$STUB_BIN/podman" "$STUB_BIN/ss" "$STUB_BIN/ps" "$STUB_BIN/kill" "$STUB_BIN/systemd-run"
+chmod 755 "$STUB_BIN/curl" "$STUB_BIN/podman" "$STUB_BIN/ss" "$STUB_BIN/ps" "$STUB_BIN/kill"
 export PATH="$STUB_BIN:$PATH"
 export PORT_PROBE_STATE_DIR="$SANDBOX/state"
 export MULTICA_MAIN_LOCK_FILE="$SANDBOX/deploy.lock"
@@ -169,15 +167,15 @@ test "$(grep -c '^cid-backend$' "$RESTART_LOG")" -eq 2
 unset STUCK
 
 # Recreate fallback (1): the restart itself fails. The probe removes the
-# stuck container and brings it back through systemd-run compose up;
+# stuck container and brings it back with a scoped compose up;
 # postgres/redis are never named. The backend heals, exit 0.
 rm -rf "$PORT_PROBE_STATE_DIR"
 : > "$RESTART_LOG"; : > "$KILL_LOG"; : > "$CALL_LOG"
 export HOST_BACKEND_OK=0 FAIL_RESTART=1
 rc=0; out="$(run 2>&1)" || rc=$?
 [ "$rc" -eq 0 ]
-[[ "$out" == *"recreating via systemd"* ]]
-[[ "$out" == *"recreated via systemd"* ]]
+[[ "$out" == *"recreating via compose up"* ]]
+[[ "$out" == *"recreated via compose up"* ]]
 [[ "$out" == *"healed (host :4802 answers after restart)"* ]]
 grep -q "rm -f cid-backend" "$CALL_LOG"
 grep -q "compose up -d backend" "$CALL_LOG"
@@ -192,7 +190,7 @@ rm -rf "$PORT_PROBE_STATE_DIR"
 export STUCK=1 CONT_RUNNING=0
 rc=0; out="$(run 2>&1)" || rc=$?
 [ "$rc" -ne 0 ]
-[[ "$out" == *"recreating via systemd"* ]]
+[[ "$out" == *"recreating via compose up"* ]]
 grep -q "compose up -d backend" "$CALL_LOG"
 unset STUCK
 export CONT_RUNNING=1
