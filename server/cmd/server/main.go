@@ -801,6 +801,10 @@ func main() {
 	// escalated to the project lead — its own 30s tick, since each candidate is
 	// judged against its project's override rather than a shared wall clock.
 	go runAskPlanTimeoutSweeper(sweepCtx, queries, taskSvc)
+	// M-570: pending memory records are announced to workspace managers on
+	// their own 5-minute tick — the poll is one moct-be read per workspace,
+	// not per project, so it stays off the 30-second liveness tick.
+	go runMoctPendingSweeper(sweepCtx, queries, bus)
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.

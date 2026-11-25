@@ -16,11 +16,13 @@ func TestAllowlistedRoutesForwardScopedRequests(t *testing.T) {
 		name, method, path, body, upstreamPath string
 	}{
 		{"list", "GET", "/team/v1/memory?limit=8", "", "/team/v1/memory"},
+		{"create", "POST", "/team/v1/memory", `{"type":"rule","title":"t","body":"b","attrs":{"level":"must"}}`, "/team/v1/memory"},
 		{"get", "POST", "/team/v1/memory/get", `{"ids":["mem_1"]}`, "/team/v1/memory/get"},
 		{"usage", "GET", "/team/v1/memory/usage", "", "/team/v1/memory/usage"},
 		{"versions", "GET", "/team/v1/memory/mem_1/versions", "", "/team/v1/memory/mem_1/versions"},
 		{"approve", "POST", "/team/v1/memory/mem_1/approve", `{"baseVersion":2}`, "/team/v1/memory/mem_1/approve"},
 		{"retract", "POST", "/team/v1/memory/mem_1/retract", `{"baseVersion":2}`, "/team/v1/memory/mem_1/retract"},
+		{"purge", "POST", "/team/v1/memory/mem_1/purge", `{}`, "/team/v1/memory/mem_1/purge"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +110,133 @@ func TestApproveRequiresAdminAndRejectsForeignWorkspaceRecord(t *testing.T) {
 				t.Fatalf("status = %d body %s, want %d", res.Code, res.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+// M-570: create-note and purge are owner/admin-only additions to the closed
+// allow-list. The proxy authors actor + workspace scope server-side; purge
+// additionally re-checks the record's workspace through a lookup.
+func TestCreateNoteNeedsAdminAndAuthorsScope(t *testing.T) {
+	var gotBody map[string]any
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/team/v1/memory" || r.Method != http.MethodPost {
+			t.Errorf("upstream = %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if r.URL.Query().Get("workspaceId") != "multica:ws:ws-a" {
+			t.Errorf("workspace scope = %q", r.URL.Query().Get("workspaceId"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"record":{"id":"mem_9","status":"active"}}`)
+	}))
+	defer backend.Close()
+	proxy := New(backend.URL)
+	request := func(admin bool, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "http://app.test/team/v1/memory", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		res := httptest.NewRecorder()
+		proxy.Serve(res, req, Identity{WorkspaceID: "ws-a", ActorID: "user-a", Admin: admin}, "/team/v1/memory")
+		return res
+	}
+	if res := request(false, `{"type":"decision","title":"t","body":"b"}`); res.Code != http.StatusForbidden {
+		t.Fatalf("member create status = %d body %s, want 403", res.Code, res.Body.String())
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"missing title", `{"type":"decision","body":"b"}`},
+		{"bad type", `{"type":"task","title":"t","body":"b"}`},
+		{"foreign team home", `{"type":"decision","title":"t","body":"b","homeKind":"team","homeRef":"multica:ws:other"}`},
+		{"decision needs issue home", `{"type":"decision","title":"t","body":"b","homeKind":"team","homeRef":"multica:ws:ws-a"}`},
+		{"decision needs attrs", `{"type":"decision","title":"t","body":"b","homeKind":"task","homeRef":"multica:issue:22222222-2222-4222-8222-222222222222"}`},
+		{"rule needs level", `{"type":"rule","title":"t","body":"b","homeKind":"team","homeRef":"multica:ws:ws-a"}`},
+		{"how_to_work not in workspace", `{"type":"how_to_work","title":"t","body":"b","homeKind":"team","homeRef":"multica:ws:ws-a"}`},
+	} {
+		if res := request(true, tc.body); res.Code != http.StatusBadRequest && res.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d body %s, want 4xx", tc.name, res.Code, res.Body.String())
+		}
+	}
+	// A rule on the workspace with its level is the allowed shape: the proxy
+	// defaults an empty home to the team home, and authors actor + scope.
+	res := request(true, `{"type":"rule","title":"t","body":"b","attrs":{"level":"must"}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin create status = %d body %s", res.Code, res.Body.String())
+	}
+	actor, _ := gotBody["actor"].(map[string]any)
+	if gotBody["workspaceId"] != "multica:ws:ws-a" || actor["kind"] != "human" || actor["id"] != "multica:user:user-a" {
+		t.Fatalf("server-authored scope = %v", gotBody)
+	}
+	home, _ := gotBody["home"].(map[string]any)
+	if home["kind"] != "team" || home["ref"] != "multica:ws:ws-a" {
+		t.Fatalf("default home = %v", home)
+	}
+	attrs, _ := gotBody["attrs"].(map[string]any)
+	if attrs["level"] != "must" {
+		t.Fatalf("attrs = %v, want level must", gotBody["attrs"])
+	}
+}
+
+func TestPurgeNeedsAdminAndOwnWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		admin           bool
+		recordWorkspace string
+		want            int
+	}{
+		{"member denied", false, "multica:ws:ws-a", http.StatusForbidden},
+		{"foreign workspace hidden", true, "multica:ws:ws-b", http.StatusNotFound},
+		{"admin allowed", true, "multica:ws:ws-a", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotActor map[string]any
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/team/v1/memory/get" {
+					_, _ = io.WriteString(w, `{"records":[{"id":"mem_1","workspaceId":"`+tc.recordWorkspace+`"}]}`)
+					return
+				}
+				if r.URL.Path != "/team/v1/memory/mem_1/purge" || r.Method != http.MethodPost {
+					t.Errorf("upstream = %s %s", r.Method, r.URL.Path)
+				}
+				var payload struct {
+					Actor map[string]any `json:"actor"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				gotActor = payload.Actor
+				_, _ = io.WriteString(w, `{"id":"mem_1","status":"purged"}`)
+			}))
+			defer backend.Close()
+			req := httptest.NewRequest("POST", "http://app.test/team/v1/memory/mem_1/purge", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			res := httptest.NewRecorder()
+			New(backend.URL).Serve(res, req, Identity{WorkspaceID: "ws-a", ActorID: "user-a", Admin: tc.admin}, "/team/v1/memory/mem_1/purge")
+			if res.Code != tc.want {
+				t.Fatalf("status = %d body %s, want %d", res.Code, res.Body.String(), tc.want)
+			}
+			if tc.want == http.StatusOK && (gotActor["kind"] != "human" || gotActor["id"] != "multica:user:user-a") {
+				t.Fatalf("purge actor = %v, want the human caller", gotActor)
+			}
+		})
+	}
+}
+
+func TestMoctSecretEnvelopeRelaysByteForByte(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"ok":false,"code":"SECRET_DETECTED","error":"content looks like a credential"}`)
+	}))
+	defer backend.Close()
+	proxy := New(backend.URL)
+	// A rule on the team home with its level is the allowed shape that reaches
+	// moct-be: the proxy validates the home, then relays the backend's answer.
+	body := `{"type":"rule","title":"t","body":"b","homeKind":"team","homeRef":"multica:ws:ws-a","attrs":{"level":"must"}}`
+	req := httptest.NewRequest("POST", "http://app.test/team/v1/memory", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	proxy.Serve(res, req, Identity{WorkspaceID: "ws-a", ActorID: "user-a", Admin: true}, "/team/v1/memory")
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("secret status = %d body %s, want 422", res.Code, res.Body.String())
+	}
+	var errorBody map[string]any
+	if json.Unmarshal(res.Body.Bytes(), &errorBody) != nil || errorBody["code"] != "SECRET_DETECTED" {
+		t.Fatalf("secret body = %s", res.Body.String())
 	}
 }
 

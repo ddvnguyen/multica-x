@@ -77,7 +77,8 @@
     "open_project": "Open project",
     "autopilot_quota_upgrade": "View upgrade options",
     "archive": "Archive",
-    "unarchive": "Unarchive"
+    "unarchive": "Unarchive",
+    "open_memory": "Open Memory"
   },
   "types": {
     "issue_assigned": "Assigned",
@@ -109,7 +110,8 @@
     "app_connect_requested": "Connect an app",
     "app_action_result": "App action result",
     "agent_question": "Needs your answer",
-    "plan_review": "Plan ready for review"
+    "plan_review": "Plan ready for review",
+    "memory_pending": "Memory waiting for approval"
   },
   "labels": {
     "set_status_to": "Set status to",

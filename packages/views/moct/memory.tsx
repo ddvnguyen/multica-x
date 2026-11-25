@@ -25,17 +25,17 @@ import {
 
 /**
  * The Memory entry of the MOCT group (S2-D): the workspace's memory records,
- * and the two decisions a human makes about them.
+ * the two decisions a human makes about them, and the two owner writes.
  *
- * Three things this page is not. It is not a writer: agents write through
- * `memory_note`, and the only verbs here are moct-be's `approve` and `retract`
- * (the seam has no `reject` — "reject" is what a reader calls a retraction of a
- * pending record). It is not an editor: no title, body, home or pin is
- * editable, because a record's text is the writer's, not the reader's. And it
- * is not a second authority: every listing, version row and decision is
- * moct-be's answer, relayed through the authenticated workspace API, which owns the
- * workspace and the acting human's ref. The browser still chooses nothing but
- * the filters.
+ * Three things this page is not. It is not an agent writer: agents write
+ * through `memory_note`, and the verbs here are moct-be's `approve` and
+ * `retract` plus the owner's own `create` and `purge`. It is not an editor:
+ * no title, body, home or pin is editable, because a record's text is the
+ * writer's, not the reader's. And it is not a second authority: every
+ * listing, version row, decision and write is moct-be's answer, relayed
+ * through the authenticated workspace API, which owns the workspace and the
+ * acting human's ref. The browser still chooses nothing but the filters and
+ * the note it files.
  */
 
 /** The types moct accepts on a write and on a `types` filter. */
@@ -163,14 +163,13 @@ export interface MemoryFilters {
 /**
  * What the page opens on.
  *
- * A worker's `rule`, `decision` and `how_to_work` land `pending` and do not
- * inject until a human approves them, so the queue that needs a human is the
- * useful default. Every other status is one choice away.
+ * Every status the workspace stores: the queue that needs a human is one
+ * choice away, behind "Waiting for approval".
  */
 export const MEMORY_DEFAULT_FILTERS: MemoryFilters = {
   q: "",
   type: "",
-  status: "pending",
+  status: "all",
   home: "",
   agent: "",
 };
@@ -309,6 +308,28 @@ export function parseMemoryRecord(body: unknown): MemoryRecord | null {
   };
 }
 
+/** One note answer: moct-be's `{record}` envelope, or `{record:null}` held for confirmation. */
+export interface MemoryNoteAnswer {
+  record: MemoryRecord | null;
+  held: boolean;
+}
+
+/**
+ * One note answer, or null when the answer is not one.
+ *
+ * A held write (`record` null with near-matches) is not a record — the reader
+ * must confirm, and this page's form has no confirmNew path, so it reports
+ * the hold rather than rendering a row that does not exist.
+ */
+export function parseMemoryNote(body: unknown): MemoryNoteAnswer | null {
+  const envelope = asRecord(body);
+  if (!("record" in envelope)) return null;
+  const raw = envelope["record"];
+  if (raw === null) return { record: null, held: true };
+  const parsed = parseMemoryRecord(raw);
+  return parsed === null ? null : { record: parsed, held: false };
+}
+
 /** One search answer: `{results,total,nextCursor}`. */
 export function parseMemoryPage(body: unknown): MemoryPage {
   const record = asRecord(body);
@@ -401,7 +422,27 @@ export function memoryVersionsPath(id: string, connection: MoctConnection): stri
   return `${memoryRecordPath(id, connection)}/versions`;
 }
 
-/** `approve` or `retract` — the seam's two decisions, and its only two verbs. */
+/** The create URL for one owner's note: a POST on the memory collection. */
+export function memoryCreatePath(connection: MoctConnection): string {
+  return `${moctMemoryPath(connection)}`;
+}
+
+/** An owner's note, as the seam's create route takes it. */
+export interface MemoryNoteInput {
+  type: string;
+  title: string;
+  body: string;
+  homeKind: string;
+  homeRef: string;
+  attrs?: Record<string, unknown>;
+}
+
+/** `purge` — the seam's permanent delete, and its only delete verb. */
+export function memoryPurgePath(id: string, connection: MoctConnection): string {
+  return `${memoryRecordPath(id, connection)}/purge`;
+}
+
+/** `approve` or `retract` — the seam's two decisions, and its two other verbs. */
 export function memoryDecisionPath(id: string, verb: "approve" | "retract", connection: MoctConnection): string {
   return `${memoryRecordPath(id, connection)}/${verb}`;
 }
@@ -558,6 +599,7 @@ function RecordDetail({
   canManage,
   onBack,
   onDecided,
+  onPurged,
 }: {
   id: string;
   summary: MemoryRecord;
@@ -566,6 +608,7 @@ function RecordDetail({
   canManage: boolean;
   onBack: () => void;
   onDecided: (record: MemoryRecord) => void;
+  onPurged: (id: string) => void;
 }) {
   const [record, setRecord] = useState<MemoryRecord>(summary);
   const [versions, setVersions] = useState<Load<MemoryVersion[]>>({ state: "loading" });
@@ -629,6 +672,26 @@ function RecordDetail({
     },
     [id, record.version, onDecided, reload, connection],
   );
+
+  const [confirmingPurge, setConfirmingPurge] = useState(false);
+  const purge = useCallback(async () => {
+    setBusy(true);
+    setFailure(null);
+    setNotice(null);
+    const answer = await callJson(memoryPurgePath(id, connection), parseMemoryRecord, {
+      method: "POST",
+      body: {},
+    });
+    setBusy(false);
+    setConfirmingPurge(false);
+    if (!answer.ok || answer.parsed === null) {
+      setFailure(answer.message ?? "the server did not answer");
+      reload();
+      return;
+    }
+    onPurged(id);
+    onBack();
+  }, [id, connection, onPurged, onBack, reload]);
 
   const title = record.title ?? "Untitled record";
   const pending = record.status === "pending";
@@ -705,6 +768,35 @@ function RecordDetail({
                   <span data-memory-action="retract">Reject</span>
                 </ActionButton>
               </span>
+            </SettingsRow>
+          ) : null}
+          {canManage && record.workspaceId !== null ? (
+            <SettingsRow
+              label="Delete"
+              description="Permanent. Purged text is gone and cannot be restored — retract instead to keep it in the store without injecting."
+            >
+              {confirmingPurge ? (
+                <span className="flex items-center gap-2">
+                  <ActionButton
+                    label={`Delete ${title} permanently`}
+                    disabled={busy}
+                    onClick={() => void purge()}
+                  >
+                    <span data-memory-action="purge-confirm">Delete permanently</span>
+                  </ActionButton>
+                  <ActionButton label="Keep this record" disabled={busy} onClick={() => setConfirmingPurge(false)}>
+                    Keep
+                  </ActionButton>
+                </span>
+              ) : (
+                <ActionButton
+                  label={`Delete ${title}`}
+                  disabled={busy}
+                  onClick={() => setConfirmingPurge(true)}
+                >
+                  <span data-memory-action="purge">Delete…</span>
+                </ActionButton>
+              )}
             </SettingsRow>
           ) : null}
           {notice === null ? null : (
@@ -1033,6 +1125,17 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
   const [failure, setFailure] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [reloadCount, setReloadCount] = useState(0);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteBody, setNoteBody] = useState("");
+  const [noteType, setNoteType] = useState("rule");
+  const [noteHome, setNoteHome] = useState("");
+  const [noteLevel, setNoteLevel] = useState("must");
+  const [noteDecidedBy, setNoteDecidedBy] = useState("");
+  const [noteSourceRef, setNoteSourceRef] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteFailure, setNoteFailure] = useState<string | null>(null);
+  const [noteNotice, setNoteNotice] = useState<string | null>(null);
 
   const path = useMemo(() => memoryListPath(filters, null, connection), [filters, connection]);
 
@@ -1089,11 +1192,74 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
     setReloadCount((current) => current + 1);
   }, [reloadStatus, reloadUsage]);
 
+  const submitNote = useCallback(async () => {
+    // The Owner files as themselves: moct-be saves a human write active, so
+    // there is no gate to wait on. A credential in the text is moct-be's
+    // 422, shown word for word.
+    setNoteBusy(true);
+    setNoteFailure(null);
+    setNoteNotice(null);
+    const trimmedHome = noteHome.trim();
+    const homeKind =
+      noteType === "decision" ? "task" : trimmedHome === "" ? "team" : "channel";
+    const homeRef =
+      homeKind === "team"
+        ? ""
+        : homeKind === "task"
+          ? trimmedHome
+          : trimmedHome === ""
+            ? ""
+            : `multica:project:${trimmedHome}`;
+    const attrs: Record<string, unknown> =
+      noteType === "rule"
+        ? { level: noteLevel }
+        : noteType === "decision"
+          ? { decidedBy: noteDecidedBy.trim(), sourceRef: noteSourceRef.trim() }
+          : {};
+    const answer = await callJson(memoryCreatePath(connection), parseMemoryNote, {
+      method: "POST",
+      body: {
+        type: noteType,
+        title: noteTitle.trim(),
+        body: noteBody,
+        homeKind,
+        homeRef,
+        ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
+      } satisfies MemoryNoteInput,
+    });
+    setNoteBusy(false);
+    if (!answer.ok || answer.parsed === null) {
+      setNoteFailure(answer.message ?? "the server did not answer");
+      return;
+    }
+    if (answer.parsed.held || answer.parsed.record === null) {
+      setNoteFailure("moct-be held the note as a near-duplicate and wrote nothing. Change the title and save again.");
+      return;
+    }
+    const created = answer.parsed.record;
+    setRecords((current) => {
+      if (current.some((record) => record.id === created.id)) return current;
+      return [created, ...current];
+    });
+    setTotal((current) => (current === null ? null : current + 1));
+    setNoteTitle("");
+    setNoteBody("");
+    setNoteDecidedBy("");
+    setNoteSourceRef("");
+    setNoteNotice("Saved. It is active now — a human note needs no approval.");
+  }, [connection, noteType, noteTitle, noteBody, noteHome, noteLevel, noteDecidedBy, noteSourceRef]);
+
   /** One record's answer replaces the page's copy of it, so a row never lies. */
   const onDecided = useCallback((decided: MemoryRecord) => {
     setRecords((current) =>
       current.map((record) => (record.id === decided.id ? { ...record, ...decided } : record)),
     );
+  }, []);
+
+  /** A purge removes the record server-side, so the list drops its row. */
+  const onPurged = useCallback((purgedId: string) => {
+    setRecords((current) => current.filter((record) => record.id !== purgedId));
+    setTotal((current) => (current === null ? null : Math.max(0, current - 1)));
   }, []);
 
   if (open !== null && openRecord !== undefined) {
@@ -1106,6 +1272,7 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
         canManage={canManage}
         onBack={() => setOpen(null)}
         onDecided={onDecided}
+        onPurged={onPurged}
       />
     );
   }
@@ -1147,7 +1314,7 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
         title="Records"
         description={
           filters.status === "pending"
-            ? "Waiting for approval. A worker's rule, decision or how_to_work lands here first and does not inject until it is approved; choose another status to read the rest."
+            ? "Waiting for approval. A worker's rule, decision or how_to_work lands here first and does not inject until it is approved; choose All to read the whole memory."
             : "Every status this workspace stores, filtered the way moct filters it."
         }
         action={<RefreshButton onClick={reload} />}
@@ -1222,6 +1389,188 @@ export function MoctMemoryTab({ connection }: { connection: MoctConnection }) {
           </p>
         )}
       </SettingsSection>
+
+      {canManage ? (
+        <SettingsSection
+          title="Add a note"
+          description="Filed as you, active now — a human note needs no approval. A decision lives on an issue; a rule or how-to on the workspace or one project."
+        >
+          <SettingsCard>
+            <SettingsRow label="Title">
+              <Input
+                aria-label="Note title"
+                className="w-64"
+                value={noteTitle}
+                disabled={noteBusy}
+                onChange={(event) => setNoteTitle(event.target.value)}
+              />
+            </SettingsRow>
+            <SettingsRow label="Type">
+              <Select
+                items={[
+                  { value: "rule", label: "Rule" },
+                  { value: "decision", label: "Decision" },
+                  { value: "how_to_work", label: "How to work" },
+                ]}
+                value={noteType}
+                onValueChange={(value) => {
+                  setNoteType(value as string);
+                  setNoteOpen(false);
+                  setNoteNotice(null);
+                }}
+              >
+                <SelectTrigger aria-label="Note type" className="w-48" disabled={noteBusy}>
+                  <SelectValue placeholder="Rule" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="rule">Rule</SelectItem>
+                  <SelectItem value="decision">Decision</SelectItem>
+                  <SelectItem value="how_to_work">How to work</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <SettingsRow label="Body">
+              <Input
+                aria-label="Note body"
+                className="w-64"
+                value={noteBody}
+                disabled={noteBusy}
+                onChange={(event) => setNoteBody(event.target.value)}
+              />
+            </SettingsRow>
+            {noteType === "rule" ? (
+              <SettingsRow label="Level" description="moct-be requires must or should on a rule.">
+                <Select
+                  items={[
+                    { value: "must", label: "Must" },
+                    { value: "should", label: "Should" },
+                  ]}
+                  value={noteLevel}
+                  onValueChange={(value) => setNoteLevel(value as string)}
+                >
+                  <SelectTrigger aria-label="Note level" className="w-48" disabled={noteBusy}>
+                    <SelectValue placeholder="Must" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="must">Must</SelectItem>
+                    <SelectItem value="should">Should</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+            ) : null}
+            {noteType === "decision" ? (
+              <SettingsRow
+                label="Decided by"
+                description="Who decided, in the Owner's own words — moct-be requires it."
+              >
+                <Input
+                  aria-label="Note decided by"
+                  className="w-64"
+                  value={noteDecidedBy}
+                  disabled={noteBusy}
+                  onChange={(event) => setNoteDecidedBy(event.target.value)}
+                />
+              </SettingsRow>
+            ) : null}
+            {noteType === "decision" ? (
+              <SettingsRow label="Source" description="Where the decision was taken — moct-be requires it.">
+                <Input
+                  aria-label="Note source ref"
+                  className="w-64"
+                  value={noteSourceRef}
+                  disabled={noteBusy}
+                  onChange={(event) => setNoteSourceRef(event.target.value)}
+                />
+              </SettingsRow>
+            ) : null}
+            {noteType === "decision" ? (
+              <SettingsRow
+                label="Issue home"
+                description="The issue this decides, as multica:issue:<uuid>."
+              >
+                <Input
+                  aria-label="Note issue home"
+                  className="w-64"
+                  placeholder="multica:issue:<uuid>"
+                  value={noteHome}
+                  disabled={noteBusy}
+                  onChange={(event) => setNoteHome(event.target.value)}
+                />
+              </SettingsRow>
+            ) : (
+              <SettingsRow
+                label="Project home"
+                description="Empty files it on the workspace; picking a project files it there."
+              >
+                <Select
+                  items={[
+                    { value: "", label: "Workspace" },
+                    ...directory.projects.map((project) => ({ value: project.id, label: project.name })),
+                  ]}
+                  value={noteHome}
+                  onValueChange={(value) => setNoteHome(value as string)}
+                >
+                  <SelectTrigger aria-label="Note project home" className="w-48" disabled={noteBusy}>
+                    <SelectValue placeholder="Workspace" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Workspace</SelectItem>
+                    {directory.projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+            )}
+            <SettingsRow label="Save">
+              <span className="flex items-center gap-2">
+                <ActionButton
+                  label="Save note"
+                  disabled={
+                    noteBusy ||
+                    noteTitle.trim() === "" ||
+                    noteBody.trim() === "" ||
+                    (noteType === "decision" &&
+                      (noteHome.trim() === "" ||
+                        noteDecidedBy.trim() === "" ||
+                        noteSourceRef.trim() === ""))
+                  }
+                  onClick={() => setNoteOpen(true)}
+                >
+                  Save note
+                </ActionButton>
+              </span>
+            </SettingsRow>
+            {noteOpen ? (
+              <SettingsRow label="Confirm">
+                <span className="flex flex-wrap items-center gap-2">
+                  <Status value={`Save “${noteTitle.trim() === "" ? "Untitled note" : noteTitle.trim()}” as ${noteType} active now?`} />
+                  <ActionButton label="Confirm save note" disabled={noteBusy} onClick={() => void submitNote()}>
+                    Confirm
+                  </ActionButton>
+                  <ActionButton label="Cancel save note" disabled={noteBusy} onClick={() => setNoteOpen(false)}>
+                    Cancel
+                  </ActionButton>
+                </span>
+              </SettingsRow>
+            ) : null}
+            {noteNotice === null ? null : (
+              <SettingsRow label="Saved">
+                <span role="status" className="text-body text-muted-foreground">
+                  {noteNotice}
+                </span>
+              </SettingsRow>
+            )}
+            {noteFailure === null ? null : (
+              <SettingsRow label="Not saved">
+                <Failure message={noteFailure} />
+              </SettingsRow>
+            )}
+          </SettingsCard>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="Context budget">
         <SettingsCard>

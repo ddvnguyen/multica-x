@@ -64,6 +64,9 @@ var typeGroups = map[string]string{
 	"app_action_requested":  "",
 	"app_action_reminder":   "",
 	"app_connect_requested": "",
+	// M-570: a pending memory record waits for a human decision the same way
+	// a parked run does — muting must not hide it.
+	"memory_pending": "",
 }
 
 // legacyTypes are types earlier releases wrote and this server no longer

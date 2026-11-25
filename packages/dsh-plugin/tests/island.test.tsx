@@ -823,7 +823,7 @@ describe("mountIsland", () => {
       expect(text).toContain("640 tokens · 3 records");
       expect(text).toContain("1 waiting for approval");
       // ... and the records themselves, which is what S2-D added: the page
-      // opens on the queue that needs a human.
+      // opens on the whole memory, every status moct stores.
       expect(text).toContain("Always run the package suite");
       expect(text).toContain("1 of 1 records");
     });
@@ -831,7 +831,7 @@ describe("mountIsland", () => {
     expect(requests).toContain(`${moctApi}/status`);
     expect(requests).toContain(`${moctApi}/team/v1/memory/usage`);
     const list = requests.find((url) => url.startsWith(`${moctApi}/team/v1/memory?`));
-    expect(new URLSearchParams(list?.split("?")[1] ?? "").get("status")).toBe("pending");
+    expect(new URLSearchParams(list?.split("?")[1] ?? "").get("status")).toBe("all");
   });
 
   it("does not touch the memory plane from another page", async () => {

@@ -289,6 +289,9 @@ ws_labels AS MATERIALIZED (
 ws_skills AS MATERIALIZED (
     SELECT id FROM skill WHERE workspace_id = $1
 ),
+ws_mcp_servers AS MATERIALIZED (
+    SELECT id FROM workspace_mcp_server WHERE workspace_id = $1
+),
 ws_squads AS MATERIALIZED (
     SELECT id FROM squad WHERE workspace_id = $1
 ),
@@ -439,6 +442,14 @@ deleted_agent_skills AS (
     DELETE FROM agent_skill
     WHERE agent_id IN (SELECT id FROM ws_agents)
        OR skill_id IN (SELECT id FROM ws_skills)
+),
+deleted_agent_mcp_servers AS (
+    -- Agent-role rows (M-567) name an agent outside this workspace and carry
+    -- no workspace FK of their own; nothing else owns them, so they delete
+    -- by either side, mirroring deleted_agent_skills.
+    DELETE FROM agent_mcp_server
+    WHERE agent_id IN (SELECT id FROM ws_agents)
+       OR server_id IN (SELECT id FROM ws_mcp_servers)
 ),
 deleted_agent_tiers AS (
     -- M-351: the Use-tiers join. No FKs per repo rule; teardown owns it.
@@ -850,6 +861,18 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+-- M-570: the pending-announcement gate is workspace-scoped and carries no
+-- history worth keeping past the workspace itself.
+deleted_moct_pending AS (
+    DELETE FROM moct_pending_notified
+    WHERE moct_pending_notified.workspace_id = $1
+),
+-- M-567 agent-role rows name agents outside the workspace; the manifest owns
+-- the decision, the workspace library rows delete with their workspace.
+deleted_workspace_mcp_servers AS (
+    DELETE FROM workspace_mcp_server
+    WHERE workspace_mcp_server.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;
