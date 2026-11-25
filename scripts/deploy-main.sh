@@ -96,20 +96,18 @@ SWITCH_STARTED=0
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
 
-for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl systemd-run; do
+for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 command -v curl >/dev/null 2>&1 || die "required command not found: curl"
 
-# (Re)create the stack detached from this shell: anything started as a child
-# of the runner job inherits RUNNER_TRACKING_ID and is reaped (conmon first,
-# then the ports and containers go with it) when the job ends. A transient
-# systemd unit runs with the manager environment instead, which never
-# carries a job id. --wait blocks until compose finishes; --collect cleans
-# the unit up afterwards.
-stack_up() { # [$1...] = optional compose service names (empty = whole stack)
-  systemd-run --user --collect --wait --working-directory="$STACK_DIR" \
-    podman compose up -d "$@"
+# (Re)create the whole stack through the persistent multica.service unit, NOT
+# through this shell and NOT through a transient systemd-run unit (verified
+# 2026-11-25: a job-spawned compose leaves conmon carrying the job id, which
+# the runner reaps when the job ends; transient units take conmon down with
+# them on this host). The unit's manager environment never carries a job id.
+stack_up() {
+  systemctl --user restart multica.service
 }
 
 # The deploy runner must be a sibling of the daemon, never one of its tasks.
