@@ -605,7 +605,13 @@
     "load_failed": "No se pudo cargar la tarea.",
     "load_retry": "Reintentar",
     "not_found_title": "Tarea no encontrada",
-    "restore_to_inbox_tooltip": "Restore to inbox"
+    "restore_to_inbox_tooltip": "Restore to inbox",
+    "owner_decisions": "Decisiones del propietario",
+    "owner_decisions_loading": "Cargando decisiones…",
+    "owner_decisions_failed": "No se pudieron cargar las decisiones.",
+    "owner_decisions_retry": "Reintentar",
+    "owner_decisions_empty": "Registrar una decisión",
+    "owner_decisions_superseded": "Sustituida por “{{decision}}”"
   },
   "timeline": {
     "loading": "Cargando...",
@@ -791,7 +797,10 @@
     "trigger_blocked_tier_waiting_capacity": "El tier seleccionado está lleno o sin conexión — la ejecución está en cola y empezará cuando haya capacidad",
     "trigger_blocked_tier_unavailable": "El tier seleccionado no existe, está desactivado o no está disponible para este agente — corrige el nombre",
     "trigger_blocked_short_tier_waiting_capacity": "Tier lleno — en cola",
-    "trigger_blocked_short_tier_unavailable": "Tier inválido"
+    "trigger_blocked_short_tier_unavailable": "Tier inválido",
+    "record_as_decision": "Registrar como decisión",
+    "supersedes_decision": "Sustituye una decisión existente",
+    "new_decision": "Nueva decisión"
   },
   "reply": {
     "recipients_changed": "El destino de la respuesta ha cambiado. Revisa los destinatarios antes de volver a enviar.",

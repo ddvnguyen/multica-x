@@ -609,6 +609,30 @@ async function chooseRecipientAction(chip: string, action: RegExp) {
 }
 
 describe("comment composers", () => {
+  it("sends an opted-in comment as an Owner decision with its replacement choice", async () => {
+    const onSubmit = vi.fn().mockResolvedValue("comment-1");
+    function DecisionComposer() {
+      const [enabled, setEnabled] = useState(false);
+      return <CommentInput
+        issueId="issue-1"
+        onSubmit={onSubmit}
+        decisionMode={enabled}
+        onDecisionModeChange={setEnabled}
+        decisionRecords={[{ id: "record-1", decided: "Prior decision", superseded_by_id: null }]}
+      />;
+    }
+    const { container } = renderWithProviders(<DecisionComposer />);
+    expect(screen.getByRole("checkbox", { name: "Record as decision" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Record as decision" }));
+    expect(screen.getByRole("combobox", { name: "Replace an existing decision" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Replace an existing decision" }), { target: { value: "record-1" } });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "New decision\nReason" } });
+    fireEvent.click(getSubmitButton(container));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith("New decision\nReason", undefined, undefined, undefined, true, "record-1");
+    });
+  });
+
   it("renders the main comment composer without a manual expand control", () => {
     const { container } = renderCommentInput();
 

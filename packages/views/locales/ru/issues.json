@@ -629,7 +629,13 @@
     "thread_nav_show_replies_many": "Показать {{count}} ответов",
     "not_found_title": "Задача не найдена",
     "load_failed": "Не удалось загрузить задачу.",
-    "load_retry": "Повторить"
+    "load_retry": "Повторить",
+    "owner_decisions": "Решения владельца",
+    "owner_decisions_loading": "Загрузка решений…",
+    "owner_decisions_failed": "Не удалось загрузить решения.",
+    "owner_decisions_retry": "Повторить",
+    "owner_decisions_empty": "Записать решение",
+    "owner_decisions_superseded": "Заменено на «{{decision}}»"
   },
   "timeline": {
     "loading": "Загрузка...",
@@ -842,7 +848,10 @@
     "recipient_count_many": "{{count}} агентов получат это",
     "reply_action": "Ответить",
     "actions_label": "Действия с комментарием",
-    "create_issue_from_selection": "Создать подзадачу из выделенного"
+    "create_issue_from_selection": "Создать подзадачу из выделенного",
+    "record_as_decision": "Записать как решение",
+    "supersedes_decision": "Заменяет существующее решение",
+    "new_decision": "Новое решение"
   },
   "reply": {
     "recipients_changed": "Адресат ответа изменился. Проверьте получателей перед повторной отправкой.",
