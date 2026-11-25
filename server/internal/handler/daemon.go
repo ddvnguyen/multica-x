@@ -7332,7 +7332,13 @@ func (h *Handler) dshTranscriptPayloads(ctx context.Context, task db.AgentTaskQu
 	if task.WorkDir.Valid {
 		workDir = strings.TrimSpace(task.WorkDir.String)
 	}
-	events, err := dshsession.ReadTranscript(h.dshSessionStore, workDir, sessionID)
+	// Private daemon roots nest runtime/agent above the project key, so a
+	// workdir-pinned path misses there — scan first (the same order the
+	// memory-report path uses), then fall back to the pinned layout.
+	events, err := dshsession.ReadTranscript(h.dshSessionStore, "", sessionID)
+	if err != nil && workDir != "" {
+		events, err = dshsession.ReadTranscript(h.dshSessionStore, workDir, sessionID)
+	}
 	if err != nil {
 		slog.Debug("dsh transcript read fell back to rows", "task_id", taskID, "error", err)
 		return nil, false
