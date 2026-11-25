@@ -28,6 +28,12 @@ die() { log "ERROR: $*" >&2; exit 1; }
 # (-o), so no descendant can ever inherit it.
 WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
 LOCK_FILE="${MULTICA_MAIN_LOCK_FILE:-$WORKSPACE_ROOT/multica-main-deploy.lock}"
+
+# M-556: the GH runner reaps every process carrying its RUNNER_TRACKING_ID
+# when the job ends — including conmon, which outlives the deploy and takes
+# the stack's ports with it. Clear it so nothing this script spawns can ever
+# match a job id.
+export RUNNER_TRACKING_ID=
 case "$LOCK_FILE" in "$WORKSPACE_ROOT"/*) ;; *) die "lock file must be under $WORKSPACE_ROOT" ;; esac
 if [ -z "${DEPLOY_MAIN_LOCKED:-}" ]; then
   export DEPLOY_MAIN_LOCKED=1
@@ -90,10 +96,21 @@ SWITCH_STARTED=0
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
 
-for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
+for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl systemd-run; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 command -v curl >/dev/null 2>&1 || die "required command not found: curl"
+
+# (Re)create the stack detached from this shell: anything started as a child
+# of the runner job inherits RUNNER_TRACKING_ID and is reaped (conmon first,
+# then the ports and containers go with it) when the job ends. A transient
+# systemd unit runs with the manager environment instead, which never
+# carries a job id. --wait blocks until compose finishes; --collect cleans
+# the unit up afterwards.
+stack_up() { # [$1...] = optional compose service names (empty = whole stack)
+  systemd-run --user --collect --wait --working-directory="$STACK_DIR" \
+    podman compose up -d "$@"
+}
 
 # The deploy runner must be a sibling of the daemon, never one of its tasks.
 # Check both process arguments and cgroups so systemd service ancestry is caught
@@ -237,8 +254,8 @@ printf '  web image:       %s\n' "$WEB_IMAGE"
 printf '  backend port:    %s\n' "$BACKEND_PORT"
 printf '  frontend port:   %s\n' "$FRONTEND_PORT"
 printf '  backups:         %s\n' "$BACKUP_ROOT"
-printf '  switch: stop daemon, update .env, podman compose up -d, verify health/migrations/web, install daemon binary, start daemon\n'
-printf '  rollback: restore .env and old daemon binary, podman compose up -d, start daemon; database dump is retained, never restored automatically\n'
+printf '  switch: stop daemon, update .env, recreate the stack through systemd, verify health/migrations/web, install daemon binary, start daemon\n'
+printf '  rollback: restore .env and old daemon binary, recreate the stack through systemd, start daemon; database dump is retained, never restored automatically\n'
 if [ "$DRY_RUN" = 1 ]; then
   log "dry-run complete; no stack state was changed"
   exit 0
@@ -279,7 +296,7 @@ rollback() {
     systemctl --user stop multica-daemon.service || rollback_failed=1
     cp -p "$BACKUP_DIR/.env" "$ENV_FILE" || rollback_failed=1
     install -m 755 "$BACKUP_DIR/multica" "$HOME/.local/bin/multica" || rollback_failed=1
-    (cd "$STACK_DIR" && podman compose up -d) || rollback_failed=1
+    stack_up || rollback_failed=1
     systemctl --user start multica-daemon.service || rollback_failed=1
     if [ "$rollback_failed" = 0 ]; then
       log "rollback commands completed; database dump retained at $BACKUP_DIR/database.dump"
@@ -316,7 +333,7 @@ awk -F= -v tag="$IMAGE_TAG" '
 chmod --reference="$ENV_FILE" "$ENV_TMP"
 mv "$ENV_TMP" "$ENV_FILE"
 ENV_TMP=""
-(cd "$STACK_DIR" && podman compose up -d)
+stack_up
 
 health_ok=0
 for _ in $(seq 1 60); do

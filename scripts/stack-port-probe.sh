@@ -11,20 +11,29 @@
 # web frontend:
 #
 #   container ok + host dead   = forwarder dead -> kill stale forwarder pids,
-#                                restart that container only
+#                                restart; recreate via systemd if that fails
 #   container dead ×3 ticks    = hung backend -> capture diagnostics (top,
 #                                /proc status, logs, SIGQUIT goroutine dump
-#                                for the backend), then restart it
+#                                for the backend), then restart; recreate via
+#                                systemd if that fails
 #   both ok                    = healthy, nothing to do
 #
 # Restarts are rate-limited (2 per 15 minutes per container) and never happen
 # while deploy-main.sh holds its lock. Only the backend/frontend containers
-# are ever restarted — never the database, never a compose-wide operation.
+# are ever restarted or recreated — never the database (postgres/redis),
+# never a compose-wide operation.
 #
 # Usage: stack-port-probe.sh [--check] [stack-dir]
 #   --check   report only: exit 1 when a forwarder is dead, never restart.
 #   stack-dir defaults to $HOME/.local/share/multica.
 set -euo pipefail
+
+# M-556: the GH runner reaps every process carrying its RUNNER_TRACKING_ID
+# when the job ends — including conmon, which outlives a deploy and takes
+# the stack's ports with it. Belt and braces: clear it so nothing this
+# script spawns (notably podman and the containers it manages) can ever
+# match a job id. Timer units already run with a clean manager environment.
+export RUNNER_TRACKING_ID=
 
 CHECK_ONLY=0
 if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
@@ -41,7 +50,7 @@ die() { log "ERROR: $*"; exit 1; }
 [ -d "$STACK_DIR" ] || die "stack directory not found: $STACK_DIR"
 [ -f "$STACK_DIR/.env" ] || die "stack environment file not found: $STACK_DIR/.env"
 [ -f "$STACK_DIR/compose.yml" ] || die "compose file not found: $STACK_DIR/compose.yml"
-for cmd in awk curl jq podman; do
+for cmd in awk curl jq podman systemd-run; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 
@@ -164,6 +173,10 @@ stale_forwarder_pids() { # $1 = host port; pids of rootlessport listeners on it
     | sed -n 's/.*rootlessport",pid=\([0-9][0-9]*\).*/\1/p' || true
 }
 
+container_running() { # $1 = container id; true when the container is running
+  [ "$(podman inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" = true ]
+}
+
 restart_container() { # $1 = service, $2 = container id, $3 = host port
   local svc="$1" cid="$2" hport="$3" pid
   # Re-test the lock immediately before acting: a deploy may have started
@@ -176,13 +189,33 @@ restart_container() { # $1 = service, $2 = container id, $3 = host port
   # a plain restart then fails with "bind: address already in use" and the
   # container stays down. Kill the exact pids bound to the port first —
   # never by name alone.
-  local svc="$1" cid="$2" hport="$3" pid
   for pid in $(stale_forwarder_pids "$hport"); do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     log "$svc: killing stale forwarder pid $pid on :$hport"
     env kill -9 "$pid" 2>/dev/null || log "$svc: pid $pid already gone"
   done
-  podman restart "$cid" >/dev/null || { log "$svc: podman restart failed"; return 1; }
+  if podman restart "$cid" >/dev/null 2>&1 && container_running "$cid"; then
+    return 0
+  fi
+  log "$svc: restart failed or container still stopped; recreating via systemd"
+  recreate_container "$svc" "$cid" || return 1
+}
+
+# Last-resort heal: remove the stuck container and bring it back through a
+# transient systemd unit, like the deploy does — detached from any job shell
+# so no runner can reap it. Only backend/frontend ever reach here; postgres
+# and redis are never touched.
+recreate_container() { # $1 = service, $2 = container id
+  local svc="$1" cid="$2"
+  case "$svc" in
+    backend|frontend) ;;
+    *) log "$svc: refusing to recreate (not backend/frontend)"; return 1 ;;
+  esac
+  podman rm -f "$cid" >/dev/null 2>&1 || log "$svc: rm failed (continuing)"
+  systemd-run --user --collect --wait --working-directory="$STACK_DIR" \
+    podman compose up -d "$svc" >/dev/null 2>&1 \
+    || { log "$svc: systemd compose up failed"; return 1; }
+  log "$svc: recreated via systemd"
 }
 
 capture_evidence() { # $1 = service, $2 = host port; log both sides' state
