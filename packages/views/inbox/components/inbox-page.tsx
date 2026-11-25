@@ -1088,6 +1088,16 @@ export function InboxPage() {
             {t(($) => $.detail.open_project)}
           </Button>
         )}
+        {detailItem.type === "memory_pending" && (
+          <Button
+            size="sm"
+            variant="outline"
+            render={<AppLink href={`${wsPaths.settings()}?tab=moct-memory`} />}
+            nativeButton={false}
+          >
+            {t(($) => $.detail.open_memory)}
+          </Button>
+        )}
         {detailItem.type === "quick_create_failed" &&
           detailItem.details?.source_context_id &&
           detailItem.details?.task_id && (

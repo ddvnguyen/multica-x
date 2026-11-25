@@ -47,6 +47,9 @@ export type InboxItemType =
   // a member of. Issue-less: details carry project_id, project_title and
   // joined_by (the owner's name).
   | "project_owner_joined"
+  // A memory record landed pending and waits for a human decision (M-570).
+  // Issue-less: details carry memory_id, status and the settings tab.
+  | "memory_pending"
   // Connected Apps (MUL-8516): an agent waits on the recipient to confirm an
   // app call, or to connect their account.
   | "app_action_requested"

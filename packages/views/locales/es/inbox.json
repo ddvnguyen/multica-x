@@ -77,7 +77,8 @@
     "open_project": "Abrir proyecto",
     "autopilot_quota_upgrade": "Ver opciones de mejora del plan",
     "archive": "Archivar",
-    "unarchive": "Desarchivar"
+    "unarchive": "Desarchivar",
+    "open_memory": "Abrir Memoria"
   },
   "types": {
     "issue_assigned": "Asignada",
@@ -109,7 +110,8 @@
     "app_action_requested": "Necesita tu confirmación",
     "app_action_reminder": "La confirmación caduca pronto",
     "app_connect_requested": "Conectar una aplicación",
-    "app_action_result": "Resultado de la acción de la aplicación"
+    "app_action_result": "Resultado de la acción de la aplicación",
+    "memory_pending": "Memoria pendiente de aprobación"
   },
   "labels": {
     "set_status_to": "Establecer estado en",

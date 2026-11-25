@@ -42,6 +42,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
     children_done: t(($) => $.types.children_done),
     project_owner_joined: t(($) => $.types.project_owner_joined),
+    memory_pending: t(($) => $.types.memory_pending),
     app_action_requested: t(($) => $.types.app_action_requested),
     app_action_reminder: t(($) => $.types.app_action_reminder),
     app_connect_requested: t(($) => $.types.app_connect_requested),
