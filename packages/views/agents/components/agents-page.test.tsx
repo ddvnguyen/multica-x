@@ -20,6 +20,7 @@ import { AgentsPage } from "./agents-page";
 const mocks = vi.hoisted(() => ({
   agents: [] as Agent[],
   agentsLoading: false,
+  roleTypeEnabled: false,
   runCounts: [] as Array<{ agent_id: string; run_count: number }>,
   runCountsPending: false,
   activity: {
@@ -41,6 +42,7 @@ const mocks = vi.hoisted(() => ({
       owners: [] as string[],
       models: [] as string[],
       access: [] as string[],
+      types: [] as string[],
     },
     search: "",
     setSearch: vi.fn(),
@@ -95,6 +97,8 @@ vi.mock("sonner", () => ({
 vi.mock("@multica/core/agents", () => ({
   isAgentRuntimeBound: (agent: { runtime_id: string; runtime_bound?: boolean }) =>
     agent.runtime_bound !== false && agent.runtime_id.length > 0,
+  isRoleAgent: (agent: { subtype?: string }) => agent?.subtype === "role",
+  useAgentRoleTypeEnabled: () => mocks.roleTypeEnabled === true,
   agentRunCounts30dOptions: () => ({ queryKey: ["agent-run-counts"] }),
   useWorkspaceActivityMap: () => mocks.activity,
   useWorkspacePresenceMap: () => mocks.presence,
@@ -247,6 +251,7 @@ function betaPrecedesAlpha(): boolean {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.roleTypeEnabled = false;
   mocks.agents = [ALPHA, BETA];
   mocks.agentsLoading = false;
   mocks.runCounts = [];
@@ -264,7 +269,33 @@ beforeEach(() => {
     owners: [],
     models: [],
     access: [],
+    types: [],
   };
+});
+
+describe("AgentsPage Agent Type (M-567)", () => {
+  it("shows the Type column and a Role badge with its tier role instead of Needs a runtime", () => {
+    mocks.roleTypeEnabled = true;
+    mocks.viewState.sortField = "name";
+    mocks.agents = [
+      ALPHA,
+      makeAgent({
+        id: "a-role",
+        name: "Engineer Role",
+        subtype: "role",
+        runtime_id: "",
+        tier_role: "engineer",
+      }),
+    ];
+
+    renderPage();
+
+    expect(screen.getByRole("columnheader", { name: "Type" })).toBeInTheDocument();
+    // The Type cell and the Status cell both badge a Role.
+    expect(screen.getAllByText("Role").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("engineer")).toBeInTheDocument();
+    expect(screen.queryByText("Needs a runtime")).toBeNull();
+  });
 });
 
 describe("AgentsPage listReady gate", () => {

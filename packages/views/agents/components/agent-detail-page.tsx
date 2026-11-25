@@ -696,11 +696,20 @@ export function AgentDetailPage({ agentId, extraSections }: AgentDetailPageProps
               title={agent.name}
               description={agent.description || undefined}
               trailing={
-                isArchived ? (
-                  <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
-                    {t(($) => $.row.archived)}
-                  </span>
-                ) : null
+                <>
+                  {roleTypeEnabled && !isArchived ? (
+                    <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                      {isRoleAgent(agent)
+                        ? t(($) => $.row.role)
+                        : t(($) => $.inspector.type_agent)}
+                    </span>
+                  ) : null}
+                  {isArchived ? (
+                    <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-caption text-muted-foreground">
+                      {t(($) => $.row.archived)}
+                    </span>
+                  ) : null}
+                </>
               }
             />
             <AgentChannelLinks agent={agent} />

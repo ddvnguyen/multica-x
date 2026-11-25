@@ -33,7 +33,18 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
 import { Switch } from "@multica/ui/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
+import { CollectionTag } from "../../layout/collection-list";
 import {
   SettingsCard,
   SettingsRow,
@@ -136,6 +147,38 @@ export function AgentDetailInspector({
     agent.id,
     roleTypeEnabled && !isRoleAgent(agent) && !!agent.implements_role_id,
   );
+
+  // M-567: the Agent Type property. Switching is a guarded server-side
+  // conversion, so the select opens a confirm instead of writing directly.
+  const [pendingType, setPendingType] = useState<"agent" | "role" | null>(null);
+  const { data: workspaceAgents = [] } = useQuery({
+    ...agentListOptions(wsId),
+    enabled: roleTypeEnabled && wsId !== "",
+  });
+  // Mirrors ListAgentsImplementingRole on the server: live, non-Role agents
+  // linking this Role, excluding the Role row itself.
+  const implementers = workspaceAgents.filter(
+    (candidate) =>
+      !isRoleAgent(candidate) &&
+      !candidate.archived_at &&
+      candidate.implements_role_id === agent.id,
+  );
+  const requestTypeChange = useCallback(
+    (next: string) => {
+      const target = next === "role" ? "role" : "agent";
+      if (!canEdit || target === (isRoleAgent(agent) ? "role" : "agent")) return;
+      setPendingType(target);
+    },
+    [agent, canEdit],
+  );
+  const confirmTypeChange = useCallback(() => {
+    if (!pendingType) return;
+    // The server keeps tier_role (inactive) on Role → Agent and clears the
+    // Role link on Agent → Role; the client only need send the target type.
+    void update({ subtype: pendingType });
+    setPendingType(null);
+  }, [pendingType, update]);
+
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? "");
   const [starters, setStarters] = useState<AgentConversationStarter[]>(
@@ -338,7 +381,31 @@ export function AgentDetailInspector({
             }
           >
             <SettingsCard>
+              {roleTypeEnabled ? (
+                <SettingsRow
+                  label={t(($) => $.inspector.prop_type)}
+                  description={
+                    showingRole ? t(($) => $.inspector.type_active_note) : undefined
+                  }
+                >
+                  <select
+                    aria-label={t(($) => $.inspector.prop_type)}
+                    value={showingRole ? "role" : "agent"}
+                    disabled={!canEdit}
+                    onChange={(event) => requestTypeChange(event.target.value)}
+                    className="max-w-44 truncate rounded-md border bg-background px-2 py-1 text-sm"
+                  >
+                    <option value="agent">
+                      {t(($) => $.inspector.type_agent)}
+                    </option>
+                    <option value="role">
+                      {t(($) => $.inspector.type_agent_role)}
+                    </option>
+                  </select>
+                </SettingsRow>
+              ) : null}
               {showingRole ? (
+              <>
               <SettingsRow
                 label={t(($) => $.inspector.prop_tier_role)}
                 description={t(($) => $.inspector.tier_role_hint)}
@@ -362,6 +429,28 @@ export function AgentDetailInspector({
                   ))}
                 </select>
               </SettingsRow>
+              {roleTypeEnabled ? (
+                <SettingsRow
+                  stacked
+                  label={t(($) => $.inspector.role_inherited_by)}
+                  description={t(($) => $.inspector.role_inherited_by_hint)}
+                >
+                  {implementers.length === 0 ? (
+                    <p className="text-caption text-muted-foreground">
+                      {t(($) => $.inspector.role_inherited_none)}
+                    </p>
+                  ) : (
+                    <ul className="flex flex-wrap gap-1.5">
+                      {implementers.map((entry) => (
+                        <li key={entry.id}>
+                          <CollectionTag>{entry.name}</CollectionTag>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </SettingsRow>
+              ) : null}
+              </>
               ) : (
               <>
               {roleTypeEnabled ? (
@@ -548,6 +637,42 @@ export function AgentDetailInspector({
           />
         </SettingsSection>
       </div>
+      {pendingType ? (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPendingType(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t(($) => $.inspector.type_change_title)}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingType === "role"
+                  ? t(($) => $.inspector.type_to_role_confirm)
+                  : implementers.length > 0
+                    ? t(($) => $.inspector.type_to_agent_blocked, {
+                        count: implementers.length,
+                      })
+                    : t(($) => $.inspector.type_to_agent_confirm)}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>
+                {t(($) => $.inspector.cancel)}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={pendingType === "agent" && implementers.length > 0}
+                onClick={confirmTypeChange}
+              >
+                {t(($) => $.inspector.save)}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
     </div>
   );
 }

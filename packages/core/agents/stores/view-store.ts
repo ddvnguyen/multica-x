@@ -52,6 +52,8 @@ export interface AgentListFilters {
   models: string[];
   /** Effective access-scope values (MUL-3963): workspace | specific-people | owner-only. */
   access: AccessScope[];
+  /** Agent Type values (M-567): "agent" | "role". Empty = no filter. */
+  types: string[];
 }
 
 export const EMPTY_AGENT_FILTERS: AgentListFilters = {
@@ -60,11 +62,13 @@ export const EMPTY_AGENT_FILTERS: AgentListFilters = {
   owners: [],
   models: [],
   access: [],
+  types: [],
 };
 
 // User-hideable columns. Name and the structural columns (checkbox, kebab)
 // are always visible.
 export type AgentColumnKey =
+  | "type"
   | "status"
   | "owner"
   | "access"

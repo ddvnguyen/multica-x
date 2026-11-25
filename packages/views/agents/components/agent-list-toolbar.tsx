@@ -40,6 +40,7 @@ export function countActiveFilterDimensions(
   if (filters.owners.length > 0) count++;
   if (filters.models.length > 0) count++;
   if (filters.access.length > 0) count++;
+  if ((filters.types?.length ?? 0) > 0) count++;
   return count;
 }
 
@@ -62,6 +63,7 @@ export function AgentListFilterMenu({
   onToggleFilter,
   allRows,
   members,
+  showTypeFilter = false,
 }: {
   filters: AgentListFilters;
   onToggleFilter: (key: keyof AgentListFilters, value: string) => void;
@@ -69,6 +71,8 @@ export function AgentListFilterMenu({
    *  counts derive from this set. */
   allRows: AgentListRow[];
   members: MemberWithUser[];
+  /** M-567: only exposed while the agent_role_type flag is on. */
+  showTypeFilter?: boolean;
 }) {
   const { t } = useT("agents");
 
@@ -98,11 +102,14 @@ export function AgentListFilterMenu({
   const memberById = new Map(members.map((m) => [m.user_id, m]));
   const ownerCounts = new Map<string, number>();
   const modelCounts = new Map<string, number>();
+  const typeCounts = new Map<string, number>();
   for (const row of allRows) {
     const oid = row.agent.owner_id;
     if (oid) ownerCounts.set(oid, (ownerCounts.get(oid) ?? 0) + 1);
     const model = row.agent.model;
     if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
+    const type = row.agent.subtype === "role" ? "role" : "agent";
+    typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
   }
 
   return (
@@ -141,6 +148,36 @@ export function AgentListFilterMenu({
             })}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+
+        {/* M-567: Agent Type, only while the flag is on. Mirrors the other
+            submenus' keyboard/ARIA pattern. */}
+        {showTypeFilter ? (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <span className="flex-1">
+                {t(($) => $.toolbar.section_type)}
+              </span>
+              <SubTriggerCount value={filters.types?.length ?? 0} />
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-auto min-w-44">
+              {[
+                { value: "agent", label: t(($) => $.inspector.type_agent) },
+                { value: "role", label: t(($) => $.row.role) },
+              ].map(({ value, label }) => (
+                <DropdownMenuCheckboxItem
+                  key={value}
+                  checked={(filters.types ?? []).includes(value)}
+                  onCheckedChange={() => onToggleFilter("types", value)}
+                  className={FILTER_ITEM_CLASS}
+                >
+                  <HoverCheck checked={(filters.types ?? []).includes(value)} />
+                  <span className="min-w-0 truncate">{label}</span>
+                  <CountBadge value={typeCounts.get(value) ?? 0} />
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ) : null}
 
         {/* Access — effective access scope (workspace / specific-people / owner-only).
             Mirrors Availability's keyboard/ARIA pattern. */}
