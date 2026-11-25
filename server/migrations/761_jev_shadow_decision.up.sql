@@ -6,7 +6,13 @@
 -- the moment, and what Jev said, next to whatever the run that followed did.
 -- Rows are written only when MULTICA_JEV_SHADOW is on and a key resolves, so a
 -- deployment without either never writes here.
-CREATE TABLE jev_shadow_decision (
+--
+-- Renumbered 760 -> 761 (M-584): lane z already applied this table under the
+-- old 760 stem, and the runner keys schema_migrations by full filename, so the
+-- lane re-runs this file. IF NOT EXISTS keeps that re-apply a no-op that
+-- preserves the shadow rows. The index lives in 762 (AGENTS.md: one
+-- single-statement CONCURRENTLY file per index build).
+CREATE TABLE IF NOT EXISTS jev_shadow_decision (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id uuid NOT NULL,
     -- decision_point names the fork being observed, e.g. issue_wakeup_dispatch.
@@ -29,6 +35,3 @@ CREATE TABLE jev_shadow_decision (
     error_kind text,
     created_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE INDEX jev_shadow_decision_point_created_idx
-    ON jev_shadow_decision (decision_point, created_at DESC);
