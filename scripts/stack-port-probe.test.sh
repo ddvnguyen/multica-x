@@ -54,16 +54,22 @@ case "$1 $2" in
   "port "*)
     printf '8080/tcp -> 0.0.0.0:4802\n' ;;
   "restart "*)
-    printf '%s\n' "$2" >> "$RESTART_LOG" ;;
+    printf '%s\n' "$2" >> "$RESTART_LOG"
+    [ "${FAIL_RESTART:-0}" = 0 ] ;;
   "top "*)
     printf 'PID USER TIME COMMAND\n4242 root 1:00 server\n' >> "$CALL_LOG" ;;
   "inspect "*)
     printf 'inspect %s\n' "$*" >> "$CALL_LOG"
-    printf '4242\n' ;;
+    case "$*" in
+      *State.Running*) [ "${CONT_RUNNING:-1}" = 1 ] && printf 'true\n' || printf 'false\n' ;;
+      *) printf '4242\n' ;;
+    esac ;;
   "kill "*)
     printf 'kill %s\n' "$*" >> "$CALL_LOG" ;;
   "logs "*)
     printf 'fake log line\n' >> "$CALL_LOG" ;;
+  "rm "*)
+    printf 'rm %s\n' "$*" >> "$CALL_LOG" ;;
   *) printf 'unexpected podman call: %s\n' "$*" >&2; exit 90 ;;
 esac
 EOF
@@ -79,7 +85,11 @@ cat > "$STUB_BIN/kill" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$KILL_LOG"
 EOF
-chmod 755 "$STUB_BIN/curl" "$STUB_BIN/podman" "$STUB_BIN/ss" "$STUB_BIN/ps" "$STUB_BIN/kill"
+cat > "$STUB_BIN/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >> "$CALL_LOG"
+EOF
+chmod 755 "$STUB_BIN/curl" "$STUB_BIN/podman" "$STUB_BIN/ss" "$STUB_BIN/ps" "$STUB_BIN/kill" "$STUB_BIN/systemd-run"
 export PATH="$STUB_BIN:$PATH"
 export PORT_PROBE_STATE_DIR="$SANDBOX/state"
 export MULTICA_MAIN_LOCK_FILE="$SANDBOX/deploy.lock"
@@ -157,6 +167,35 @@ rc=0; out="$(run 2>&1)" || rc=$?
 [[ "$out" == *"rate limit reached"* ]]
 test "$(grep -c '^cid-backend$' "$RESTART_LOG")" -eq 2
 unset STUCK
+
+# Recreate fallback (1): the restart itself fails. The probe removes the
+# stuck container and brings it back through systemd-run compose up;
+# postgres/redis are never named. The backend heals, exit 0.
+rm -rf "$PORT_PROBE_STATE_DIR"
+: > "$RESTART_LOG"; : > "$KILL_LOG"; : > "$CALL_LOG"
+export HOST_BACKEND_OK=0 FAIL_RESTART=1
+rc=0; out="$(run 2>&1)" || rc=$?
+[ "$rc" -eq 0 ]
+[[ "$out" == *"recreating via systemd"* ]]
+[[ "$out" == *"recreated via systemd"* ]]
+[[ "$out" == *"healed (host :4802 answers after restart)"* ]]
+grep -q "rm -f cid-backend" "$CALL_LOG"
+grep -q "compose up -d backend" "$CALL_LOG"
+! grep -qE "postgres|redis" "$CALL_LOG" "$RESTART_LOG"
+export HOST_BACKEND_OK=1
+unset FAIL_RESTART
+
+# Recreate fallback (2): the restart succeeds but the container stays
+# stopped. Same recreate path; the host stays dead so the tick still fails.
+rm -rf "$PORT_PROBE_STATE_DIR"
+: > "$RESTART_LOG"; : > "$KILL_LOG"; : > "$CALL_LOG"
+export STUCK=1 CONT_RUNNING=0
+rc=0; out="$(run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ]
+[[ "$out" == *"recreating via systemd"* ]]
+grep -q "compose up -d backend" "$CALL_LOG"
+unset STUCK
+export CONT_RUNNING=1
 
 # Restart-path recheck: the lock is free at tick start, but a deploy grabs it
 # before the restart. A counting flock stub makes the first probe (tick

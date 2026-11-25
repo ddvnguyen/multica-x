@@ -28,6 +28,10 @@ printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/fake 200
 EOF
 cat > "$STUB_BIN/podman" <<'EOF'
 #!/usr/bin/env bash
+# Every podman invocation must run with an empty RUNNER_TRACKING_ID (the
+# deploy and probe clear it); a leaked job id here would fail the assertion
+# at the end of the successful-deploy test.
+printf 'tracked:%s\n' "${RUNNER_TRACKING_ID-<unset>}" >> "$STUB_LOG"
 case "$1 $2" in
   'image exists') [[ "${FAIL_IMAGE:-}" != "$3" ]] ;;
   'image inspect')
@@ -40,14 +44,13 @@ case "$1 $2" in
   'ps -q') printf 'ps -q:%s\n' "$PWD" >> "$STUB_LOG"; printf 'db-id\n' ;;
   'compose up')
     printf 'compose up\n' >> "$STUB_LOG"
-    # Simulate conmon: a detached child that outlives the deploy and inherits
-    # every open fd. If the deploy holds the lock on an fd, this child keeps
-    # it locked after the script exits and the assertion below fails.
+    # Same conmon simulation as the systemd-run stub (old code paths recreate
+    # the stack through podman directly).
     if [ "${LEAK_SLEEPER:-0}" = 1 ]; then
-      # Real sleep (not the stubbed one): this child must outlive the deploy.
       setsid /bin/sleep 30 < /dev/null > /dev/null 2>&1 &
     fi
     ;;
+  'compose -f') printf 'cid-probe-stub\n' ;;
   'compose -f') printf 'cid-probe-stub\n' ;;
   'exec db-id') printf 'database dump bytes\n' ;;
   'exec cid-probe-stub') exit 0 ;;
@@ -98,7 +101,19 @@ cat > "$STUB_BIN/sleep" <<'EOF'
 #!/usr/bin/env bash
 /bin/sleep 0.05
 EOF
-for command in ps df podman multica systemctl curl sleep; do chmod 755 "$STUB_BIN/$command"; done
+cat > "$STUB_BIN/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >> "$STUB_LOG"
+# Simulate the detached unit/conmon: a child that outlives the deploy and
+# inherits every open fd. If the deploy held the lock on an fd, this child
+# keeps it locked after the script exits and the assertion below fails.
+if [ "${LEAK_SLEEPER:-0}" = 1 ]; then
+  # Real sleep (not the stubbed one): this child must outlive the deploy.
+  setsid /bin/sleep 30 < /dev/null > /dev/null 2>&1 &
+fi
+exit 0
+EOF
+for command in ps df podman multica systemctl curl sleep systemd-run; do chmod 755 "$STUB_BIN/$command"; done
 
 export PATH="$STUB_BIN:$PATH"
 export HOME="$HOME_DIR"
@@ -109,6 +124,7 @@ export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp/multica-main-deploy"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
 export PORT_PROBE_STATE_DIR="$SANDBOX/probe-state"
+export RUNNER_TRACKING_ID=test-job-id-1234
 export STUB_LOG="$SANDBOX/commands.log"
 export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567
@@ -161,7 +177,9 @@ fi
 assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
 assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
 assert grep -q 'systemctl --user start multica-daemon.service' "$STUB_LOG"
-assert test "$(grep -c '^compose up$' "$STUB_LOG")" -ge 2
+# The stack goes up through systemd (detached from the job shell), twice here:
+# once in the failed deploy, once in its rollback.
+assert test "$(grep -c '^systemd-run .*compose up -d$' "$STUB_LOG")" -ge 2
 assert grep -q "ps -q:$STACK_DIR" "$STUB_LOG"
 dump="$(find "$MULTICA_MAIN_BACKUP_ROOT" -name database.dump -type f -print -quit)"
 assert test -s "$dump"
@@ -226,6 +244,9 @@ LOCK_FILE="$WORKSPACE_ROOT/multica-main-deploy.lock"
 LEAK_SLEEPER=1 run >/dev/null 2>&1
 # The 30s sleeper still runs here; if it inherited the lock the next line fails.
 assert flock -n "$LOCK_FILE" true
+# No podman call may carry the job id: RUNNER_TRACKING_ID is cleared for the
+# whole deploy (stub records every invocation's value).
+assert test -z "$(grep -h '^tracked:' "$STUB_LOG" | grep -v '^tracked:$' || true)"
 # Reset the fixture: the leak run above is a successful deploy (new tag).
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 
