@@ -192,6 +192,54 @@ func TestListTaskMessagesByUserDshFallbackToRows(t *testing.T) {
 	}
 }
 
+// M-585: the run dialog must find sessions under a private daemon root even
+// when the task's work_dir pins a different project key. The memory-report
+// path already scans first; the dialog read only the pinned layout, returned
+// ErrNoSession, and silently fell back to the (empty for sunk tasks) rows —
+// count 0 on lane z for a run with 113 session events.
+func TestListTaskMessagesByUserDshTranscriptNestedRoot(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	taskID := seedDshTask(t, "dsh-nested-root")
+
+	// Session lives nested like a private daemon root
+	// (<profile>/dsh-sessions/<runtime>/<agent>/<project>/<session>), while the
+	// task's work_dir points at a project key that holds nothing.
+	const sessionID = "multica-00000000-0000-7000-8000-00000000000a"
+	store := t.TempDir()
+	nested := filepath.Join(store, "some-runtime", "some-agent", dshsession.ProjectKey("/elsewhere"), sessionID)
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A decoy project dir with no session: the pinned workdir layout misses.
+	if err := os.MkdirAll(filepath.Join(store, dshsession.ProjectKey("/task/workdir")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join([]string{
+		`{"type":"session","version":4,"id":"` + sessionID + `","createdAt":1,"cwd":"/elsewhere","isSeeded":false,"delegationDepth":0}`,
+		`{"type":"assistant/message","seq":18,"time":1000,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"hello from nested store"}]}}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(nested, "session.jsonl"), []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testHandler.dshSessionStore = store
+	t.Cleanup(func() { testHandler.dshSessionStore = "" })
+
+	rec := testutil.Call(t, testHandler.ListTaskMessagesByUser, userMessagesRequest(t, taskID)).Want(http.StatusOK)
+	var payloads []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payloads); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("got %d transcript entries, want 1 session entry via scan fallback: %+v", len(payloads), payloads)
+	}
+	if payloads[0]["type"] != "text" || payloads[0]["content"] != "hello from nested store" {
+		t.Fatalf("entry = %+v, want the nested-root session text", payloads[0])
+	}
+}
+
 // zstdCompress produces the on-disk encoding dsh writes for its session logs.
 func zstdCompress(t *testing.T, data string) []byte {
 	t.Helper()
