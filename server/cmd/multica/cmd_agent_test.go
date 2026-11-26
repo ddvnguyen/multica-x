@@ -1979,6 +1979,154 @@ func TestAgentUpdateSendsThinkingLevel(t *testing.T) {
 	}
 }
 
+// TestAgentUpdateSendsAccountSelection covers the account-binding flags the
+// server already accepts on PUT /api/agents/{id} (M-153). `specific` must
+// carry the id in the same body so SetAgentAccount applies mode and id
+// together; `default` must not send an id at all, because the server reads a
+// present account_id as "only valid when account_mode is specific".
+func TestAgentUpdateSendsAccountSelection(t *testing.T) {
+	t.Run("specific pins the id", func(t *testing.T) {
+		gotBody, _ := runAgentUpdateAgainstServer(t, map[string]string{
+			"account-mode": "specific",
+			"account-id":   "cde4c236-3c69-4640-98f7-8986f0e839a2",
+		})
+		if gotBody["account_mode"] != "specific" {
+			t.Fatalf("account_mode = %v, want specific", gotBody["account_mode"])
+		}
+		if gotBody["account_id"] != "cde4c236-3c69-4640-98f7-8986f0e839a2" {
+			t.Fatalf("account_id = %v, want the pinned id", gotBody["account_id"])
+		}
+	})
+
+	t.Run("resolution modes omit the id", func(t *testing.T) {
+		for _, mode := range []string{"default", "any"} {
+			t.Run(mode, func(t *testing.T) {
+				gotBody, _ := runAgentUpdateAgainstServer(t, map[string]string{"account-mode": mode})
+				if gotBody["account_mode"] != mode {
+					t.Fatalf("account_mode = %v, want %s", gotBody["account_mode"], mode)
+				}
+				if _, ok := gotBody["account_id"]; ok {
+					t.Fatalf("account_id must be omitted for %s; got body %v", mode, gotBody)
+				}
+			})
+		}
+	})
+
+	t.Run("explicit empty mode clears to default", func(t *testing.T) {
+		gotBody, _ := runAgentUpdateAgainstServer(t, map[string]string{"account-mode": ""})
+		if gotBody["account_mode"] != "" {
+			t.Fatalf("account_mode = %v, want an explicit empty string", gotBody["account_mode"])
+		}
+	})
+
+	t.Run("account-id alone re-pins within the stored mode", func(t *testing.T) {
+		gotBody, _ := runAgentUpdateAgainstServer(t, map[string]string{
+			"account-id": "cde4c236-3c69-4640-98f7-8986f0e839a2",
+		})
+		if _, ok := gotBody["account_mode"]; ok {
+			t.Fatalf("account_mode must stay omitted when only the id is set; got %v", gotBody)
+		}
+		if gotBody["account_id"] != "cde4c236-3c69-4640-98f7-8986f0e839a2" {
+			t.Fatalf("account_id = %v, want the pinned id", gotBody["account_id"])
+		}
+	})
+
+	t.Run("specific without an id is rejected before the request", func(t *testing.T) {
+		sent := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sent = true
+		}))
+		defer srv.Close()
+
+		cmd := newAgentUpdateTestCmd(t, srv.URL)
+		if err := cmd.Flags().Set("account-mode", "specific"); err != nil {
+			t.Fatal(err)
+		}
+		err := runAgentUpdate(cmd, []string{"agent-123"})
+		if err == nil || !strings.Contains(err.Error(), "--account-id is required") {
+			t.Fatalf("err = %v, want --account-id is required", err)
+		}
+		if sent {
+			t.Fatal("a rejected selection must not reach the server")
+		}
+	})
+
+	t.Run("unknown mode is rejected", func(t *testing.T) {
+		cmd := newAgentUpdateTestCmd(t, "http://127.0.0.1:1")
+		if err := cmd.Flags().Set("account-mode", "first"); err != nil {
+			t.Fatal(err)
+		}
+		err := runAgentUpdate(cmd, []string{"agent-123"})
+		if err == nil || !strings.Contains(err.Error(), "--account-mode must be") {
+			t.Fatalf("err = %v, want an --account-mode validation error", err)
+		}
+	})
+
+	t.Run("id with another mode is rejected", func(t *testing.T) {
+		cmd := newAgentUpdateTestCmd(t, "http://127.0.0.1:1")
+		for flag, value := range map[string]string{
+			"account-mode": "any",
+			"account-id":   "cde4c236-3c69-4640-98f7-8986f0e839a2",
+		} {
+			if err := cmd.Flags().Set(flag, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := runAgentUpdate(cmd, []string{"agent-123"})
+		if err == nil || !strings.Contains(err.Error(), "only valid with --account-mode specific") {
+			t.Fatalf("err = %v, want the mode/id conflict error", err)
+		}
+	})
+}
+
+// newAgentUpdateTestCmd builds the minimal update command the account-flag
+// tests need: the two account flags, plus the globals runAgentUpdate reads.
+func newAgentUpdateTestCmd(t *testing.T, serverURL string) *cobra.Command {
+	t.Helper()
+	t.Setenv("MULTICA_SERVER_URL", serverURL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_TASK_ID", "")
+
+	cmd := &cobra.Command{Use: "update"}
+	cmd.Flags().String("account-mode", "", "")
+	cmd.Flags().String("account-id", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	return cmd
+}
+
+// runAgentUpdateAgainstServer runs the update against a stub API that echoes
+// an agent, and returns the decoded PUT body.
+func runAgentUpdateAgainstServer(t *testing.T, flags map[string]string) (map[string]any, string) {
+	t.Helper()
+	var gotBody map[string]any
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "agent-123", "name": "TestAgent"})
+	}))
+	defer srv.Close()
+
+	cmd := newAgentUpdateTestCmd(t, srv.URL)
+	for flag, value := range flags {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runAgentUpdate(cmd, []string{"agent-123"}); err != nil {
+		t.Fatalf("runAgentUpdate: %v", err)
+	}
+	if gotPath != "/api/agents/agent-123" {
+		t.Fatalf("path = %q, want /api/agents/agent-123", gotPath)
+	}
+	return gotBody, gotPath
+}
+
 func TestAgentServiceTierFlagsAndBodies(t *testing.T) {
 	if agentCreateCmd.Flag("service-tier") == nil {
 		t.Error("agent create must expose --service-tier")

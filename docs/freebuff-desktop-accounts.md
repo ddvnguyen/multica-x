@@ -45,6 +45,19 @@ Base `/api/workspaces/{workspaceId}`. Members read; owners and admins write.
 Agent create/update accept `account_mode` and `account_id`. An update that
 mentions neither leaves the account alone; moving off `specific` clears the id.
 
+The CLI mirrors those two fields on `agent update` (owners/admins, or the
+agent's owner):
+
+```
+multica agent update <agentId> --account-mode specific --account-id <accountId>
+multica agent update <agentId> --account-mode any
+multica agent update <agentId> --account-mode default
+```
+
+The id must be sent together with `specific`; sending it with `default`/`any`
+is rejected locally, and `specific` without an id is rejected before the
+request. `--account-id` on its own re-pins within the stored mode.
+
 Model discovery: `POST /runtimes/{id}/models?account=default|all|<accountId>`.
 `all` unions the models of every enabled account. Catalogs are cached per
 runtime and scope (bare `runtimeID` for default, `runtimeID:<scope>` otherwise).
