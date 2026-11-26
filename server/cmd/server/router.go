@@ -2624,6 +2624,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
+					// Read-only route probe for the M-588 role pilot
+					// (orch-sweep `role_route_ready`): the workspace flag
+					// plus the Role's role-keyed tiers with member runtime
+					// state and free slots. Workspace member auth only, no
+					// writes, no Role status/runtime gate.
+					r.Get("/role-route", h.GetAgentRoleRoute)
 					// Read-only inherited-content preview for the Team Role UI
 					// (M-499 slice 3). Human actors only: a task token must not
 					// use it to read a Role outside its own run.

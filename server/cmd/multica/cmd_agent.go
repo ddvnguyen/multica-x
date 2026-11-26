@@ -70,6 +70,13 @@ var agentTasksCmd = &cobra.Command{
 	RunE:  runAgentTasks,
 }
 
+var agentRoleRouteCmd = &cobra.Command{
+	Use:   "role-route <id>",
+	Short: "Show a Role's route: workspace flag plus role-keyed tiers with member runtime state and free slots",
+	Args:  exactArgs(1),
+	RunE:  runAgentRoleRoute,
+}
+
 var agentAvatarCmd = &cobra.Command{
 	Use:   "avatar <id>",
 	Short: "Upload an avatar image for an agent",
@@ -138,6 +145,7 @@ func init() {
 	agentCmd.AddCommand(agentArchiveCmd)
 	agentCmd.AddCommand(agentRestoreCmd)
 	agentCmd.AddCommand(agentTasksCmd)
+	agentCmd.AddCommand(agentRoleRouteCmd)
 	agentCmd.AddCommand(agentAvatarCmd)
 	agentCmd.AddCommand(agentSkillsCmd)
 	agentCmd.AddCommand(agentEnvCmd)
@@ -221,6 +229,9 @@ func init() {
 	agentTasksCmd.Flags().String("output", "table", "Output format: table or json")
 	agentTasksCmd.Flags().Int("limit", 200, "Maximum runs per page (1-200)")
 	agentTasksCmd.Flags().String("before", "", "Cursor from the previous page")
+
+	// agent role-route (M-588 B1e/G1: read-only route probe for orch-sweep)
+	agentRoleRouteCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent avatar
 	agentAvatarCmd.Flags().String("file", "", "Path to the avatar image file (required)")
@@ -598,6 +609,61 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
 	}}
+	cli.PrintTable(os.Stdout, headers, rows)
+	return nil
+}
+
+// runAgentRoleRoute implements `multica agent role-route <id>`: the read-only
+// route probe consumed by orch-sweep `role_route_ready` (M-588 B1e/G1). The
+// server answers 404 for an unknown, non-Role or archived agent, which
+// surfaces here as a non-zero exit so the sweep fails closed to `named`.
+func runAgentRoleRoute(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var route map[string]any
+	if err := client.GetJSON(ctx, "/api/agents/"+args[0]+"/role-route", &route); err != nil {
+		return fmt.Errorf("get agent role route: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, route)
+	}
+	if output != "table" {
+		return fmt.Errorf("invalid --output %q: must be json or table", output)
+	}
+
+	fmt.Fprintf(os.Stdout, "flag_on: %v\n", route["flag_on"])
+	headers := []string{"TIER", "ENABLED", "MANUAL_ONLY", "COOLDOWN_UNTIL", "FREE_SLOTS"}
+	rows := [][]string{}
+	if tiers, ok := route["tiers"].([]any); ok {
+		for _, t := range tiers {
+			tier, _ := t.(map[string]any)
+			var free int64
+			if members, ok := tier["members"].([]any); ok {
+				for _, m := range members {
+					if member, ok := m.(map[string]any); ok {
+						if f, ok := member["free_slots"].(float64); ok {
+							free += int64(f)
+						}
+					}
+				}
+			}
+			rows = append(rows, []string{
+				strVal(tier, "name"),
+				fmt.Sprint(tier["enabled"]),
+				fmt.Sprint(tier["manual_only"]),
+				strVal(tier, "cooldown_until"),
+				fmt.Sprint(free),
+			})
+		}
+	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
 }
