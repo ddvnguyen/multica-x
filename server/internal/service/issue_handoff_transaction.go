@@ -82,7 +82,11 @@ func (s *TaskService) EnqueuePreparedIssueHandoffInTx(ctx context.Context, q *db
 	if agent.ArchivedAt.Valid || agent.RuntimeID != prepared.agent.RuntimeID || agent.UseTiers != prepared.agent.UseTiers {
 		return db.AgentTaskQueue{}, fmt.Errorf("handoff agent changed during preparation")
 	}
-	if !agent.RuntimeID.Valid && !agent.UseTiers {
+	// M-597: the same Role exemption PrepareIssueHandoff already applies, so a
+	// decision-response handoff back to a model-free Role is not refused after
+	// its tier was resolved. The flag is re-read here, keeping a flag-off Row on
+	// the pre-M-510 path.
+	if !agent.RuntimeID.Valid && !agent.UseTiers && !roleRunEnabled(ctx, s, agent) {
 		return db.AgentTaskQueue{}, fmt.Errorf("handoff agent changed during preparation")
 	}
 	source, delegated, kind, ref := attributionCreateParams(prepared.attr)

@@ -1507,6 +1507,11 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 	// same value the pre-MUL-4302 resolver produced, so overlay/authorization
 	// are unchanged; the extra fields are audit provenance.
 	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceCommentSource, actorUserID)
+	// M-597: capture the human originator before the fallback. An agent actor
+	// hands down no member id, so a Role pick is authorized against this human;
+	// owner_fallback fills in an accountable human for audit only and must not
+	// become an authorization grant.
+	rolePickOriginator := attr.UserID
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -1522,8 +1527,13 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 	// M-351: a use_tiers agent resolves its runtime + model stamp from the
 	// first selected tier with a free provider slot. Full tiers are
 	// backpressure: the row is still inserted (queued) but carries no
-	// runtime, so no daemon can claim it until promotion re-resolves.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, actorUserID)
+	// runtime, so no daemon can claim it until promotion re-resolves. A Role
+	// pick is authorized against the human the actor acts for (M-597).
+	tierRequester := actorUserID
+	if roleRunEnabled(ctx, s, agent) {
+		tierRequester = rolePickRequester(actorUserID, rolePickOriginator)
+	}
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, tierRequester)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr
@@ -1744,6 +1754,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 	// copied); a member mention is direct_human. attr.UserID matches the
 	// pre-MUL-4302 value, so authorization is unchanged.
 	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	// M-597: the human a Role pick is authorized against, captured before the
+	// audit-only owner_fallback can fill it in.
+	rolePickOriginator := attr.UserID
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -1756,8 +1769,13 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
-	// M-351 auto path, or the M-359 explicit pick when override is set.
-	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, actorUserID)
+	// M-351 auto path, or the M-359 explicit pick when override is set. A Role
+	// pick is authorized against the human the actor acts for (M-597).
+	tierRequester := actorUserID
+	if roleRunEnabled(ctx, s, agent) {
+		tierRequester = rolePickRequester(actorUserID, rolePickOriginator)
+	}
+	tierRes, tierParked, tierQueuedOnly, tierErr := s.applyTierResolutionWithOverride(ctx, agent, issue.ID, issue.Properties, override, tierRequester)
 	tierExplicit := tierExplicitFlag(tierRes.tierID, override)
 	if tierErr != nil {
 		return db.AgentTaskQueue{}, tierErr

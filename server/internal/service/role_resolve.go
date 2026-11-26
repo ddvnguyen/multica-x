@@ -172,6 +172,20 @@ func (s *TaskService) authorizeRoleForRun(ctx context.Context, role db.Agent, wo
 	return errRoleAccessDenied
 }
 
+// rolePickRequester is the human a Role pick is authorized against when the
+// immediate actor is not a member (M-597). An agent actor carries no member id —
+// memberActorUserID deliberately refuses to turn an agent id into an accountable
+// human — so the pick is judged by the resolved top-of-chain human originator,
+// exactly as invokeAgentDecision judges an agent-initiated invocation. When no
+// human resolves, the requester stays invalid and authorizeRoleForRun keeps
+// failing closed.
+func rolePickRequester(actorUserID, originatorUserID pgtype.UUID) pgtype.UUID {
+	if actorUserID.Valid {
+		return actorUserID
+	}
+	return originatorUserID
+}
+
 // memberHitsRoleTargets is the service-side twin of the handler's invocation
 // target predicate: a workspace target admits any member, a member target
 // admits the matching user, team targets are inert.
