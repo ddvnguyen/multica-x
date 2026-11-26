@@ -186,14 +186,48 @@ func TestDecideRejectsMalformedQuestionsWithoutSending(t *testing.T) {
 
 	c := client(t, srv.URL, time.Second)
 	for name, questions := range map[string]map[string]Question{
-		"no questions":   {},
-		"no id":          {"": Noul("q", "y", "n")},
-		"no wording":     {"needs_action": {Type: "noul"}},
-		"other question": {"needs_action": {Type: "choice", Instructions: "pick"}},
+		"no questions":         {},
+		"no id":                {"": Noul("q", "y", "n")},
+		"no wording":           {"needs_action": {Type: "noul"}},
+		"unsupported":          {"needs_action": {Type: "score", Instructions: "rate"}},
+		"choice no opts":       {"route_pick": Choice("pick", nil)},
+		"choice no opts empty": {"route_pick": Choice("pick", map[string]string{})},
 	} {
 		if _, err := c.Decide(context.Background(), "state", questions); KindOf(err) != KindRequest {
 			t.Errorf("%s: kind = %q, want %q", name, KindOf(err), KindRequest)
 		}
+	}
+}
+
+// The choice body this package sends must be the one the dsh service builds,
+// verified against @contexera/dsh-jev's buildWireBody:
+// {"state":...,"model":...,"questions":{"route_pick":{"type":"choice",
+// "instructions":...,"criteria":{option: description, ...}}}}.
+func TestDecideSendsTheDocumentedChoiceBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"jev-1.13-free","answers":{"route_pick":{"type":"choice","choice":"engineer","probabilities":{"engineer":0.7,"reviewer":0.3},"confidence":0.4}},"usage":{"input_tokens":120,"output_tokens":9}}`)
+	}))
+	defer srv.Close()
+
+	question := Choice("which route fits this card?", map[string]string{"engineer": "code work on the card", "reviewer": "review the card"})
+	result, err := client(t, srv.URL, time.Second).Decide(context.Background(), map[string]any{"issue": map[string]any{"status": "todo"}}, map[string]Question{"route_pick": question})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	want := `{"model":"jev-1.13.0","questions":{"route_pick":{"type":"choice","instructions":"which route fits this card?","criteria":{"engineer":"code work on the card","reviewer":"review the card"}}},"state":{"issue":{"status":"todo"}}}`
+	if gotBody != want {
+		t.Errorf("body mismatch\n got: %s\nwant: %s", gotBody, want)
+	}
+	if got := result.Answers["route_pick"].Choice; got != "engineer" {
+		t.Errorf("choice = %q, want %q", got, "engineer")
+	}
+	if got := result.Answers["route_pick"].Confidence; got != 0.4 {
+		t.Errorf("confidence = %v, want 0.4", got)
 	}
 }
 

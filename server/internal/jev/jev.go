@@ -92,32 +92,45 @@ func KindOf(err error) ErrorKind {
 	return ""
 }
 
-// Question is one typed question. Only the yes/no form is implemented: it is
-// the only one shadow mode asks, and a smaller surface is a smaller contract to
-// keep true. `choice` and `score` are a later change, not an untested guess.
+// Question is one typed question: `noul` (yes/no) or `choice` (one option out
+// of a fixed set). `score` is a later change, not an untested guess. Shapes
+// match `@contexera/dsh-jev` contracts: a choice carries its options as the
+// option map, noul its true/false entries, and the choice answer is the
+// chosen key plus the full distribution.
 type Question struct {
-	Type         string    `json:"type"`
-	Instructions string    `json:"instructions"`
-	Criteria     *Criteria `json:"criteria,omitempty"`
+	Type         string `json:"type"`
+	Instructions string `json:"instructions"`
+	Criteria     any    `json:"criteria,omitempty"`
 }
 
-// Criteria names what a yes and a no mean. Either side may be omitted.
-type Criteria struct {
+// NoulCriteria names what a yes and a no mean. Either side may be omitted. A
+// struct rather than a map so the wire keeps the documented key order.
+type NoulCriteria struct {
 	True  string `json:"true,omitempty"`
 	False string `json:"false,omitempty"`
 }
 
 // Noul is the yes/no question the shadow asks.
 func Noul(instructions, yes, no string) Question {
-	return Question{Type: "noul", Instructions: instructions, Criteria: &Criteria{True: yes, False: no}}
+	return Question{Type: "noul", Instructions: instructions, Criteria: NoulCriteria{True: yes, False: no}}
 }
 
-// Answer is the vendor's answer, passed through as sent. Only the members a
-// yes/no question can carry are declared; an answer of another type still
+// Choice is the routing question the shadow asks: pick one option out of the
+// fixed set. Options maps each option name to its description; it must offer
+// at least one option, mirroring the dsh package's readChoiceCriteria.
+func Choice(instructions string, options map[string]string) Question {
+	return Question{Type: "choice", Instructions: instructions, Criteria: options}
+}
+
+// Answer is the vendor's answer, passed through as sent. It declares the
+// members a `noul` or `choice` answer carries; an answer of another type still
 // unmarshals, with the fields it does not use left zero.
 type Answer struct {
-	Type string  `json:"type"`
-	Noul float64 `json:"noul"`
+	Type          string             `json:"type"`
+	Noul          float64            `json:"noul"`
+	Choice        string             `json:"choice"`
+	Probabilities map[string]float64 `json:"probabilities"`
+	Confidence    float64            `json:"confidence"`
 }
 
 // Result is the vendor's response. Model reports the versioned id that
@@ -210,10 +223,10 @@ func (c *Client) Redact(text string) string {
 	return strings.ReplaceAll(text, c.cfg.APIKey, Redacted)
 }
 
-// Decide asks one set of yes/no questions about one state and returns the
-// vendor's answers. It makes exactly one attempt: a shadow observation that
-// retries would spend more of the decision's budget than the observation is
-// worth, and a missed row is cheaper than a dispatch slowed down.
+// Decide asks one set of questions about one state and returns the vendor's
+// answers. It makes exactly one attempt: a shadow observation that retries
+// would spend more of the decision's budget than the observation is worth,
+// and a missed row is cheaper than a dispatch slowed down.
 func (c *Client) Decide(ctx context.Context, state any, questions map[string]Question) (*Result, error) {
 	if len(questions) == 0 {
 		return nil, &Error{Kind: KindRequest, msg: "jev: at least one question is required"}
@@ -222,7 +235,14 @@ func (c *Client) Decide(ctx context.Context, state any, questions map[string]Que
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(q.Instructions) == "" {
 			return nil, &Error{Kind: KindRequest, msg: "jev: every question needs an id and instructions"}
 		}
-		if q.Type != "noul" {
+		switch q.Type {
+		case "noul":
+		case "choice":
+			options, ok := q.Criteria.(map[string]string)
+			if !ok || len(options) == 0 {
+				return nil, &Error{Kind: KindRequest, msg: fmt.Sprintf("jev: choice question %q must offer at least one option", id)}
+			}
+		default:
 			return nil, &Error{Kind: KindRequest, msg: fmt.Sprintf("jev: unsupported question type %q", q.Type)}
 		}
 	}

@@ -4449,6 +4449,14 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 				"runtime_id", runtimeKey,
 				"agent_id", util.UUIDToString(stale.AgentID),
 			)
+			// Jev shadow mode (M-592): observe the re-delivery without
+			// touching it. The snapshot is built from the UPDATE's returned
+			// row, after the reclaim committed; the vendor call and its row
+			// run asynchronously on the pool, never in this claim path.
+			// Nil-safe no-op when the flag is off.
+			if shadow := s.JevShadow; shadow != nil {
+				shadow.AssessReclaim(shadow.SnapshotReclaim(stale))
+			}
 			return &stale, nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -4861,6 +4869,11 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			"runtime_id", util.UUIDToString(reclaimed[i].RuntimeID),
 			"agent_id", util.UUIDToString(reclaimed[i].AgentID),
 		)
+		// Jev shadow mode (M-592): same observation as the singular path.
+		// Nil-safe no-op when the flag is off.
+		if shadow := s.JevShadow; shadow != nil {
+			shadow.AssessReclaim(shadow.SnapshotReclaim(reclaimed[i]))
+		}
 	}
 	if len(claimed) >= maxTasks {
 		// Reclaim (step 2) already filled the batch, so step 3 never runs and a

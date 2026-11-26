@@ -4518,6 +4518,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp.RunOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.SuppressRun, actorType, actorID, workspaceID, handoffNote, override)
+	// Jev shadow mode (M-592): observe the routing decision without touching
+	// it. SnapshotRoute filters to Leader/Orchestrator reassigns; everything
+	// else returns nil. Post-commit, asynchronous through the pool — never in
+	// the write's transaction, never before the run is enqueued.
+	if shadow := h.TaskService.JevShadow; shadow != nil && shadow.Enabled() && trigger.Source == service.RunSourceAssign {
+		shadow.AssessRoute(shadow.SnapshotRoute(r.Context(), issue,
+			prevIssue.AssigneeType.String, uuidToString(prevIssue.AssigneeID),
+			actorType, actorID, false, handoff != nil))
+	}
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
 	// conditions): the write recorded the change; process it now. A failure
@@ -5385,6 +5394,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			runOutcome = h.resolveIssueRun(r, issue, trigger, runDecided, req.Updates.SuppressRun, actorType, actorID, workspaceID, batchHandoffNote, override)
+			// Jev shadow mode (M-592): same observation as the single-update
+			// path. Nil-safe no-op when the flag is off.
+			if shadow := h.TaskService.JevShadow; shadow != nil && shadow.Enabled() && trigger.Source == service.RunSourceAssign {
+				shadow.AssessRoute(shadow.SnapshotRoute(r.Context(), issue,
+					prevIssue.AssigneeType.String, uuidToString(prevIssue.AssigneeID),
+					actorType, actorID, false, handoff != nil))
+			}
 
 			// No status change — not even → cancelled — cancels active tasks here,
 			// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
