@@ -216,6 +216,12 @@ func init() {
 	agentUpdateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentUpdateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
 	agentUpdateCmd.Flags().String("status", "", "New status")
+	// Account selection (M-153): a thin pass-through to the account_mode /
+	// account_id fields the server already validates for freebuff-desktop
+	// runtimes (normalizeAccountSelection). Without these flags the only way
+	// to bind an agent to a workspace account was the web UI.
+	agentUpdateCmd.Flags().String("account-mode", "", "Freebuff account selection for freebuff-desktop runtimes: default (runtime decides), specific (pin --account-id), or any (first connected account). Pass an empty string to reset to default.")
+	agentUpdateCmd.Flags().String("account-id", "", "Workspace account id to pin; required when --account-mode is specific. Any other mode clears it.")
 	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent runs (1-50)")
 	agentUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
@@ -866,6 +872,39 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("status")
 		body["status"] = v
 	}
+	// account_mode / account_id are a tri-state pair on the server: sending
+	// account_mode alone then account_id in the same body applies them
+	// together (SetAgentAccount), so the CHECK constraint never sees half a
+	// selection. Sending only account_id re-pins within the stored mode.
+	accountModeChanged := cmd.Flags().Changed("account-mode")
+	accountMode := ""
+	if accountModeChanged {
+		accountMode, _ = cmd.Flags().GetString("account-mode")
+		accountMode = strings.TrimSpace(accountMode)
+		switch accountMode {
+		case "", "default", "specific", "any":
+		default:
+			return fmt.Errorf("--account-mode must be default, specific, or any (got %q)", accountMode)
+		}
+		body["account_mode"] = accountMode
+	}
+	if cmd.Flags().Changed("account-id") {
+		v, _ := cmd.Flags().GetString("account-id")
+		accountID := strings.TrimSpace(v)
+		// specific needs an id; naming an id while switching to default/any
+		// would contradict the mode the same body sets, so reject it here
+		// instead of letting the server answer 400.
+		if accountModeChanged && accountMode != "specific" && accountID != "" {
+			return fmt.Errorf("--account-id is only valid with --account-mode specific")
+		}
+		body["account_id"] = accountID
+	}
+	if accountModeChanged && accountMode == "specific" {
+		v, _ := cmd.Flags().GetString("account-id")
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("--account-id is required when --account-mode is specific")
+		}
+	}
 	if cmd.Flags().Changed("max-concurrent-tasks") {
 		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
 		if err := validateAgentMaxConcurrentTasksFlag(v); err != nil {
@@ -880,7 +919,7 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --conversation-starters, --runtime-id, --runtime-config, --model, --thinking-level, --service-tier, --custom-args, --mcp-config, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
+		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --conversation-starters, --runtime-id, --runtime-config, --model, --thinking-level, --service-tier, --custom-args, --mcp-config, --visibility, --status, --account-mode, --account-id, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())
