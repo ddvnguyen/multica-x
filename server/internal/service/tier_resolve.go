@@ -733,6 +733,17 @@ func (s *TaskService) LookupExplicitTierAs(ctx context.Context, agent db.Agent, 
 		return none, errUnknownTier
 	}
 	if agent.UseTiers {
+		// M-510/M-589: a Role is tier-mode, but its tier list is the role-keyed
+		// M-497 index and never agent_tier — a Role has no selections of its
+		// own to consult. Validate it exactly as the enqueue path validates a
+		// forced pick by id (roleExplicitTier), so `@Role#tier` and the tier
+		// picker agree on which names a Role may name.
+		if roleRunEnabled(ctx, s, agent) {
+			if _, rerr := s.roleExplicitTier(ctx, agent, normalizeTierRole(agent.TierRole.String), tier.ID, requester); rerr != nil {
+				return none, rerr
+			}
+			return tier, nil
+		}
 		selected, err := s.Queries.ListAgentTierIDs(ctx, agent.ID)
 		if err != nil {
 			return none, err

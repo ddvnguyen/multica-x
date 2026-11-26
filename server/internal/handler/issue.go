@@ -3005,20 +3005,29 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 	// twenty seconds later. Dev-built
 	// daemons (git-describe shape) are exempted inside CheckMinCLIVersion
 	// so `make daemon` works without weakening staging or production.
-	if status, payload := h.checkQuickCreateDaemonVersion(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID); status != 0 {
-		writeJSON(w, status, payload)
-		return
-	}
-	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, len(req.AttachmentIDs) > 0); status != 0 {
-		writeJSON(w, status, payload)
-		return
-	}
-	if priority != "" || dueDate != "" {
-		if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
-			r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
-		); status != 0 {
+	//
+	// These gates read the agent's bound runtime, so they only apply when it
+	// has one. A Role is model-free by design (M-510/M-589): readiness just
+	// accepted it because its route is stamped from the chosen tier at
+	// enqueue, so there is no runtime to version-check and no daemon whose
+	// limits could be attributed yet. A plain Agent reaching this point always
+	// has a runtime — readiness refuses a runtime-less one above.
+	if agent.RuntimeID.Valid {
+		if status, payload := h.checkQuickCreateDaemonVersion(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID); status != 0 {
 			writeJSON(w, status, payload)
 			return
+		}
+		if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, len(req.AttachmentIDs) > 0); status != 0 {
+			writeJSON(w, status, payload)
+			return
+		}
+		if priority != "" || dueDate != "" {
+			if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
+				r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
+			); status != 0 {
+				writeJSON(w, status, payload)
+				return
+			}
 		}
 	}
 
