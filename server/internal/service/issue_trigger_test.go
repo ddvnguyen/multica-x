@@ -145,14 +145,18 @@ func TestWillEnqueueRunRoleAssignPassesRuntimeGate(t *testing.T) {
 		t.Fatalf("load issue: %v", err)
 	}
 	in := IssueTriggerInput{Issue: issue, PrevStatus: issue.Status, AssigneeChanged: true}
+	// M-597: a Role pick is also authorized against the acting human, so the
+	// probe carries the Role's owner (here the workspace owner) and only the
+	// runtime gate is under test below.
+	probe := IssueTriggerProbe{RoleRequester: util.MustParseUUID(userID)}
 
-	if trigger, ok := newSvc(roleFlagService(true, workspaceID)).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); !ok {
+	if trigger, ok := newSvc(roleFlagService(true, workspaceID)).WillEnqueueRun(ctx, in, probe); !ok {
 		t.Fatalf("flag-on Role assign declined: %q", trigger.DeclineReason)
 	}
-	if trigger, ok := newSvc(roleFlagService(false, workspaceID)).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
+	if trigger, ok := newSvc(roleFlagService(false, workspaceID)).WillEnqueueRun(ctx, in, probe); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
 		t.Fatalf("flag-off Role assign = run:%v reason:%q, want decline agent_runtime_required", ok, trigger.DeclineReason)
 	}
-	if trigger, ok := newSvc(nil).WillEnqueueRun(ctx, in, IssueTriggerProbe{}); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
+	if trigger, ok := newSvc(nil).WillEnqueueRun(ctx, in, probe); ok || trigger.DeclineReason != dispatch.ReasonAgentRuntimeRequired {
 		t.Fatalf("nil-flags Role assign = run:%v reason:%q, want decline agent_runtime_required", ok, trigger.DeclineReason)
 	}
 }

@@ -19,6 +19,23 @@ import (
 // selection cannot fan out into thousands of readiness probes.
 const maxPreviewTriggerIssues = 500
 
+// issueRoleRequester names the human a Role pick on this write is authorized
+// against (M-597): a member acts as themselves, an agent or system principal as
+// the human originator resolved from its task — the same principal the write
+// boundary's invoke gate already used. Zero when none resolves, which declines
+// every Role exactly as the enqueue would.
+func (h *Handler) issueRoleRequester(r *http.Request, actorType, actorID string) pgtype.UUID {
+	userID := actorID
+	if actorType != "member" {
+		userID = h.invokeOriginatorFromRequest(r, actorType, actorID)
+	}
+	uid, err := util.ParseUUID(userID)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return uid
+}
+
 // issueTriggerWriteProbe builds the probe the write paths feed to
 // WillEnqueueRun. The private-agent gate is already enforced at the HTTP
 // boundary (validateAssigneePair on assign) and inside enqueueSquadLeaderTask
@@ -27,6 +44,7 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
+		RoleRequester:  h.issueRoleRequester(r, actorType, actorID),
 		IsSelfLoop: func(targetAgentID pgtype.UUID) bool {
 			return h.isAgentRunningOnIssue(r, actorType, issue, targetAgentID)
 		},
@@ -50,6 +68,7 @@ func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID str
 func (h *Handler) issueTriggerPreviewProbe(r *http.Request, actorType, actorID, workspaceID string, issue db.Issue) service.IssueTriggerProbe {
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
 	return service.IssueTriggerProbe{
+		RoleRequester: h.issueRoleRequester(r, actorType, actorID),
 		CanAccessAgent: func(agent db.Agent) bool {
 			return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 		},

@@ -42,10 +42,18 @@ const (
 // pair already has a non-terminal task. The ownership update still succeeds;
 // only the duplicate enqueue is suppressed. Cross-issue handoffs to a fresh
 // target remain runnable. A nil func means "do not suppress".
+//
+// RoleRequester is the human a Role pick is authorized against (M-597): the
+// acting member, or the resolved originator when an agent or system principal
+// acts. A Role assignee is declined when the Role's own access rules refuse that
+// human, so preview and the write path report the verdict the enqueue reaches
+// instead of promising a run the enqueue refuses. A zero UUID declines every
+// Role: nobody can be authorised.
 type IssueTriggerProbe struct {
 	CanAccessAgent               func(agent db.Agent) bool
 	IsSelfLoop                   func(targetAgentID pgtype.UUID) bool
 	SuppressActiveSelfAssignment func(agentID pgtype.UUID) bool
+	RoleRequester                pgtype.UUID
 }
 
 // IssueTriggerInput describes one prospective issue write in its post-write
@@ -181,6 +189,11 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return declineRun(dispatch.ReasonAgentRuntimeRequired)
 		}
 		if !canAccess(agent) {
+			return declineRun(dispatch.ReasonInvocationNotAllowed)
+		}
+		// A Role has its own access rules and no runtime of its own; the enqueue
+		// authorizes it with the same predicate, so both sides agree (M-597).
+		if roleRunForTrigger(ctx, s, agent) && s.TaskService.authorizeRoleForRun(ctx, agent, issue.WorkspaceID, probe.RoleRequester) != nil {
 			return declineRun(dispatch.ReasonInvocationNotAllowed)
 		}
 		if source == RunSourceStatus && probe.IsSelfLoop != nil && probe.IsSelfLoop(issue.AssigneeID) {
