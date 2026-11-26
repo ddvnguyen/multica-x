@@ -60,7 +60,8 @@ describe("AgentPresetEditor", () => {
     renderEditor();
 
     await user.type(await screen.findByRole("textbox", { name: "Preset name" }), "Claude Architect");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Tier" }), "tier-1");
+    await user.click(screen.getByRole("button", { name: "Tier" }));
+    await user.click(await screen.findByRole("button", { name: "Sonnet High" }));
     await user.click(screen.getByRole("button", { name: "Add preset" }));
 
     expect(mocks.createAgentPreset).toHaveBeenCalledWith("ws-1", {
@@ -84,7 +85,8 @@ describe("AgentPresetEditor", () => {
     const nameInput = screen.getByRole("textbox", { name: "Preset name" });
     await user.clear(nameInput);
     await user.type(nameInput, "Architect Fast");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Tier" }), "tier-2");
+    await user.click(screen.getByRole("button", { name: "Tier" }));
+    await user.click(await screen.findByRole("button", { name: "Fast" }));
     await user.click(screen.getByRole("button", { name: "Save preset" }));
 
     expect(mocks.updateAgentPreset).toHaveBeenCalledWith("ws-1", "preset-1", {

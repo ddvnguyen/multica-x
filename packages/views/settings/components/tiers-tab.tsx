@@ -93,8 +93,8 @@ import {
 /**
  * Workspace tier profiles (M-350, M-481). A tier is a profile — index, roles,
  * quality, quota kinds, auto-pick, context ceiling — plus one or more ordered
- * (harness, model) members. The resolver picks the tier by idx, then its first
- * available member, so a rate limit on one harness only cools that member.
+ * (runtime, model) members. The resolver picks the tier by idx, then its first
+ * available member, so a rate limit on one runtime only cools that member.
  */
 
 /** Existing member positions stay far below this; new rows park here first. */
@@ -1022,7 +1022,7 @@ function TierEditorDialog({
   /**
    * Persists the draft rows against a saved tier. `baseIndex` is the first
    * position these rows own: 0 when editing, 1 when creating (the server
-   * backfilled member 0 from the profile's first harness/model).
+   * backfilled member 0 from the profile's first runtime/model).
    */
   const reconcileMembers = async (
     tierId: string,

@@ -298,7 +298,7 @@ describe("TiersTab", () => {
     expect(screen.getByText("Disabled")).toBeInTheDocument();
   });
 
-  it("shows every member of a tier as a harness + model chip", () => {
+  it("shows every member of a tier as a runtime + model chip", () => {
     render(<TiersTab />, { wrapper: Wrapper });
     const chips = within(screen.getByTestId("tier-members-tier-1"));
     expect(chips.getByTestId("tier-member-tier-1-member-1")).toHaveTextContent(
@@ -800,7 +800,7 @@ describe("TiersTab", () => {
       "tier-1": [
         member({
           id: "member-1",
-          provider: "acme-harness",
+          provider: "acme-provider",
           model: "custom-model",
           thinking_level: "custom-thinking",
           runtime_id: null,
@@ -814,7 +814,7 @@ describe("TiersTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(mockUpdateMember).toHaveBeenCalled());
     expect(mockUpdateMember.mock.calls[0]![0]).toMatchObject({
-      provider: "acme-harness",
+      provider: "acme-provider",
       model: "custom-model",
       thinking_level: "custom-thinking",
       runtime_id: "",
