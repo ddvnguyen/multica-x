@@ -2256,8 +2256,8 @@
     "compact_label": "Compact at (% of context)",
     "compact_invalid": "Compaction must be a whole number from 1 to 100.",
     "advisory_badge": "advisory",
-    "advisory_hint": "Stored and shown for scheduling and review. No harness proves it passes a compaction threshold to the provider yet, so treat it as advisory.",
+    "advisory_hint": "Stored and shown for scheduling and review. No runtime enforces a compaction threshold yet, so treat it as advisory.",
     "compact_tokens_hint": "Compacts at about {{tokens}} tokens.",
-    "editor_description": "Profile settings apply to the whole tier; each member is one harness and model it may run on."
+    "editor_description": "Profile settings apply to the whole tier; each member is one runtime and model it may run on."
   }
 }
