@@ -23,6 +23,24 @@ require_config() {
   fi
 }
 
+# require_env_value reads one variable out of `docker compose config` and
+# compares it literally, tolerating either quoting style: compose quotes a
+# scalar when it would otherwise read as a number or boolean (`"2500"`, `"on"`),
+# and an unset ${VAR:-} renders as an empty scalar in either style.
+require_env_value() {
+  local config=$1 key=$2 want=$3 got
+
+  got="$(sed -n "s/^[[:space:]]*${key}: //p" <<<"$config" | head -1)"
+  got="${got#\"}"; got="${got%\"}"
+  got="${got#\'}"; got="${got%\'}"
+  if [ "$got" != "$want" ]; then
+    echo "Wrong value for $key in docker compose config:"
+    echo "  want: '$want'"
+    echo "  got:  '$got'"
+    exit 1
+  fi
+}
+
 require_env() {
   local output=$1
   local expected=$2
@@ -43,6 +61,7 @@ sed 's/^FRONTEND_PORT=.*/FRONTEND_PORT=3100/' .env.example >"$tmp_env"
 printf '\nBACKEND_PORT=9100\nSMTP_FROM_EMAIL=multica@example.com\n' >>"$tmp_env"
 printf 'MULTICA_LLM_API_KEY=llm-key-from-env\nMULTICA_LLM_BASE_URL=http://gateway.example/v1\nMULTICA_LLM_DEFAULT_MODEL=model-from-env\nMULTICA_LLM_MAX_RETRIES=3\n' >>"$tmp_env"
 printf 'DATABASE_REPLICA_URL=postgres://reader:secret@replica.example.com:5432/multica?sslmode=require\nDATABASE_REPLICA_MAX_CONNS=12\nDATABASE_REPLICA_MIN_CONNS=1\n' >>"$tmp_env"
+printf 'MULTICA_JEV_SHADOW=on\nJEV_API_BASE=https://opencode.ai/inference/systemone/v1\nJEV_MODEL=jev-1.13-free\nJEV_API_KEY=jev-key-from-env\nJEV_TIMEOUT_MS=2500\n' >>"$tmp_env"
 
 config="$(
   docker compose \
@@ -79,6 +98,35 @@ require_config "$config" 'MULTICA_LLM_API_KEY: llm-key-from-env'
 require_config "$config" 'MULTICA_LLM_BASE_URL: http://gateway.example/v1'
 require_config "$config" 'MULTICA_LLM_DEFAULT_MODEL: model-from-env'
 require_config "$config" 'MULTICA_LLM_MAX_RETRIES: "3"'
+
+# Jev shadow mode (M-592) is the same allowlist trap: the server reads these
+# five variables from its own environment, and a stack .env that sets them is
+# silently ignored unless the compose file maps each one. Assert the values
+# land, and assert each appears once — the backend is the only service that
+# reads them, so a second occurrence means they leaked onto the web container.
+require_env_value "$config" MULTICA_JEV_SHADOW on
+require_env_value "$config" JEV_API_BASE https://opencode.ai/inference/systemone/v1
+require_env_value "$config" JEV_MODEL jev-1.13-free
+require_env_value "$config" JEV_API_KEY jev-key-from-env
+require_env_value "$config" JEV_TIMEOUT_MS 2500
+for jev_var in MULTICA_JEV_SHADOW JEV_API_BASE JEV_MODEL JEV_API_KEY JEV_TIMEOUT_MS; do
+  jev_hits="$(grep -c "^[[:space:]]*${jev_var}:" <<<"$config" || true)"
+  if [ "$jev_hits" != "1" ]; then
+    echo "$jev_var appears $jev_hits times in docker compose config; the backend"
+    echo "must be its only reader (expected exactly 1 occurrence)."
+    exit 1
+  fi
+done
+# Empty stays empty: an unset variable must render as an empty value (the
+# server treats that as off), never as the literal '${JEV_TIMEOUT_MS:-}'.
+grep -v '^JEV_\|^MULTICA_JEV_SHADOW=' "$tmp_env" >"$tmp_dir/no-jev.env"
+unset_config="$(
+  docker compose --env-file "$tmp_dir/no-jev.env" \
+    -f docker-compose.selfhost.yml \
+    config
+)"
+require_env_value "$unset_config" MULTICA_JEV_SHADOW ""
+require_env_value "$unset_config" JEV_API_KEY ""
 
 while IFS= read -r llm_var; do
   if ! grep -Eq "^[[:space:]]+${llm_var}: \\\$\{${llm_var}:-" docker-compose.selfhost.yml; then

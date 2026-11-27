@@ -247,6 +247,19 @@ services:
       # rebuilds the backend environment without the flag and the Role UI goes
       # dark even though the stack .env still sets it.
       FF_AGENT_ROLE_TYPE: ${FF_AGENT_ROLE_TYPE:-}
+      # Jev shadow mode (M-592): the observation answers a decision fork next to
+      # the real one and never changes it. MULTICA_JEV_SHADOW is the switch and
+      # empty means off, exactly like FF_AGENT_ROLE_TYPE above; the server also
+      # needs a key before the client is wired at all. These five lines are the
+      # only path from the stack .env into the container — the backend
+      # environment is an allowlist, so a JEV_* line set in .env without a
+      # mapping here does nothing. Keep the key out of images and logs: pass it
+      # as an env value only, never as a build arg.
+      MULTICA_JEV_SHADOW: ${MULTICA_JEV_SHADOW:-}
+      JEV_API_BASE: ${JEV_API_BASE:-}
+      JEV_MODEL: ${JEV_MODEL:-}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-}
     restart: unless-stopped
 
   frontend:
