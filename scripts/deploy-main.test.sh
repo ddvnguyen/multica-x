@@ -10,7 +10,8 @@ HOME_DIR="$SANDBOX/home"
 STACK_DIR="$HOME_DIR/.local/share/multica"
 WORKSPACE_ROOT="$SANDBOX/workspace"
 CONTAINERS_ROOT="$SANDBOX/containers"
-mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$STACK_DIR" "$WORKSPACE_ROOT" "$CONTAINERS_ROOT"
+mkdir -p "$STUB_BIN" "$HOME_DIR/.local/bin" "$HOME_DIR/.multica" "$STACK_DIR" "$WORKSPACE_ROOT" "$CONTAINERS_ROOT"
+printf '{"port":19514,"token":"ctl-test-token"}\n' > "$HOME_DIR/.multica/daemon-drain.json"
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 printf 'services: {}\n' > "$STACK_DIR/compose.yml"
 printf 'old daemon binary\n' > "$HOME_DIR/.local/bin/multica"
@@ -91,6 +92,19 @@ case "$url" in
     fi
     ;;
   */healthz) printf '{"status":"ok","checks":{"db":"ok","migrations":"ok"}}\n' ;;
+  */drain/begin)
+    if [[ "${FAIL_DRAIN_BEGIN:-0}" == "1" ]]; then exit 22; fi
+    printf '{"status":"draining","token":"lease-test","expires_at":"2026-11-27T12:00:00Z"}\n'
+    ;;
+  */drain/status)
+    if [[ "${FAIL_DRAIN_STATUS:-0}" == "1" ]]; then exit 22; fi
+    if [[ "${ACTIVE_TASK_COUNT:-0}" == "1" ]]; then
+      printf '{"status":"draining","token":"lease-test","active_task_count":1,"claims_in_flight":0}\n'
+    else
+      printf '{"status":"drained","token":"lease-test","active_task_count":0,"claims_in_flight":0}\n'
+    fi
+    ;;
+  */drain/abort) printf '{"status":"aborted","token":"lease-test"}\n' ;;
   */login) printf 'ok' ;;
   */) printf '200' ;;
   *) exit 91 ;;
@@ -110,6 +124,8 @@ export MULTICA_MAIN_CONTAINERS_ROOT="$CONTAINERS_ROOT"
 export MULTICA_MAIN_BACKUP_ROOT="$WORKSPACE_ROOT/backups"
 export MULTICA_MAIN_TMPDIR="$WORKSPACE_ROOT/tmp/multica-main-deploy"
 export MULTICA_MAIN_PROC_ROOT="$SANDBOX/proc"
+export MULTICA_DEPLOY_STOP_AUDIT_LOG="$WORKSPACE_ROOT/multica-main-stop-audit.log"
+AUDIT_LOG="$MULTICA_DEPLOY_STOP_AUDIT_LOG"
 export PORT_PROBE_STATE_DIR="$SANDBOX/probe-state"
 export RUNNER_TRACKING_ID=test-job-id-1234
 export STUB_LOG="$SANDBOX/commands.log"
@@ -117,6 +133,7 @@ export IMAGE_TAG=test-deploy
 export EXPECTED_COMMIT=0123456789abcdef0123456789abcdef01234567
 
 assert() { "$@" || { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }; }
+audit_has() { jq -es "$1" "$AUDIT_LOG" >/dev/null; }
 run() { bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 1 "$@"; }
 
 # Dry-run performs read-only preflight and does not make temporary or backup dirs.
@@ -145,23 +162,78 @@ assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
 assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
 
 # drain_timeout_seconds=0 (the CI/CD default) does not wait for active tasks:
-# it cancels them and deploys immediately (owner directive, 2026-11-04).
+# it cancels them and deploys immediately (owner directive, 2026-11-04). No
+# lease is requested in this explicit cancel path.
 drain0_log="$SANDBOX/drain0.log"
+: > "$AUDIT_LOG"
+before_begin="$(grep -c '/drain/begin$' "$STUB_LOG" || true)"
 ACTIVE_TASK_COUNT=1 bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 0 >"$drain0_log" 2>&1 || {
   echo "expected drain=0 deploy to succeed with active tasks" >&2; cat "$drain0_log" >&2; exit 1; }
 assert grep -q 'deploy does not wait for task drain' "$drain0_log"
 assert grep -q "MULTICA_IMAGE_TAG=$IMAGE_TAG" "$STACK_DIR/.env"
 assert grep -q "new daemon binary" "$HOME/.local/bin/multica"
+assert test "$(grep -c '/drain/begin$' "$STUB_LOG")" -eq "$before_begin"
+assert audit_has 'any(.[]; .operation=="stop" and .outcome=="no_drain")'
 # Restore fixtures the later rollback tests rely on.
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
 
+# A positive drain takes an authenticated lease, verifies idle through it and
+# records the stop with structured UTC fields.
+: > "$AUDIT_LOG"
+before_begin="$(grep -c '/drain/begin$' "$STUB_LOG" || true)"
+run >/dev/null 2>&1
+assert test "$(grep -c '/drain/begin$' "$STUB_LOG")" -eq "$((before_begin + 1))"
+assert grep -q '/drain/status$' "$STUB_LOG"
+assert audit_has 'any(.[]; .operation=="stop" and .outcome=="drained" and .unit=="multica-daemon.service" and (.force|type=="boolean") and (.timeout|type=="number") and (.ts|test("Z$")))'
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
+
+# An unforced timeout aborts the lease and resumes claims; nothing is switched.
+: > "$AUDIT_LOG"
+before_abort="$(grep -c '/drain/abort$' "$STUB_LOG" || true)"
+before_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG" || true)"
+if ACTIVE_TASK_COUNT=1 run >/dev/null 2>&1; then
+  echo "expected unforced drain timeout to abort" >&2; exit 1
+fi
+assert test "$(grep -c '/drain/abort$' "$STUB_LOG")" -eq "$((before_abort + 1))"
+assert test "$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")" -eq "$before_stops"
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+assert audit_has 'all(.[]; .operation != "stop")'
+
+# With --force the same timeout aborts the lease and then explicitly cancels
+# the remaining tasks, which is the recorded 2026-11-04 behaviour.
+: > "$AUDIT_LOG"
+before_abort="$(grep -c '/drain/abort$' "$STUB_LOG" || true)"
+if ! ACTIVE_TASK_COUNT=1 bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 1 --force >/dev/null 2>&1; then
+  echo "expected forced drain timeout deploy to succeed" >&2; exit 1
+fi
+assert test "$(grep -c '/drain/abort$' "$STUB_LOG")" -eq "$((before_abort + 1))"
+assert audit_has 'any(.[]; .operation=="stop" and .outcome=="force_cancel" and .force==true)'
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
+
+# Losing control of the drain (no credential or a lost status endpoint) aborts
+# and stops nothing.
+for failure in FAIL_DRAIN_BEGIN=1 FAIL_DRAIN_STATUS=1; do
+  before_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG" || true)"
+  if env "$failure" run >/dev/null 2>&1; then
+    echo "expected lost-control drain to abort ($failure)" >&2; exit 1
+  fi
+  assert test "$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")" -eq "$before_stops"
+  assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+done
+
 # A post-switch health failure restores .env and daemon binary and brings the
 # compose stack and daemon back up. All host commands above are stubbed.
 before_restarts="$(grep -c '^systemctl --user restart multica.service$' "$STUB_LOG")"
+: > "$AUDIT_LOG"
 if FAIL_HEALTH=1 run >/dev/null 2>&1; then
   echo "expected health verification failure" >&2; exit 1
 fi
+# Both the planned stop and the rollback stop are audited before they run.
+assert audit_has 'any(.[]; .operation=="stop" and .outcome=="drained")'
+assert audit_has 'any(.[]; .operation=="rollback_stop" and .outcome=="rollback")'
 assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
 assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
 assert grep -q 'systemctl --user start multica-daemon.service' "$STUB_LOG"
