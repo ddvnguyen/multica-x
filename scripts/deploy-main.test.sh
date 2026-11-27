@@ -54,7 +54,27 @@ case "$1 $2" in
   'compose -f') printf 'cid-probe-stub\n' ;;
   'exec db-id') printf 'database dump bytes\n' ;;
   'exec cid-probe-stub') exit 0 ;;
-  'logs '*) printf 'GET /healthz 200\n' ;;
+  'logs '*)
+    printf 'podman logs:%s\n' "$*" >> "$STUB_LOG"
+    # M-615: emulate a busy backend. One /healthz line is written early (the
+    # 5s compose healthcheck), then 120 daemon API lines bury it. `--tail 100`
+    # shows only the noise (the deploy bug); `--since` reads the whole window
+    # since the switch and still finds the healthz line.
+    if [ "${NOISY_BACKEND_LOG:-0}" = 1 ]; then
+      backend_log="$STUB_LOG.backend"
+      {
+        printf 'GET /healthz 200\n'
+        for i in $(seq 1 120); do printf 'GET /api/daemon/tasks 200\n'; done
+      } > "$backend_log"
+      case "$2" in
+        --since) cat "$backend_log" ;;
+        --tail) tail -n "${3:-100}" "$backend_log" ;;
+        *) cat "$backend_log" ;;
+      esac
+    else
+      printf 'GET /healthz 200\n'
+    fi
+    ;;
   'run --rm') printf 'new daemon binary\n' ;;
   'images --format')
     # Lines look like: <repo> <tag> <date> <time> <tz> UTC. Empty by default
@@ -258,6 +278,23 @@ assert grep -q 'curl http://127.0.0.1:4802/healthz' "$STUB_LOG"
 assert grep -q 'curl http://127.0.0.1:4180/' "$STUB_LOG"
 after_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")"
 assert test "$after_stops" -gt "$before_stops"
+
+# M-615: on a busy stack the 5s /healthz line is pushed out of the last 100
+# log lines. The serving proof must read logs since the switch (--since), not
+# a fixed --tail window, or a healthy deploy rolls back. The stub above drops
+# the healthz line for --tail and keeps it for --since, so a regression to
+# --tail makes this deploy fail.
+noisy_log="$SANDBOX/noisy-serving-proof.log"
+if ! NOISY_BACKEND_LOG=1 run >"$noisy_log" 2>&1; then
+  echo "expected noisy-log deploy to pass the serving proof" >&2
+  cat "$noisy_log" >&2
+  exit 1
+fi
+assert grep -q 'waiting for the backend to log a /healthz request' "$noisy_log"
+assert grep -q 'podman logs:.*--since' "$STUB_LOG"
+# Restore fixtures the later rollback tests rely on.
+printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
+printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
 
 # Image retention: after a successful deploy, only the two newest
 # localhost/multica-{web,backend} versions stay; older tags are removed and
