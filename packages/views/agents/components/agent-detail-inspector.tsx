@@ -17,7 +17,7 @@ import {
   useAgentRoleTypeEnabled,
   useRolePreview,
 } from "@multica/core/agents";
-import { useCurrentWorkspace } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, tierRolesOptions } from "@multica/core/workspace/queries";
 import {
   accountModelScope,
@@ -43,7 +43,7 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
-import { CollectionTag } from "../../layout/collection-list";
+import { AppLink } from "../../navigation";
 import {
   SettingsCard,
   SettingsRow,
@@ -432,11 +432,9 @@ export function AgentDetailInspector({
                       {t(($) => $.inspector.role_inherited_none)}
                     </p>
                   ) : (
-                    <ul className="flex flex-wrap gap-1.5">
+                    <ul className="space-y-1">
                       {implementers.map((entry) => (
-                        <li key={entry.id}>
-                          <CollectionTag>{entry.name}</CollectionTag>
-                        </li>
+                        <ImplementerSummary key={entry.id} agent={entry} />
                       ))}
                     </ul>
                   )}
@@ -817,6 +815,37 @@ function ImplementsRoleRow({
         ))}
       </select>
     </SettingsRow>
+  );
+}
+
+/**
+ * An implementing Agent on the Role page: a link plus the composed view the
+ * server would send at claim time. A 403 hides the summary, never partial
+ * inherited content; the link itself only names an Agent already listed to
+ * the caller.
+ */
+function ImplementerSummary({ agent }: { agent: Agent }) {
+  const { t } = useT("agents");
+  const paths = useWorkspacePaths();
+  const { data, isError } = useRolePreview(agent.id, true);
+  return (
+    <li className="text-caption">
+      <AppLink
+        href={paths.agentDetail(agent.id)}
+        className="font-medium text-brand hover:underline"
+      >
+        {agent.name}
+      </AppLink>
+      {!isError && data ? (
+        <span className="text-muted-foreground">
+          {" — "}
+          {t(($) => $.inspector.role_inherited_summary, {
+            chars: data.instructions.length,
+            count: data.skills.length,
+          })}
+        </span>
+      ) : null}
+    </li>
   );
 }
 

@@ -161,6 +161,12 @@ describe("AgentInstructionsSection inherited Role (M-603)", () => {
         { id: "s2", name: "notes", description: "", source: "agent" },
       ],
     });
+    state.preview = preview({
+      skills: [
+        { id: "s1", name: "review", description: "", source: "role" },
+        { id: "s2", name: "notes", description: "", source: "agent" },
+      ],
+    });
     renderSection(agent({ implements_role_id: "role-1" }));
 
     const link = screen.getByRole("link", { name: "Inherited from Reviewer" });
@@ -169,16 +175,28 @@ describe("AgentInstructionsSection inherited Role (M-603)", () => {
     expect(screen.getByText("Be helpful.")).toBeInTheDocument();
     expect(screen.getByText("Role")).toBeInTheDocument();
     expect(screen.getByText("Agent")).toBeInTheDocument();
+
+    // Server composition order: Role instructions, Agent additions, union.
+    const block = screen.getByText("Review every change.").closest("div.rounded-lg")!;
+    const text = block.textContent ?? "";
+    expect(text.indexOf("Review every change.")).toBeLessThan(
+      text.indexOf("Be helpful."),
+    );
+    expect(text.indexOf("Be helpful.")).toBeLessThan(text.indexOf("review"));
   });
 
-  it("says there are no additions when the Agent adds nothing", () => {
-    state.preview = preview({ role_instructions: "Review every change." });
-    renderSection(agent({ implements_role_id: "role-1", instructions: "" }));
+  it("says there are no additions when the server composition has none", () => {
+    state.preview = preview({
+      role_instructions: "Review every change.",
+      agent_instructions: "",
+    });
+    renderSection(agent({ implements_role_id: "role-1", instructions: "stale local text" }));
 
     expect(screen.getByText("Review every change.")).toBeInTheDocument();
     expect(
       screen.getByText("No additions; inherits the Role."),
     ).toBeInTheDocument();
+    expect(screen.queryByText("stale local text")).toBeNull();
   });
 
   it("hides the inherited block while loading or on error, never partial", () => {
@@ -189,10 +207,9 @@ describe("AgentInstructionsSection inherited Role (M-603)", () => {
 
     state.previewLoading = false;
     state.previewError = true;
-    renderSection(agent({ implements_role_id: "role-1" }));
+    renderSection(agent({ implements_role_id: "role-1", instructions: "Be helpful." }));
     expect(screen.queryByRole("link", { name: /Inherited from/ })).toBeNull();
-    // The Agent's own instructions still read.
-    expect(screen.getByText("Be helpful.")).toBeInTheDocument();
+    expect(screen.queryByText("Be helpful.")).toBeNull();
   });
 
   it("shows nothing extra for an Agent with no Role", () => {
@@ -203,15 +220,42 @@ describe("AgentInstructionsSection inherited Role (M-603)", () => {
     expect(screen.getByText("Be helpful.")).toBeInTheDocument();
   });
 
-  it("shows the inheritance note for a Role agent", () => {
+  it("shows the Role instructions title and hint for a Role agent", () => {
     renderSection(agent({ id: "role-1", subtype: "role" }));
 
     expect(
-      screen.getByText(
-        "These instructions are inherited by the Agents implementing this Role.",
-      ),
+      screen.getByRole("button", { name: "Role instructions" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByText("Every Agent that implements this Role inherits these."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Inherited from/ })).toBeNull();
+  });
+
+  it("shows an explicit empty state with an Edit action for a new Role", () => {
+    renderSection(agent({ id: "role-1", subtype: "role", instructions: "" }));
+
+    expect(
+      screen.getByText(
+        "No instructions yet. Agents implementing this Role inherit nothing until you add some.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+  });
+
+  it("lists a Role's own skills read-only with their source", () => {
+    renderSection(
+      agent({
+        id: "role-1",
+        subtype: "role",
+        instructions: "Review everything.",
+        skills: [{ id: "s1", name: "review", description: "" }],
+      }),
+    );
+    expect(screen.getByText("Review everything.")).toBeInTheDocument();
+    expect(screen.getByText("Role skills")).toBeInTheDocument();
+    expect(screen.getByText("review")).toBeInTheDocument();
+    expect(screen.getByText("Role")).toBeInTheDocument();
   });
 
   it("collapses the inherited block with the section", async () => {

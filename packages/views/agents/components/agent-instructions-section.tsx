@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronRight, Pencil, X } from "@multica/ui/icons";
-import type { Agent, RoleCompositionPreview } from "@multica/core/types";
+import type { Agent } from "@multica/core/types";
 import {
   isRoleAgent,
   useAgentRoleTypeEnabled,
@@ -111,7 +111,9 @@ export function AgentInstructionsSection({
   const inheritedRoleId =
     roleTypeEnabled && !isRoleAgent(agent) ? (agent.implements_role_id ?? null) : null;
 
-  const title = t(($) => $.tabs.instructions);
+  const title = showingRole
+    ? t(($) => $.sections.instructions_role_title)
+    : t(($) => $.tabs.instructions);
   const ownInstructions = agent.instructions ?? "";
 
   return (
@@ -150,12 +152,9 @@ export function AgentInstructionsSection({
     >
       {collapsed ? null : (
         <>
-          {inheritedRoleId ? (
-            <InheritedRoleBlock agentId={agent.id} roleId={inheritedRoleId} />
-          ) : null}
           {showingRole ? (
             <p className="text-body text-muted-foreground">
-              {t(($) => $.sections.instructions_role_note)}
+              {t(($) => $.sections.instructions_role_hint)}
             </p>
           ) : null}
           {editing ? (
@@ -167,17 +166,25 @@ export function AgentInstructionsSection({
               }}
               onDirtyChange={setDirty}
             />
+          ) : showingRole && !ownInstructions.trim() ? (
+            <p className="rounded-lg border border-dashed bg-card px-4 py-3 text-body text-muted-foreground">
+              {t(($) => $.sections.instructions_role_empty)}
+            </p>
+          ) : showingRole ? (
+            <InstructionsPreview content={ownInstructions} />
           ) : inheritedRoleId ? (
-            ownInstructions.trim() ? (
-              <InstructionsPreview content={ownInstructions} />
-            ) : (
-              <p className="text-body text-muted-foreground">
-                {t(($) => $.sections.instructions_no_additions)}
-              </p>
-            )
+            <InstructionsFromRole agentId={agent.id} roleId={inheritedRoleId} />
           ) : (
             <InstructionsPreview content={ownInstructions} />
           )}
+          {showingRole && !editing ? (
+            <div className="space-y-1">
+              <p className="text-caption font-medium">
+                {t(($) => $.sections.instructions_role_skills)}
+              </p>
+              <RoleSkills skills={agent.skills ?? []} />
+            </div>
+          ) : null}
         </>
       )}
 
@@ -222,7 +229,7 @@ export function AgentInstructionsSection({
  * and error (including a 403 where the caller lost Role access) render as
  * hidden, never partial — same contract as the settings preview.
  */
-function InheritedRoleBlock({
+function InstructionsFromRole({
   agentId,
   roleId,
 }: {
@@ -234,7 +241,7 @@ function InheritedRoleBlock({
   const { data, isLoading, isError } = useRolePreview(agentId, true);
   if (isLoading || isError || !data) return null;
   return (
-    <div className="rounded-lg border bg-card px-4 py-3">
+    <div className="space-y-1.5 rounded-lg border bg-card px-4 py-3">
       <AppLink
         href={paths.agentDetail(roleId)}
         className="text-caption font-medium text-brand hover:underline"
@@ -243,27 +250,42 @@ function InheritedRoleBlock({
           name: data.role_name ?? roleId.slice(0, 8),
         })}
       </AppLink>
+      {/* The order and the text are the server's composed claim view — do
+          not re-derive instructions or skills from the Agent payload. */}
       {data.role_instructions ? (
-        <div className="mt-1.5 text-body text-muted-foreground">
+        <div className="text-body text-muted-foreground">
           <ReadonlyContent content={data.role_instructions} />
         </div>
       ) : null}
+      {data.agent_instructions.trim() ? (
+        <div className="text-body">
+          <ReadonlyContent content={data.agent_instructions} />
+        </div>
+      ) : (
+        <p className="text-body text-muted-foreground">
+          {t(($) => $.sections.instructions_no_additions)}
+        </p>
+      )}
       <RoleSkills skills={data.skills} />
     </div>
   );
 }
 
-function RoleSkills({ skills }: { skills: RoleCompositionPreview["skills"] }) {
+function RoleSkills({
+  skills,
+}: {
+  skills: ReadonlyArray<{ id: string; name: string; source?: string | null }>;
+}) {
   const { t } = useT("agents");
   if (skills.length === 0) return null;
   return (
-    <ul className="mt-1.5 space-y-0.5">
+    <ul className="space-y-0.5">
       {skills.map((skill) => (
         <li key={skill.id} className="flex items-center gap-1.5 text-caption">
           <span className="rounded-md bg-muted px-1.5 py-0.5">
-            {skill.source === "role"
-              ? t(($) => $.inspector.role_preview_skill_role)
-              : t(($) => $.inspector.role_preview_skill_agent)}
+            {skill.source === "agent"
+              ? t(($) => $.inspector.role_preview_skill_agent)
+              : t(($) => $.inspector.role_preview_skill_role)}
           </span>
           <span className="truncate">{skill.name}</span>
         </li>

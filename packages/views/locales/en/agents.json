@@ -255,7 +255,9 @@
     "role_preview_label": "Inherited from Role",
     "role_preview_hint": "Preview of what a claim of this agent sends when {name} is linked.",
     "role_preview_skill_role": "Role",
-    "role_preview_skill_agent": "Agent"
+    "role_preview_skill_agent": "Agent",
+    "role_inherited_summary_one": "inherits {{chars}} characters of instructions, {{count}} skill",
+    "role_inherited_summary_other": "inherits {{chars}} characters of instructions, {{count}} skills"
   },
   "overview": {
     "attention_title": "Runs need attention",
@@ -277,7 +279,10 @@
     "instructions_empty": "No instructions yet.",
     "instructions_inherited_from": "Inherited from {{name}}",
     "instructions_no_additions": "No additions; inherits the Role.",
-    "instructions_role_note": "These instructions are inherited by the Agents implementing this Role."
+    "instructions_role_title": "Role instructions",
+    "instructions_role_hint": "Every Agent that implements this Role inherits these.",
+    "instructions_role_empty": "No instructions yet. Agents implementing this Role inherit nothing until you add some.",
+    "instructions_role_skills": "Role skills"
   },
   "panel": {
     "status": "Status",
