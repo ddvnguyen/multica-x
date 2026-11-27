@@ -4216,7 +4216,11 @@ const DefaultTokenRenewalInterval = 3 * 24 * time.Hour
 // register runtimes once one appears.
 func (d *Daemon) preflightAuth(ctx context.Context) error {
 	d.tryRenewToken(ctx)
-	err := d.syncWorkspacesFromAPI(ctx, false)
+	// A backend outage at startup must not exit the process: retry transient
+	// registration failures while health stays "starting" and no task is
+	// claimed. Permanent auth/config errors still return at once and fail
+	// startup visibly. See syncWorkspacesForStartup.
+	err := d.syncWorkspacesForStartup(ctx)
 	if d.startupMayProceedWithoutRuntimes(err) {
 		d.logger.Warn("starting with no runtimes registered: an automatic DSH runtime profile install is still running; " +
 			"the runtime registers when it finishes")
@@ -4472,6 +4476,10 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 
 	var registered int
 	var removed int
+	// Preserve each failed workspace's underlying error so the startup retry
+	// can tell an outage from a rejected token. Periodic syncs ignore the
+	// causes; they only use the wrapped errNoWorkspaceRuntimesRegistered.
+	var registrationFailures []workspaceRegistrationFailure
 	for id, name := range apiIDs {
 		if currentIDs[id] {
 			if reconcileProfiles {
@@ -4490,6 +4498,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 			d.logger.Info("workspace has no runtimes; retrying registration", "workspace_id", id, "name", name)
 			if err := d.reregisterWorkspaceAfterRuntimeGone(ctx, id); err != nil {
 				d.logger.Warn("retry register failed", "workspace_id", id, "error", err)
+				registrationFailures = append(registrationFailures, workspaceRegistrationFailure{workspaceID: id, err: err})
 				continue
 			}
 			registered++
@@ -4564,6 +4573,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 		})
 		if err != nil {
 			d.logger.Error("failed to register runtimes", "workspace_id", id, "name", name, "error", err)
+			registrationFailures = append(registrationFailures, workspaceRegistrationFailure{workspaceID: id, err: err})
 			continue
 		}
 
@@ -4619,7 +4629,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 	d.publishTrackedCoAuthoredByState()
 
 	if len(d.allRuntimeIDs()) == 0 && registered == 0 && len(workspaces) > 0 {
-		return fmt.Errorf("%w for any of the %d workspace(s)", errNoWorkspaceRuntimesRegistered, len(workspaces))
+		return &startupRegistrationError{failures: registrationFailures, count: len(workspaces)}
 	}
 	if registered > 0 || removed > 0 {
 		d.logger.Debug("workspace sync done", "registered", registered, "removed", removed, "tracked", len(apiIDs))
