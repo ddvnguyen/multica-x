@@ -88,3 +88,53 @@ func TestIssueDecisionAddPostsProblemDecisionAndHumanComment(t *testing.T) {
 		t.Fatalf("JSON output = %q", out)
 	}
 }
+
+func TestIssueDecisionAddSupersedesFlagIsRegisteredAndPosted(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	const supersedesID = "22222222-2222-4222-8222-222222222222"
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"record-2","problem":"Which policy?","decided":"Use the new policy","scope":"issue"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "workspace-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	// Exercise the real command, not a locally rebuilt flag set: a dropped
+	// --supersedes registration makes Set fail and leaves supersedes_id out
+	// of the posted body, which is exactly the regression this guards.
+	flags := issueDecisionAddCmd.Flags()
+	values := map[string]string{
+		"problem":    "Which policy?",
+		"decided":    "Use the new policy",
+		"comment":    "human-comment",
+		"supersedes": supersedesID,
+		"scope":      "issue",
+	}
+	for name, value := range values {
+		flag := flags.Lookup(name)
+		if flag == nil {
+			t.Fatalf("issueDecisionAddCmd has no --%s flag; it must be registered in init()", name)
+		}
+		if err := flags.Set(name, value); err != nil {
+			t.Fatalf("set --%s: %v", name, err)
+		}
+		t.Cleanup(func() {
+			_ = flag.Value.Set(flag.DefValue)
+			flag.Changed = false
+		})
+	}
+	if _, err := captureStdout(t, func() error {
+		return runIssueDecisionAdd(issueDecisionAddCmd, []string{issueID})
+	}); err != nil {
+		t.Fatalf("runIssueDecisionAdd: %v", err)
+	}
+	if gotBody["supersedes_id"] != supersedesID {
+		t.Fatalf("POST body supersedes_id = %v, want %q; body = %+v", gotBody["supersedes_id"], supersedesID, gotBody)
+	}
+}

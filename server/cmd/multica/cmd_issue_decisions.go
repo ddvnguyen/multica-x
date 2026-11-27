@@ -43,6 +43,7 @@ func init() {
 	issueDecisionAddCmd.Flags().String("decided", "", "Human resolution")
 	issueDecisionAddCmd.Flags().String("comment", "", "ID of the comment recording the resolution: a human comment, or the system mirror of an answered ask card")
 	issueDecisionAddCmd.Flags().String("problem-comment", "", "ID of the comment containing the question or problem")
+	issueDecisionAddCmd.Flags().String("supersedes", "", "Active decision record explicitly overridden")
 	issueDecisionAddCmd.Flags().String("scope", "issue", "Decision scope: issue or project")
 	issueDecisionAddCmd.Flags().String("output", "table", "Output format: table or json")
 	_ = issueDecisionAddCmd.MarkFlagRequired("problem")
