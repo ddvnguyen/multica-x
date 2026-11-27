@@ -44,6 +44,7 @@ flowchart LR
   MB --- PG[("Postgres :5432<br/>db multica_z")]
   D -->|"dsh --profile multica --stdio"| S[("dsh session store<br/>lane home")]
   D -->|inject + moct-mcp (phase 2 children)| MO["moct-be z :8310"]
+  MB -->|/api/.../moct/* (browser seam, M-582)| MO
   MO --- T[("Turso /mnt/workspace/clouds/moct-z/data/fleet.db")]
 ```
 
