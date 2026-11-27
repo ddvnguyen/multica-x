@@ -1937,6 +1937,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// admin-gated.
 					r.Get("/interactions", h.GetInteractions)
 					r.Get("/moct", h.GetMoctSettings)
+				// M-616: the memory compare aggregate (vote split and median
+				// bytes/latency per backend). Counts only, member-visible.
+				r.Get("/memory-comparison", h.GetWorkspaceMemoryComparison)
 					r.Get("/turn-end-router", h.GetTurnEndRouterSettings)
 				})
 				// Admin-level access
@@ -2329,6 +2332,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/quick-actions/{quickActionId}/render", h.RenderQuickAction)
 					r.Get("/task-runs", h.ListTasksByIssue)
 					r.Get("/tasks/{taskId}/memory-report", h.GetTaskMemoryReport)
+				// M-616: which memory block this run's reader found more useful.
+				// Members and agents both vote, so no human gate.
+				r.Post("/tasks/{taskId}/memory-mark", h.SetTaskMemoryMark)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)
 					r.Delete("/reactions", h.RemoveIssueReaction)

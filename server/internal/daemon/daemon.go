@@ -9513,6 +9513,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if memoryBlock != "" {
 		promptOptions = append(promptOptions, WithMoctInject(memoryBlock))
 	}
+	// MEMORY_SHADOW (M-616): read a second memory backend on this same claim and
+	// record its block on the run row, never injecting it. Fired here and joined
+	// only when the report is marshalled, so it costs the claim no latency; a
+	// switch that is set but unusable leaves its reason on the memory part
+	// instead of disappearing.
+	shadow, shadowNote := newMemoryShadow(d.cfg, task, taskLog)
+	if shadow != nil {
+		shadow.start(ctx)
+	} else if shadowNote != "" {
+		memoryPart.Shadow = &initctx.MemoryShadowReport{Backend: memoryShadowPowerContext, Note: shadowNote}
+	}
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
@@ -9984,7 +9995,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			"summary of "+sessionStart.Candidate.SessionID+" plus this run's trigger; capped at 32K tokens")
 	}
 	initContext := newInitContext(provider, runtimeBrief, memoryPart, prompt, memoryBlock, task, seedPart)
-	defer func() { taskResult.InitContext = marshalInitContext(initContext) }()
+	defer func() {
+		applyMemoryShadow(initContext, shadow)
+		taskResult.InitContext = marshalInitContext(initContext)
+	}()
 
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
 		WorkspaceID: task.WorkspaceID,

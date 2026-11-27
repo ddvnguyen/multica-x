@@ -602,6 +602,52 @@ export interface MemoryToolCall {
   error?: string;
 }
 
+/**
+ * A memory backend's block for one run (M-616). The injected side is the part
+ * itself; the shadow side is read and recorded but never sent to the agent.
+ */
+export interface MemoryBlockRecord {
+  /** `moct` or `powercontext`. */
+  backend: string;
+  /** The block as rendered for the prompt; absent when nothing was returned. */
+  block?: string;
+  bytes: number;
+  tokens: number;
+  latency_ms: number;
+  /** Why this side produced no block. Never affects the run. */
+  error?: string;
+  note?: string;
+}
+
+/** Which memory block this run's reader found more useful. */
+export type MemoryCompareChoice = "moct" | "powercontext" | "neither";
+
+/** One run's saved judgement, as the server recorded it. */
+export interface MemoryCompareMark {
+  task_id: string;
+  choice: MemoryCompareChoice | (string & {});
+  /** `member` or `agent`: who judged, never which member. */
+  marked_by_type: string;
+  primary_bytes: number;
+  primary_latency_ms: number;
+  shadow_bytes: number;
+  shadow_latency_ms: number;
+  marked_at: string;
+}
+
+/**
+ * The workspace aggregate behind the compare panel: how the votes split and
+ * what each backend cost on the runs that were judged. Medians cover judged
+ * runs only, so an unmarked run never moves them.
+ */
+export interface WorkspaceMemoryComparison {
+  workspace_id: string;
+  marked: number;
+  votes: { moct: number; powercontext: number; neither: number };
+  preference_pct: { moct: number; powercontext: number; neither: number };
+  backends: { backend: string; bytes: number; latency_ms: number }[];
+}
+
 export interface TaskMemoryReport {
   task_id: string;
   workspace_id: string;
@@ -609,7 +655,17 @@ export interface TaskMemoryReport {
     part: "memory";
     note?: string;
     entries: { id: string; type: string; title: string; body: string }[];
+    /** M-616: the injected side, measured. Absent on older daemons. */
+    backend?: string;
+    block?: string;
+    bytes?: number;
+    tokens?: number;
+    latency_ms?: number;
+    /** The second backend's block, read for comparison and never injected. */
+    shadow?: MemoryBlockRecord | null;
   } | null;
+  /** Absent (null) on a run nobody has judged. */
+  mark?: MemoryCompareMark | null;
   /**
    * The memory tools this run called. `available: false` means the transcript
    * could not be read — show "unavailable", never "no calls". Absent on servers

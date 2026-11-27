@@ -2150,6 +2150,20 @@ type TaskContextReceipt struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type TaskMemoryMark struct {
+	TaskID           pgtype.UUID        `json:"task_id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Choice           string             `json:"choice"`
+	MarkedByType     string             `json:"marked_by_type"`
+	MarkedByID       pgtype.UUID        `json:"marked_by_id"`
+	PrimaryBytes     int32              `json:"primary_bytes"`
+	PrimaryLatencyMs int32              `json:"primary_latency_ms"`
+	ShadowBytes      int32              `json:"shadow_bytes"`
+	ShadowLatencyMs  int32              `json:"shadow_latency_ms"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type TaskMessage struct {
 	ID              pgtype.UUID        `json:"id"`
 	TaskID          pgtype.UUID        `json:"task_id"`

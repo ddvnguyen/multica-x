@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS task_memory_mark_workspace_created_idx;

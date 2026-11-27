@@ -174,6 +174,47 @@ type PartReport struct {
 	// Entries are the prompt-ready MOCT records actually injected for this run.
 	// Kept only on the memory part so the run report can explain its contents.
 	Entries []MemoryEntry `json:"entries,omitempty"`
+	// Block is the exact text this part injected, memory part only. The compare
+	// panel shows it beside the shadow block, so the two are read as the runs
+	// saw them rather than as a re-render of the same records.
+	Block string `json:"block,omitempty"`
+	// Bytes is len(Block). A part that injected nothing has neither.
+	Bytes int `json:"bytes,omitempty"`
+	// LatencyMS is how long this part's producer took: the backend call for the
+	// memory part, unset everywhere else. Priced against the shadow read so a
+	// comparison can say what each backend cost, not only what it returned.
+	LatencyMS int64 `json:"latency_ms,omitempty"`
+	// Shadow is the secondary memory backend's block for the same claim: read
+	// and recorded, never injected (MEMORY_SHADOW, M-616). Absent when the
+	// shadow read is off, which is the default everywhere.
+	Shadow *MemoryShadowReport `json:"shadow,omitempty"`
+	// Backend names the memory backend that produced this part (moct or
+	// powercontext), so the compare panel labels the injected side without
+	// inferring it from whichever selector a daemon happens to run.
+	Backend string `json:"backend,omitempty"`
+}
+
+// MemoryShadowReport is the block a second memory backend returned for the
+// claim that produced the injected block (M-616). It is a comparison record,
+// not prompt content: nothing in it ever reaches the agent, and it is priced
+// outside the run's token total.
+type MemoryShadowReport struct {
+	// Backend names the secondary plane, so a reader never has to infer it from
+	// whichever selector happens to be enabled.
+	Backend string `json:"backend"`
+	// Block is the text this backend would have injected, rendered the same way
+	// the primary block is, so the two are comparable.
+	Block string `json:"block,omitempty"`
+	Bytes int    `json:"bytes"`
+	// Tokens uses the report's own estimator, so both blocks are priced by one
+	// rule and a smaller block is smaller on either side.
+	Tokens    int   `json:"tokens"`
+	LatencyMS int64 `json:"latency_ms"`
+	// Error names the failure that produced no block: a timeout, an unreachable
+	// server, an unreadable scope. It never affects the run.
+	Error string `json:"error,omitempty"`
+	// Note explains an empty block or a read that never ran.
+	Note string `json:"note,omitempty"`
 }
 
 // MemoryEntry is the user-visible content of one record in the pre-run inject.

@@ -163,6 +163,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"task_context_receipt":               workspaceDelete,
 	"runtime_rate_limit":                 workspaceDelete,
 	"task_message":                       workspaceDelete,
+	"task_memory_mark":                   workspaceDelete,
 	"chat_task_supplement":               workspaceDelete,
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,

@@ -139,6 +139,9 @@ import type {
   TaskMessagePayload,
   TaskContextReceiptResponse,
   TaskMemoryReport,
+  MemoryCompareChoice,
+  MemoryCompareMark,
+  WorkspaceMemoryComparison,
   RuntimeRateLimitsResponse,
   Attachment,
   ChatSession,
@@ -467,6 +470,8 @@ import {
   TaskMessageListSchema,
   TaskContextReceiptResponseSchema,
   TaskMemoryReportSchema,
+  MemoryCompareMarkSchema,
+  WorkspaceMemoryComparisonSchema,
   TimelineEntriesSchema,
   UserSchema,
   WebhookDeliveryResponseSchema,
@@ -3565,6 +3570,38 @@ export class ApiClient {
       workspace_id: "",
       memory: null,
     }, { endpoint: "GET /api/issues/:id/tasks/:taskId/memory-report" });
+  }
+
+  /**
+   * M-616: record which memory block this run's reader found more useful.
+   * Members and agents can both vote; the server re-reads the run's own
+   * measurements rather than trusting any numbers sent here.
+   */
+  async setIssueTaskMemoryMark(
+    issueId: string,
+    taskId: string,
+    choice: MemoryCompareChoice,
+  ): Promise<MemoryCompareMark> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/tasks/${taskId}/memory-mark`,
+      { method: "POST", body: JSON.stringify({ choice }) },
+    );
+    return parseWithFallback<MemoryCompareMark>(raw, MemoryCompareMarkSchema, {
+      task_id: taskId, choice, marked_by_type: "", primary_bytes: 0,
+      primary_latency_ms: 0, shadow_bytes: 0, shadow_latency_ms: 0, marked_at: "",
+    }, { endpoint: "POST /api/issues/:id/tasks/:taskId/memory-mark" });
+  }
+
+  async getWorkspaceMemoryComparison(workspaceId: string): Promise<WorkspaceMemoryComparison> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/memory-comparison`,
+    );
+    return parseWithFallback<WorkspaceMemoryComparison>(raw, WorkspaceMemoryComparisonSchema, {
+      workspace_id: workspaceId, marked: 0,
+      votes: { moct: 0, powercontext: 0, neither: 0 },
+      preference_pct: { moct: 0, powercontext: 0, neither: 0 },
+      backends: [],
+    }, { endpoint: "GET /api/workspaces/:id/memory-comparison" });
   }
 
   async listTasksByIssue(issueId: string, includeDescendants = false, options?: { view: "timeline" }): Promise<AgentTask[]> {

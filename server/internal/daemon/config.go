@@ -198,6 +198,13 @@ type Config struct {
 	// authentication is enabled. Empty sends no Authorization header, which is
 	// correct for the default loopback-only installation.
 	PowerContextToken string
+	// MemoryShadow asks this host to read a SECOND memory backend on every
+	// claim and record the block next to the injected one, never injecting it
+	// (M-616, docs/powercontext-seam.md). Empty — the default — is the
+	// single-backend seam unchanged. The only value today is "powercontext",
+	// and it needs MOCT_BASE_URL (the primary) and POWERCONTEXT_BASE_URL (the
+	// shadow) both set: on its own it changes nothing.
+	MemoryShadow string
 
 	// PlanGateEnabled opens a Plannotator review of a plan the agent parked for
 	// approval, and posts the reviewer's verdict back (docs/plannotator-gate.md).
@@ -699,6 +706,12 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	powerContextBaseURL := strings.TrimSpace(os.Getenv("POWERCONTEXT_BASE_URL"))
 	powerContextToken := strings.TrimSpace(os.Getenv("POWERCONTEXT_TOKEN"))
 
+	// MEMORY_SHADOW is the dogfood switch (M-616): read the other backend on the
+	// same claim and record its block, without injecting it. Not MULTICA_* for
+	// the same reason as the two URLs above — it names another memory plane,
+	// and empty means the claim path is exactly what it was before.
+	memoryShadow := strings.TrimSpace(os.Getenv("MEMORY_SHADOW"))
+
 	// Plan gate (docs/plannotator-gate.md). Opt-in, and unlike the memory seam
 	// this one is named MULTICA_* on purpose: it is our own loop step, not a
 	// third-party endpoint, and it never changes where a run's context comes
@@ -783,6 +796,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		MoctBaseURL:                     moctBaseURL,
 		PowerContextBaseURL:             powerContextBaseURL,
 		PowerContextToken:               powerContextToken,
+		MemoryShadow:                    memoryShadow,
 		PlanGateEnabled:                 planGateEnabled,
 		PlanGateBinary:                  planGateBinary,
 	}, nil

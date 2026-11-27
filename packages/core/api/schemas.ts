@@ -2690,6 +2690,46 @@ const MemoryToolCallSchema = z.object({
   error: z.string().optional(),
 }).loose();
 
+const MemoryBlockRecordSchema = z.object({
+  backend: z.string().catch(""),
+  block: z.string().optional(),
+  bytes: z.number().catch(0),
+  tokens: z.number().catch(0),
+  latency_ms: z.number().catch(0),
+  error: z.string().optional(),
+  note: z.string().optional(),
+}).loose();
+
+export const MemoryCompareMarkSchema = z.object({
+  task_id: z.string().catch(""),
+  choice: z.string().catch(""),
+  marked_by_type: z.string().catch(""),
+  primary_bytes: z.number().catch(0),
+  primary_latency_ms: z.number().catch(0),
+  shadow_bytes: z.number().catch(0),
+  shadow_latency_ms: z.number().catch(0),
+  marked_at: z.string().catch(""),
+}).loose();
+
+// M-616: the workspace aggregate the compare panel reads.
+const MemoryVoteCountsSchema = z.object({
+  moct: z.number().catch(0),
+  powercontext: z.number().catch(0),
+  neither: z.number().catch(0),
+}).loose();
+
+export const WorkspaceMemoryComparisonSchema = z.object({
+  workspace_id: z.string().catch(""),
+  marked: z.number().catch(0),
+  votes: MemoryVoteCountsSchema.catch({ moct: 0, powercontext: 0, neither: 0 }),
+  preference_pct: MemoryVoteCountsSchema.catch({ moct: 0, powercontext: 0, neither: 0 }),
+  backends: z.array(z.object({
+    backend: z.string().catch(""),
+    bytes: z.number().catch(0),
+    latency_ms: z.number().catch(0),
+  }).loose()).catch([]),
+}).loose();
+
 export const TaskMemoryReportSchema = z.object({
   task_id: z.string().catch(""),
   workspace_id: z.string().catch(""),
@@ -2702,7 +2742,17 @@ export const TaskMemoryReportSchema = z.object({
       title: z.string().catch(""),
       body: z.string().catch(""),
     }).loose()).catch([]),
+    // M-616: the injected side as the daemon measured it, and the second
+    // backend's block read beside it. Both absent on an older daemon, which
+    // is what keeps the compare panel from claiming a comparison it lacks.
+    backend: z.string().optional(),
+    block: z.string().optional(),
+    bytes: z.number().optional(),
+    tokens: z.number().optional(),
+    latency_ms: z.number().optional(),
+    shadow: MemoryBlockRecordSchema.nullish().transform((value) => value ?? null),
   }).loose().nullable().catch(null),
+  mark: MemoryCompareMarkSchema.nullish().optional().transform((value) => value ?? null),
   // Absent on servers before M-132 E3; the report then shows "unavailable".
   memory_tools: z.object({
     available: z.boolean().catch(false),
