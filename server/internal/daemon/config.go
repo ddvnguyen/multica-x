@@ -120,6 +120,7 @@ type Config struct {
 	MessageSink                    string           // MESSAGE_SINK, only "dsh" recognized
 	DshSummary                     DshSummaryConfig // dsh prompt-cache summary clock (S3-B1); every value is env-tunable, see dsh_summary.go
 	HealthPort                     int              // local HTTP port for health checks (default: 19514)
+	DrainControlFile               string           // 0600 drain-control credential file; empty = <profile dir>/daemon-drain.json (tests set a throwaway path)
 	MaxConcurrentTasks             int              // max tasks running in parallel (default: 20)
 	GCEnabled                      bool             // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration    // how often the GC loop runs (default: 2h)

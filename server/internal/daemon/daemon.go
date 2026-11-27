@@ -721,8 +721,17 @@ type Daemon struct {
 	// race where a new task slipping in during the release-metadata fetch
 	// would be cancelled by triggerRestart's root-ctx cancel.
 	claimMu        sync.Mutex
-	pauseClaims    bool // when true, the batch poller skips claiming
+	pauseClaims    bool // effective flag: true when any subsystem holds the claim barrier
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// claimPauseOwner records who set pauseClaims. Auto-update and the deploy
+	// drain lease share the flag (both must stop new claims), but each must
+	// only ever clear its own pause: an update's failure cleanup used to clear
+	// the flag unconditionally, which would silently resume claims under an
+	// active drain lease.
+	claimPauseOwner claimPauseOwner
+	// drainLease is the current deploy-drain lease, guarded by claimMu. A
+	// non-nil lease always means pauseClaims is held by claimPauseDrain.
+	drainLease *drainLeaseState
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -2206,6 +2215,15 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	// "starting" until d.ready is set after preflight, so a slow or *failing*
 	// preflight is never misreported as a started daemon. resolveAuth has
 	// already run, so a missing token still fails fast before we begin serving.
+	drainPort := d.cfg.HealthPort
+	if tcpAddr, ok := healthLn.Addr().(*net.TCPAddr); ok {
+		drainPort = tcpAddr.Port
+	}
+	if err := d.publishDrainControl(drainPort); err != nil {
+		// Non-fatal: deploys without the credential simply abort before
+		// stopping the daemon, so they can never pause claims blindly.
+		d.logger.Warn("could not publish local drain control credential", "error", err)
+	}
 	go d.serveHealth(ctx, healthLn, time.Now())
 
 	// Renew the PAT before the first API call, then do the initial
@@ -5354,6 +5372,7 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 		return serverUpdateRuntimeBusy
 	}
 	d.pauseClaims = true
+	d.claimPauseOwner = claimPauseUpdate
 	d.claimMu.Unlock()
 
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -5365,7 +5384,7 @@ func (d *Daemon) tryBeginServerUpdate(ctx context.Context) serverUpdateAcquireRe
 				d.claimMu.Unlock()
 				return serverUpdateAcquired
 			}
-			d.pauseClaims = false
+			d.clearClaimPauseIfOwner(claimPauseUpdate)
 			d.claimMu.Unlock()
 			d.updating.Store(false)
 			return serverUpdateRuntimeBusy
@@ -5501,17 +5520,30 @@ func (d *Daemon) trySetClaimBarrier() bool {
 		return false
 	}
 	d.pauseClaims = true
+	d.claimPauseOwner = claimPauseUpdate
 	return true
+}
+
+// clearClaimPauseIfOwner clears pauseClaims only when it is held by the named
+// subsystem. Callers hold claimMu. This is the barrier's ownership guard: an
+// auto-update cleanup must never resume claims while a deploy drain lease is
+// keeping them paused, and vice versa.
+func (d *Daemon) clearClaimPauseIfOwner(owner claimPauseOwner) {
+	if d.claimPauseOwner == owner {
+		d.pauseClaims = false
+		d.claimPauseOwner = claimPauseNone
+	}
 }
 
 // releaseClaimBarrier clears the auto-update claim barrier so pollers may
 // resume claiming. Called on failure paths only — a successful upgrade leaves
 // the barrier set because triggerRestart is about to take the process down
-// and clearing it would open a window for new claims during shutdown.
+// and clearing it would open a window for new claims during shutdown. A drain
+// lease owns the same flag, so release is a no-op while that lease is active.
 func (d *Daemon) releaseClaimBarrier() {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	d.pauseClaims = false
+	d.clearClaimPauseIfOwner(claimPauseUpdate)
 }
 
 // triggerRestart initiates a graceful daemon restart into the binary at

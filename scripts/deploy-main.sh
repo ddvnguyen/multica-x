@@ -28,6 +28,14 @@ die() { log "ERROR: $*" >&2; exit 1; }
 # (-o), so no descendant can ever inherit it.
 WORKSPACE_ROOT="${MULTICA_MAIN_WORKSPACE_ROOT:-/mnt/workspace}"
 LOCK_FILE="${MULTICA_MAIN_LOCK_FILE:-$WORKSPACE_ROOT/multica-main-deploy.lock}"
+# Local drain control is authenticated by a 0600 credential file published by
+# the daemon itself. The endpoint is bound to 127.0.0.1; the token stops any
+# other local process from pausing claim paths.
+DRAIN_CONTROL_FILE="${MULTICA_DAEMON_DRAIN_FILE:-$HOME/.multica/daemon-drain.json}"
+STOP_AUDIT_LOG="${MULTICA_DEPLOY_STOP_AUDIT_LOG:-$WORKSPACE_ROOT/multica-main-stop-audit.log}"
+DRAIN_UNIT="multica-daemon.service"
+DEPLOY_ACTOR="${GITHUB_ACTOR:-${USER:-unknown}}"
+DEPLOY_RUN_ID="${GITHUB_RUN_ID:-}"
 
 # M-556: the GH runner reaps every process carrying its RUNNER_TRACKING_ID
 # when the job ends — including conmon, which outlives the deploy and takes
@@ -95,6 +103,10 @@ BACKUP_DIR=""
 SWITCH_STARTED=0
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
+DRAIN_TOKEN=""
+DRAIN_PORT=""
+DRAIN_LEASE_TOKEN=""
+DRAIN_LEASE_TIMEOUT=0
 
 for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
@@ -147,6 +159,96 @@ daemon_active_count() { # prints the count, or nothing on failure
     fi
     tries=$((tries + 1))
     sleep 3
+  done
+  return 1
+}
+
+# Every daemon stop is preceded by one structured UTC audit record. It goes to
+# stdout (captured by the workflow) and to a workspace-local JSONL file so a
+# later investigation can attribute stops that the journal cannot.
+audit_stop() { # operation outcome timeout_seconds force_bool
+  local operation="$1" outcome="$2" timeout="$3" force="$4"
+  local line
+  line="$(jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg operation "$operation" --arg actor "$DEPLOY_ACTOR" \
+    --arg workflow_run_id "$DEPLOY_RUN_ID" --arg unit "$DRAIN_UNIT" \
+    --argjson force "$force" --argjson timeout "$timeout" \
+    --arg outcome "$outcome" \
+    '{ts:$ts,operation:$operation,actor:$actor,workflow_run_id:$workflow_run_id,unit:$unit,force:$force,timeout:$timeout,outcome:$outcome}')" || return 0
+  printf '%s\n' "$line"
+  mkdir -p "$(dirname "$STOP_AUDIT_LOG")" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$STOP_AUDIT_LOG" 2>/dev/null || true
+}
+
+# Read the daemon-published control credential and actual health port.
+drain_control() { # prints token, then port; fails if either is missing
+  [ -r "$DRAIN_CONTROL_FILE" ] || return 1
+  local control token port
+  control="$(cat "$DRAIN_CONTROL_FILE")" || return 1
+  token="$(jq -r '.token // empty' <<<"$control")" || return 1
+  port="$(jq -r '.port // empty' <<<"$control")" || return 1
+  [ -n "$token" ] && [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n%s' "$token" "$port"
+}
+
+drain_curl() { # method path [header] [json body]
+  local method="$1" path="$2" header="${3:-}" body="${4:-}"
+  local args=(-fsS --max-time 5 -X "$method" -H "Authorization: Bearer $DRAIN_TOKEN")
+  [ -n "$header" ] && args+=(-H "$header")
+  if [ -n "$body" ]; then
+    args+=(-H 'Content-Type: application/json' --data "$body")
+  fi
+  curl "${args[@]}" "http://127.0.0.1:$DRAIN_PORT$path"
+}
+
+# Take a uniquely owned, expiring lease. The TTL includes a small grace over
+# the script's own deadline so the daemon never expires the lease while the
+# script is still legitimately waiting for idle.
+request_drain() { # prints the lease token
+  local control body json lease ttl
+  control="$(drain_control)" || return 1
+  DRAIN_TOKEN="${control%%$'\n'*}"
+  DRAIN_PORT="${control##*$'\n'}"
+  ttl=$((MAX_DRAIN_SECONDS + 10))
+  body="$(jq -nc \
+    --arg actor "$DEPLOY_ACTOR" --arg run "$DEPLOY_RUN_ID" --arg unit "$DRAIN_UNIT" \
+    --argjson force "$([ "$FORCE" = 1 ] && printf true || printf false)" \
+    --argjson timeout "$ttl" \
+    '{actor:$actor,workflow_run_id:$run,unit:$unit,force:$force,timeout_seconds:$timeout}')" || return 1
+  json="$(drain_curl POST /drain/begin "" "$body")" || return 1
+  lease="$(jq -r '.token // empty' <<<"$json")" || return 1
+  [ -n "$lease" ] || return 1
+  DRAIN_LEASE_TOKEN="$lease"
+  DRAIN_LEASE_TIMEOUT="$ttl"
+  printf '%s' "$lease"
+}
+
+# Best-effort release: if the script has lost control of the lease, aborting
+# still resumes claims on the daemon side before we give up or force-stop.
+drain_abort_best_effort() {
+  [ -n "$DRAIN_LEASE_TOKEN" ] || return 0
+  drain_curl POST /drain/abort "X-Multica-Drain-Token: $DRAIN_LEASE_TOKEN" >/dev/null 2>&1 || true
+  audit_stop drain_abort resumed "$DRAIN_LEASE_TIMEOUT" "$([ "$FORCE" = 1 ] && printf true || printf false)" || true
+}
+
+# 0 = idle, 1 = deadline passed, 2 = lease lost/expired.
+wait_for_drain() { # $1 = lease token
+  local lease="$1" deadline=$((SECONDS + MAX_DRAIN_SECONDS)) state active claims json
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    json="$(drain_curl GET /drain/status "X-Multica-Drain-Token: $lease")" || return 2
+    state="$(jq -r '.status // empty' <<<"$json")" || return 2
+    active="$(jq -r '.active_task_count // empty' <<<"$json")" || return 2
+    claims="$(jq -r '.claims_in_flight // empty' <<<"$json")" || return 2
+    active_count="$active"
+    case "$state" in
+      drained)
+        [ "$active" = 0 ] && [ "$claims" = 0 ] && return 0
+        ;;
+      draining) ;;
+      *) return 2 ;;
+    esac
+    sleep 2
   done
   return 1
 }
@@ -260,19 +362,42 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 active_count="$(daemon_active_count)" || die "could not read numeric active_task_count from daemon status (5 tries)"
-# max-drain-seconds 0 (the CI/CD default, owner directive 2026-11-04) deploys
-# immediately: no wait for active tasks — stopping the daemon below cancels
-# them. A positive value waits for tasks to drain first.
+force_json="$([ "$FORCE" = 1 ] && printf true || printf false)"
+# max-drain-seconds 0 (the CI/CD default, owner directive 2026-11-04) stays the
+# explicit cancel-without-force path: no lease is requested and the stop below
+# still cancels tasks. A positive value takes an authenticated drain lease so
+# claim paths are paused and the fleet can actually reach idle.
+DRAIN_OUTCOME="no_drain"
 if [ "$MAX_DRAIN_SECONDS" -gt 0 ]; then
-  deadline=$((SECONDS + MAX_DRAIN_SECONDS))
-  while [ "$active_count" -gt 0 ] && [ "$SECONDS" -lt "$deadline" ]; do
-    log "waiting for $active_count active task(s) to drain"
-    sleep 5
-    active_count="$(daemon_active_count)" || die "could not read daemon status while draining (5 tries)"
-  done
-  if [ "$active_count" -gt 0 ] && [ "$FORCE" != 1 ]; then
-    die "drain timed out with $active_count active task(s); no changes made (pass --force to cancel them)"
+  if ! DRAIN_LEASE_TOKEN="$(request_drain)"; then
+    die "could not request an authenticated drain lease; no daemon changes made"
   fi
+  audit_stop drain_begin pending "$DRAIN_LEASE_TIMEOUT" "$force_json" || true
+  # set +e: a non-zero wait result is data here, not an errexit condition.
+  set +e
+  wait_for_drain "$DRAIN_LEASE_TOKEN"
+  drain_rc=$?
+  set -e
+  case "$drain_rc" in
+    0)
+      DRAIN_OUTCOME="drained"
+      log "drain complete; claim paths stay paused through the stop"
+      ;;
+    1)
+      # Timeout behaviour is unchanged by this lease: unforced is an abort
+      # with no changes; with --force the operator explicitly cancels tasks.
+      drain_abort_best_effort
+      if [ "$FORCE" != 1 ]; then
+        die "drain timed out with $active_count active task(s); no changes made (pass --force to cancel them)"
+      fi
+      DRAIN_OUTCOME="force_cancel"
+      log "drain timed out; force authorizes canceling remaining task(s)"
+      ;;
+    *)
+      drain_abort_best_effort
+      die "lost control of the drain lease; no changes made"
+      ;;
+  esac
 fi
 
 mkdir -p "$TMPDIR" "$BACKUP_ROOT"
@@ -291,6 +416,7 @@ rollback() {
     ROLLBACK_ACTIVE=1
     local rollback_failed=0
     log "deployment failed; rolling back environment and daemon binary"
+    audit_stop rollback_stop rollback "$MAX_DRAIN_SECONDS" "$force_json" || true
     systemctl --user stop multica-daemon.service || rollback_failed=1
     cp -p "$BACKUP_DIR/.env" "$ENV_FILE" || rollback_failed=1
     install -m 755 "$BACKUP_DIR/multica" "$HOME/.local/bin/multica" || rollback_failed=1
@@ -309,9 +435,10 @@ rollback() {
 }
 trap rollback EXIT
 
-if [ "$active_count" -gt 0 ]; then
+if [ "$DRAIN_OUTCOME" = "no_drain" ] && [ "$active_count" -gt 0 ]; then
   log "stopping daemon to cancel $active_count remaining task(s); deploy does not wait for task drain"
 fi
+audit_stop stop "$DRAIN_OUTCOME" "$MAX_DRAIN_SECONDS" "$force_json" || true
 DAEMON_WAS_STOPPED=1
 systemctl --user stop multica-daemon.service
 db_container="$(cd "$STACK_DIR" && podman ps -q --filter "label=com.docker.compose.service=postgres" --filter "label=com.docker.compose.project=multica")" || die "could not locate postgres container"
