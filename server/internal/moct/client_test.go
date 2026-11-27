@@ -418,3 +418,69 @@ func TestNewClientTrimsTrailingSlash(t *testing.T) {
 		t.Errorf("baseURL did not parse: %q (%v)", c.baseURL, err)
 	}
 }
+
+// M-605: supersedes travels as a top-level body field — the shape moct-be
+// reads (routeMemory takes body["supersedes"], not attrs).
+func TestNoteSendsSupersedesTopLevel(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode body %q: %v", raw, err)
+		}
+		var id string
+		if err := json.Unmarshal(body["supersedes"], &id); err != nil || id != "mem_old" {
+			t.Errorf("supersedes = %s, want \"mem_old\" top-level", body["supersedes"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"record":{"id":"mem_new","supersedes":"mem_old"},"nearMatches":[]}`)
+	})
+	old, ver := "mem_old", 3
+	got, err := c.Note(context.Background(), NoteParams{
+		Type: "convention", Title: "New", Body: "B",
+		Home:              Home{Kind: "team", Ref: testWorkspace},
+		WorkspaceID:       testWorkspace,
+		Actor:             Actor{Kind: "member", ID: testExpert},
+		Supersedes:        &old,
+		SupersedesVersion: &ver,
+	})
+	if err != nil {
+		t.Fatalf("Note: %v", err)
+	}
+	if got.Record == nil || got.Record.Supersedes == nil || *got.Record.Supersedes != "mem_old" {
+		t.Errorf("record.supersedes = %+v, want mem_old", got.Record)
+	}
+}
+
+// M-605: Retract hits the moct-be retract verb with the actor and version.
+func TestRetractPostsRetractVerb(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/team/v1/memory/mem_old/retract" {
+			t.Fatalf("%s %s, want POST /team/v1/memory/mem_old/retract", r.Method, r.URL.Path)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			BaseVersion int    `json:"baseVersion"`
+			Actor       Actor  `json:"actor"`
+			Reason      string `json:"reason"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode body %q: %v", raw, err)
+		}
+		if body.BaseVersion != 2 || body.Actor.ID != testExpert || body.Reason != "stale" {
+			t.Errorf("body = %+v, want version 2, run actor, reason stale", body)
+		}
+		io.WriteString(w, `{"id":"mem_old","status":"retracted","version":3}`)
+	})
+	got, err := c.Retract(context.Background(), RetractParams{
+		ID: "mem_old", BaseVersion: 2, Reason: "stale",
+		WorkspaceID: testWorkspace,
+		Actor:       Actor{Kind: "member", ID: testExpert},
+	})
+	if err != nil {
+		t.Fatalf("Retract: %v", err)
+	}
+	if got.Status != "retracted" {
+		t.Errorf("status = %q, want retracted", got.Status)
+	}
+}

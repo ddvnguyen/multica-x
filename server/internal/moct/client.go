@@ -226,6 +226,12 @@ type NoteParams struct {
 	Actor       Actor          `json:"actor"`
 	Pinned      bool           `json:"pinned,omitempty"`
 	ConfirmNew  bool           `json:"confirmNew,omitempty"`
+	// Supersedes names the record id this note replaces. Top-level on the
+	// wire: moct-be reads body.supersedes, not attrs.supersedes (M-605).
+	// moct-be retires the old record once this one is active, and refuses
+	// a worker superseding a record it did not author (NOT_OWNER).
+	Supersedes        *string `json:"supersedes,omitempty"`
+	SupersedesVersion *int    `json:"supersedesVersion,omitempty"`
 }
 
 // Note writes one memory record. A 200 with Record == nil and NearMatches
@@ -236,6 +242,39 @@ type NoteParams struct {
 func (c *Client) Note(ctx context.Context, p NoteParams) (*NoteResult, error) {
 	var out NoteResult
 	if err := c.do(ctx, http.MethodPost, teamPath+"/memory", nil, p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RetractParams withdraws one record from future injects
+// (moct-be POST /team/v1/memory/{id}/retract). Only the author may retract
+// their own record (a worker retracting another's is NOT_OWNER there); a
+// superseded record needs no retract — it already stopped injecting.
+type RetractParams struct {
+	ID          string // record id, e.g. mem_<uuid>
+	BaseVersion int    // record.Version from a search or get
+	Reason      string // optional, recorded in the version history
+	WorkspaceID string // from env, same as a note
+	Actor       Actor  // from env, same as a note
+}
+
+// Retract withdraws one record. BaseVersion is the optimistic-concurrency
+// guard every moct-be verb takes: a stale version is a 409, and the caller
+// re-reads the record and retries.
+func (c *Client) Retract(ctx context.Context, p RetractParams) (*Record, error) {
+	if p.ID == "" {
+		return nil, errors.New("moct: retract needs a record id")
+	}
+	body := map[string]any{
+		"baseVersion": p.BaseVersion,
+		"actor":       p.Actor,
+	}
+	if p.Reason != "" {
+		body["reason"] = p.Reason
+	}
+	var out Record
+	if err := c.do(ctx, http.MethodPost, teamPath+"/memory/"+p.ID+"/retract", nil, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

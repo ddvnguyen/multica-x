@@ -308,21 +308,51 @@ func (s *Server) note(ctx context.Context, args json.RawMessage) (any, error) {
 		return nil, err
 	}
 	var in struct {
-		Type       string         `json:"type"`
-		Title      string         `json:"title"`
-		Body       string         `json:"body"`
-		Attrs      map[string]any `json:"attrs"`
-		Home       *moct.Home     `json:"home"`
-		ConfirmNew bool           `json:"confirmNew"`
+		Type              string         `json:"type"`
+		Title             string         `json:"title"`
+		Body              string         `json:"body"`
+		Attrs             map[string]any `json:"attrs"`
+		Home              *moct.Home     `json:"home"`
+		ConfirmNew        bool           `json:"confirmNew"`
+		Supersedes        *string        `json:"supersedes"`
+		SupersedesVersion *int           `json:"supersedesVersion"`
+		Retract           *string        `json:"retract"`
+		RetractVersion    *int           `json:"retractVersion"`
+		RetractReason     *string        `json:"retractReason"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil, fmt.Errorf("memory_note: bad arguments: %w", err)
+	}
+	// Retract is a second verb on this tool so an agent needs no new tool to
+	// withdraw its own record. It runs instead of a note (a withdrawal
+	// writes no replacement); supersede-then-write stays on memory_note's
+	// supersedes path. moct-be enforces authorship: retracting or
+	// superseding a record the run did not author is NOT_OWNER there.
+	if in.Retract != nil {
+		if *in.Retract == "" {
+			return nil, errors.New("memory_note: retract needs the record id to withdraw")
+		}
+		baseVersion := 0
+		if in.RetractVersion != nil {
+			baseVersion = *in.RetractVersion
+		}
+		reason := ""
+		if in.RetractReason != nil {
+			reason = *in.RetractReason
+		}
+		return s.client.Retract(ctx, moct.RetractParams{
+			ID:          *in.Retract,
+			BaseVersion: baseVersion,
+			Reason:      reason,
+			WorkspaceID: s.scope.WorkspaceRef,
+			Actor:       moct.Actor{Kind: "member", ID: s.scope.ExpertRef},
+		})
 	}
 	home, err := s.noteHome(in.Home)
 	if err != nil {
 		return nil, err
 	}
-	return s.client.Note(ctx, moct.NoteParams{
+	out, err := s.client.Note(ctx, moct.NoteParams{
 		Type:  in.Type,
 		Title: in.Title,
 		Body:  in.Body,
@@ -333,15 +363,76 @@ func (s *Server) note(ctx context.Context, args json.RawMessage) (any, error) {
 		WorkspaceID: s.scope.WorkspaceRef,
 		Actor:       moct.Actor{Kind: "member", ID: s.scope.ExpertRef},
 		ConfirmNew:  in.ConfirmNew,
+		// Top-level on the wire: moct-be reads body.supersedes, while
+		// attrs.supersedes is refused as an unknown key (M-605). Callers
+		// sending the old attrs shape get it promoted, not a 400.
+		Supersedes:        promotedSupersedes(in.Supersedes, in.Attrs),
+		SupersedesVersion: in.SupersedesVersion,
 	})
+	if err != nil {
+		return nil, hintScopeRefusal(err)
+	}
+	return out, nil
 }
 
-// noteHome is the write's home: the caller's, or the task home of this run.
-// A run that is not attached to an issue has no default home and must name one.
+// hintScopeRefusal appends the accepted ref format to a moct-be scope
+// refusal, so the next attempt names a ref moct-be accepts (M-605/3). The
+// M-600 run burned four attempts on bare `moct` / `workspace` / uuid refs
+// because SCOPE_FORBIDDEN never said what a team home ref looks like.
+func hintScopeRefusal(err error) error {
+	var apiErr *moct.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "SCOPE_FORBIDDEN" {
+		return err
+	}
+	return fmt.Errorf("%w (team home ref is {\"kind\":\"team\", \"ref\":\"multica:ws:<workspace uuid>\"}; task/channel/expert homes take multica:issue:<uuid>, multica:project:<uuid>, multica:agent:<uuid>)", err)
+}
+
+// promotedSupersedes moves a supersedes id sent in the old attrs shape to the
+// top-level field moct-be actually reads. moct-be's attrs are an allow-list
+// per type, so attrs.supersedes never survived validation — it 400'd. The key
+// is dropped from Attrs (keeping it would 400); the returned id is what note
+// sends top-level.
+func promotedSupersedes(explicit *string, attrs map[string]any) *string {
+	if explicit != nil {
+		return explicit
+	}
+	if attrs == nil {
+		return nil
+	}
+	raw, ok := attrs["supersedes"]
+	if !ok {
+		return nil
+	}
+	// Drop the legacy key unconditionally: moct-be allow-lists attrs per
+	// type, so a surviving attrs.supersedes would 400 the write. Only a
+	// non-empty string id promotes to the top-level field.
+	delete(attrs, "supersedes")
+	id, ok := raw.(string)
+	if !ok || id == "" {
+		return nil
+	}
+	return &id
+}
+
+// noteHome is the write's home: the caller's, the run's task home, or — when
+// the run names no explicit home and is not attached to an issue — the team
+// home (M-605). The team home is the only workspace-wide home a run's own
+// refs can always name: {kind:"team", ref:<workspace ref>}. That keeps a
+// convention/decision writable from any run instead of failing with "pass
+// home explicitly".
 func (s *Server) noteHome(explicit *moct.Home) (moct.Home, error) {
 	if explicit != nil {
-		if explicit.Kind == "" || explicit.Ref == "" {
-			return moct.Home{}, errors.New("memory_note: home needs both kind and ref")
+		if explicit.Ref == "" {
+			// {kind:"team"} without a ref fills in this run's workspace
+			// (M-605): the failing shape from the M-600 run that passed
+			// bare "team"/"workspace"/"moct" refs and got SCOPE_FORBIDDEN.
+			if explicit.Kind == "team" {
+				return moct.Home{Kind: "team", Ref: s.scope.WorkspaceRef}, nil
+			}
+			return moct.Home{}, errors.New("memory_note: home needs both kind and ref; for a team-wide record use {\"kind\":\"team\"} and this run's workspace is filled in")
+		}
+		if explicit.Kind == "" {
+			return moct.Home{}, errors.New("memory_note: home needs both kind and ref; for a team-wide record use {\"kind\":\"team\"} and this run's workspace is filled in")
 		}
 		// In dual-scope mode an Agent may read its Role's memory but must
 		// never write into that scope: an expert home outside this run's own
@@ -352,7 +443,7 @@ func (s *Server) noteHome(explicit *moct.Home) (moct.Home, error) {
 		return *explicit, nil
 	}
 	if s.scope.TaskRef == "" {
-		return moct.Home{}, errors.New("memory_note: this run has no task ref; pass home explicitly ({kind, ref})")
+		return moct.Home{Kind: "team", Ref: s.scope.WorkspaceRef}, nil
 	}
 	return moct.Home{Kind: "task", Ref: s.scope.TaskRef}, nil
 }

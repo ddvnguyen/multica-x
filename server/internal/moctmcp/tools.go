@@ -64,7 +64,7 @@ func toolDescriptors() []map[string]any {
 		},
 		{
 			"name":        "memory_note",
-			"description": "Write one record to the MOCT team memory, scoped to this run. Defaults to this issue's task home; workspace and author come from the run's identity and cannot be overridden. Rules: a near-duplicate title holds the write and returns nearMatches without a record — resend with confirmNew:true to write it anyway. Under moct-be's default expertApproval setting, a worker's rule/decision/how_to_work is saved as \"pending\" and does NOT inject into future runs until a human approves it (the response notice says so); a convention activates immediately. A task home accepts type \"decision\" only, and a decision needs attrs.decidedBy and attrs.sourceRef.",
+			"description": "Write one record to the MOCT team memory, scoped to this run. Defaults to this issue's task home (or the team home when the run has no issue); workspace and author come from the run's identity and cannot be overridden. Pass {\"kind\":\"team\"} without a ref for a team-wide record — this run's workspace is filled in. Rules: a near-duplicate title holds the write and returns nearMatches without a record — resend with confirmNew:true to write it anyway. Under moct-be's default expertApproval setting, a worker's rule/decision/how_to_work is saved as \"pending\" and does NOT inject into future runs until a human approves it (the response notice says so); a convention activates immediately. A task home accepts type \"decision\" only, and a decision needs attrs.decidedBy and attrs.sourceRef. To replace your own record, write the new one with supersedes:<old id> (the old record retires once this one is active; superseding another author's record is refused). To withdraw your own record with no replacement, call with retract:<id> plus its baseVersion as retractVersion.",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"type", "title", "body"},
@@ -87,7 +87,7 @@ func toolDescriptors() []map[string]any {
 					},
 					"home": map[string]any{
 						"type":        "object",
-						"description": "{kind, ref} with kind one of task, channel, team, expert. Defaults to this issue's task home.",
+						"description": "{kind, ref} with kind one of task, channel, team, expert. Defaults to this issue's task home, or the team home when the run has no issue. {\"kind\":\"team\"} without a ref fills in this run's workspace.",
 						"properties": map[string]any{
 							"kind": map[string]any{"type": "string"},
 							"ref":  map[string]any{"type": "string"},
@@ -96,6 +96,26 @@ func toolDescriptors() []map[string]any {
 					"confirmNew": map[string]any{
 						"type":        "boolean",
 						"description": "Resend with true to write anyway after a near-duplicate hold.",
+					},
+					"supersedes": map[string]any{
+						"type":        "string",
+						"description": "Record id this note replaces (your own record only). The old record retires once this one is active.",
+					},
+					"supersedesVersion": map[string]any{
+						"type":        "integer",
+						"description": "Base version of the superseded record; omit unless you know it changed under you.",
+					},
+					"retract": map[string]any{
+						"type":        "string",
+						"description": "Record id to withdraw with no replacement (your own record only). Runs instead of writing a note.",
+					},
+					"retractVersion": map[string]any{
+						"type":        "integer",
+						"description": "Base version of the record to retract (from memory_search/memory_get).",
+					},
+					"retractReason": map[string]any{
+						"type":        "string",
+						"description": "Optional reason recorded in the version history.",
 					},
 				},
 			},
