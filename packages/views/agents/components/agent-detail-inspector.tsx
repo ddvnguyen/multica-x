@@ -17,7 +17,7 @@ import {
   useAgentRoleTypeEnabled,
   useRolePreview,
 } from "@multica/core/agents";
-import { useCurrentWorkspace } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions, tierRolesOptions } from "@multica/core/workspace/queries";
 import {
   accountModelScope,
@@ -32,7 +32,6 @@ import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
-import { Switch } from "@multica/ui/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,7 +43,7 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
-import { CollectionTag } from "../../layout/collection-list";
+import { AppLink } from "../../navigation";
 import {
   SettingsCard,
   SettingsRow,
@@ -66,9 +65,7 @@ import {
   setAgentFreebuffAccountId,
 } from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./inspector/runtime-picker";
-import { TierPicker } from "./inspector/tier-picker";
 import { AgentPresetEditor } from "./inspector/agent-preset-editor";
-import { RolePicker } from "./inspector/role-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
 import { useExecutionControls } from "./inspector/use-execution-controls";
@@ -134,11 +131,6 @@ export function AgentDetailInspector({
   const wsId = useCurrentWorkspace()?.id ?? "";
   const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
   const showingRole = roleTypeEnabled && isRoleAgent(agent);
-  // Legacy tier routing (M-545). An Agent routes through its own runtime and
-  // model; only a Role agent walks a tier table. An existing agent that still
-  // carries `use_tiers` or a tier-table role keeps one compact block so the
-  // old routing can be turned off, and agents without either never see it.
-  const legacyTierRouting = (agent.use_tiers ?? false) || !!agent.role;
   const { data: tierRoles = [] } = useQuery({
     ...tierRolesOptions(wsId),
     enabled: showingRole,
@@ -440,11 +432,9 @@ export function AgentDetailInspector({
                       {t(($) => $.inspector.role_inherited_none)}
                     </p>
                   ) : (
-                    <ul className="flex flex-wrap gap-1.5">
+                    <ul className="space-y-1">
                       {implementers.map((entry) => (
-                        <li key={entry.id}>
-                          <CollectionTag>{entry.name}</CollectionTag>
-                        </li>
+                        <ImplementerSummary key={entry.id} agent={entry} />
                       ))}
                     </ul>
                   )}
@@ -463,8 +453,7 @@ export function AgentDetailInspector({
               {roleTypeEnabled && agent.implements_role_id ? (
               <RolePreviewRow preview={rolePreview} />
               ) : null}
-              {agent.use_tiers ? null : (
-                <>
+              <>
               <SettingsRow
                 label={t(($) => $.inspector.prop_runtime)}
                 size="select-wide"
@@ -555,56 +544,7 @@ export function AgentDetailInspector({
                 </>
               )}
                 </>
-              )}
-              {legacyTierRouting ? (
-                <div className="border-t" data-testid="legacy-tier-routing">
-                  <div className="px-4 pt-3">
-                    <p className="text-body font-medium">
-                      {t(($) => $.inspector.legacy_tier_routing)}
-                    </p>
-                    <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
-                      {t(($) => $.inspector.legacy_tier_routing_hint)}
-                    </p>
-                  </div>
-                  <SettingsRow
-                    label={t(($) => $.inspector.prop_use_tiers)}
-                    description={t(($) => $.inspector.use_tiers_hint)}
-                  >
-                    <Switch
-                      checked={agent.use_tiers ?? false}
-                      disabled={!canEdit}
-                      onCheckedChange={(checked) => {
-                        void update({ use_tiers: checked });
-                      }}
-                      aria-label={t(($) => $.inspector.prop_use_tiers)}
-                    />
-                  </SettingsRow>
-                  <SettingsRow
-                    label={t(($) => $.inspector.prop_role)}
-                    description={t(($) => $.inspector.role_hint)}
-                  >
-                    <RolePicker
-                      value={agent.role ?? ""}
-                      canEdit={canEdit}
-                      onChange={(role) => update({ role })}
-                    />
-                  </SettingsRow>
-                  {agent.use_tiers ? (
-                    <SettingsRow
-                      label={t(($) => $.inspector.prop_tiers)}
-                      description={t(($) => $.inspector.tiers_hint)}
-                    >
-                      <TierPicker
-                        value={agent.tier_ids ?? []}
-                        agentRole={agent.role ?? ""}
-                        canEdit={canEdit}
-                        onChange={(tier_ids) => update({ tier_ids })}
-                      />
-                    </SettingsRow>
-                  ) : null}
-                </div>
-              ) : null}
-              </>
+                </>
               )}
               {/* M-545: a Role keeps its instructions — only its execution
                   (runtime, model, tier, concurrency) is tier-owned. */}
@@ -875,6 +815,37 @@ function ImplementsRoleRow({
         ))}
       </select>
     </SettingsRow>
+  );
+}
+
+/**
+ * An implementing Agent on the Role page: a link plus the composed view the
+ * server would send at claim time. A 403 hides the summary, never partial
+ * inherited content; the link itself only names an Agent already listed to
+ * the caller.
+ */
+function ImplementerSummary({ agent }: { agent: Agent }) {
+  const { t } = useT("agents");
+  const paths = useWorkspacePaths();
+  const { data, isError } = useRolePreview(agent.id, true);
+  return (
+    <li className="text-caption">
+      <AppLink
+        href={paths.agentDetail(agent.id)}
+        className="font-medium text-brand hover:underline"
+      >
+        {agent.name}
+      </AppLink>
+      {!isError && data ? (
+        <span className="text-muted-foreground">
+          {" — "}
+          {t(($) => $.inspector.role_inherited_summary, {
+            chars: data.instructions.length,
+            count: data.skills.length,
+          })}
+        </span>
+      ) : null}
+    </li>
   );
 }
 

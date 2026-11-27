@@ -51,9 +51,6 @@ vi.mock("./inspector/model-picker", () => ({
     return <div data-testid="model-picker" />;
   },
 }));
-vi.mock("./inspector/tier-picker", () => ({
-  TierPicker: () => <div data-testid="tier-picker" />,
-}));
 
 import { AgentPropertiesPanel } from "./agent-properties-panel";
 

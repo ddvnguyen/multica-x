@@ -14,11 +14,24 @@ import { AgentDetailInspector } from "./agent-detail-inspector";
 const state = vi.hoisted(() => ({
   roleTypeEnabled: true,
   workspaceAgents: [] as Agent[],
+  preview: null as import("@multica/core/types").RoleCompositionPreview | null,
 }));
 
 vi.mock("@multica/core/agents", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/agents")>()),
   useAgentRoleTypeEnabled: () => state.roleTypeEnabled,
+  useRolePreview: () => ({
+    data: state.preview,
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useWorkspacePaths: () => ({
+    agentDetail: (id: string) => `/w/agents/${id}`,
+  }),
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
@@ -45,6 +58,22 @@ vi.mock("./inspector/use-execution-controls", () => ({
 vi.mock("./inspector/agent-preset-editor", () => ({
   AgentPresetEditor: () => <div data-testid="preset-editor" />,
 }));
+vi.mock("../../navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../navigation")>()),
+  AppLink: ({
+    href,
+    children,
+    ...rest
+  }: {
+    href: string;
+    children: React.ReactNode;
+    [k: string]: unknown;
+  }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
 vi.mock("../../common/avatar-upload-control", () => ({
   AvatarUploadControl: () => <div data-testid="avatar-upload" />,
 }));
@@ -59,9 +88,6 @@ vi.mock("./inspector/thinking-prop-row", () => ({
 }));
 vi.mock("./inspector/service-tier-setting-field", () => ({
   ServiceTierSettingField: () => <div data-testid="service-tier-field" />,
-}));
-vi.mock("./inspector/tier-picker", () => ({
-  TierPicker: () => <div data-testid="tier-picker" />,
 }));
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -98,6 +124,7 @@ describe("AgentDetailInspector Agent Type (M-567)", () => {
   beforeEach(() => {
     state.roleTypeEnabled = true;
     state.workspaceAgents = [];
+    state.preview = null;
   });
   afterEach(() => {
     cleanup();
@@ -165,6 +192,27 @@ describe("AgentDetailInspector Agent Type (M-567)", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("links implementing Agents with their composed inheritance summary", () => {
+    state.workspaceAgents = [implementer("a-1", "Alpha")];
+    state.preview = {
+      agent_id: "a-1",
+      role_id: "role-1",
+      role_name: "Reviewer",
+      instructions: "ROLE RULES",
+      role_instructions: "ROLE RULES",
+      agent_instructions: "",
+      skills: [{ id: "s1", name: "review", description: "", source: "role" }],
+    };
+    renderInspector(agent({ id: "role-1", subtype: "role", runtime_id: "" }));
+
+    expect(screen.getByRole("link", { name: "Alpha" }).getAttribute("href")).toMatch(
+      "/w/agents/a-1",
+    );
+    expect(
+      screen.getByText(/inherits 10 characters of instructions, 1 skill/),
+    ).toBeInTheDocument();
   });
 
   it("confirms Role → Agent when nobody implements the Role", async () => {
