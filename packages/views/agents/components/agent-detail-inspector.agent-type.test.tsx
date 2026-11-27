@@ -60,9 +60,6 @@ vi.mock("./inspector/thinking-prop-row", () => ({
 vi.mock("./inspector/service-tier-setting-field", () => ({
   ServiceTierSettingField: () => <div data-testid="service-tier-field" />,
 }));
-vi.mock("./inspector/tier-picker", () => ({
-  TierPicker: () => <div data-testid="tier-picker" />,
-}));
 
 function agent(overrides: Partial<Agent> = {}): Agent {
   return {

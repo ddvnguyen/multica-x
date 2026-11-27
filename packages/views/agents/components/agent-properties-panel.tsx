@@ -24,7 +24,6 @@ import { useLocale, useT } from "../../i18n";
 import { AgentPresenceIndicator } from "./agent-presence-indicator";
 import { CHIP_CLASS } from "./inspector/chip";
 import { ModelPicker } from "./inspector/model-picker";
-import { TierPicker } from "./inspector/tier-picker";
 import { RuntimePicker } from "./inspector/runtime-picker";
 import { ThinkingPropRow } from "./inspector/thinking-prop-row";
 import { useExecutionControls } from "./inspector/use-execution-controls";
@@ -121,35 +120,6 @@ export function AgentPropertiesPanel({
           </Value>
         </ObjectProperty>
 
-        <ObjectProperty label={t(($) => $.inspector.prop_use_tiers)}>
-          <Value>
-            <span className="truncate">
-              {agent.use_tiers
-                ? t(($) => $.inspector.prop_tiers)
-                : t(($) => $.inspector.prop_runtime)}
-            </span>
-          </Value>
-        </ObjectProperty>
-
-        <ObjectProperty label={t(($) => $.inspector.prop_role)}>
-          <Value>
-            <span className="truncate">
-              {agent.role || t(($) => $.inspector.role_none)}
-            </span>
-          </Value>
-        </ObjectProperty>
-
-        {agent.use_tiers ? (
-          <ObjectProperty label={t(($) => $.inspector.prop_tiers)}>
-            <TierPicker
-              value={agent.tier_ids ?? []}
-              agentRole={agent.role ?? ""}
-              canEdit={canEdit}
-              onChange={(tier_ids) => update({ tier_ids })}
-            />
-          </ObjectProperty>
-        ) : (
-          <>
         <ObjectProperty label={t(($) => $.inspector.prop_runtime)}>
           <RuntimePicker
             value={agent.runtime_id}
@@ -204,8 +174,6 @@ export function AgentPropertiesPanel({
               canEdit={canEdit}
               onChange={(thinkingLevel) => update({ thinking_level: thinkingLevel })}
             />
-          </>
-        )}
           </>
         )}
 

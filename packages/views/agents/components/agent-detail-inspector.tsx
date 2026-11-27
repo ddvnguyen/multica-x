@@ -32,7 +32,6 @@ import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
-import { Switch } from "@multica/ui/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -66,9 +65,7 @@ import {
   setAgentFreebuffAccountId,
 } from "./agent-freebuff-account-field";
 import { RuntimePicker } from "./inspector/runtime-picker";
-import { TierPicker } from "./inspector/tier-picker";
 import { AgentPresetEditor } from "./inspector/agent-preset-editor";
-import { RolePicker } from "./inspector/role-picker";
 import { ThinkingSettingField } from "./inspector/thinking-prop-row";
 import { ServiceTierSettingField } from "./inspector/service-tier-setting-field";
 import { useExecutionControls } from "./inspector/use-execution-controls";
@@ -134,11 +131,6 @@ export function AgentDetailInspector({
   const wsId = useCurrentWorkspace()?.id ?? "";
   const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
   const showingRole = roleTypeEnabled && isRoleAgent(agent);
-  // Legacy tier routing (M-545). An Agent routes through its own runtime and
-  // model; only a Role agent walks a tier table. An existing agent that still
-  // carries `use_tiers` or a tier-table role keeps one compact block so the
-  // old routing can be turned off, and agents without either never see it.
-  const legacyTierRouting = (agent.use_tiers ?? false) || !!agent.role;
   const { data: tierRoles = [] } = useQuery({
     ...tierRolesOptions(wsId),
     enabled: showingRole,
@@ -463,8 +455,7 @@ export function AgentDetailInspector({
               {roleTypeEnabled && agent.implements_role_id ? (
               <RolePreviewRow preview={rolePreview} />
               ) : null}
-              {agent.use_tiers ? null : (
-                <>
+              <>
               <SettingsRow
                 label={t(($) => $.inspector.prop_runtime)}
                 size="select-wide"
@@ -555,56 +546,7 @@ export function AgentDetailInspector({
                 </>
               )}
                 </>
-              )}
-              {legacyTierRouting ? (
-                <div className="border-t" data-testid="legacy-tier-routing">
-                  <div className="px-4 pt-3">
-                    <p className="text-body font-medium">
-                      {t(($) => $.inspector.legacy_tier_routing)}
-                    </p>
-                    <p className="mt-0.5 text-caption leading-5 text-muted-foreground">
-                      {t(($) => $.inspector.legacy_tier_routing_hint)}
-                    </p>
-                  </div>
-                  <SettingsRow
-                    label={t(($) => $.inspector.prop_use_tiers)}
-                    description={t(($) => $.inspector.use_tiers_hint)}
-                  >
-                    <Switch
-                      checked={agent.use_tiers ?? false}
-                      disabled={!canEdit}
-                      onCheckedChange={(checked) => {
-                        void update({ use_tiers: checked });
-                      }}
-                      aria-label={t(($) => $.inspector.prop_use_tiers)}
-                    />
-                  </SettingsRow>
-                  <SettingsRow
-                    label={t(($) => $.inspector.prop_role)}
-                    description={t(($) => $.inspector.role_hint)}
-                  >
-                    <RolePicker
-                      value={agent.role ?? ""}
-                      canEdit={canEdit}
-                      onChange={(role) => update({ role })}
-                    />
-                  </SettingsRow>
-                  {agent.use_tiers ? (
-                    <SettingsRow
-                      label={t(($) => $.inspector.prop_tiers)}
-                      description={t(($) => $.inspector.tiers_hint)}
-                    >
-                      <TierPicker
-                        value={agent.tier_ids ?? []}
-                        agentRole={agent.role ?? ""}
-                        canEdit={canEdit}
-                        onChange={(tier_ids) => update({ tier_ids })}
-                      />
-                    </SettingsRow>
-                  ) : null}
-                </div>
-              ) : null}
-              </>
+                </>
               )}
               {/* M-545: a Role keeps its instructions — only its execution
                   (runtime, model, tier, concurrency) is tier-owned. */}
