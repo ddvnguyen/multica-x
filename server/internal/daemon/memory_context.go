@@ -325,8 +325,8 @@ func powerContextRecordHandoff(ctx context.Context, cfg Config, task Task, resul
 		Query:   marker,
 		Limit:   3,
 	}); searchErr == nil && existing != nil {
-		for _, record := range existing.Results {
-			if strings.Contains(record.Content, marker) {
+		for _, text := range existing.Texts() {
+			if strings.Contains(text, marker) {
 				return
 			}
 		}

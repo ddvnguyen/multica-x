@@ -15,13 +15,16 @@ import (
 	"github.com/multica-ai/multica/server/internal/powercontext"
 )
 
-// fakePlane is an httptest stand-in for the two PowerContext routes this
-// package uses. It keeps what was remembered per scope so a second pass can be
+// fakePlane is an httptest stand-in for the PowerContext routes this package
+// uses, shaped like a real 1.6.0: /v1/scopes maps a Multica ref to a
+// server-generated id, and that id — never the ref — is what the memory routes
+// accept. It keeps what was remembered per scope so a second pass can be
 // asserted to write nothing.
 type fakePlane struct {
 	mu         sync.Mutex
 	scopes     map[string][]string
 	kinds      map[string][]string
+	ids        map[string]string
 	searchFail bool
 	rememberTo string // when set, /v1/memory/remember answers 422
 	server     *httptest.Server
@@ -29,7 +32,7 @@ type fakePlane struct {
 
 func newFakePlane(t *testing.T) *fakePlane {
 	t.Helper()
-	f := &fakePlane{scopes: map[string][]string{}, kinds: map[string][]string{}}
+	f := &fakePlane{scopes: map[string][]string{}, kinds: map[string][]string{}, ids: map[string]string{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.server.Close)
 	return f
@@ -44,11 +47,32 @@ func (f *fakePlane) client(t *testing.T) *powercontext.Client {
 	return client
 }
 
+// scopeID is the id the plane hands out for a ref. Stable per ref, so a test
+// can look a scope up the way the callers speak about it.
+func (f *fakePlane) scopeID(ref string) string {
+	if id, ok := f.ids[ref]; ok {
+		return id
+	}
+	id := fmt.Sprintf("scp_%d", len(f.ids)+1)
+	f.ids[ref] = id
+	return id
+}
+
 func (f *fakePlane) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	switch r.URL.Path {
+	case "/v1/scopes":
+		query := r.URL.Query().Get("query")
+		if r.URL.Query().Get("query_field") == "scope_id" {
+			writeJSON(w, map[string]any{"items": []any{}, "next_cursor": nil})
+			return
+		}
+		writeJSON(w, map[string]any{"items": []map[string]any{{
+			"scope_id":            f.scopeID(query),
+			"external_references": []map[string]any{{"kind": "multica-project", "value": query}},
+		}}, "next_cursor": nil})
 	case "/v1/memory/search":
 		if f.searchFail {
 			http.Error(w, `{"error":{"code":"unavailable","message":"down"}}`, http.StatusServiceUnavailable)
@@ -59,13 +83,16 @@ func (f *fakePlane) handle(w http.ResponseWriter, r *http.Request) {
 			Query   string `json:"query"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		results := []map[string]any{}
-		for _, content := range f.scopes[body.ScopeID] {
-			if body.Query == "" || strings.Contains(content, body.Query) {
-				results = append(results, map[string]any{"content": content, "state": "live"})
+		hits := []map[string]any{}
+		for _, text := range f.scopes[body.ScopeID] {
+			if body.Query == "" || strings.Contains(text, body.Query) {
+				hits = append(hits, map[string]any{
+					"memory": map[string]any{"text": text, "state": "active"},
+					"score":  1, "matched_by": []string{"text"},
+				})
 			}
 		}
-		writeJSON(w, map[string]any{"results": results})
+		writeJSON(w, map[string]any{"mode": "text", "hits": hits})
 	case "/v1/memory/remember":
 		var body struct {
 			ScopeID string `json:"scope_id"`
@@ -82,7 +109,7 @@ func (f *fakePlane) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		f.scopes[body.ScopeID] = append(f.scopes[body.ScopeID], body.Text)
 		f.kinds[body.ScopeID] = append(f.kinds[body.ScopeID], body.Kind)
-		writeJSON(w, map[string]any{"records": []map[string]any{{"content": body.Text, "state": "live"}}})
+		writeJSON(w, map[string]any{"changed": true, "records": []map[string]any{{"text": body.Text, "state": "active"}}})
 	default:
 		http.NotFound(w, r)
 	}
@@ -93,10 +120,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (f *fakePlane) texts(scope string) []string {
+// texts returns what a ref's scope holds, resolving it the way the ingest does.
+func (f *fakePlane) texts(ref string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.scopes[scope]...)
+	return append([]string(nil), f.scopes[f.scopeID(ref)]...)
 }
 
 func decisionEntry(projectID string) Entry {
@@ -175,7 +203,7 @@ func TestIngestRecordsTheRememberedKind(t *testing.T) {
 	scope := powercontext.WorkspaceScope(decisionEntry("").WorkspaceID)
 	plane.mu.Lock()
 	defer plane.mu.Unlock()
-	got := plane.kinds[scope]
+	got := plane.kinds[plane.scopeID(scope)]
 	if len(got) != 2 || got[0] != "decision" || got[1] != "fact" {
 		t.Fatalf("kinds = %v, want [decision fact]", got)
 	}

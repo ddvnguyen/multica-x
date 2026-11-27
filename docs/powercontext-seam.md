@@ -63,6 +63,40 @@ exactly one names the scope ([`refs.go`](../server/internal/powercontext/refs.go
 The **strings stay the D2 refs** from [moct-seam.md](moct-seam.md) so both
 backends answer to one vocabulary and a migration never rewrites stored refs.
 
+### Refs are looked up, never sent as ids
+
+A ref is a **key**, not an id. PowerContext generates a Scope id (`scp_…`) when
+a Scope is created and keeps the Multica ref as an external reference, so a
+route handed `multica:project:<uuid>` answers `scope_not_found` — a real 1.6.0
+does exactly that. [`Client.ResolveScope`](../server/internal/powercontext/client.go)
+resolves it once per client and caches the result:
+
+```
+GET /v1/scopes?query=<ref>&query_field=external_reference_value
+→ {"items": [{"scope_id": "scp_…", "external_references": [{"kind": "multica-project",
+              "value": "multica:project:<uuid>"}]}]}
+```
+
+`Prepare`, `Remember` and `Search` all resolve their `scope_id` this way, so
+callers keep speaking refs and never handle a `scp_` id. Two consequences worth
+knowing:
+
+- **A ref with no Scope is a configuration fact**, reported before any write
+  (`no Scope carries the ref …`), not a mystery `scope_not_found` per entry. The
+  Scope has to exist — created by whatever provisions the lane, with the ref in
+  `external_references`.
+- **An older server with no `GET /v1/scopes`** gets the ref passed through
+  unchanged, which is what those builds accepted.
+
+### Two wire shapes that bite
+
+Both were read from a live 1.6.0 `/openapi.json`, not inferred:
+
+| Route | Shape | The trap |
+| --- | --- | --- |
+| `POST /v1/memory/search` | `{mode, hits: [{memory: {kind, text, state, …}, score, matched_by}]}` | The entry sits under `memory` and its body is **`text`**. A decoder expecting a top-level `results[].content` reads every search as empty — which silently turns the handoff's dedupe into "never found" and writes a duplicate every run. |
+| `POST /v1/memory/remember` | `{changed, records: [{artifact, kind, text, state, …}]}` | `changed` says whether an entry was written or matched. |
+
 ## Out-path 2 — tools
 
 PowerContext serves its own MCP endpoint at `/mcp`, so the daemon adds a
@@ -211,10 +245,12 @@ the signal a scheduled run needs; failures are listed with their markers.
 Nothing schedules it: run it by hand, or from whatever the host already uses
 for periodic jobs, after a first pass.
 
-The whole write path is verified against a fake plane (`/v1/memory/search`,
-`/v1/memory/remember`) and the real schema; no live PowerContext 1.6.0 runs on
-the host that built it, so the same open item the shadow read carries applies
-here — first contact with a real server is unproven.
+The write path is verified end to end against a **live PowerContext 1.6.0**
+(`127.0.0.1:8000`, package version 1.6.0): first pass `written=2 skipped=0`, a
+second pass over the same rows `written=0 skipped=2`, and the Scope's entry
+list holds exactly one copy of each mirrored record. That run is also what
+proved ref resolution is mandatory: before it, every write answered
+`scope_not_found` because the ref was sent as an id.
 
 ## Failure contract
 

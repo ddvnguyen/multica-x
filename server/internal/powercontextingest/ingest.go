@@ -226,8 +226,8 @@ func Ingest(ctx context.Context, w Writer, entries []Entry) (Summary, error) {
 }
 
 func containsMarker(result *powercontext.SearchResult, marker string) bool {
-	for _, record := range result.Results {
-		if strings.Contains(record.Content, marker) {
+	for _, text := range result.Texts() {
+		if strings.Contains(text, marker) {
 			return true
 		}
 	}

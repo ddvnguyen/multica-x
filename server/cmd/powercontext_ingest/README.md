@@ -15,6 +15,15 @@ go run ./cmd/powercontext_ingest --workspace <workspace uuid> --dry-run
 go run ./cmd/powercontext_ingest --workspace <workspace uuid>
 ```
 
+**The Scope has to exist.** The command addresses the workspace's project (or
+workspace) Scope by its Multica ref — `multica:project:<uuid>`, else
+`multica:ws:<uuid>` — and the server resolves that ref through the Scope's
+`external_references` to its `scp_…` id. PowerContext generates ids, so a ref
+with no Scope carrying it fails before anything is written; create the Scope
+with the ref as an external reference of kind `multica-project` (or
+`multica-workspace`) first. `GET /v1/scopes?query=<ref>&query_field=external_reference_value`
+is the same lookup the client does, if you want to check by hand.
+
 `--dry-run` prints one line per entry — marker, scope, remembered kind — and
 writes nothing; `POWERCONTEXT_BASE_URL` is not needed for it. `--since`
 (RFC3339) bounds a pass to rows created after a time, `--limit` bounds rows per
