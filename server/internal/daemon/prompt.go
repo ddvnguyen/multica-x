@@ -171,7 +171,7 @@ func buildIssueDecisionRecordsBlock(task Task) string {
 			writeDecisionPromptLine(&b, record, decided)
 		}
 	}
-	b.WriteString("After each human comment or prompt, decide whether it resolves a question or sets direction. Record decisions with `multica issue decision add`, pairing the nearest preceding question/problem with the human resolution; skip acknowledgements and status checks. If a new decision conflicts with an active one without an explicit override, call native `ask` naming both and suggesting a resolution; keep the older active. Use `--supersedes` only when the human explicitly overrides it. Promote clearly general decisions with `--scope project`.\n")
+	b.WriteString("After each human comment or prompt, decide whether it resolves a question or sets direction. Record decisions with `multica issue decision add`, pairing the nearest preceding question/problem with the human resolution; skip acknowledgements and status checks. For an answered ask card, cite the system mirror comment that names the card in `--comment` — that is the recordable form of the Owner's answer, attributed to who answered. If a new decision conflicts with an active one without an explicit override, call native `ask` naming both and suggesting a resolution; keep the older active. Use `--supersedes` only when the human explicitly overrides it. Promote clearly general decisions with `--scope project`.\n")
 	return b.String()
 }
 
