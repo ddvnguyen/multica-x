@@ -68,6 +68,18 @@ func TestMemoryShadowLeavesTheInjectByteIdentical(t *testing.T) {
 	if onPart.Tokens != offPart.Tokens || onPart.Note != offPart.Note {
 		t.Fatalf("memory row changed with the shadow on: %+v vs %+v", offPart, onPart)
 	}
+	// M-616: the injected side now carries its own block, size and cost so the
+	// compare panel has two measured sides instead of one measured and one
+	// re-rendered. None of it is new prompt content: the block IS the inject.
+	if onPart.Block != onBlock || onPart.Bytes != len(onBlock) {
+		t.Fatalf("memory row recorded %d bytes for a %d-byte block", onPart.Bytes, len(onBlock))
+	}
+	if onPart.Backend != string(memoryBackendMoct) {
+		t.Fatalf("memory backend = %q, want moct", onPart.Backend)
+	}
+	if onPart.LatencyMS < 0 {
+		t.Fatalf("memory latency = %d ms", onPart.LatencyMS)
+	}
 	if strings.Contains(onBlock, "Never inject me") {
 		t.Fatalf("the shadow block reached the prompt: %q", onBlock)
 	}

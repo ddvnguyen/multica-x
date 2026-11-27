@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/moct"
@@ -77,6 +78,24 @@ func memoryConflict(cfg Config) bool {
 // different facts, and the run row has to tell them apart.
 func memoryInjectPrompt(ctx context.Context, cfg Config, task Task, logger *slog.Logger) (string, initctx.PartReport) {
 	kind, baseURL, token := memoryBackendFor(cfg)
+	started := time.Now()
+	block, part := memoryBackendPrompt(ctx, kind, baseURL, token, cfg, task, logger)
+	// The injected block and its price belong beside it (M-616): the compare
+	// panel pits this read against the shadow's, and a latency, a size or a
+	// block only one side reports is not a comparison. Latency is measured
+	// around the backend call itself, so client construction and decoding are
+	// included and nothing else is; block and bytes are what buildPrompt will
+	// prepend verbatim, recorded here rather than re-rendered later.
+	part.Backend = string(kind)
+	part.Block = block
+	part.Bytes = len(block)
+	part.LatencyMS = time.Since(started).Milliseconds()
+	return block, part
+}
+
+// memoryBackendPrompt is the per-backend half of memoryInjectPrompt, kept
+// separate so the caller can time and label whichever backend ran.
+func memoryBackendPrompt(ctx context.Context, kind memoryBackend, baseURL, token string, cfg Config, task Task, logger *slog.Logger) (string, initctx.PartReport) {
 	switch kind {
 	case memoryBackendMoct:
 		block, part := moctInjectPrompt(ctx, baseURL, task, logger)
