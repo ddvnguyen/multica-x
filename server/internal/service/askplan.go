@@ -255,7 +255,7 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 		}
 	}
 	note := renderQuestionAnswerHandoff(card, answers, narrator)
-	resumeTask, err := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
+	resumeTask, err := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy, false)
 	if err != nil {
 		if errors.Is(err, ErrDuplicatePendingTask) {
 			// M-500: a comment trigger or the escalation lead run holds the
@@ -269,7 +269,7 @@ func (s *TaskService) AnswerQuestionCard(ctx context.Context, cardID, workspaceI
 				// The pending run drained between the enqueue and the
 				// attach; retry the resume enqueue once so the answer
 				// still resumes a run.
-				retry, retryErr := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy)
+				retry, retryErr := s.enqueueAskPlanResumeTask(ctx, issue, parked, EvidenceQuestionAnswer, card.ID, note, answeredBy, false)
 				if retryErr != nil {
 					return card, nil, retryErr
 				}
@@ -566,7 +566,7 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 		}
 		handoff := renderPlanVerdictHandoffWithComments(plan, verdict, comments, note, pending)
 		txService := &TaskService{Queries: qtx}
-		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy)
+		task, err := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy, verdict == "changes_requested")
 		if errors.Is(err, ErrDuplicatePendingTask) {
 			// M-500: same lost-verdict shape as the answer path. The verdict
 			// tx commits below, so the verdict always lands; the already-queued
@@ -577,7 +577,7 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 				return attachErr
 			}
 			if attached == nil {
-				retry, retryErr := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy)
+				retry, retryErr := txService.enqueueAskPlanResumeTask(ctx, issue, parked, EvidencePlanVerdict, plan.ID, handoff, reviewedBy, verdict == "changes_requested")
 				if retryErr != nil {
 					return retryErr
 				}
@@ -625,7 +625,7 @@ func (s *TaskService) ReviewPlan(ctx context.Context, planID, workspaceID, revie
 // (M-285 quirk, reproduced on opencode2 in M-318). A parked task with no
 // trigger comment — an assignment-triggered run — stays NULL, which is right:
 // there was no thread to answer in.
-func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Issue, parked db.AgentTaskQueue, evidenceKind string, evidenceRefID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Issue, parked db.AgentTaskQueue, evidenceKind string, evidenceRefID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID, wasCorrected bool) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, parked.AgentID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load parked agent: %w", err)
@@ -659,10 +659,13 @@ func (s *TaskService) enqueueAskPlanResumeTask(ctx context.Context, issue db.Iss
 		HandoffNote:           pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
 		// forceFreshSession stays false: the whole point is resuming the parked
 		// session through the named rerun source.
-		OriginatorUserID:     attr.UserID,
-		AccountableUserID:    attr.AccountableUserID,
-		RuleVersionID:        attr.RuleVersionID,
-		RerunOfTaskID:        parked.ID,
+		OriginatorUserID:  attr.UserID,
+		AccountableUserID: attr.AccountableUserID,
+		RuleVersionID:     attr.RuleVersionID,
+		RerunOfTaskID:     parked.ID,
+		// M-604: a changes_requested verdict sends the plan back for rework —
+		// the resume run is a correction. Approve/cancel/answer resumes are not.
+		WasCorrected:         pgtype.Bool{Bool: wasCorrected, Valid: wasCorrected},
 		TriggerCommentID:     parked.TriggerCommentID,
 		RuntimeMcpOverlay:    overlay.Overlay,
 		RuntimeConnectedApps: overlay.ConnectedApps,

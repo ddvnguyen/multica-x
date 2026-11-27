@@ -1231,7 +1231,7 @@ func commentMentionsAnyone(content string) bool {
 // paths go through computeCommentAgentTriggers so preview and create share the
 // same trigger set.
 // It reports whether a leader task was enqueued and, if not, why.
-func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, authorType, authorID, handoffNote string, workflowHandoff bool) (DispatchStatus, DispatchReasonCode) {
+func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, authorType, authorID, handoffNote string, workflowHandoff bool, wasCorrected bool) (DispatchStatus, DispatchReasonCode) {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
@@ -1285,9 +1285,9 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, au
 	// leader run (MUL-4302 §4) — the same principal the gate above judged. An agent
 	// author is not a human, so only a member actor is threaded.
 	if workflowHandoff {
-		_, err = h.TaskService.EnqueueTaskForWorkflowSquadLeader(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
+		_, err = h.TaskService.EnqueueTaskForWorkflowSquadLeaderWithCorrection(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID), wasCorrected)
 	} else {
-		_, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
+		_, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoffAndCorrection(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID), wasCorrected)
 	}
 	if err != nil {
 		return issueEnqueueFailure(issue, squad.LeaderID, err)

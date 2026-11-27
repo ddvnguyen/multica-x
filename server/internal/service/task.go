@@ -1414,8 +1414,21 @@ func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue 
 // EnqueueTaskForIssueWithTierHandoff is the M-359 explicit-pick variant of
 // EnqueueTaskForIssueWithHandoff: override carries the tier-picker (or
 // runtime+model) selection for the assign-triggered run.
-func (s *TaskService) EnqueueTaskForIssueWithTierHandoff(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID, override TierTriggerOverride) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+func (s *TaskService) EnqueueTaskForIssueWithTierHandoff(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID, wasCorrected bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, wasCorrected, override)
+}
+
+// EnqueueTaskForIssueWithHandoffAndCorrection is the back-step variant of
+// EnqueueTaskForIssueWithHandoff (M-604): wasCorrected stamps the task's
+// context so the claim renders the mmx inner-loop line.
+func (s *TaskService) EnqueueTaskForIssueWithHandoffAndCorrection(ctx context.Context, issue db.Issue, handoffNote string, actorUserID pgtype.UUID, wasCorrected bool) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, pgtype.UUID{}, nil, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, false, wasCorrected, TierTriggerOverride{})
+}
+
+// EnqueueTaskForSquadLeaderWithHandoffAndCorrection is the back-step variant
+// of EnqueueTaskForSquadLeaderWithHandoff (M-604).
+func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoffAndCorrection(ctx context.Context, issue db.Issue, leaderID pgtype.UUID, squadID pgtype.UUID, handoffNote string, actorUserID pgtype.UUID, wasCorrected bool) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, handoffNote, actorUserID, pgtype.UUID{}, OriginDerived, false, false, wasCorrected, TierTriggerOverride{})
 }
 
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
@@ -1468,15 +1481,15 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 }
 
 // enqueueIssueTaskWithOverride is enqueueIssueTask with an M-359 explicit pick.
-func (s *TaskService) enqueueIssueTaskWithOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, false, override)
+func (s *TaskService) enqueueIssueTaskWithOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, wasCorrected bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, false, wasCorrected, override)
 }
 
 func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, freshRerun bool) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, freshRerun, TierTriggerOverride{})
+	return s.enqueueIssueTaskWithCommentPlanAndOverride(ctx, issue, triggerCommentID, coalescedCommentIDs, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, origin, freshRerun, false, TierTriggerOverride{})
 }
 
-func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, freshRerun bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin, freshRerun bool, wasCorrected bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -1539,6 +1552,16 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 		return db.AgentTaskQueue{}, tierErr
 	}
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	// M-604: fold every correction signal known here. A non-fresh manual
+	// rerun resumes the source run to fix it; a member comment on a failed
+	// or just-sent-back card corrects the previous pass. Explicit callers
+	// (back-step dispatch, changes_requested resume) OR in via wasCorrected.
+	if !wasCorrected && rerunOfTaskID.Valid && !freshRerun {
+		wasCorrected = true
+	}
+	if !wasCorrected && triggerCommentID.Valid && s.commentWasCorrection(ctx, issue, triggerCommentID) {
+		wasCorrected = true
+	}
 	createParams := db.CreateAgentTaskParams{
 		ID:                    dbid.NewV7(),
 		AgentID:               issue.AssigneeID,
@@ -1567,6 +1590,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlanAndOverride(ctx context.Con
 		RuleVersionID:         attr.RuleVersionID,
 		RerunOfTaskID:         rerunOfTaskID,
 		FreshRerun:            pgtype.Bool{Bool: freshRerun, Valid: true},
+		WasCorrected:          pgtype.Bool{Bool: wasCorrected, Valid: wasCorrected},
 		RuntimeMcpOverlay:     runtimeMCPOverlay.Overlay,
 		RuntimeConnectedApps:  runtimeMCPOverlay.ConnectedApps,
 		OriginatorSource:      attrSource,
@@ -1678,7 +1702,7 @@ func (s *TaskService) EnqueueTaskForMentionWithTier(ctx context.Context, issue d
 }
 
 func (s *TaskService) enqueueMentionTaskWithOverride(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, override TierTriggerOverride) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false, override)
+	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false, false, override)
 }
 
 // EnqueueTaskForThreadParent creates a queued task for the agent who authored
@@ -1724,14 +1748,14 @@ func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoff(ctx context.Context, 
 }
 
 func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false, false)
 }
 
-func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, freshRerun, workflowHandoff, TierTriggerOverride{})
+func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool, wasCorrected bool) (db.AgentTaskQueue, error) {
+	return s.enqueueMentionTaskWithCommentPlanAndOverride(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, freshRerun, workflowHandoff, wasCorrected, TierTriggerOverride{})
 }
 
-func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool, wasCorrected bool, override TierTriggerOverride) (db.AgentTaskQueue, error) {
 	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1781,6 +1805,15 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 		return db.AgentTaskQueue{}, tierErr
 	}
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	// M-604: same fold as the issue impl — non-fresh rerun, or a member
+	// comment on a failed/sent-back card. Back-step dispatch ORs in below
+	// via the new param.
+	if !wasCorrected && rerunOfTaskID.Valid && !freshRerun {
+		wasCorrected = true
+	}
+	if !wasCorrected && triggerCommentID.Valid && s.commentWasCorrection(ctx, issue, triggerCommentID) {
+		wasCorrected = true
+	}
 	params := db.CreateAgentTaskParams{
 		ID:                    dbid.NewV7(),
 		AgentID:               agentID,
@@ -1808,6 +1841,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlanAndOverride(ctx context.C
 		RuleVersionID:         attr.RuleVersionID,
 		RerunOfTaskID:         rerunOfTaskID,
 		FreshRerun:            pgtype.Bool{Bool: freshRerun, Valid: true},
+		WasCorrected:          pgtype.Bool{Bool: wasCorrected, Valid: wasCorrected},
 		RuntimeMcpOverlay:     runtimeMCPOverlay.Overlay,
 		RuntimeConnectedApps:  runtimeMCPOverlay.ConnectedApps,
 		OriginatorSource:      attrSource,
@@ -6880,6 +6914,53 @@ func IsFreshRerun(task db.AgentTaskQueue) bool {
 	return json.Unmarshal(task.Context, &context) == nil && context.Fresh
 }
 
+// WasCorrectedTask reports whether a run starts from a correction (M-604):
+// the enqueue stamped context.was_corrected. Read at claim time, so no
+// enqueue signature carries the knowledge and no extra claim query is needed.
+func WasCorrectedTask(task db.AgentTaskQueue) bool {
+	var context struct {
+		Corrected bool `json:"was_corrected"`
+	}
+	return json.Unmarshal(task.Context, &context) == nil && context.Corrected
+}
+
+// statusChangeDetails is the from/to of an issue status_changed activity.
+type statusChangeDetails struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// commentWasCorrection reports whether a member comment starts a correction
+// run (M-604 trigger 4): the comment is member-authored, and the card's
+// latest terminal run failed or the card was just sent back. Agent and
+// system comments (worker chatter, stage-cascade wakes) never count, and a
+// member comment on a healthy card is discussion, not correction. Any lookup
+// failure reads as "not a correction" — the flag is a hint, never a gate.
+func (s *TaskService) commentWasCorrection(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID) bool {
+	if s == nil || s.Queries == nil {
+		return false
+	}
+	comment, err := s.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+		ID:          triggerCommentID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil || comment.AuthorType != "member" {
+		return false
+	}
+	if status, err := s.Queries.GetLatestTerminalTaskStatusForIssue(ctx, issue.ID); err == nil && status == "failed" {
+		return true
+	}
+	raw, err := s.Queries.GetLatestStatusChangeDetails(ctx, issue.ID)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var details statusChangeDetails
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return false
+	}
+	return s.isBackStepCorrection(ctx, details.From, issue)
+}
+
 // Only tasks belonging to the target agent on this issue are cancelled.
 // Tasks owned by other agents on the same issue (e.g. a parallel
 // @-mention agent) are left alone — rerun must not collateral-cancel
@@ -7169,7 +7250,7 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
 		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, origin, fresh)
 	}
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, origin, fresh, false)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, origin, fresh, false, false)
 }
 
 // The bulk terminal writes below are the sweeper, archive and daemon-recovery

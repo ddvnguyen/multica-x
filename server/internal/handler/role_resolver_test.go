@@ -114,7 +114,7 @@ func TestRoleResolverForcedStamp(t *testing.T) {
 	fix := setupRoleRun(t, 1, false)
 	ctx := context.Background()
 
-	task, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID),
+	task, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(fix.tierB), Requester: parseUUID(testUserID)})
 	if err != nil {
 		t.Fatalf("enqueue Role forced pick: %v", err)
@@ -139,13 +139,13 @@ func TestRoleResolverInvalidAndDisabledTier(t *testing.T) {
 		INSERT INTO model_tier (workspace_id, name, idx, runtime_id, provider, model, provider_slots, enabled, roles)
 		VALUES ($1, 'm510-foreign-%s', 5, $2, 'codebuddy', 'm510-model-foreign', 99, true, ARRAY['management']::text[])
 		RETURNING id`, suffix), testWorkspaceID, fix.rtB)
-	if _, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID),
+	if _, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(foreign), Requester: parseUUID(testUserID)}); err == nil {
 		t.Fatal("tier outside the Role's list was accepted")
 	}
 	// A disabled tier in the Role's list is also blocked.
 	dbfx.Exec(t, `UPDATE model_tier SET enabled = false WHERE id = $1`, fix.tierB)
-	if _, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID),
+	if _, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(fix.tierB), Requester: parseUUID(testUserID)}); err == nil {
 		t.Fatal("disabled tier in the Role's list was accepted")
 	}
@@ -190,7 +190,7 @@ func TestRoleResolverRetryRevalidates(t *testing.T) {
 	dbfx.Task(t, forced.roleID, testutil.Cols{
 		"runtime_id": forced.rtA, "tier_id": forced.tierA, "status": "running",
 	})
-	parked, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, forced.issue(t), "", parseUUID(testUserID),
+	parked, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, forced.issue(t), "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(forced.tierA), Requester: parseUUID(testUserID)})
 	if err != nil {
 		t.Fatalf("park forced Role pick: %v", err)
@@ -228,7 +228,7 @@ func TestRoleResolverMemberSlotRace(t *testing.T) {
 	dbfx.Exec(t, `INSERT INTO model_tier_member (tier_id, position, provider, model, runtime_id, provider_slots)
 		VALUES ($1, 0, 'codebuddy', 'm510-member-model', $2, 1)`, fix.tierB, fix.rtB)
 
-	first, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID),
+	first, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, fix.issue(t), "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(fix.tierB), Requester: parseUUID(testUserID)})
 	if err != nil {
 		t.Fatalf("first forced pick: %v", err)
@@ -249,7 +249,7 @@ func TestRoleResolverMemberSlotRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load second issue: %v", err)
 	}
-	second, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue2, "", parseUUID(testUserID),
+	second, err := testHandler.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue2, "", parseUUID(testUserID), false, 
 		service.TierTriggerOverride{TierID: parseUUID(fix.tierB), Requester: parseUUID(testUserID)})
 	if err != nil {
 		t.Fatalf("second forced pick: %v", err)

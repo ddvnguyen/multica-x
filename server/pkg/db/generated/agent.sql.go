@@ -2944,24 +2944,24 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 const createAgentTask = `-- name: CreateAgentTask :one
 WITH enqueue_agent AS MATERIALIZED (
     SELECT a.id, CASE
-        WHEN COALESCE($30::boolean, FALSE) THEN NULL
-        WHEN $28::uuid IS NOT NULL
-          OR $25::text IS NOT NULL
+        WHEN COALESCE($31::boolean, FALSE) THEN NULL
+        WHEN $29::uuid IS NOT NULL
           OR $26::text IS NOT NULL
           OR $27::text IS NOT NULL
-        THEN $39::uuid
-        ELSE COALESCE(a.runtime_id, $39::uuid)
+          OR $28::text IS NOT NULL
+        THEN $40::uuid
+        ELSE COALESCE(a.runtime_id, $40::uuid)
     END AS runtime_id
     FROM agent a
     WHERE a.id = $1
       AND lock_task_owner_rows(a.id, $2, CASE
-        WHEN COALESCE($30::boolean, FALSE) THEN NULL
-        WHEN $28::uuid IS NOT NULL
-          OR $25::text IS NOT NULL
+        WHEN COALESCE($31::boolean, FALSE) THEN NULL
+        WHEN $29::uuid IS NOT NULL
           OR $26::text IS NOT NULL
           OR $27::text IS NOT NULL
-        THEN $39::uuid
-        ELSE COALESCE(a.runtime_id, $39::uuid)
+          OR $28::text IS NOT NULL
+        THEN $40::uuid
+        ELSE COALESCE(a.runtime_id, $40::uuid)
       END)
     FOR KEY SHARE OF a
 )
@@ -2994,8 +2994,12 @@ SELECT
         THEN '{"fresh_rerun":true}'::jsonb
         ELSE '{}'::jsonb
     END || CASE
-        WHEN $14::bigint IS NOT NULL
-        THEN jsonb_build_object('workflow_handoff_revision', $14::bigint)
+        WHEN COALESCE($14::boolean, FALSE)
+        THEN '{"was_corrected":true}'::jsonb
+        ELSE '{}'::jsonb
+    END || CASE
+        WHEN $15::bigint IS NOT NULL
+        THEN jsonb_build_object('workflow_handoff_revision', $15::bigint)
         ELSE '{}'::jsonb
     END || CASE
         WHEN request_meta.requested_preset_id IS NOT NULL
@@ -3007,7 +3011,6 @@ SELECT
         THEN jsonb_build_object('preset_fallback_reason', request_meta.preset_fallback_reason)
         ELSE '{}'::jsonb
     END, '{}'::jsonb),
-    $15,
     $16,
     $17,
     $18,
@@ -3017,23 +3020,24 @@ SELECT
     $22,
     $23,
     $24,
-    $25::text,
+    $25,
     $26::text,
     $27::text,
-    $28::uuid,
+    $28::text,
     $29::uuid,
-    COALESCE($30::boolean, FALSE),
+    $30::uuid,
     COALESCE($31::boolean, FALSE),
     COALESCE($32::boolean, FALSE),
     COALESCE($33::boolean, FALSE),
+    COALESCE($34::boolean, FALSE),
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
-    COALESCE($34::text, (SELECT i.status FROM issue i WHERE i.id = $2)),
+    COALESCE($35::text, (SELECT i.status FROM issue i WHERE i.id = $2)),
     $3,
-    COALESCE($35::uuid, gen_random_uuid())
+    COALESCE($36::uuid, gen_random_uuid())
 FROM enqueue_agent
-CROSS JOIN (SELECT $36::uuid AS requested_preset_id,
-                   $37::uuid AS requested_tier_id,
-                   COALESCE($38::text, '') AS preset_fallback_reason) AS request_meta
+CROSS JOIN (SELECT $37::uuid AS requested_preset_id,
+                   $38::uuid AS requested_tier_id,
+                   COALESCE($39::text, '') AS preset_fallback_reason) AS request_meta
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, workflow_step, account_id, model_override, thinking_level_override, service_tier_override, tier_id, tier_parked, tier_explicit, tier_quality_fallback, tier_quality_unverified, tier_member_id
 `
 
@@ -3051,6 +3055,7 @@ type CreateAgentTaskParams struct {
 	SquadID                 pgtype.UUID        `json:"squad_id"`
 	HeadSha                 pgtype.Text        `json:"head_sha"`
 	FreshRerun              pgtype.Bool        `json:"fresh_rerun"`
+	WasCorrected            pgtype.Bool        `json:"was_corrected"`
 	WorkflowHandoffRevision pgtype.Int8        `json:"workflow_handoff_revision"`
 	OriginatorUserID        pgtype.UUID        `json:"originator_user_id"`
 	AccountableUserID       pgtype.UUID        `json:"accountable_user_id"`
@@ -3118,6 +3123,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.SquadID,
 		arg.HeadSha,
 		arg.FreshRerun,
+		arg.WasCorrected,
 		arg.WorkflowHandoffRevision,
 		arg.OriginatorUserID,
 		arg.AccountableUserID,
@@ -5603,6 +5609,25 @@ func (q *Queries) GetLatestTaskRolloutMissing(ctx context.Context, arg GetLatest
 	var session_rollout_missing bool
 	err := row.Scan(&session_rollout_missing)
 	return session_rollout_missing, err
+}
+
+const getLatestTerminalTaskStatusForIssue = `-- name: GetLatestTerminalTaskStatusForIssue :one
+SELECT status FROM agent_task_queue
+WHERE issue_id = $1 AND status IN ('completed', 'failed', 'cancelled')
+  AND COALESCE(context->>'type', '') <> 'triage'
+ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC, id DESC
+LIMIT 1
+`
+
+// M-604: status of the newest terminal run on an issue, so a member comment
+// arriving on a failed card can mark the next run a correction. Triage runs
+// are invisible: a failed triage is not an agent correction. pgx.ErrNoRows
+// when the issue has no terminal run yet.
+func (q *Queries) GetLatestTerminalTaskStatusForIssue(ctx context.Context, issueID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getLatestTerminalTaskStatusForIssue, issueID)
+	var status string
+	err := row.Scan(&status)
+	return status, err
 }
 
 const getWorkspaceAgentActivity30d = `-- name: GetWorkspaceAgentActivity30d :many

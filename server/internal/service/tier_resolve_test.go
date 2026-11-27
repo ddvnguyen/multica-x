@@ -704,7 +704,7 @@ func TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry(t *testing.
 	})
 
 	override := TierTriggerOverride{TierID: tierAID, PresetID: presetID, PresetAgentID: agent.ID, Requester: agent.OwnerID}
-	task, err = svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+	task, err = svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, false, override)
 	if err != nil {
 		t.Fatalf("enqueue parked preset: %v", err)
 	}
@@ -721,7 +721,7 @@ func TestPresetFallbackPreservesRequestedTierAndRechecksOwnerOnRetry(t *testing.
 	if metadata["preset_fallback_reason"] != "tier_no_capacity" {
 		t.Fatalf("fallback reason = %#v, want tier_no_capacity", metadata["preset_fallback_reason"])
 	}
-	if _, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override); !errors.Is(err, ErrDuplicatePendingTask) {
+	if _, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, false, override); !errors.Is(err, ErrDuplicatePendingTask) {
 		t.Fatalf("duplicate preset enqueue error = %v, want ErrDuplicatePendingTask", err)
 	}
 
@@ -817,7 +817,7 @@ func TestRequestedPresetResolvesAndStampsActualTier(t *testing.T) {
 	}
 
 	override := TierTriggerOverride{TierID: tierAID, PresetID: presetID, PresetAgentID: agent.ID, Requester: agent.OwnerID}
-	task, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, override)
+	task, err := svc.enqueueIssueTaskWithOverride(ctx, issue, pgtype.UUID{}, false, "", agent.OwnerID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, false, override)
 	if err != nil {
 		t.Fatalf("enqueue requested preset: %v", err)
 	}

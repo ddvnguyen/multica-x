@@ -216,6 +216,7 @@ type Task struct {
 	WakeupSystemRule              string                 `json:"wakeup_system_rule,omitempty"`    // a platform rule (e.g. child_done) started the run
 	WakeupJoined                  string                 `json:"wakeup_joined,omitempty"`         // wakeups that joined this run instead of queuing their own
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`          // legacy assignment handoff instruction; rendered only in the per-turn prompt
+	WasCorrected                  bool                   `json:"was_corrected,omitempty"`         // M-604: this run starts because the agent was corrected (non-fresh rerun, changes_requested verdict, back-step move, or member follow-up on a failed/sent-back card); the per-turn prompt adds the mmx inner-loop line. Absent/false on old servers = ordinary run.
 	TriggerEvidenceKind           string                 `json:"trigger_evidence_kind,omitempty"` // S1-A1: question_answer / plan_verdict names a parked ask/plan resume; the prompt renders the handoff as the answer/verdict block
 
 	ChatSource *protocol.ChatSource `json:"chat_source,omitempty"`
