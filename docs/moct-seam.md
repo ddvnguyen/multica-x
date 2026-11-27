@@ -47,6 +47,13 @@ seam on: the daemon then fetches the inject block on claim and adds the `moct`
 MCP server to every task it runs. Unset — the default everywhere but a lane
 that runs moct-be — nothing changes: no block, no MCP entry, no warning.The same value is forwarded to the stdio server as its `MOCT_BASE_URL`.
 
+The **server** reads the same variable for out-path 3: set it on `multica-be`
+too (`server/internal/handler/moct_api.go`) or `/api/workspaces/{id}/moct/...`
+answers 503 `moct-be is not configured` even while the daemon side works
+(`server/internal/moctapi/proxy.go`). Two processes, one switch; a deploy that
+sets only one of them is half-on — lane z does both in
+`deploy/dsh-z/deploy.sh` (M-582).
+
 `MOCT_BASE_URL` says a host *can* reach moct-be. A workspace says whether it
 *wants* memory: `workspace.settings.moct_memory_inject` (S2-C, M-123) turns the
 pre-run block off for that workspace. The server reads it on every claim and

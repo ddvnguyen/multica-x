@@ -220,10 +220,23 @@ umask 077
   # a stale/partial env cannot point the lane at the wrong dsh app or store.
   echo "MULTICA_DSH_WEB_URL=${MULTICA_DSH_WEB_URL:-}"
   echo "MULTICA_DSH_SESSION_STORE=${MULTICA_DSH_SESSION_STORE:-}"
+  # M-582: MOCT seam for the server half (out-path 3, the browser routes
+  # /api/workspaces/{id}/moct/... which proxy to moct-be). Before this the var
+  # only reached the daemon env, so a fresh deploy answered 503 "moct-be is not
+  # configured" on every memory route until it was added lane-locally by hand —
+  # and the next deploy wiped that edit. Same switch and same source of truth
+  # (dsh-z.env LANE_MOCT_BASE_URL); empty keeps the server-side seam off.
+  if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
+    echo "MOCT_BASE_URL=$LANE_MOCT_BASE_URL"
+  fi
 } > "$LANE_ROOT/multica-be/env"
 umask 022
 grep -q '^FF_AGENT_ROLE_TYPE=' "$LANE_ROOT/multica-be/env" \
   || die "FF_AGENT_ROLE_TYPE missing from regenerated server env"
+if [ -n "${LANE_MOCT_BASE_URL:-}" ]; then
+  grep -q "^MOCT_BASE_URL=$LANE_MOCT_BASE_URL$" "$LANE_ROOT/multica-be/env" \
+    || die "MOCT_BASE_URL missing from regenerated server env"
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 4 — migrations
