@@ -172,6 +172,50 @@ moves them.
 Agents may vote because the point of the dogfood is that the run's own agent can
 say which block it used; the row records `member` or `agent`, never which one.
 
+## Backfilling the corpus — `powercontext_ingest` (M-616)
+
+The seam above only writes a run's own handoff. The dogfood compares two memory
+planes on the same claims, so PowerContext also needs the knowledge that
+predates those runs. [`server/cmd/powercontext_ingest`](../server/cmd/powercontext_ingest/main.go)
+mirrors it in from the database the two sources can prove:
+
+| Source | Mirrored | Why |
+| --- | --- | --- |
+| `issue_decision_record`, current rows | all | A decision is already curated. A superseded row is not the workspace's decision any more, so it is skipped. |
+| `comment`, `author_type = 'member'`, `type = 'comment'` | all | Human prose is the scarce signal. Agent comments are pages of reasoning per run and would bury it. Status changes and blank comments carry nothing. |
+| Active MOCT records | **not mirrored** | `moct.Client` injects, searches, gets by id, notes and retracts; nothing lists a scope's active records, and an inject is a bounded top-k of what would be sent, not the set. Mirroring a guessed endpoint was rejected; this waits for a list endpoint (follow-up card). |
+
+Each entry lands in the scope the read path would use for that issue:
+`multica:project:<id>` when the record or its issue has a project, else
+`multica:ws:<id>`, so a backfilled entry is recallable by the runs it belongs
+to. The remembered kind is `decision` for a decision and `fact` for a comment.
+
+Idempotency is by source id. Every entry carries a marker
+(`decision:/multica/decision/<id>`, `comment:/multica/comment/<id>`), and the
+writer searches for that marker in the scope before writing. A search that
+**fails** skips the entry instead of writing it: a gap is retried by the next
+pass, a duplicate would be injected forever.
+
+```bash
+cd server
+export POWERCONTEXT_BASE_URL=http://127.0.0.1:8000   # POWERCONTEXT_TOKEN if the server wants one
+
+go run ./cmd/powercontext_ingest --workspace <workspace uuid> --dry-run
+go run ./cmd/powercontext_ingest --workspace <workspace uuid>
+```
+
+`--since` (RFC3339) bounds a pass to newer rows and `--limit` bounds rows per
+source (default 500); neither is the idempotency mechanism, so a repeated run
+writes nothing new. The command exits non-zero when any entry failed, which is
+the signal a scheduled run needs; failures are listed with their markers.
+Nothing schedules it: run it by hand, or from whatever the host already uses
+for periodic jobs, after a first pass.
+
+The whole write path is verified against a fake plane (`/v1/memory/search`,
+`/v1/memory/remember`) and the real schema; no live PowerContext 1.6.0 runs on
+the host that built it, so the same open item the shadow read carries applies
+here — first contact with a real server is unproven.
+
 ## Failure contract
 
 Inherited verbatim from the MOCT seam: **memory never blocks a task.**
@@ -189,6 +233,9 @@ The client's 10 s timeout is the most a slow server can add to a claim.
 
 ## Not implemented here
 
+- **Mirroring MOCT records.** The ingest covers the two sources the database
+  proves (decisions, human comments). Listing a MOCT scope's active records
+  needs an endpoint `moct` does not serve yet.
 - **Native handoff endpoints.** PowerContext's `/v1/handoff/*` and `/v1/work/*`
   are richer than a remembered entry: they carry revisions, acknowledgements
   and receivers. The seam writes through `/v1/memory/remember` because that
