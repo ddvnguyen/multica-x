@@ -97,6 +97,85 @@ func TestDecisionRecordRejectsAgentAndOtherIssueComments(t *testing.T) {
 	}
 }
 
+func TestDecisionRecordRejectsNonMirrorSystemComments(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	issueID := createCommentTriggerPreviewIssue(t, "ask mirror rejects", "", "")
+	otherIssueID := createCommentTriggerPreviewIssue(t, "ask mirror foreign", "", "")
+	agentID := createHandlerTestAgent(t, "Ask Mirror Reject Agent", nil)
+	seedTask := func(issue string) string {
+		t.Helper()
+		var taskID string
+		if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id) VALUES ($1, $2, 'completed', 0, $3) RETURNING id`, agentID, handlerTestRuntimeID(t), issue).Scan(&taskID); err != nil {
+			t.Fatalf("seed agent task: %v", err)
+		}
+		return taskID
+	}
+	seedCard := func(issue, status, answeredBy string) string {
+		t.Helper()
+		var cardID string
+		if err := testPool.QueryRow(ctx, `INSERT INTO agent_question_card (workspace_id, issue_id, task_id, agent_id, status, questions, answered_by, answered_by_type) VALUES ($1, $2, $3, $4, $5, '[]'::jsonb, $6, 'member') RETURNING id`, testWorkspaceID, issue, seedTask(issue), agentID, status, answeredBy).Scan(&cardID); err != nil {
+			t.Fatalf("seed card: %v", err)
+		}
+		return cardID
+	}
+	seedSystemComment := func(issue, content string) string {
+		t.Helper()
+		var id string
+		if err := testPool.QueryRow(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type) VALUES ($1, $2, 'system', '00000000-0000-0000-0000-000000000000', $3, 'system') RETURNING id`, issue, testWorkspaceID, content).Scan(&id); err != nil {
+			t.Fatalf("seed system comment: %v", err)
+		}
+		return id
+	}
+	answeredCard := seedCard(issueID, "answered", testUserID)
+	cases := map[string]string{
+		"plain system comment": seedSystemComment(issueID, "Scheduled maintenance notice."),
+		"open card mirror":     seedSystemComment(issueID, "The Owner answered this question card ("+seedCard(issueID, "open", testUserID)+")."),
+		"foreign card mirror":  seedSystemComment(issueID, "The Owner answered this question card ("+seedCard(otherIssueID, "answered", testUserID)+")."),
+		"unknown card mirror":  seedSystemComment(issueID, "The Owner answered this question card (00000000-0000-7000-8000-000000000001)."),
+	}
+	_ = answeredCard
+	for name, commentID := range cases {
+		w, _ := postDecisionRecord(t, issueID, map[string]any{"problem": "Which?", "decided": "Use this decision.", "comment_id": commentID})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestDecisionRecordAcceptsAskAnswerMirrorComment(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	mirrorIssueID := createCommentTriggerPreviewIssue(t, "ask answer decision source", "", "")
+	// Seed an answered question card plus the system mirror comment the
+	// answer path posts to the thread (M-500): author_type=system, content
+	// names the card. An agent can only quote it, never forge authorship.
+	agentID := createHandlerTestAgent(t, "Ask Decision Agent", nil)
+	var taskID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, issue_id) VALUES ($1, $2, 'completed', 0, $3) RETURNING id`, agentID, handlerTestRuntimeID(t), mirrorIssueID).Scan(&taskID); err != nil {
+		t.Fatalf("seed agent task: %v", err)
+	}
+	var cardID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_question_card (workspace_id, issue_id, task_id, agent_id, status, questions, answers, answered_by, answered_by_type, answered_at) VALUES ($1, $2, $3, $4, 'answered', '[{"prompt":"Which day?","options":[{"label":"Thursday"},{"label":"Friday"}]}]'::jsonb, '[{"selected":[0]}]'::jsonb, $5, 'member', now()) RETURNING id`, testWorkspaceID, mirrorIssueID, taskID, agentID, testUserID).Scan(&cardID); err != nil {
+		t.Fatalf("seed answered card: %v", err)
+	}
+	var mirrorID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type) VALUES ($1, $2, 'system', '00000000-0000-0000-0000-000000000000', $3, 'system') RETURNING id`, mirrorIssueID, testWorkspaceID, "The Owner answered this question card ("+cardID+").").Scan(&mirrorID); err != nil {
+		t.Fatalf("seed mirror comment: %v", err)
+	}
+	w, record := postDecisionRecord(t, mirrorIssueID, map[string]any{"problem": "Which day?", "decided": "Thursday", "comment_id": mirrorID})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mirror comment decision = %d, want 201: %s", w.Code, w.Body.String())
+	}
+	if record.ActorID != testUserID {
+		t.Fatalf("record actor = %q, want the answering member %q", record.ActorID, testUserID)
+	}
+}
+
 func TestDecisionRecordSupersedesOnlyCurrentDecisionOnSameIssue(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

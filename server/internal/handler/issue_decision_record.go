@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -42,7 +44,10 @@ type createIssueDecisionRecordRequest struct {
 }
 
 // CreateIssueDecisionRecord lets an agent persist a decision only when it cites
-// the human comment that resolved the question.
+// the comment that records the human resolution: a member comment, or the
+// system mirror an answered ask card posts to the thread (M-500, M-609).
+// The mirror is quotable but not forgeable — only the answer path writes it —
+// so the record attributes the decision to the card's answerer, not the agent.
 func (h *Handler) CreateIssueDecisionRecord(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -79,12 +84,28 @@ func (h *Handler) CreateIssueDecisionRecord(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	comment, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{ID: commentID, WorkspaceID: issue.WorkspaceID})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (comment.IssueID != issue.ID || comment.AuthorType != "member")) {
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && comment.IssueID != issue.ID) {
 		writeError(w, http.StatusBadRequest, "comment_id must reference a human comment on this issue")
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to validate decision comment")
+		return
+	}
+	actorID := comment.AuthorID
+	if comment.AuthorType == "system" {
+		card, cardErr := askAnswerCardForMirrorComment(r.Context(), h.Queries, issue.WorkspaceID, issue.ID, comment.Content)
+		if cardErr != nil {
+			writeError(w, http.StatusBadRequest, "comment_id must reference a human comment on this issue")
+			return
+		}
+		if !card.AnsweredBy.Valid {
+			writeError(w, http.StatusInternalServerError, "failed to validate decision comment")
+			return
+		}
+		actorID = card.AnsweredBy
+	} else if comment.AuthorType != "member" {
+		writeError(w, http.StatusBadRequest, "comment_id must reference a human comment on this issue")
 		return
 	}
 	problemCommentID := pgtype.UUID{}
@@ -130,7 +151,7 @@ func (h *Handler) CreateIssueDecisionRecord(w http.ResponseWriter, r *http.Reque
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 		CommentID: commentID, Problem: req.Problem, ProblemCommentID: problemCommentID,
 		Decided: req.Decided, Rationale: "", SupersedesID: supersedesID,
-		SourceKind: "agent_recorded", ActorID: comment.AuthorID,
+		SourceKind: "agent_recorded", ActorID: actorID,
 		Scope: req.Scope, ProjectID: projectID,
 	}
 	if err := h.Queries.CreateIssueDecisionRecord(r.Context(), params); err != nil {
@@ -229,4 +250,37 @@ func decisionRecordResponse(
 		item.SupersededByID = &value
 	}
 	return item
+}
+
+// askAnswerMirrorPrefix is the exact lead of the system comment AnswerQuestionCard
+// posts to the thread (mirrorQuestionAnswerToThread in internal/service/askplan.go).
+const askAnswerMirrorPrefix = " answered this question card ("
+
+// askAnswerCardForMirrorComment resolves a decision-source system comment to the
+// answered ask card whose mirror it is. The comment must carry the card id in
+// the mirror shape and the card must be answered on this issue in this
+// workspace — so quoting the mirror proves a human answered, while any other
+// system comment (or a card on another issue) stays rejected.
+func askAnswerCardForMirrorComment(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID, content string) (db.AgentQuestionCard, error) {
+	idx := strings.Index(content, askAnswerMirrorPrefix)
+	if idx < 0 {
+		return db.AgentQuestionCard{}, pgx.ErrNoRows
+	}
+	rest := content[idx+len(askAnswerMirrorPrefix):]
+	end := strings.Index(rest, ")")
+	if end <= 0 {
+		return db.AgentQuestionCard{}, pgx.ErrNoRows
+	}
+	cardID, err := util.ParseUUID(strings.TrimSpace(rest[:end]))
+	if err != nil {
+		return db.AgentQuestionCard{}, pgx.ErrNoRows
+	}
+	card, err := q.GetAgentQuestionCard(ctx, cardID)
+	if err != nil {
+		return db.AgentQuestionCard{}, err
+	}
+	if card.WorkspaceID != workspaceID || card.IssueID != issueID || card.Status != "answered" {
+		return db.AgentQuestionCard{}, pgx.ErrNoRows
+	}
+	return card, nil
 }
