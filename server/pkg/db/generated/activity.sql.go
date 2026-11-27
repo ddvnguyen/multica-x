@@ -164,6 +164,23 @@ func (q *Queries) GetLastIssueStatusChange(ctx context.Context, issueID pgtype.U
 	return i, err
 }
 
+const getLatestStatusChangeDetails = `-- name: GetLatestStatusChangeDetails :one
+SELECT details FROM activity_log
+WHERE issue_id = $1 AND action = 'status_changed'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// M-604: the from/to of the latest status change on an issue, so an enqueue
+// can tell a back-step (correction) from forward movement. pgx.ErrNoRows
+// when the issue never changed status.
+func (q *Queries) GetLatestStatusChangeDetails(ctx context.Context, issueID pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getLatestStatusChangeDetails, issueID)
+	var details []byte
+	err := row.Scan(&details)
+	return details, err
+}
+
 const hasSquadLeaderNoActionEvaluationForTask = `-- name: HasSquadLeaderNoActionEvaluationForTask :one
 SELECT EXISTS (
   SELECT 1

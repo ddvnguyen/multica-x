@@ -468,6 +468,10 @@ SELECT
         THEN '{"fresh_rerun":true}'::jsonb
         ELSE '{}'::jsonb
     END || CASE
+        WHEN COALESCE(sqlc.narg('was_corrected')::boolean, FALSE)
+        THEN '{"was_corrected":true}'::jsonb
+        ELSE '{}'::jsonb
+    END || CASE
         WHEN sqlc.narg(workflow_handoff_revision)::bigint IS NOT NULL
         THEN jsonb_build_object('workflow_handoff_revision', sqlc.narg(workflow_handoff_revision)::bigint)
         ELSE '{}'::jsonb
@@ -1425,6 +1429,17 @@ SET status = 'completed', completed_at = now(), result = $2,
     prepare_lease_expires_at = NULL
 WHERE id = $1 AND status = 'running'
 RETURNING *;
+
+-- name: GetLatestTerminalTaskStatusForIssue :one
+-- M-604: status of the newest terminal run on an issue, so a member comment
+-- arriving on a failed card can mark the next run a correction. Triage runs
+-- are invisible: a failed triage is not an agent correction. pgx.ErrNoRows
+-- when the issue has no terminal run yet.
+SELECT status FROM agent_task_queue
+WHERE issue_id = $1 AND status IN ('completed', 'failed', 'cancelled')
+  AND COALESCE(context->>'type', '') <> 'triage'
+ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC, id DESC
+LIMIT 1;
 
 -- name: GetLastTaskSession :one
 -- Find resume context for an agent/issue from completed, failed, or cancelled

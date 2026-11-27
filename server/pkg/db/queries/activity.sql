@@ -76,3 +76,12 @@ WHERE issue_id = sqlc.arg('issue_id')
   AND details->>'to' = sqlc.arg('status')::text
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: GetLatestStatusChangeDetails :one
+-- M-604: the from/to of the latest status change on an issue, so an enqueue
+-- can tell a back-step (correction) from forward movement. pgx.ErrNoRows
+-- when the issue never changed status.
+SELECT details FROM activity_log
+WHERE issue_id = @issue_id AND action = 'status_changed'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

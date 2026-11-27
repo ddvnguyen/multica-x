@@ -2413,3 +2413,46 @@ func TestPromptPointsSubIssueRunsAtTheirParent(t *testing.T) {
 		}
 	}
 }
+
+// TestCorrectionNoticeLinePresentOnCorrectionRuns pins M-604: a run flagged
+// WasCorrected carries exactly one mmx inner-loop line, on every prompt
+// path (BuildPrompt routes assignment, comment, wakeup and chat through
+// perTurnContextBlocks).
+func TestCorrectionNoticeLinePresentOnCorrectionRuns(t *testing.T) {
+	t.Parallel()
+
+	corrected := Task{IssueID: "issue-1", WasCorrected: true}
+	comment := Task{IssueID: "issue-1", WasCorrected: true, TriggerCommentID: "c1", TriggerCommentContent: "fix it"}
+	wakeup := Task{IssueID: "issue-1", WasCorrected: true, WakeupID: "w1", HandoffNote: "retry"}
+	chat := Task{IssueID: "issue-1", WasCorrected: true, ChatSessionID: "chat-1", ChatMessage: "fix it"}
+
+	for name, task := range map[string]Task{
+		"assignment": corrected,
+		"comment":    comment,
+		"wakeup":     wakeup,
+		"chat":       chat,
+	} {
+		out := BuildPrompt(task, "claude")
+		if got := strings.Count(out, correctionNoticeLine); got != 1 {
+			t.Errorf("%s prompt carries %d correction lines, want exactly 1:\n%s", name, got, out)
+		}
+	}
+}
+
+// TestCorrectionNoticeLineAbsentOnOrdinaryRuns pins the brief-cost rule:
+// ordinary runs — including old-server claims that never send the field —
+// carry no mmx line.
+func TestCorrectionNoticeLineAbsentOnOrdinaryRuns(t *testing.T) {
+	t.Parallel()
+
+	for name, task := range map[string]Task{
+		"plain assignment": {IssueID: "issue-1"},
+		"plain comment":    {IssueID: "issue-1", TriggerCommentID: "c1", TriggerCommentContent: "look"},
+		"plain wakeup":     {IssueID: "issue-1", WakeupID: "w1", HandoffNote: "tick"},
+		"old server claim": {IssueID: "issue-1"},
+	} {
+		if out := BuildPrompt(task, "claude"); strings.Contains(out, correctionNoticeLine) {
+			t.Errorf("%s prompt must not carry the correction line:\n%s", name, out)
+		}
+	}
+}

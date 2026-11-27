@@ -112,11 +112,27 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	}
 	b.WriteString(identity)
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	b.WriteString(buildCorrectionNoticeBlock(task))
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
 	b.WriteString(buildIssueDecisionRecordsBlock(task))
 	b.WriteString(buildParentIssueBlock(task))
 	return b.String()
+}
+
+// correctionNoticeLine is the single M-604 line a corrected run carries: the
+// signal to run the mmx inner loop. One line by the brief-cost rule — every
+// added line must pay for itself, and this one fires only on correction runs.
+const correctionNoticeLine = "You were corrected: run the `mmx` inner loop before you end."
+
+// buildCorrectionNoticeBlock renders the M-604 correction line when the server
+// flagged this run as starting from a correction (Task.WasCorrected). Empty
+// for ordinary runs and for claims from old servers that never send the field.
+func buildCorrectionNoticeBlock(task Task) string {
+	if !task.WasCorrected {
+		return ""
+	}
+	return correctionNoticeLine + "\n"
 }
 
 func buildIssueDecisionRecordsBlock(task Task) string {

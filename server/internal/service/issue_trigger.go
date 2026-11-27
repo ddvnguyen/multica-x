@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -86,7 +87,12 @@ type IssueRunTrigger struct {
 	AssigneeType    string
 	Source          RunEnqueueSource
 	WorkflowHandoff bool
-	DeclineReason   dispatch.ReasonCode
+	// WasCorrection marks a run that starts from a correction (M-604): the
+	// issue moved backwards (Needs-changes back-step or sent back from
+	// review to a working step). The dispatcher stamps it into the task's
+	// context so the claim can render the mmx inner-loop line.
+	WasCorrection bool
+	DeclineReason dispatch.ReasonCode
 }
 
 // roleRunForTrigger is the WillEnqueueRun form of the M-499 slice 2 Role
@@ -213,6 +219,9 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AgentID:      issue.AssigneeID,
 			AssigneeType: "agent",
 			Source:       source,
+			// M-604: true when this write moved the card backwards (the
+			// predicate self-gates: creates and forward moves return false).
+			WasCorrection: s.TaskService.isBackStepCorrection(ctx, in.PrevStatus, issue),
 		}, true
 
 	case "squad":
@@ -255,6 +264,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AssigneeType:    "squad",
 			Source:          source,
 			WorkflowHandoff: in.EnteredHandoffStep,
+			WasCorrection:   s.TaskService.isBackStepCorrection(ctx, in.PrevStatus, issue),
 		}, true
 	}
 	return IssueRunTrigger{}, false
@@ -275,4 +285,40 @@ func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtyp
 		return true
 	}
 	return pending
+}
+
+// correctionReviewSteps are the review-stage statuses a card is sent back
+// FROM (M-604, Architect decision on plan v1): a member moving the card out
+// of one of these into a working step is correcting the agent's work.
+var correctionReviewSteps = map[string]bool{"in_review": true, "agent_review_deploy": true}
+
+// correctionTerminalSteps are never "working steps": landing here ends the
+// card instead of asking for another pass.
+var correctionTerminalSteps = map[string]bool{"done": true, "cancelled": true}
+
+// isBackStepCorrection reports whether a status write moved the card
+// backwards (M-604 trigger 3): either the exact Needs-changes back-step of
+// the project's workflow, or a send-back from a review step to a working
+// step. prevStatus is the status before the write, issue the post-write row.
+// No general step ordering exists, so only these two pinned shapes count.
+// A TaskService method so both the issue-write predicate (via IssueService)
+// and the comment-enqueue check share it.
+func (s *TaskService) isBackStepCorrection(ctx context.Context, prevStatus string, issue db.Issue) bool {
+	if prevStatus == "" || prevStatus == issue.Status {
+		return false
+	}
+	if correctionReviewSteps[prevStatus] && !correctionTerminalSteps[issue.Status] {
+		return true
+	}
+	if s == nil || s.Queries == nil {
+		return false
+	}
+	def, _, err := issueworkflow.ForProject(ctx, s.Queries, issue.WorkspaceID, issue.ProjectID)
+	if err != nil || def == nil {
+		return false
+	}
+	if step, ok := def.Step(prevStatus); ok && step.BackStatusKey != "" && step.BackStatusKey == issue.Status {
+		return true
+	}
+	return false
 }

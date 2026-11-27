@@ -683,6 +683,7 @@ type AgentTaskResponse struct {
 	WakeupJoined             string               `json:"wakeup_joined,omitempty"`           // wakeups that fired while this run waited to start and joined it instead of queuing their own
 	HandoffNote              string               `json:"handoff_note,omitempty"`            // legacy assignment handoff instruction retained for installed clients; rendered by the daemon only in the per-turn prompt
 	TriggerEvidenceKind      string               `json:"trigger_evidence_kind,omitempty"`   // S1-A1: question_answer / plan_verdict names a parked ask/plan resume
+	WasCorrected             bool                 `json:"was_corrected,omitempty"`           // M-604: this run starts from a correction (non-fresh rerun, changes_requested verdict, back-step move, member follow-up on failed/sent-back card); daemon renders the mmx inner-loop line. False/absent = ordinary run.
 	SquadID                  string               `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName                string               `json:"squad_name,omitempty"`              // display name for the picker squad
 	ParentIssueID            string               `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
@@ -1071,6 +1072,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		TriggerSummary:         textToPtr(t.TriggerSummary),
 		HandoffNote:            handoffNote,
 		TriggerEvidenceKind:    triggerEvidenceKind,
+		WasCorrected:           service.WasCorrectedTask(t),
 		WakeupID:               wakeupContext.ID,
 		WakeupSystemRule:       wakeupContext.SystemRule,
 		WakeupJoined:           service.JoinedWakeupNotes(t.Context),

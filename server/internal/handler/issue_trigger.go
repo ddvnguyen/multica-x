@@ -210,13 +210,13 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		if !override.IsZero() {
 			return h.dispatchIssueRunWithTier(ctx, issue, trigger, actorType, actorID, handoffNote, override)
 		}
-		_, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		_, err := h.TaskService.EnqueueTaskForIssueWithHandoffAndCorrection(ctx, issue, handoffNote, memberActorUserID(actorType, actorID), trigger.WasCorrection)
 		if err == nil {
 			return DispatchQueued, ReasonQueued
 		}
 		return issueEnqueueFailure(issue, issue.AssigneeID, err)
 	case "squad":
-		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
+		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff, trigger.WasCorrection)
 	}
 	return DispatchBlocked, ReasonTargetUnavailable
 }
@@ -303,13 +303,13 @@ func (h *Handler) isWorkspaceOwnerMember(ctx context.Context, workspaceID, userI
 func (h *Handler) dispatchIssueRunWithTier(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string, override service.TierTriggerOverride) (DispatchStatus, DispatchReasonCode) {
 	switch trigger.AssigneeType {
 	case "agent":
-		_, err := h.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID), override)
+		_, err := h.TaskService.EnqueueTaskForIssueWithTierHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID), trigger.WasCorrection, override)
 		if err == nil {
 			return DispatchQueued, ReasonQueued
 		}
 		return issueEnqueueFailure(issue, issue.AssigneeID, err)
 	case "squad":
-		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
+		return h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff, trigger.WasCorrection)
 	}
 	return DispatchBlocked, ReasonTargetUnavailable
 }
