@@ -453,10 +453,15 @@ func TestNoteSendsSupersedesTopLevel(t *testing.T) {
 }
 
 // M-605: Retract hits the moct-be retract verb with the actor and version.
+// M-546: moct-be v9 scopes every record verb by workspace, so the retract
+// carries ?workspaceId= and an empty one is refused client-side.
 func TestRetractPostsRetractVerb(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/team/v1/memory/mem_old/retract" {
 			t.Fatalf("%s %s, want POST /team/v1/memory/mem_old/retract", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("workspaceId"); got != testWorkspace {
+			t.Errorf("workspace scope = %q, want %q", got, testWorkspace)
 		}
 		raw, _ := io.ReadAll(r.Body)
 		var body struct {
@@ -482,5 +487,17 @@ func TestRetractPostsRetractVerb(t *testing.T) {
 	}
 	if got.Status != "retracted" {
 		t.Errorf("status = %q, want retracted", got.Status)
+	}
+}
+
+func TestRetractRefusesMissingWorkspace(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("moct-be must not be called without a workspace scope")
+	})
+	if _, err := c.Retract(context.Background(), RetractParams{
+		ID: "mem_old", BaseVersion: 2,
+		Actor: Actor{Kind: "member", ID: testExpert},
+	}); err == nil {
+		t.Fatal("Retract without a workspace id: nil error, want a refusal")
 	}
 }
