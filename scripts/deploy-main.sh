@@ -101,6 +101,7 @@ WEB_IMAGE=""
 OLD_TAG=""
 BACKUP_DIR=""
 SWITCH_STARTED=0
+SWITCH_LOG_SINCE=""
 ROLLBACK_ACTIVE=0
 DAEMON_WAS_STOPPED=0
 DRAIN_TOKEN=""
@@ -447,6 +448,10 @@ podman exec "$db_container" sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB
 [ -s "$BACKUP_DIR/database.dump" ] || die "database dump is empty"
 chmod 600 "$BACKUP_DIR/.env" "$BACKUP_DIR/multica" "$BACKUP_DIR/database.dump"
 log "backup complete: $BACKUP_DIR (database dump will not be restored automatically)"
+# Remember the switch instant for the serving proof below. The log window
+# must start here: a busy backend emits many /api/daemon requests per second,
+# which push the 5s /healthz healthcheck line out of any fixed tail window.
+SWITCH_LOG_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SWITCH_STARTED=1
 ENV_TMP="$ENV_FILE.tmp.$$"
 awk -F= -v tag="$IMAGE_TAG" '
@@ -504,14 +509,19 @@ PORT_PROBE_SKIP_LOCK=1 bash "$(dirname "${BASH_SOURCE[0]}")/stack-port-probe.sh"
 # serving by requiring a /healthz request in its log within 30s. The compose
 # healthcheck hits :8080/healthz every 5s, so a serving backend always leaves
 # this trace quickly after a switch.
-log "waiting for the backend to log a /healthz request (serving proof)"
+# M-615: read logs since the switch, not `podman logs --tail 100`. On the busy
+# stack the 5s /healthz lines are pushed out of the last 100 lines by daemon
+# API traffic, so the old proof failed after 30s and rolled back a healthy
+# deploy. `--since` covers the whole post-switch window, so the line is found
+# no matter how noisy the log gets, while a frozen backend still emits none.
+log "waiting for the backend to log a /healthz request (serving proof since $SWITCH_LOG_SINCE)"
 be_cid="$(podman ps -q \
   --filter "label=com.docker.compose.project=$(basename "$STACK_DIR")" \
   --filter 'label=com.docker.compose.service=backend' | head -1)"
 [ -n "$be_cid" ] || die "could not find the backend container after the switch"
 served=0
 for _ in $(seq 1 15); do
-  if podman logs --tail 100 "$be_cid" 2>&1 | grep -q 'healthz'; then served=1; break; fi
+  if podman logs --since "$SWITCH_LOG_SINCE" "$be_cid" 2>&1 | grep -q 'healthz'; then served=1; break; fi
   sleep 2
 done
 [ "$served" = 1 ] || die "backend logged no /healthz request within 30s of the switch; not provably serving"
