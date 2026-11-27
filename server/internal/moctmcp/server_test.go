@@ -288,11 +288,15 @@ func TestMemoryNoteForwardsExplicitHomeAndConfirmNew(t *testing.T) {
 	}
 }
 
-// A run that is not attached to an issue has no default home; the agent has to
-// name one rather than having the write land somewhere untraceable.
-func TestMemoryNoteWithoutTaskRefNeedsExplicitHome(t *testing.T) {
-	calls := 0
-	client := testClient(t, func(http.ResponseWriter, *http.Request) { calls++ })
+// A run that is not attached to an issue defaults to the team home, so a
+// convention/decision stays writable from any run (M-605).
+func TestMemoryNoteWithoutTaskRefDefaultsToTeamHome(t *testing.T) {
+	var gotBody []byte
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"record":{"id":"rec-team"}}`)
+	})
 	scope := testScope()
 	scope.TaskRef = ""
 	frames := drive(t, client, scope,
@@ -300,11 +304,12 @@ func TestMemoryNoteWithoutTaskRefNeedsExplicitHome(t *testing.T) {
 	if len(frames) != 1 || frames[0].Error != nil {
 		t.Fatalf("unexpected frames %+v", frames)
 	}
-	if body := toolText(t, frames[0]); !strings.Contains(body, "pass home explicitly") {
-		t.Errorf("expected the missing-home tool error, got %s", body)
+	var sent moct.NoteParams
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("decode sent note: %v (%s)", err, gotBody)
 	}
-	if calls != 0 {
-		t.Errorf("moct-be should not be called; got %d calls", calls)
+	if sent.Home.Kind != "team" || sent.Home.Ref != testWorkspaceRef {
+		t.Errorf("home = %+v, want the run's team home", sent.Home)
 	}
 }
 
@@ -377,5 +382,118 @@ func TestScopeCompleteness(t *testing.T) {
 	}
 	if (Scope{ExpertRef: testExpertRef}).Complete() {
 		t.Error("expert-only scope is not complete")
+	}
+}
+
+// M-605/1: {kind:"team"} without a ref fills in this run's workspace instead
+// of failing or forwarding a ref moct-be would 403.
+func TestMemoryNoteTeamKindWithoutRefFillsWorkspace(t *testing.T) {
+	var gotBody []byte
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"record":{"id":"rec-team"}}`)
+	})
+	frames := drive(t, client, testScope(),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_note","arguments":{"type":"convention","title":"T","body":"B","home":{"kind":"team"}}}}`)
+	if len(frames) != 1 || frames[0].Error != nil {
+		t.Fatalf("unexpected frames %+v", frames)
+	}
+	var sent moct.NoteParams
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("decode sent note: %v (%s)", err, gotBody)
+	}
+	if sent.Home.Kind != "team" || sent.Home.Ref != testWorkspaceRef {
+		t.Errorf("home = %+v, want team home of this run's workspace", sent.Home)
+	}
+}
+
+// M-605/2: supersedes travels top-level (moct-be reads body.supersedes), and
+// the legacy attrs.supersedes shape is promoted rather than 400'd.
+func TestMemoryNoteSupersedesTopLevelAndAttrsPromoted(t *testing.T) {
+	var bodies [][]byte
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, raw)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"record":{"id":"rec-new","supersedes":"mem_old"}}`)
+	})
+	frames := drive(t, client, testScope(),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_note","arguments":{"type":"convention","title":"New","body":"B","home":{"kind":"team","ref":"`+testWorkspaceRef+`"},"supersedes":"mem_old"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_note","arguments":{"type":"convention","title":"New2","body":"B","home":{"kind":"team","ref":"`+testWorkspaceRef+`"},"attrs":{"supersedes":"mem_older"}}}}`)
+	if len(frames) != 2 || frames[0].Error != nil || frames[1].Error != nil {
+		t.Fatalf("unexpected frames %+v", frames)
+	}
+	var first moct.NoteParams
+	if err := json.Unmarshal(bodies[0], &first); err != nil {
+		t.Fatalf("decode first note: %v", err)
+	}
+	if first.Supersedes == nil || *first.Supersedes != "mem_old" {
+		t.Errorf("first supersedes = %+v, want mem_old top-level", first.Supersedes)
+	}
+	var second map[string]json.RawMessage
+	if err := json.Unmarshal(bodies[1], &second); err != nil {
+		t.Fatalf("decode second note: %v", err)
+	}
+	var top *string
+	if raw, ok := second["supersedes"]; ok {
+		_ = json.Unmarshal(raw, &top)
+	}
+	if top == nil || *top != "mem_older" {
+		t.Errorf("second supersedes top-level = %s, want mem_older", second["supersedes"])
+	}
+	var attrs map[string]json.RawMessage
+	if raw, ok := second["attrs"]; ok && string(raw) != "null" {
+		_ = json.Unmarshal(raw, &attrs)
+		if _, kept := attrs["supersedes"]; kept {
+			t.Errorf("attrs.supersedes must be dropped (moct-be would 400 it): %s", raw)
+		}
+	}
+}
+
+// M-605/2: retract runs instead of a note, against moct-be's retract verb.
+func TestMemoryNoteRetractWithdrawsRecord(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, `{"id":"mem_old","status":"retracted","version":2}`)
+	})
+	frames := drive(t, client, testScope(),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_note","arguments":{"type":"convention","title":"unused","body":"unused","retract":"mem_old","retractVersion":1,"retractReason":"stale"}}}`)
+	if len(frames) != 1 || frames[0].Error != nil {
+		t.Fatalf("unexpected frames %+v", frames)
+	}
+	if gotPath != "/team/v1/memory/mem_old/retract" {
+		t.Errorf("path = %s, want the retract verb", gotPath)
+	}
+	var body struct {
+		BaseVersion int        `json:"baseVersion"`
+		Actor       moct.Actor `json:"actor"`
+		Reason      string     `json:"reason"`
+	}
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("decode retract body: %v (%s)", err, gotBody)
+	}
+	if body.BaseVersion != 1 || body.Actor.ID != testExpertRef || body.Reason != "stale" {
+		t.Errorf("retract body = %+v, want version 1, run actor, reason stale", body)
+	}
+}
+
+// M-605/3: a moct-be SCOPE_FORBIDDEN names the accepted ref format so the
+// next attempt does not burn retries on bare refs.
+func TestMemoryNoteScopeRefusalNamesRefFormat(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"ok":false,"code":"SCOPE_FORBIDDEN","error":"team home must be the workspace"}`)
+	})
+	frames := drive(t, client, testScope(),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_note","arguments":{"type":"convention","title":"T","body":"B","home":{"kind":"team","ref":"multica:ws:other"}}}}`)
+	if len(frames) != 1 || frames[0].Error != nil {
+		t.Fatalf("unexpected frames %+v", frames)
+	}
+	if body := toolText(t, frames[0]); !strings.Contains(body, "multica:ws:<workspace uuid>") {
+		t.Errorf("scope refusal should name the accepted ref format, got %s", body)
 	}
 }

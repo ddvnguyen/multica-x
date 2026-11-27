@@ -119,9 +119,15 @@ Tool-input contract:
   scope comes from env.
 - `memory_get`: `ids` (1–10); scope comes from env. Ids outside the scope
   come back in `missing`, never as data.
-- `memory_note`: `type`, `title`, `body`, `attrs`, `home`;
+- `memory_note`: `type`, `title`, `body`, `attrs`, `home`, `supersedes`,
+  `supersedesVersion`, `retract`, `retractVersion`, `retractReason`;
   `workspaceId` and `actor` come from env. The default home for a run is
-  the task home `{kind:"task", ref:$MOCT_TASK_REF}`.
+  the task home `{kind:"task", ref:$MOCT_TASK_REF}`, or the team home
+  `{kind:"team", ref:$MOCT_WORKSPACE_ID}` when the run has no issue.
+  `{kind:"team"}` without a ref fills in this run's workspace.
+  `supersedes:<id>` replaces the caller's own record (retired once the new
+  one is active; `attrs.supersedes` is promoted, not 403'd).
+  `retract:<id>` withdraws the caller's own record with no replacement.
 
 Write semantics the tool must surface to the agent (live-verified):
 
