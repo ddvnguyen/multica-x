@@ -10,6 +10,7 @@ environment variable per host.
 | --- | --- | --- |
 | Daemon | `POWERCONTEXT_BASE_URL` | Turns the seam on, e.g. `http://127.0.0.1:8000`. Empty (the default) changes nothing on the claim path. |
 | Daemon | `POWERCONTEXT_TOKEN` | Bearer for a server with authentication enabled. Empty sends no `Authorization` header — correct for the default loopback-only install. |
+| Daemon | `MEMORY_SHADOW` | `powercontext` records the PowerContext block on the run row **without injecting it**, for the MOCT-vs-PowerContext dogfood ([shadow read](#shadow-read-memory_shadow-m-616)). Empty (the default) leaves the claim path unchanged. |
 
 `MOCT_BASE_URL` and `POWERCONTEXT_BASE_URL` are **mutually exclusive on one
 host**, because one run gets one memory block, never two. With both set, MOCT
@@ -87,6 +88,49 @@ copy of the run's report.
 `handoff:/multica/task/<task id>`, and the writer searches for that marker
 before writing. A retried terminal callback or a daemon restart therefore cannot
 make the next claim inject the same handoff twice.
+
+## Shadow read (`MEMORY_SHADOW`, M-616)
+
+The seam above gives a host ONE memory plane. The dogfood needs two blocks for
+the same claim, so a host can also **read** the second plane and record it:
+
+```
+MEMORY_SHADOW=powercontext
+MOCT_BASE_URL=http://127.0.0.1:8110        # primary: injects, as today
+POWERCONTEXT_BASE_URL=http://127.0.0.1:8000  # shadow: recorded, never injected
+```
+
+[`memoryShadow`](../server/internal/daemon/memory_shadow.go) sends the same
+`/v1/context/prepare` the seam sends when PowerContext owns the host — same
+scope, same query, same `max_bytes` — and stores the result as `shadow` on the
+run row's memory part, beside the injected block:
+
+```json
+{"part": "memory", "tokens": 742, "note": "injected 9 records from moct-be",
+ "shadow": {"backend": "powercontext", "block": "## Project memory (PowerContext) …",
+            "bytes": 3184, "tokens": 796, "latency_ms": 212}}
+```
+
+What the switch never does:
+
+- **It never injects.** The `shadow.block` text is stored only. The prompt slot,
+the `moct` MCP entry and the run's token total are the primary's, unchanged —
+the acceptance test asserts the injected bytes are identical with the switch on
+and off.
+- **It never delays the claim.** The read runs in its own goroutine and is
+joined only when `init_context` is marshalled at run end. A read still in flight
+then is recorded as unfinished (`note`), not waited for.
+- **It never fails a run.** Its own timeout — 5 s, shorter than the seam's 10 s —
+ends the call; the outcome is one `error` or `note` on the same record.
+
+It also requires `MOCT_BASE_URL`: the comparison is against the MOCT block, so a
+host that reads PowerContext as its primary has nothing to compare. Every
+unusable setting — unknown value, missing URL, no MOCT primary — writes its
+reason onto the same `shadow` record, because a lane that exported the variable
+and sees no comparison has to be able to find out why from the run it is
+looking at.
+
+`shadow` is absent when the switch is off, which is the default everywhere.
 
 ## Failure contract
 
