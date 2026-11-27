@@ -29,7 +29,19 @@ export const workspaceKeys = {
   tierRoles: (wsId: string) => ["workspaces", wsId, "tiers", "roles"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
+  /** M-616 compare aggregate; a vote anywhere in the workspace moves it. */
+  memoryComparison: (wsId: string) =>
+    ["workspaces", wsId, "memory-comparison"] as const,
 };
+
+export function workspaceMemoryComparisonOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.memoryComparison(wsId),
+    queryFn: () => api.getWorkspaceMemoryComparison(wsId),
+    enabled: !!wsId,
+    staleTime: 60_000,
+  });
+}
 
 export function workspaceListOptions() {
   return queryOptions({

@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { taskMemoryReportOptions } from "@multica/core/issues";
 import type { MemoryToolCall, TaskMemoryReport } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { MemoryCompare } from "./memory-compare";
 
 /** Longest argument JSON shown inline before it is cut with an ellipsis. */
 const ARGUMENT_PREVIEW = 160;
@@ -118,6 +119,15 @@ export function InjectedMemoryReport({ issueId, taskId }: { issueId: string; tas
             )}
           </div>
           <MemoryToolsUsed report={report.data} />
+          {memory && (
+            <MemoryCompare
+              issueId={issueId}
+              taskId={taskId}
+              workspaceId={report.data?.workspace_id ?? ""}
+              memory={memory}
+              mark={report.data?.mark ?? null}
+            />
+          )}
         </div>
       )}
     </section>

@@ -159,11 +159,15 @@ func (h *Handler) GetTaskMemoryReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, struct {
-		TaskID      string            `json:"task_id"`
-		WorkspaceID string            `json:"workspace_id"`
-		Memory      json.RawMessage   `json:"memory"`
-		MemoryTools memoryToolsReport `json:"memory_tools"`
-	}{TaskID: uuidToString(task.ID), WorkspaceID: workspaceID, Memory: memory, MemoryTools: tools})
+		TaskID      string             `json:"task_id"`
+		WorkspaceID string             `json:"workspace_id"`
+		Memory      json.RawMessage    `json:"memory"`
+		MemoryTools memoryToolsReport  `json:"memory_tools"`
+		// M-616: which block the run's reader found more useful, when they said.
+		// Absent (null) on every run nobody has judged.
+		Mark *MemoryMarkResponse `json:"mark"`
+	}{TaskID: uuidToString(task.ID), WorkspaceID: workspaceID, Memory: memory, MemoryTools: tools,
+		Mark: h.taskMemoryMark(r, task.ID, issue.WorkspaceID)})
 }
 
 func memoryReportPart(result json.RawMessage) json.RawMessage {

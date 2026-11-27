@@ -107,9 +107,16 @@ run row's memory part, beside the injected block:
 
 ```json
 {"part": "memory", "tokens": 742, "note": "injected 9 records from moct-be",
+ "backend": "moct", "block": "## Project memory (MOCT) …", "bytes": 2968, "latency_ms": 41,
  "shadow": {"backend": "powercontext", "block": "## Project memory (PowerContext) …",
             "bytes": 3184, "tokens": 796, "latency_ms": 212}}
 ```
+
+The injected side carries its own `backend`, `block`, `bytes` and `latency_ms`
+for the same reason the shadow does: a comparison whose two sides are measured
+by different rules is not a comparison. `block` is the text `BuildPrompt`
+prepends verbatim — recording it costs one copy of a block the run already sent
+and saves the panel from re-rendering the same records differently.
 
 What the switch never does:
 
@@ -131,6 +138,39 @@ and sees no comparison has to be able to find out why from the run it is
 looking at.
 
 `shadow` is absent when the switch is off, which is the default everywhere.
+
+## Comparing them — the Memory compare panel (M-616)
+
+`multica-web`'s run detail renders a **Memory compare** section under the
+injected-memory report whenever the run recorded a shadow block:
+
+- the two blocks side by side, each with its bytes, token estimate and latency;
+  a side that produced no block shows its `error`/`note` instead;
+- **More useful: MOCT / PowerContext / Neither**, one click, stored per run
+  (`task_memory_mark`, migration 763) with the numbers the reader saw;
+- the workspace tally: preference share, plus median bytes and latency per
+  backend over the judged runs.
+
+Two rules keep the tally worth reading:
+
+- **One vote per run.** Voting again replaces the row, so the aggregate counts
+  runs rather than clicks.
+- **A run with no shadow cannot be voted on.** `POST …/memory-mark` answers 409.
+  A run that only ever read one block has nothing to compare, and counting a
+guess would make the preference share say something the evidence does not.
+
+The server re-reads the run row's own measurements when saving a vote; a client
+sends only `choice`. Medians cover judged runs only, so an unmarked run never
+moves them.
+
+| Endpoint | Who | Returns |
+| --- | --- | --- |
+| `POST /api/issues/{id}/tasks/{taskId}/memory-mark` | member or agent | the saved mark |
+| `GET /api/issues/{id}/tasks/{taskId}/memory-report` | member | the report, its shadow and `mark` |
+| `GET /api/workspaces/{id}/memory-comparison` | member | vote counts, preference %, medians per backend |
+
+Agents may vote because the point of the dogfood is that the run's own agent can
+say which block it used; the row records `member` or `agent`, never which one.
 
 ## Failure contract
 
