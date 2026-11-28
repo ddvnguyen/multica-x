@@ -16,14 +16,14 @@ import { getCurrentWsId } from "@multica/core/platform";
 import { flattenIssueBuckets, issueKeys } from "@multica/core/issues/queries";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { workspaceKeys } from "@multica/core/workspace/queries";
+import { agentListOptions, workspaceKeys } from "@multica/core/workspace/queries";
 import { projectKeys } from "@multica/core/projects/queries";
 import { configStore, featureFlagEnabled } from "@multica/core/config";
 import { docKeys, docTreeOptions } from "@multica/core/docs";
 import { AGENT_ROLE_TYPE_FLAG, DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import { useAuthStore } from "@multica/core/auth";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
-import { isAgentRuntimeBound } from "@multica/core/agents";
+import { isAgentRuntimeBound, isRoleAgent } from "@multica/core/agents";
 import { searchIssues, searchProjects } from "@multica/core/search-index";
 import {
   isIssueDirectHit,
@@ -339,13 +339,32 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
     const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
     const normalizedQuery = query.trim();
     const wsId = getCurrentWsId() ?? "";
+    // M-633: presets pin a tier, and only Roles pick tiers. Scope the rows
+    // to presets whose agent is a Role (flag-on); plain-Agent presets stay
+    // stored but are no longer offered. Flag off = empty, as before.
+    const roleTypeEnabled = featureFlagEnabled(
+      configStore.getState().featureFlags,
+      AGENT_ROLE_TYPE_FLAG,
+    );
+    const agentsQuery = useQuery({
+      ...agentListOptions(wsId),
+      enabled: wsId !== "" && roleTypeEnabled,
+      staleTime: 60_000,
+    });
     const presetsQuery = useQuery({
       queryKey: ["agent-presets", wsId],
       queryFn: () => api.listAgentPresets(wsId),
-      enabled: wsId !== "",
+      enabled: wsId !== "" && roleTypeEnabled,
       staleTime: 60_000,
     });
-    const presetItems: MentionItem[] = (presetsQuery.data ?? [])
+    const roleIds = new Set(
+      ((agentsQuery.data ?? []) as Agent[])
+        .filter((agent) => isRoleAgent(agent))
+        .map((agent) => agent.id),
+    );
+    const presetRows = presetsQuery.data ?? [];
+    const presetItems: MentionItem[] = (roleTypeEnabled ? presetRows : [])
+      .filter((preset) => roleIds.has(preset.agent_id))
       .filter((preset) => !normalizedQuery ||
         preset.name.toLowerCase().includes(normalizedQuery.toLowerCase()) ||
         preset.agent_name.toLowerCase().includes(normalizedQuery.toLowerCase()))
@@ -1084,18 +1103,24 @@ export interface TierPickItem {
   disabled: boolean;
 }
 
-/** Exported for tests: filters the cached workspace tiers by name. */
-export function buildTierPickItems(qc: QueryClient, query: string): TierPickItem[] {
+/** Exported for tests: filters the cached workspace tiers by name. With a
+ * Role key, reads that Role's tier table; falls back to the unscoped list
+ * when the role table was never fetched (cold cache) so the picker still
+ * offers something — the server 409s a forced tier outside the Role. */
+export function buildTierPickItems(qc: QueryClient, query: string, role?: string): TierPickItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
   const q = query.trim().toLowerCase();
-  const tiers = (qc.getQueryData(workspaceKeys.tiers(wsId)) ?? []) as Array<{
-    id: string;
-    name: string;
-    provider?: string;
-    model?: string;
-    enabled: boolean;
-  }>;
+  const readTiers = (key: readonly unknown[]) =>
+    (qc.getQueryData(key) ?? []) as Array<{
+      id: string;
+      name: string;
+      provider?: string;
+      model?: string;
+      enabled: boolean;
+    }>;
+  const scoped = role ? readTiers([...workspaceKeys.tiers(wsId), role]) : [];
+  const tiers = scoped.length > 0 ? scoped : readTiers(workspaceKeys.tiers(wsId));
   return tiers
     .filter((t) => !q || t.name.toLowerCase().includes(q))
     .slice(0, 20)
@@ -1178,38 +1203,56 @@ export const TierPickList = forwardRef<MentionListRef, { items: TierPickItem[]; 
 );
 
 /**
- * `#tier` picker (M-359): after an `@agent` mention pill, typing `#` lists
- * the workspace's tiers. Selecting one rewrites the PRECEDING agent mention
- * node's label to `name#tier`, which serializes to
+ * `#tier` picker (M-359), M-633 Role-only: after an `@Role` mention pill,
+ * typing `#` lists that Role's tier table. Selecting one rewrites the
+ * PRECEDING Role mention node's label to `name#tier`, which serializes to
  * `[@name#tier](mention://agent/<uuid>)` — the server's explicit-pick syntax.
- * The picker opens ONLY directly after an agent mention; a `#` anywhere else
- * (headings, channels) keeps its normal meaning. Disabled tiers are shown
- * but not selectable — picking one would only 409 at send.
+ * The picker opens ONLY directly after a Role mention; a `#` after a plain
+ * Agent (or anywhere else — headings, channels) keeps its normal meaning.
+ * Disabled tiers are shown but not selectable — picking one would only 409
+ * at send.
  */
 export function createTierPickSuggestion(
   qc: QueryClient,
 ): Omit<SuggestionOptions<TierPickItem>, "editor"> {
   const pluginKey = new PluginKey("tierPickSuggestion");
 
-  const agentMentionAt = (doc: ProseMirrorNode, from: number): { pos: number; node: ProseMirrorNode } | null => {
+  // The preceding agent mention, plus whether it targets a Role. The node
+  // carries no subtype (Roles serialize as `mention://agent/<uuid>`), so the
+  // Role check resolves the id against the cached agent list.
+  const roleMentionAt = (doc: ProseMirrorNode, from: number): { pos: number; node: ProseMirrorNode; role?: string } | null => {
     let found: { pos: number; node: ProseMirrorNode } | null = null;
     doc.nodesBetween(Math.max(0, from - 6), from, (node, pos) => {
       if (node.type.name === "mention" && node.attrs.type === "agent") {
         found = { pos, node };
       }
     });
-    return found;
+    if (!found) return null;
+    const resolved: { pos: number; node: ProseMirrorNode } = found;
+    const wsId = getCurrentWsId();
+    const cached = (qc.getQueryData(workspaceKeys.agents(wsId ?? "")) ?? []) as Agent[];
+    const roleTypeEnabled =
+      !!wsId && featureFlagEnabled(configStore.getState().featureFlags, AGENT_ROLE_TYPE_FLAG);
+    const target = cached.find((agent) => agent.id === resolved.node.attrs.id);
+    if (!roleTypeEnabled || !target || !isRoleAgent(target)) return null;
+    return { pos: resolved.pos, node: resolved.node, role: target.tier_role || undefined };
   };
 
   return {
     char: "#",
     pluginKey,
     allowSpaces: false,
-    items: ({ query }) => buildTierPickItems(qc, query),
+    items: ({ query, editor }) => {
+      // No range here in v3 — the cursor sits just past the trigger, same
+      // spot `shouldShow` gated on, so resolve the preceding Role from it.
+      const found = roleMentionAt(editor.state.doc, editor.state.selection.from);
+      if (!found) return [];
+      return buildTierPickItems(qc, query, found.role);
+    },
     shouldShow: ({ editor, range }) =>
-      isTriggerArmedAt(editor, range.from) && agentMentionAt(editor.state.doc, range.from) != null,
+      isTriggerArmedAt(editor, range.from) && roleMentionAt(editor.state.doc, range.from) != null,
     command: ({ editor, range, props }) => {
-      const found = agentMentionAt(editor.state.doc, range.from);
+      const found = roleMentionAt(editor.state.doc, range.from);
       if (!found) return;
       const currentLabel = String(found.node.attrs.label ?? "");
       const base = currentLabel.includes("#") ? currentLabel.slice(0, currentLabel.indexOf("#")) : currentLabel;

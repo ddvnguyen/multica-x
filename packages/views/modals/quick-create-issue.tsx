@@ -68,7 +68,7 @@ import { ProjectPicker } from "../projects/components/project-picker";
 import { DueDatePicker, PriorityIcon, PriorityPicker } from "../issues/components";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
 import { TierPickFlow } from "../issues/components/pickers/tier-pick-flow";
-import { isAgentRuntimeBound } from "@multica/core/agents";
+import { isAgentRuntimeBound, isRoleAgent, useAgentRoleTypeEnabled } from "@multica/core/agents";
 import {
   PropertyPicker,
   PickerItem,
@@ -272,6 +272,11 @@ export function AgentCreatePanel({
     if (actor?.type !== "squad") return undefined;
     return visibleSquads.find((s) => s.id === actor.id);
   }, [actor, visibleSquads]);
+  // M-633: Role-only — plain Agents and squads route to a leader directly,
+  // only a Role pick shows the tier row (below) and sends `tier_id`.
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const isRoleActor = roleTypeEnabled && !!selectedAgent && isRoleAgent(selectedAgent);
+  const sendTierId = isRoleActor ? tierId : null;
 
   // Unfinished selections live in the shared issue-create draft. The
   // last-successful actor remains a separate fallback, so closing a draft
@@ -477,7 +482,7 @@ export function AgentCreatePanel({
               ...(priority !== "none" ? { priority } : {}),
               ...(dueDate ? { due_date: dueDate } : {}),
               ...(activeAttachmentIds.length > 0 ? { attachment_ids: activeAttachmentIds } : {}),
-              ...(tierId ? { tier_id: tierId } : {}),
+              ...(sendTierId ? { tier_id: sendTierId } : {}),
             },
           });
         } else {
@@ -491,7 +496,7 @@ export function AgentCreatePanel({
             ...(dueDate ? { due_date: dueDate } : {}),
             parent_issue_id: parentIssueId,
             ...(activeAttachmentIds.length > 0 ? { attachment_ids: activeAttachmentIds } : {}),
-            ...(tierId ? { tier_id: tierId } : {}),
+            ...(sendTierId ? { tier_id: sendTierId } : {}),
           });
         }
         setLastActor(actor.type, actor.id);
@@ -751,9 +756,11 @@ export function AgentCreatePanel({
         </div>
 
         {/* M-359 tier for this run — Auto (resolver) by default, or one
-            pinned tier. Squad picks route to the leader; the pin applies
-            to the leader's run. */}
-        <TierPickRow tierId={tierId} supportedTierIds={selectedAgent?.tier_ids} onPick={setTierId} />
+            pinned tier. M-633: Role-only; plain Agents message/run directly
+            with no tier row. */}
+        {isRoleActor && (
+          <TierPickRow tierId={tierId} tierRole={selectedAgent?.tier_role} onPick={setTierId} />
+        )}
 
         {selectedAgent && versionBlocked && (
           <div className="mx-5 mb-2 shrink-0 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-caption text-amber-700 dark:text-amber-300">
@@ -1129,26 +1136,29 @@ function ActorPicker({
   );
 }
 
-/** M-359 single-tier pick for the quick-created run (null = Auto). */
+/** M-359 single-tier pick for the quick-created run (null = Auto).
+ * M-633: Role-only — scoped to the picked Role's tier_role table. */
 function TierPickRow({
   tierId,
-  supportedTierIds,
+  tierRole,
   onPick,
 }: {
   tierId: string | null;
-  supportedTierIds?: string[];
+  tierRole?: string;
   onPick: (tierId: string | null) => void;
 }) {
   const { t } = useT("modals");
   const wsId = useWorkspaceId();
   const [open, setOpen] = useState(false);
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
+  const { data: roleTiers } = useQuery({
+    ...modelTiersOptions(wsId, tierRole),
+    enabled: !!tierRole,
+  });
   const enabled = useMemo(() => {
-    const rows = tiers.filter((tier) => tier.enabled);
-    if (!supportedTierIds?.length) return rows;
-    const allowed = new Set(supportedTierIds);
-    return rows.filter((tier) => allowed.has(tier.id));
-  }, [tiers, supportedTierIds]);
+    const source = tierRole ? (roleTiers ?? []) : tiers;
+    return source.filter((tier) => tier.enabled);
+  }, [tiers, roleTiers, tierRole]);
   if (enabled.length === 0) return null;
   const pick = (next: string | null) => {
     onPick(next);

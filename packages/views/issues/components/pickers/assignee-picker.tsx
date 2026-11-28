@@ -68,10 +68,11 @@ interface AssigneePickerProps {
   onOpenChange?: (v: boolean) => void;
   align?: "start" | "center" | "end";
   /**
-   * M-359: when true, picking an agent advances to a tier step (Auto default
+   * M-359: when true, picking a Role advances to a tier step (Auto default
    * + enabled tiers) instead of confirming immediately; the confirm sends
-   * `{assignee_type, assignee_id, tier_id?}` in one update. Member/squad and
-   * unassigned picks still confirm immediately.
+   * `{assignee_type, assignee_id, tier_id?}` in one update. M-633: plain
+   * Agents, members, squads and unassigned picks confirm immediately —
+   * the tier step is Role-only.
    */
   tierPick?: boolean;
 }
@@ -268,8 +269,15 @@ function useAssigneeChoices(filter: string) {
     queryFn: () => api.listAgentPresets(wsId),
     enabled: wsId !== "",
   });
-  const filteredPresets = presets.filter((preset) =>
-    preset.name.toLowerCase().includes(query) || preset.agent_name.toLowerCase().includes(query),
+  // M-633: presets pin a tier, and only Roles pick tiers. Offer only
+  // presets whose agent is a Role (flag-on); plain-Agent presets stay stored
+  // but are no longer offered. Flag off = empty, as before.
+  const roleIds = new Set(
+    agents.filter((agent) => isRoleAgent(agent)).map((agent) => agent.id),
+  );
+  const filteredPresets = (roleTypeEnabled ? presets : []).filter((preset) =>
+    roleIds.has(preset.agent_id) &&
+    (preset.name.toLowerCase().includes(query) || preset.agent_name.toLowerCase().includes(query)),
   );
 
   return {
@@ -311,17 +319,14 @@ function AssigneeOptions({
     assigneeType === type && assigneeId === id;
 
   if (tierAgent) {
-    // M-493: the tier step only offers tiers the chosen agent supports
-    // (`agent_tier`, exposed as `Agent.tier_ids`). An agent with no selection
-    // keeps the legacy behaviour of offering every enabled tier. A Role
-    // scopes to its tier_role table instead — a forced tier outside it 409s.
+    // M-633: the tier step is Role-only. Roles scope to their tier_role
+    // table — a forced tier outside it 409s. `supportedTierIds` is dead:
+    // plain Agents never reach this step, and Roles ignore `tier_ids`.
     const picked = agents.find((agent) => agent.id === tierAgent.id);
-    const supportedTierIds = picked?.tier_ids;
     const tierRole = picked && isRoleAgent(picked) ? picked.tier_role || undefined : undefined;
     return (
       <TierStep
         agentName={tierAgent.name}
-        supportedTierIds={supportedTierIds}
         tierRole={tierRole}
         onBack={() => setTierAgent(null)}
         onPick={(tierId) =>
@@ -427,10 +432,8 @@ function AssigneeOptions({
                 }
                 onClick={() => {
                   if (!allowed) return;
-                  if (tierPick) {
-                    setTierAgent({ id: a.id, name: a.name });
-                    return;
-                  }
+                  // M-633: plain Agents never pick tiers — only Roles do.
+                  // Assign directly even when `tierPick` is on.
                   onPick({
                     assignee_type: "agent",
                     assignee_id: a.id,
@@ -537,23 +540,24 @@ function AssigneeOptions({
 }
 
 /**
- * TierStep is the second step of the assignee picker: after an agent is
+ * TierStep is the second step of the assignee picker: after a Role is
  * chosen, the sender optionally pins one tier for this run (Auto default =
- * the idx-ranked resolver). M-493 narrows the list to the tiers that agent
- * supports and walks model → harness → runtime through the tier's members;
- * the leaf shows the tier config (`#name`, harness/model, runtime) before the
+ * the idx-ranked resolver). M-633 made this Role-only — plain Agents confirm
+ * directly and never reach here. The list is scoped to the Role's tier_role
+ * table; the unscoped list query is kept as the empty-role fallback (a Role
+ * with no tier_role set reads today's unscoped list), never for Agents.
+ * The flow walks model → harness → runtime through the tier's members; the
+ * leaf shows the tier config (`#name`, harness/model, runtime) before the
  * pick is written back as one `tier_id` update. Disabled tiers stay hidden —
  * picking one would only 409 at send.
  */
 function TierStep({
   agentName,
-  supportedTierIds,
   tierRole,
   onBack,
   onPick,
 }: {
   agentName: string;
-  supportedTierIds?: string[];
   /** A Role's tier-role: scope the list to that role's tier table (M-499). */
   tierRole?: string;
   onBack: () => void;
@@ -562,23 +566,19 @@ function TierStep({
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const { data: tiers = [] } = useQuery(modelTiersOptions(wsId));
-  // A Role reads its own role table (one query, cached per role); an Agent
-  // keeps today's unscoped list. Role tiers are authoritative for forced
-  // picks — the backend 409s a tier outside the Role's list.
+  // A Role reads its own role table (one query, cached per role); a Role
+  // with no tier_role set falls back to today's unscoped list. Role tiers
+  // are authoritative for forced picks — the backend 409s a tier outside
+  // the Role's list.
   const { data: roleTiers } = useQuery({
     ...modelTiersOptions(wsId, tierRole),
     enabled: !!tierRole,
   });
 
-  // An agent with an explicit tier selection only sees those tiers; an agent
-  // without one keeps the legacy behaviour of every enabled tier.
   const eligible = useMemo(() => {
     const source = tierRole ? (roleTiers ?? []) : tiers;
-    const enabled = source.filter((tier) => tier.enabled);
-    if (!supportedTierIds || supportedTierIds.length === 0) return enabled;
-    const allowed = new Set(supportedTierIds);
-    return enabled.filter((tier) => allowed.has(tier.id));
-  }, [tiers, roleTiers, tierRole, supportedTierIds]);
+    return source.filter((tier) => tier.enabled);
+  }, [tiers, roleTiers, tierRole]);
 
   return (
     <>

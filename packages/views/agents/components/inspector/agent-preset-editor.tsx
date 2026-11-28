@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { modelTiersOptions } from "@multica/core/workspace/queries";
+import { agentDetailOptions, modelTiersOptions } from "@multica/core/workspace/queries";
+import { isRoleAgent, useAgentRoleTypeEnabled } from "@multica/core/agents";
 import type { AgentPreset } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -17,9 +18,14 @@ import { useT } from "../../../i18n";
 
 const presetQueryKey = (wsId: string) => ["agent-presets", wsId] as const;
 
-/** Workspace presets bound to the inspected agent. */
+/** Workspace presets bound to the inspected Role. M-633 hides this for
+ * plain Agents — presets pin a tier, and only Roles pick tiers. Preset
+ * data is untouched; existing presets for plain Agents stay stored. */
 export function AgentPresetEditor({ agentId, canEdit }: { agentId: string; canEdit: boolean }) {
   const wsId = useWorkspaceId();
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
+  const { data: agent } = useQuery(agentDetailOptions(wsId, agentId));
+  const isRole = roleTypeEnabled && isRoleAgent(agent);
   const queryClient = useQueryClient();
   const { t } = useT("agents");
   const [editing, setEditing] = useState<AgentPreset | null>(null);
@@ -72,7 +78,11 @@ export function AgentPresetEditor({ agentId, canEdit }: { agentId: string; canEd
     saveMutation.reset();
   };
 
-  if (workspaceQuery.isPending || (!workspaceQuery.isError && !workspaceQuery.data?.settings.agent_presets_enabled)) return null;
+  if (workspaceQuery.isPending) return null;
+  // M-633: Role-only. Keep the presets_enabled kill-switch first so flag-off
+  // and disabled workspaces stay byte-identical to today.
+  if (!workspaceQuery.isError && !workspaceQuery.data?.settings.agent_presets_enabled) return null;
+  if (!isRole) return null;
 
   // The stored tier may have been disabled since the preset was saved: the
   // enabled-only options no longer list it, so fall back to the preset's own

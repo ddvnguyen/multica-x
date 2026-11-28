@@ -8,10 +8,12 @@ import { AssigneePicker } from "./assignee-picker";
 const AGENTS = [
   { id: "agent-1", name: "Helper", archived_at: null, visibility: "workspace", tier_ids: [] },
   {
-    id: "agent-2",
+    id: "role-1",
     name: "Picky",
     archived_at: null,
     visibility: "workspace",
+    subtype: "role",
+    tier_role: "engineer",
     tier_ids: ["tier-a"],
   },
 ];
@@ -37,7 +39,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
 vi.mock("@multica/core/auth", () => ({ useAuthStore: () => ({ id: "user-1" }) }));
-vi.mock("@multica/core/agents", () => ({ isAgentRuntimeBound: () => true, isRoleAgent: () => false, useAgentRoleTypeEnabled: () => false }));
+vi.mock("@multica/core/agents", () => ({ isAgentRuntimeBound: () => true, isRoleAgent: (a: { subtype?: string }) => a?.subtype === "role", useAgentRoleTypeEnabled: () => true }));
 vi.mock("@multica/core/permissions", () => ({
   canAssignAgentToIssue: () => ({ allowed: true }),
 }));
@@ -61,9 +63,11 @@ vi.mock("../../../common/actor-avatar", () => ({
   ActorAvatar: () => <span data-testid="actor-avatar" />,
 }));
 
-// M-493: with `tierPick`, picking an agent advances to the model → harness →
-// runtime tier step (Auto default) and confirms agent+tier in one update.
-// Disabled tiers are hidden and the list is narrowed to the agent's tiers.
+// M-633: `tierPick` is Role-only. Picking a plain Agent confirms
+// immediately with no tier step and no `tier_id`; picking a Role advances
+// to the model → harness → runtime tier step (Auto default) and confirms
+// role+tier in one update. Disabled tiers are hidden and the list is scoped
+// to the Role's tier_role table.
 describe("AssigneePicker tier step", () => {
   function renderTierPicker(onUpdate: (u: unknown) => void) {
     return render(
@@ -80,11 +84,25 @@ describe("AssigneePicker tier step", () => {
     );
   }
 
-  async function openTierStep(user: ReturnType<typeof userEvent.setup>, agent = "Helper") {
-    await user.click(await screen.findByText(agent));
+  async function openTierStep(user: ReturnType<typeof userEvent.setup>, role = "Picky") {
+    await user.click(await screen.findByText(role));
   }
 
-  it("confirms agent+Auto without a tier id", async () => {
+  it("confirms a plain Agent immediately with no tier step", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    renderTierPicker(onUpdate);
+
+    await user.click(await screen.findByText("Helper"));
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      assignee_type: "agent",
+      assignee_id: "agent-1",
+    });
+    expect(screen.queryByText("Auto (resolver picks)")).toBeNull();
+  });
+
+  it("confirms role+Auto without a tier id", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     renderTierPicker(onUpdate);
@@ -94,7 +112,7 @@ describe("AssigneePicker tier step", () => {
 
     expect(onUpdate).toHaveBeenCalledWith({
       assignee_type: "agent",
-      assignee_id: "agent-1",
+      assignee_id: "role-1",
     });
   });
 
@@ -112,13 +130,13 @@ describe("AssigneePicker tier step", () => {
 
     expect(onUpdate).toHaveBeenCalledWith({
       assignee_type: "agent",
-      assignee_id: "agent-1",
+      assignee_id: "role-1",
       tier_id: "tier-a",
     });
     expect(screen.queryByText(/#slow/)).toBeNull();
   });
 
-  it("shows only the tiers the agent supports", async () => {
+  it("shows only the tiers the role supports", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     renderTierPicker(onUpdate);

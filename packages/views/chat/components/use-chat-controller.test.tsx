@@ -132,6 +132,8 @@ vi.mock("@multica/core/api", () => ({
 vi.mock("@multica/core/agents", () => ({
   isAgentRuntimeBound: (agent: { runtime_id: string; runtime_bound?: boolean }) =>
     agent.runtime_bound !== false && agent.runtime_id.length > 0,
+  isRoleAgent: (agent: { subtype?: string } | null | undefined) => agent?.subtype === "role",
+  useAgentRoleTypeEnabled: () => false,
   useAgentPresenceDetail: () => ({ availability: "online" }),
   useWorkspaceAgentAvailability: () => "available",
 }));

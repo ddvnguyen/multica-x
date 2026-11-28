@@ -7,14 +7,33 @@ vi.mock("@multica/core/platform", () => ({
   getCurrentWsId: vi.fn(() => "ws-1"),
 }));
 
+vi.mock("@multica/core/config", () => ({
+  configStore: { getState: () => ({ featureFlags: { agent_role_type: true } }) },
+  featureFlagEnabled: (flags: Record<string, boolean>, key: string) => flags?.[key] ?? false,
+}));
+
+vi.mock("@multica/core/feature-flags", () => ({
+  AGENT_ROLE_TYPE_FLAG: "agent_role_type",
+  DOCS_V1_FLAG: "docs_v1",
+}));
+
 vi.mock("./suggestion-trigger-arming", () => ({
   isTriggerArmedAt: () => true,
 }));
 
-function fakeQc(tiers: unknown[]): QueryClient {
+const AGENTS = [
+  { id: "agent-1", name: "Helper", subtype: "agent" },
+  { id: "role-1", name: "Reviewer", subtype: "role", tier_role: "engineer" },
+];
+
+function fakeQc(tiers: unknown[], roleTiers: unknown[] = []): QueryClient {
   return {
     getQueryData: (key: unknown) => {
-      if (Array.isArray(key) && key[key.length - 1] === "tiers") return tiers;
+      if (!Array.isArray(key)) return undefined;
+      if (key[key.length - 1] === "agents") return AGENTS;
+      if (key[key.length - 2] === "tiers" && key[key.length - 1] !== "tiers")
+        return roleTiers.length > 0 ? roleTiers : tiers;
+      if (key[key.length - 1] === "tiers") return tiers;
       return undefined;
     },
     getQueriesData: () => [],
@@ -52,11 +71,38 @@ describe("buildTierPickItems", () => {
 });
 
 describe("createTierPickSuggestion command", () => {
-  it("rewrites the preceding agent mention label to name#tier", () => {
+  it("stays hidden after a plain Agent mention", () => {
     const config = createTierPickSuggestion(fakeQc(TIERS));
     const mentionNode = {
       type: { name: "mention" },
       attrs: { type: "agent", label: "Helper", id: "agent-1" },
+    };
+    const editor = {
+      state: {
+        doc: {
+          nodesBetween: (_from: number, _to: number, cb: (node: unknown, pos: number) => void) => {
+            cb(mentionNode, 10);
+          },
+        },
+        tr: {
+          setNodeMarkup: vi.fn().mockReturnThis(),
+          delete: vi.fn().mockReturnThis(),
+        },
+      },
+      view: { dispatch: () => {} },
+      chain: () => ({ focus: () => ({ run: () => {} }) }),
+    };
+    // Plain Agents never pick tiers — the picker must not open.
+    expect(
+      config.shouldShow?.({ editor: editor as never, range: { from: 12, to: 12 } } as never),
+    ).toBe(false);
+  });
+
+  it("rewrites the preceding role mention label to name#tier", () => {
+    const config = createTierPickSuggestion(fakeQc(TIERS));
+    const mentionNode = {
+      type: { name: "mention" },
+      attrs: { type: "agent", label: "Reviewer", id: "role-1" },
     };
     const dispatched: unknown[] = [];
     const editor = {
@@ -74,7 +120,7 @@ describe("createTierPickSuggestion command", () => {
       view: { dispatch: (tr: unknown) => dispatched.push(tr) },
       chain: () => ({ focus: () => ({ run: () => {} }) }),
     };
-    // shouldShow passes only directly after an agent mention.
+    // shouldShow passes only directly after a Role mention.
     expect(
       config.shouldShow?.({ editor: editor as never, range: { from: 12, to: 12 } } as never),
     ).toBe(true);
@@ -85,8 +131,8 @@ describe("createTierPickSuggestion command", () => {
     } as never);
     expect(editor.state.tr.setNodeMarkup).toHaveBeenCalledWith(10, undefined, {
       type: "agent",
-      label: "Helper#fast",
-      id: "agent-1",
+      label: "Reviewer#fast",
+      id: "role-1",
     });
     expect(dispatched).toHaveLength(1);
   });
@@ -95,7 +141,7 @@ describe("createTierPickSuggestion command", () => {
     const config = createTierPickSuggestion(fakeQc(TIERS));
     const mentionNode = {
       type: { name: "mention" },
-      attrs: { type: "agent", label: "Helper#slow", id: "agent-1" },
+      attrs: { type: "agent", label: "Reviewer#slow", id: "role-1" },
     };
     const editor = {
       state: {
@@ -119,8 +165,13 @@ describe("createTierPickSuggestion command", () => {
     } as never);
     expect(editor.state.tr.setNodeMarkup).toHaveBeenCalledWith(10, undefined, {
       type: "agent",
-      label: "Helper#fast",
-      id: "agent-1",
+      label: "Reviewer#fast",
+      id: "role-1",
     });
+  });
+
+  it("reads the role's tier table", () => {
+    const items = buildTierPickItems(fakeQc(TIERS, [{ id: "tier-r", name: "role-fast", enabled: true }]), "", "engineer");
+    expect(items.map((t) => t.name)).toEqual(["role-fast"]);
   });
 });
