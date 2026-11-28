@@ -217,30 +217,52 @@ mirrors it in from the database the two sources can prove:
 | --- | --- | --- |
 | `issue_decision_record`, current rows | all | A decision is already curated. A superseded row is not the workspace's decision any more, so it is skipped. |
 | `comment`, `author_type = 'member'`, `type = 'comment'` | all | Human prose is the scarce signal. Agent comments are pages of reasoning per run and would bury it. Status changes and blank comments carry nothing. |
-| Active MOCT records | **not mirrored** | `moct.Client` injects, searches, gets by id, notes and retracts; nothing lists a scope's active records, and an inject is a bounded top-k of what would be sent, not the set. Mirroring a guessed endpoint was rejected; this waits for a list endpoint (follow-up card). |
+| Active MOCT records, read through `GET /team/v1/memory` (`all=1`, default status `active`, paged at 20) | all but expert-home records | A note or a decision someone chose to keep is already curated. Retracted and superseded records are excluded by the status filter. Expert-home records are excluded on purpose: MOCT shows them to one expert, PowerContext has no per-agent visibility, so copying one would show that agent's notes to every agent. The command counts and reports them. |
 
 Each entry lands in the scope the read path would use for that issue:
 `multica:project:<id>` when the record or its issue has a project, else
 `multica:ws:<id>`, so a backfilled entry is recallable by the runs it belongs
-to. The remembered kind is `decision` for a decision and `fact` for a comment.
+to. A MOCT record is placed by its home instead:
+
+| Home | Scopes it is written to |
+| --- | --- |
+| `channel` (`multica:project:<id>`) | that project |
+| `task` (`multica:issue:<id>`) | the issue's project, else the workspace |
+| `team` | the workspace **and** every project of the workspace — one entry per scope, because a project run reads only its own project scope |
+| `expert` | none (counted as `expert_home_skipped`) |
+
+The remembered kind is `decision` for a decision (from either source) and
+`fact` for a comment or any other MOCT record type. A record's entry text
+carries its type, title and body, clamped like the other sources.
 
 Idempotency is by source id. Every entry carries a marker
-(`decision:/multica/decision/<id>`, `comment:/multica/comment/<id>`), and the
-writer searches for that marker in the scope before writing. A search that
-**fails** skips the entry instead of writing it: a gap is retried by the next
-pass, a duplicate would be injected forever.
+(`decision:/multica/decision/<id>`, `comment:/multica/comment/<id>`,
+`moct:/multica/record/<id>`), and the writer searches for that marker in the
+scope before writing. A search that **fails** skips the entry instead of
+writing it: a gap is retried by the next pass, a duplicate would be injected
+forever. A team-home record carries the same marker in every scope, so each
+copy is skipped independently on the next pass. Editing or retracting an
+already mirrored record does not propagate: the marker still matches, so the
+old text stays until the entry is removed from PowerContext by hand.
 
 ```bash
 cd server
 export POWERCONTEXT_BASE_URL=http://127.0.0.1:8000   # POWERCONTEXT_TOKEN if the server wants one
+export MOCT_BASE_URL=http://127.0.0.1:8310           # required while MOCT records are mirrored
 
 go run ./cmd/powercontext_ingest --workspace <workspace uuid> --dry-run
 go run ./cmd/powercontext_ingest --workspace <workspace uuid>
 ```
 
-`--since` (RFC3339) bounds a pass to newer rows and `--limit` bounds rows per
-source (default 500); neither is the idempotency mechanism, so a repeated run
-writes nothing new. The command exits non-zero when any entry failed, which is
+`--since` (RFC3339) bounds a pass to newer rows — for MOCT records, newer than
+their `updatedAt`. `--limit` bounds rows per database source and defaults to
+`0`, meaning unbounded: the read is oldest first, so a fixed bound would reread
+the same rows on every pass and a corpus larger than it would never drain.
+Neither flag is the idempotency mechanism, so a repeated run writes nothing
+new. `--moct-records` is on by default; `--moct-records=false` skips the MOCT
+source and drops the `MOCT_BASE_URL` requirement. If the MOCT listing fails the
+pass still mirrors the database sources and the command exits non-zero. The
+command exits non-zero when any entry failed, which is
 the signal a scheduled run needs; failures are listed with their markers.
 Nothing schedules it: run it by hand, or from whatever the host already uses
 for periodic jobs, after a first pass.
@@ -269,9 +291,10 @@ The client's 10 s timeout is the most a slow server can add to a claim.
 
 ## Not implemented here
 
-- **Mirroring MOCT records.** The ingest covers the two sources the database
-  proves (decisions, human comments). Listing a MOCT scope's active records
-  needs an endpoint `moct` does not serve yet.
+- **Propagating edits and retractions.** A mirrored entry is skipped once its
+  marker is in the scope, so a record edited or retracted in MOCT after it was
+  mirrored keeps its old text in PowerContext until someone removes the entry.
+  The marker is the price of never writing a duplicate.
 - **Native handoff endpoints.** PowerContext's `/v1/handoff/*` and `/v1/work/*`
   are richer than a remembered entry: they carry revisions, acknowledgements
   and receivers. The seam writes through `/v1/memory/remember` because that

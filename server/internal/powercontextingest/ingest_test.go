@@ -321,6 +321,10 @@ func TestMarkerFollowsTheSourceKind(t *testing.T) {
 	if got := Marker(commentEntry("")); got != CommentMarkerPrefix+commentEntry("").ID {
 		t.Fatalf("comment marker = %q", got)
 	}
+	record := Entry{Kind: KindRecord, ID: "mem_1"}
+	if got := Marker(record); got != RecordMarkerPrefix+"mem_1" {
+		t.Fatalf("record marker = %q", got)
+	}
 }
 
 func TestScopePrefersTheProject(t *testing.T) {
