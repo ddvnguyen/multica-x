@@ -1,12 +1,13 @@
 // powercontext_ingest mirrors a workspace's curated records into its
-// PowerContext plane: current issue decisions and human-authored issue
-// comments. It is the backfill half of the memory dogfood (M-616 item 3) — the
-// seam writes each run's handoff, this fills in the knowledge that predates it.
+// PowerContext plane: current issue decisions, human-authored issue comments,
+// and the workspace's active MOCT records. It is the backfill half of the
+// memory dogfood (M-616 item 3) — the seam writes each run's handoff, this fills
+// in the knowledge that predates it.
 //
 // Run it repeatedly: entries are skipped when their marker is already in the
-// scope, so a second pass writes nothing new. It never writes agent comments and
-// never mirrors MOCT records (no list endpoint exists yet); both are documented
-// in docs/powercontext-seam.md.
+// scope, so a second pass writes nothing new. It never writes agent comments;
+// docs/powercontext-seam.md documents the rules and what is deliberately left
+// out.
 package main
 
 import (
@@ -22,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/moct"
 	"github.com/multica-ai/multica/server/internal/powercontext"
 	"github.com/multica-ai/multica/server/internal/powercontextingest"
 )
@@ -36,8 +38,9 @@ func main() {
 
 func run() error {
 	workspaceID := flag.String("workspace", "", "workspace id to mirror (required)")
-	sinceRaw := flag.String("since", "", "only records created at or after this RFC3339 time (default: all history)")
-	limit := flag.Int("limit", powercontextingest.DefaultLimit, "maximum rows read per source")
+	sinceRaw := flag.String("since", "", "only records created (or, for MOCT records, updated) at or after this RFC3339 time (default: all history)")
+	limit := flag.Int("limit", 0, "maximum rows read per database source (0 = unbounded)")
+	moctRecords := flag.Bool("moct-records", true, "mirror the workspace's active MOCT records (MOCT_BASE_URL required)")
 	dryRun := flag.Bool("dry-run", false, "read and report what would be written without writing it")
 	flag.Parse()
 
@@ -45,8 +48,8 @@ func run() error {
 	if workspace == "" {
 		return fmt.Errorf("--workspace is required")
 	}
-	if *limit < 1 {
-		return fmt.Errorf("--limit must be at least 1")
+	if *limit < 0 {
+		return fmt.Errorf("--limit must be zero or greater")
 	}
 	var since time.Time
 	if raw := strings.TrimSpace(*sinceRaw); raw != "" {
@@ -55,6 +58,11 @@ func run() error {
 			return fmt.Errorf("--since must be RFC3339: %w", err)
 		}
 		since = parsed
+	}
+
+	moctBaseURL := strings.TrimSpace(os.Getenv("MOCT_BASE_URL"))
+	if *moctRecords && moctBaseURL == "" {
+		return fmt.Errorf("MOCT_BASE_URL is required when MOCT records are mirrored (set --moct-records=false to skip them)")
 	}
 
 	baseURL := strings.TrimSpace(os.Getenv("POWERCONTEXT_BASE_URL"))
@@ -86,7 +94,33 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	slog.Info("powercontext ingest read", "workspace", workspace, "entries", len(entries), "dry_run", *dryRun)
+
+	// A MOCT listing failure does not cancel the pass: the database sources are
+	// already readable, so mirroring them is still progress. The command exits
+	// non-zero at the end so a scheduled run is visible.
+	var moctRead powercontextingest.MOCTRead
+	var moctErr error
+	if *moctRecords {
+		moctClient, err := moct.NewClient(moct.Config{BaseURL: moctBaseURL})
+		if err != nil {
+			return err
+		}
+		moctRead, moctErr = powercontextingest.ReadMOCTRecords(ctx, pool, moctClient, powercontextingest.MOCTOptions{
+			WorkspaceID: workspace,
+			Since:       since,
+		})
+		if moctErr != nil {
+			slog.Warn("powercontext ingest MOCT records failed", "error", moctErr)
+		}
+		entries = append(entries, moctRead.Entries...)
+	}
+	slog.Info("powercontext ingest read",
+		"workspace", workspace,
+		"entries", len(entries),
+		"moct_records", moctRead.Records,
+		"moct_expert_home_skipped", moctRead.ExpertHome,
+		"dry_run", *dryRun,
+	)
 
 	if *dryRun {
 		for _, e := range entries {
@@ -97,6 +131,9 @@ func run() error {
 			fmt.Printf("%s\t%s\t%s\n", powercontextingest.Marker(e), scope, powercontextingest.PowerContextKind(e))
 		}
 		fmt.Printf("would write %d entries\n", len(entries))
+		if moctErr != nil {
+			return moctErr
+		}
 		return nil
 	}
 
@@ -116,6 +153,7 @@ func run() error {
 		"workspace", workspace,
 		"decisions", summary.Decisions,
 		"comments", summary.Comments,
+		"records", summary.Records,
 		"written", summary.Written,
 		"skipped", summary.Skipped,
 		"failed", summary.Failed,
@@ -128,5 +166,5 @@ func run() error {
 		// repeat, and entries that failed were not written.
 		return fmt.Errorf("%d of %d entries failed", summary.Failed, len(entries))
 	}
-	return nil
+	return moctErr
 }

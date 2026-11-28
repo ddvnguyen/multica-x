@@ -210,3 +210,35 @@ func TestReadRequiresAWorkspace(t *testing.T) {
 		t.Fatal("read with no workspace succeeded")
 	}
 }
+
+// TestReadIsUnboundedByDefault pins the fix for the oldest-first bound: a pass
+// that reads the same first rows every time never drains a corpus larger than
+// the bound, so zero must mean "all rows", not "a default page".
+func TestReadIsUnboundedByDefault(t *testing.T) {
+	pool := readTestPool(t)
+	f := newReadFixture(t, pool)
+
+	const rows = 501
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO issue_decision_record (id, workspace_id, issue_id, comment_id, decided, source_kind, actor_id)
+		SELECT gen_random_uuid(), $1, $2, gen_random_uuid(), 'Bulk call ' || n, 'comment', $3
+		FROM generate_series(1, $4) AS n`,
+		f.fx.WorkspaceID, f.issueID, f.fx.UserID, rows); err != nil {
+		t.Fatalf("seed decisions: %v", err)
+	}
+
+	entries, err := Read(context.Background(), pool, Options{WorkspaceID: f.fx.WorkspaceID})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(entries) != rows {
+		t.Fatalf("read %d entries, want all %d", len(entries), rows)
+	}
+}
+
+func TestReadRejectsANegativeLimit(t *testing.T) {
+	pool := readTestPool(t)
+	if _, err := Read(context.Background(), pool, Options{WorkspaceID: "22222222-2222-2222-2222-222222222222", Limit: -1}); err == nil {
+		t.Fatal("read with a negative limit succeeded")
+	}
+}

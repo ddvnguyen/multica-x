@@ -1,30 +1,32 @@
 // Package powercontextingest mirrors the curated records Multica already holds
 // into a PowerContext scope (M-616 item 3, option A of the Architect's
-// decision): the workspace's current issue decisions and its human-authored
-// issue comments.
+// decision): the workspace's current issue decisions, its human-authored issue
+// comments, and the workspace's active MOCT records.
 //
 // The seam (docs/powercontext-seam.md) only ever wrote the run's own handoff
 // entry. A backfilled corpus is what a prepare can recall from on its first
 // read, and it is the other half of the dogfood: the comparison is only fair if
 // both planes started from the same knowledge.
 //
-// Two rules shape what is mirrored:
+// Three rules shape what is mirrored:
 //
 //   - Human comments only. An agent writes pages of reasoning per run; copying
 //     that into the memory plane would bury the two or three lines a person
 //     actually decided. Decisions are already curated by whoever recorded them,
-//     so those are mirrored whatever the recorder.
-//   - Idempotent by source id. Each entry carries a marker naming the comment
-//     or decision it came from, and the entry is skipped when a search finds
-//     that marker. A search that fails skips the entry instead of writing a
-//     possible duplicate: a gap is retried by the next pass, a duplicate is
+//     so those are mirrored whatever the recorder. MOCT records are curated by
+//     definition — a note or a decision someone chose to keep.
+//   - Idempotent by source id. Each entry carries a marker naming the comment,
+//     decision or record it came from, and the entry is skipped when a search
+//     finds that marker. A search that fails skips the entry instead of writing
+//     a possible duplicate: a gap is retried by the next pass, a duplicate is
 //     injected forever.
+//   - One entry per target scope. A record that a whole workspace can see
+//     (home kind team) is copied into the workspace scope and into every
+//     project scope of that workspace, so a project run — which reads only its
+//     project scope — can recall it. Each copy is deduped by the same marker.
 //
-// The third source the card named — active MOCT records — has no enumerated
-// list endpoint (moct.Client injects, searches, gets by id, notes, retracts),
-// so it is deliberately absent rather than guessed at. Same for native
-// PowerContext handoff endpoints: this writes through /v1/memory/remember,
-// whose payload is the one the seam already verified.
+// Native PowerContext handoff endpoints stay out of scope: this writes through
+// /v1/memory/remember, whose payload is the one the seam already verified.
 package powercontextingest
 
 import (
@@ -39,10 +41,6 @@ import (
 )
 
 const (
-	// DefaultLimit bounds rows read per source in one pass. A pass is meant to
-	// be rerun, so a workspace larger than this drains over several runs
-	// instead of holding one long transaction.
-	DefaultLimit = 500
 	// bodyMax bounds one copied body. PowerContext caps a memory body at 8192
 	// bytes and the entry also carries refs and a marker; 6000 leaves room for
 	// the header without splitting a rune.
@@ -56,6 +54,9 @@ const (
 const (
 	DecisionMarkerPrefix = "decision:/multica/decision/"
 	CommentMarkerPrefix  = "comment:/multica/comment/"
+	// RecordMarkerPrefix names one MOCT record. moct-be ids already carry the
+	// mem_ prefix, so the path reads moct:/multica/record/mem_<uuid>.
+	RecordMarkerPrefix = "moct:/multica/record/"
 )
 
 // Entry kinds, as recorded in the entry text. They also carry the remembered
@@ -63,12 +64,14 @@ const (
 const (
 	KindDecision = "decision"
 	KindComment  = "comment"
+	KindRecord   = "record"
 )
 
 // Entry is one source record eligible for mirroring.
 type Entry struct {
 	Kind string
-	// ID is the source row's id — the decision id or the comment id.
+	// ID is the source row's id — the decision id, the comment id, or the
+	// MOCT record id.
 	ID          string
 	WorkspaceID string
 	IssueID     string
@@ -78,19 +81,28 @@ type Entry struct {
 	// AuthorType is set for comments and empty for decisions.
 	AuthorType string
 	CreatedAt  time.Time
-	// Body is the decided text, or the comment content.
+	// Body is the decided text, or the comment content, or the record body.
 	Body string
 	// Rationale is the decision's rationale, empty for comments.
 	Rationale string
+	// RecordType is the MOCT record's type (decision, convention, …), set only
+	// for KindRecord entries.
+	RecordType string
+	// Title is the MOCT record's title, set only for KindRecord entries.
+	Title string
 }
 
 // Marker is the entry's idempotency key, written into its text and searched for
 // before it is written again.
 func Marker(e Entry) string {
-	if e.Kind == KindDecision {
+	switch e.Kind {
+	case KindDecision:
 		return DecisionMarkerPrefix + e.ID
+	case KindComment:
+		return CommentMarkerPrefix + e.ID
+	default:
+		return RecordMarkerPrefix + e.ID
 	}
-	return CommentMarkerPrefix + e.ID
 }
 
 // Scope is the PowerContext scope the entry belongs in: the same
@@ -101,10 +113,13 @@ func Scope(e Entry) (string, bool) {
 }
 
 // PowerContextKind is the remembered entry's kind: a decision is one, and a
-// human comment is a fact of record rather than a decision Multica ever
-// recorded as such.
+// human comment or a non-decision MOCT record is a fact of record rather than a
+// decision Multica ever recorded as such.
 func PowerContextKind(e Entry) string {
 	if e.Kind == KindDecision {
+		return "decision"
+	}
+	if e.Kind == KindRecord && e.RecordType == "decision" {
 		return "decision"
 	}
 	return "fact"
@@ -130,6 +145,20 @@ func EntryText(e Entry) string {
 	if e.AuthorType != "" {
 		fmt.Fprintf(&b, "author: %s\n", e.AuthorType)
 	}
+	if e.Kind == KindRecord {
+		if e.RecordType != "" {
+			fmt.Fprintf(&b, "type: %s\n", e.RecordType)
+		}
+		if title := strings.TrimSpace(e.Title); title != "" {
+			fmt.Fprintf(&b, "title: %s\n", clampText(title, titleMax))
+		}
+		if !e.CreatedAt.IsZero() {
+			fmt.Fprintf(&b, "updated: %s\n", e.CreatedAt.UTC().Format(time.RFC3339))
+		}
+		b.WriteString(clampText(strings.TrimSpace(e.Body), bodyMax))
+		b.WriteString("\n")
+		return b.String()
+	}
 	if !e.CreatedAt.IsZero() {
 		fmt.Fprintf(&b, "recorded: %s\n", e.CreatedAt.UTC().Format(time.RFC3339))
 	}
@@ -150,25 +179,39 @@ func EntryText(e Entry) string {
 	return b.String()
 }
 
-// Summary reports one pass. Written plus Skipped plus Failed equals the number
-// of entries the pass read.
+// Summary reports one pass. Written plus Skipped plus Failed counts one target
+// per entry: a record visible to a whole workspace is written once per scope,
+// and each copy is skipped or written on its own.
 type Summary struct {
 	Decisions int
 	Comments  int
-	Written   int
-	Skipped   int
-	Failed    int
+	// Records counts the distinct MOCT records read, not their per-scope copies.
+	Records int
+	Written int
+	Skipped int
+	Failed  int
 	// Failures names the first few failures, each as "<marker>: <reason>".
 	Failures []string
+
+	seenRecords map[string]bool
 }
 
 const maxReportedFailures = 10
 
 func (s *Summary) count(e Entry) {
-	if e.Kind == KindDecision {
+	switch e.Kind {
+	case KindDecision:
 		s.Decisions++
-	} else {
+	case KindComment:
 		s.Comments++
+	default:
+		if s.seenRecords == nil {
+			s.seenRecords = map[string]bool{}
+		}
+		if !s.seenRecords[e.ID] {
+			s.seenRecords[e.ID] = true
+			s.Records++
+		}
 	}
 }
 
@@ -242,7 +285,9 @@ type Options struct {
 	// history. It is a convenience for incremental runs, not the idempotency
 	// mechanism — the marker is.
 	Since time.Time
-	// Limit bounds each source. Zero uses DefaultLimit.
+	// Limit bounds each source. Zero means unbounded: the read is oldest first,
+	// so a bound would reread the same rows on every pass and a corpus larger
+	// than it would never drain.
 	Limit int
 }
 
@@ -255,8 +300,8 @@ func Read(ctx context.Context, pool *pgxpool.Pool, opts Options) ([]Entry, error
 		return nil, fmt.Errorf("powercontext ingest needs a workspace id")
 	}
 	limit := opts.Limit
-	if limit <= 0 {
-		limit = DefaultLimit
+	if limit < 0 {
+		return nil, fmt.Errorf("powercontext ingest limit cannot be negative")
 	}
 	var since any
 	if !opts.Since.IsZero() {
@@ -292,7 +337,7 @@ WHERE d.workspace_id = $1
   )
   AND ($2::timestamptz IS NULL OR d.created_at >= $2)
 ORDER BY d.created_at ASC, d.id ASC
-LIMIT $3`
+LIMIT NULLIF($3::int, 0)`
 
 const commentsQuery = `
 SELECT c.id::text,
@@ -311,7 +356,7 @@ WHERE i.workspace_id = $1
   AND btrim(c.content) <> ''
   AND ($2::timestamptz IS NULL OR c.created_at >= $2)
 ORDER BY c.created_at ASC, c.id ASC
-LIMIT $3`
+LIMIT NULLIF($3::int, 0)`
 
 func readDecisions(ctx context.Context, pool *pgxpool.Pool, workspaceID string, since any, limit int) ([]Entry, error) {
 	rows, err := pool.Query(ctx, decisionsQuery, workspaceID, since, limit)
