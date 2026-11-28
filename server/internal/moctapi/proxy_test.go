@@ -29,6 +29,13 @@ func TestAllowlistedRoutesForwardScopedRequests(t *testing.T) {
 			gotPath := ""
 			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
+				// M-546: single-record routes are scoped by workspace — the
+				// relay carries the same scope the lookup gate just proved.
+				if strings.HasPrefix(r.URL.Path, "/team/v1/memory/mem_") {
+					if got := r.URL.Query().Get("workspaceId"); got != "multica:ws:ws-a" {
+						t.Errorf("%s workspace scope = %q, want multica:ws:ws-a", r.URL.Path, got)
+					}
+				}
 				if r.URL.Path == "/team/v1/memory/get" && tc.name != "get" {
 					_, _ = io.WriteString(w, `{"records":[{"id":"mem_1","workspaceId":"multica:ws:ws-a"}]}`)
 					return

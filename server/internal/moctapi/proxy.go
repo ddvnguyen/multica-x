@@ -324,11 +324,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, identity Identity,
 		if route.kind != "versions" {
 			method = http.MethodPost
 		}
+		// moct-be v9 (M-546) scopes single-record routes by workspace: the
+		// relay carries the same scope the lookup gate just proved.
+		q := url.Values{"workspaceId": {"multica:ws:" + identity.WorkspaceID}}
 		target = "/team/v1/memory/" + url.PathEscape(route.id)
 		if route.kind == "versions" {
-			target += "/versions"
+			target += "/versions?" + q.Encode()
 		} else {
-			target += "/" + route.kind
+			target += "/" + route.kind + "?" + q.Encode()
 		}
 	default:
 		writeError(w, http.StatusNotFound, "not found")

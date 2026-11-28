@@ -273,8 +273,15 @@ func (c *Client) Retract(ctx context.Context, p RetractParams) (*Record, error) 
 	if p.Reason != "" {
 		body["reason"] = p.Reason
 	}
+	// moct-be v9 (M-546) scopes every record verb by workspace: a missing or
+	// foreign workspace is a refusal, never a mutation. The workspace comes
+	// from env, the same way a note's does.
+	if p.WorkspaceID == "" {
+		return nil, errors.New("moct: retract needs a workspace id")
+	}
 	var out Record
-	if err := c.do(ctx, http.MethodPost, teamPath+"/memory/"+p.ID+"/retract", nil, body, &out); err != nil {
+	query := url.Values{"workspaceId": {p.WorkspaceID}}
+	if err := c.do(ctx, http.MethodPost, teamPath+"/memory/"+p.ID+"/retract", query, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
