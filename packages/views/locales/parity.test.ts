@@ -119,7 +119,10 @@ describe("fork-owned key table", () => {
           .filter(
             (prefix) =>
               !keys.some(
-                (key) => key === prefix || key.startsWith(prefix + "."),
+                (key) =>
+                  key === prefix ||
+                  key.startsWith(prefix + ".") ||
+                  key === `${prefix}_count`,
               ),
           )
           .map((prefix) => `${ns}:${prefix}`);

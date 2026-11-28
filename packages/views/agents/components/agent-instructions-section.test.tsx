@@ -199,17 +199,18 @@ describe("AgentInstructionsSection inherited Role (M-603)", () => {
     expect(screen.queryByText("stale local text")).toBeNull();
   });
 
-  it("hides the inherited block while loading or on error, never partial", () => {
+  it("hides the inherited block while loading or on error, falling back to own instructions", () => {
     state.previewLoading = true;
     const { unmount } = renderSection(agent({ implements_role_id: "role-1" }));
     expect(screen.queryByRole("link", { name: /Inherited from/ })).toBeNull();
+    expect(screen.getByText("Be helpful.")).toBeInTheDocument();
     unmount();
 
     state.previewLoading = false;
     state.previewError = true;
     renderSection(agent({ implements_role_id: "role-1", instructions: "Be helpful." }));
     expect(screen.queryByRole("link", { name: /Inherited from/ })).toBeNull();
-    expect(screen.queryByText("Be helpful.")).toBeNull();
+    expect(screen.getByText("Be helpful.")).toBeInTheDocument();
   });
 
   it("shows nothing extra for an Agent with no Role", () => {

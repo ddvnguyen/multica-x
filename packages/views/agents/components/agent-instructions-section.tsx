@@ -173,7 +173,11 @@ export function AgentInstructionsSection({
           ) : showingRole ? (
             <InstructionsPreview content={ownInstructions} />
           ) : inheritedRoleId ? (
-            <InstructionsFromRole agentId={agent.id} roleId={inheritedRoleId} />
+            <InstructionsFromRole
+              agentId={agent.id}
+              roleId={inheritedRoleId}
+              fallbackInstructions={ownInstructions}
+            />
           ) : (
             <InstructionsPreview content={ownInstructions} />
           )}
@@ -226,20 +230,24 @@ export function AgentInstructionsSection({
 /**
  * Read-only inherited view for an Agent implementing a Role: the Role's name
  * (linked), its instructions, and the union of both agents' skills. Loading
- * and error (including a 403 where the caller lost Role access) render as
- * hidden, never partial — same contract as the settings preview.
+ * and error (including a 403 where the caller lost Role access) fall back to
+ * the Agent's own instructions and hide only the inherited block.
  */
 function InstructionsFromRole({
   agentId,
   roleId,
+  fallbackInstructions,
 }: {
   agentId: string;
   roleId: string;
+  fallbackInstructions: string;
 }) {
   const { t } = useT("agents");
   const paths = useWorkspacePaths();
   const { data, isLoading, isError } = useRolePreview(agentId, true);
-  if (isLoading || isError || !data) return null;
+  if (isLoading || isError || !data) {
+    return <InstructionsPreview content={fallbackInstructions} />;
+  }
   return (
     <div className="space-y-1.5 rounded-lg border bg-card px-4 py-3">
       <AppLink
