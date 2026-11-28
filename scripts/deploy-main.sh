@@ -109,6 +109,8 @@ DRAIN_PORT=""
 DRAIN_LEASE_TOKEN=""
 DRAIN_LEASE_TIMEOUT=0
 
+PATH="${PATH:+$PATH:}$HOME/.local/bin"
+export PATH
 for cmd in awk cat chmod cp date df find flock grep install jq mkdir mktemp multica mv podman ps rm seq sleep systemctl; do
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
@@ -370,7 +372,7 @@ force_json="$([ "$FORCE" = 1 ] && printf true || printf false)"
 # claim paths are paused and the fleet can actually reach idle.
 DRAIN_OUTCOME="no_drain"
 if [ "$MAX_DRAIN_SECONDS" -gt 0 ]; then
-  if ! DRAIN_LEASE_TOKEN="$(request_drain)"; then
+  if ! request_drain >/dev/null; then
     die "could not request an authenticated drain lease; no daemon changes made"
   fi
   audit_stop drain_begin pending "$DRAIN_LEASE_TIMEOUT" "$force_json" || true
