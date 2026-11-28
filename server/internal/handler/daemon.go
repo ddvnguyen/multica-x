@@ -3322,6 +3322,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
 		}
 		resp.ThreadName = issue.Title
+		// The title/description travel on the claim so a run with no trigger
+		// comment still has text for the pre-run memory recall query (M-625).
+		resp.IssueTitle = issue.Title
+		if issue.Description.Valid {
+			resp.IssueDescription = issue.Description.String
+		}
 		issueNumber = issue.Number
 
 		// Issue-state delta (MUL-7344). Every field below already sits on the

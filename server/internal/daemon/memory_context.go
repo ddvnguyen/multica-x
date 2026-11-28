@@ -139,6 +139,13 @@ func powerContextInjectPrompt(ctx context.Context, baseURL, token string, task T
 	if !ok {
 		return off("task carries no project or workspace identity, so there is no memory scope to read")
 	}
+	query := powerContextQuery(task)
+	if query == "" {
+		// PowerContext 1.6.0 rejects a prepare with no query (HTTP 422). An
+		// assignment run carries no trigger comment, so it would otherwise be
+		// scored as an empty backend on most runs (M-625).
+		return off("this run carries no text to recall; the PowerContext prepare was skipped")
+	}
 	client, err := powercontext.NewClient(powercontext.Config{BaseURL: baseURL, Token: token})
 	if err != nil {
 		if logger != nil {
@@ -149,7 +156,7 @@ func powerContextInjectPrompt(ctx context.Context, baseURL, token string, task T
 	}
 	prepared, err := client.Prepare(ctx, powercontext.PrepareRequest{
 		ScopeID:  scope,
-		Query:    powerContextQuery(task),
+		Query:    query,
 		MaxBytes: powerContextMaxBytes(),
 	})
 	if err != nil {
@@ -181,18 +188,42 @@ func powerContextMaxBytes() int {
 	return powercontext.ClampMaxBytes(initctx.BudgetMemory * 4)
 }
 
-// powerContextQuery is the recall query for a run: what the human just asked,
-// when the claim carries it.
+// powerContextQuery is the recall query for a run: the best text the claim
+// carries about what the run is about.
 //
-// The claim payload has no issue title, so the trigger comment is the closest
-// thing to "what this run is about". It is clamped to one line and a few
-// hundred bytes because it is a query, not prompt content — the full text
-// already travels in the task prompt. An empty query is legal and means
-// "assemble from the scope's own state", which is the right fallback for a chat
-// turn or a scheduled run with no human text behind it.
+// Only about 15% of sampled tasks carried a trigger comment, and PowerContext
+// 1.6.0 rejects a prepare without `query` (HTTP 422). The fallback order is the
+// same order a reader would use to understand the run: the human's latest
+// instruction, the issue the task belongs to, the autopilot or chat that
+// spawned it, then a handoff. Nothing here enters the prompt — it is a bounded
+// query, not context — and an empty result skips the prepare instead of asking
+// the backend to guess (M-625).
 func powerContextQuery(task Task) string {
-	q := moctOneLine(task.TriggerCommentContent, powerContextQueryMaxRunes)
-	return q
+	candidates := []string{
+		task.TriggerCommentContent,
+		strings.TrimSpace(task.IssueTitle + " " + task.IssueDescription),
+		strings.TrimSpace(task.AutopilotTitle + " " + task.AutopilotDescription),
+		powerContextChatQuery(task),
+		task.QuickCreatePrompt,
+		task.HandoffNote,
+	}
+	for _, candidate := range candidates {
+		if query := moctOneLine(candidate, powerContextQueryMaxRunes); query != "" {
+			return query
+		}
+	}
+	return ""
+}
+
+// powerContextChatQuery prefers the member-authored message over the generic
+// chat field: the latter can be a kickoff or a summary written by the system.
+func powerContextChatQuery(task Task) string {
+	for _, text := range []*string{task.ChatSkillMessage, task.ChatResumeMessage} {
+		if text != nil && strings.TrimSpace(*text) != "" {
+			return *text
+		}
+	}
+	return task.ChatMessage
 }
 
 // powerContextQueryMaxRunes bounds the recall query. Retrieval quality falls

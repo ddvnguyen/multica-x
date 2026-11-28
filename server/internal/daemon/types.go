@@ -96,7 +96,12 @@ type Task struct {
 	IssueID              string                 `json:"issue_id"`
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	IssueIdentifier string `json:"issue_identifier,omitempty"`
+	IssueTitle      string `json:"issue_title,omitempty"`
+	// IssueDescription is the head of the issue body. It mirrors the claim
+	// payload and is used only as a pre-run memory recall query, never rendered
+	// into the brief. Mirror field: internal/handler/agent.go.
+	IssueDescription     string                 `json:"issue_description,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.

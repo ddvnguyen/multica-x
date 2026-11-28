@@ -453,8 +453,13 @@ type AgentTaskResponse struct {
 	IssueID              string                 `json:"issue_id"`
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
-	IssueTitle           string                 `json:"issue_title,omitempty"`
+	IssueIdentifier string `json:"issue_identifier,omitempty"`
+	IssueTitle      string `json:"issue_title,omitempty"`
+	// IssueDescription is the issue body's head, sent with the title so the
+	// daemon's pre-run memory recall has a query on assignment runs that carry
+	// no trigger comment. The daemon only uses it as a recall query; it is not
+	// rendered into the brief. Mirror field: internal/daemon/types.go.
+	IssueDescription     string                 `json:"issue_description,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so

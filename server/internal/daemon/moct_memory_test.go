@@ -29,6 +29,10 @@ func moctTestTask() Task {
 		AgentID:     moctTestAgentID,
 		IssueID:     moctTestIssueID,
 		ProjectID:   moctTestProjectID,
+		// A claim always carries the issue's identity once it has one; the
+		// recall query needs it on assignment runs with no trigger comment.
+		IssueTitle:       "Compare the two planes",
+		IssueDescription: "Decide which memory backend to keep.",
 	}
 }
 

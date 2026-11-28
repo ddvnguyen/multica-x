@@ -145,7 +145,7 @@ export function MemoryCompare({
 
   const vote = useMutation({
     mutationFn: (choice: MemoryCompareChoice) =>
-      api.setIssueTaskMemoryMark(issueId, taskId, choice),
+      api.setIssueTaskMemoryMark(issueId, taskId, choice, workspaceId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: issueKeys.taskMemoryReport(issueId, taskId) });
       void qc.invalidateQueries({ queryKey: workspaceKeys.memoryComparison(workspaceId) });
