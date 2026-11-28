@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowLeft, Bot, MessageSquare, Plus } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -24,6 +24,7 @@ import { useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
+import { useVisualViewportKeyboard } from "./components/use-visual-viewport-keyboard";
 import { TierDropdown } from "./components/tier-dropdown";
 import { ChatQueue } from "./components/chat-queue";
 import { ChatWakeupStrip, useChatWakeups } from "./components/chat-wakeups";
@@ -71,6 +72,25 @@ export function ChatPage() {
   // can rehydrate the store before this page observes the destination URL.
   const isCurrentChatRoute = pathname === wsPaths.chat();
   const isCompact = useIsCompact();
+
+  // A soft keyboard shrinks only the visual viewport; the `h-svh` shell keeps
+  // its full height, so this page's bottom-anchored composer would sit behind
+  // the keyboard. Fit the whole page to the visible strip the same way the
+  // floating chat window and the agent-create shell do — both numbers matter,
+  // because a full iOS pan can make `occludedBottom` zero while the keyboard
+  // is still up.
+  const keyboard = useVisualViewportKeyboard();
+  const keyboardFitStyle: CSSProperties | undefined =
+    isCompact && keyboard
+      ? {
+          position: "fixed",
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          bottom: keyboard.occludedBottom,
+          height: keyboard.viewportHeight,
+        }
+      : undefined;
 
   const c = useChatController({
     isActive: isCurrentChatRoute && getCurrentSlug() === workspaceSlug,
@@ -442,7 +462,11 @@ export function ChatPage() {
       // An open session carries the way back in its own header; a new chat
       // has no session header yet, so it gets a bar of its own.
       return (
-        <div className="flex flex-1 flex-col min-h-0">
+        <div
+          data-testid="chat-page"
+          className="flex flex-1 flex-col min-h-0 bg-background"
+          style={keyboardFitStyle}
+        >
           {!c.currentSession && (
             <div className="flex h-12 shrink-0 items-center border-b px-2">
               <Button
@@ -461,7 +485,11 @@ export function ChatPage() {
       );
     }
     return (
-      <div className="flex flex-1 flex-col min-h-0">
+      <div
+        data-testid="chat-page"
+        className="flex flex-1 flex-col min-h-0 bg-background"
+        style={keyboardFitStyle}
+      >
         {listHeader}
         {noAgentPage ? (
           noAgentState
@@ -478,7 +506,11 @@ export function ChatPage() {
   // prompt instead of an orphaned compose box. -------------------------------
   const hasTarget = !!c.activeSessionId || composingNew;
   return (
-    <div className="flex min-h-0 flex-1">
+    <div
+      data-testid="chat-page"
+      className="flex min-h-0 flex-1 bg-background"
+      style={keyboardFitStyle}
+    >
       <ListColumn collapsed={listCollapsed} width="list">
         {listHeader}
         <div className="flex min-h-0 flex-1 flex-col">{listBody}</div>
