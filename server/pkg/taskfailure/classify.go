@@ -197,6 +197,10 @@ func Classify(rawError string) Reason {
 			// quote forms land here.
 			"hit your session limit",
 			"hit your weekly limit",
+			// Claude Code's 5-hour rolling window: "You've hit your 5-hour
+			// limit \u00b7 resets <time>". Apostrophe-free so both ASCII '
+			// and U+2019 forms land here.
+			"hit your 5-hour limit",
 			"credits",
 			"quota",
 		):
