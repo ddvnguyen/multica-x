@@ -217,6 +217,12 @@ jobs:
             test "$(podman image inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' "$image")" = "$IMAGE_TAG"
           done
 
+      # The multica-main runner is a systemd --user service, whose PATH does
+      # not include ~/.local/bin. scripts/deploy-main.sh needs the multica CLI
+      # installed there, so export it for the remaining steps (M-629).
+      - name: Put the multica CLI on PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Deploy, verify, and roll back on failure
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
