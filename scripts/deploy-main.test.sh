@@ -57,23 +57,30 @@ case "$1 $2" in
   'logs '*)
     printf 'podman logs:%s\n' "$*" >> "$STUB_LOG"
     # M-615: emulate a busy backend. One /healthz line is written early (the
-    # 5s compose healthcheck), then 120 daemon API lines bury it. `--tail 100`
-    # shows only the noise (the deploy bug); `--since` reads the whole window
-    # since the switch and still finds the healthz line.
-    if [ "${NOISY_BACKEND_LOG:-0}" = 1 ]; then
-      backend_log="$STUB_LOG.backend"
+    # 5s compose healthcheck), then 3000 daemon API lines (~78 KiB, well past
+    # the 64 KiB pipe buffer) bury it. `--tail 100` shows only the noise (the
+    # M-615 bug); `--since` reads the whole window since the switch and still
+    # finds the healthz line.
+    # M-632: the volume also reproduces the SIGPIPE defect — a reader that
+    # exits at the first match (`grep -q`) makes the writer fail with 141 under
+    # pipefail. NO_HEALTHZ_BACKEND_LOG drops the line entirely so the proof
+    # must still fail on a large stream.
+    backend_log="$STUB_LOG.backend"
+    if [ "${NO_HEALTHZ_BACKEND_LOG:-0}" = 1 ]; then
+      for i in $(seq 1 3000); do printf 'GET /api/daemon/tasks 200\n'; done > "$backend_log"
+    elif [ "${NOISY_BACKEND_LOG:-0}" = 1 ]; then
       {
         printf 'GET /healthz 200\n'
-        for i in $(seq 1 120); do printf 'GET /api/daemon/tasks 200\n'; done
+        for i in $(seq 1 3000); do printf 'GET /api/daemon/tasks 200\n'; done
       } > "$backend_log"
-      case "$2" in
-        --since) cat "$backend_log" ;;
-        --tail) tail -n "${3:-100}" "$backend_log" ;;
-        *) cat "$backend_log" ;;
-      esac
     else
-      printf 'GET /healthz 200\n'
+      printf 'GET /healthz 200\n' > "$backend_log"
     fi
+    case "$2" in
+      --since) cat "$backend_log" ;;
+      --tail) tail -n "${3:-100}" "$backend_log" ;;
+      *) cat "$backend_log" ;;
+    esac
     ;;
   'run --rm') printf 'new daemon binary\n' ;;
   'images --format')
@@ -162,6 +169,29 @@ output="$(run --dry-run)"
 assert test ! -e "$MULTICA_MAIN_TMPDIR"
 assert test ! -e "$MULTICA_MAIN_BACKUP_ROOT"
 
+# M-632: on the deploy runner `multica` lives only in $HOME/.local/bin, which
+# the script appends to PATH itself. Before #386 the preflight died with
+# "required command not found: multica". PATH here is a copy of the stub bin
+# with multica removed plus the system dirs, so only the script's own append
+# can satisfy the check.
+NOMULTICA_BIN="$SANDBOX/bin-nomultica"
+cp -a "$STUB_BIN" "$NOMULTICA_BIN"
+rm -f "$NOMULTICA_BIN/multica"
+cat > "$HOME/.local/bin/multica" <<'EOF'
+#!/usr/bin/env bash
+printf '{"active_task_count":0,"cli_version":"%s"}\n' "${IMAGE_TAG:-}"
+EOF
+chmod 755 "$HOME/.local/bin/multica"
+if ! output="$(PATH="$NOMULTICA_BIN:/usr/bin:/bin" bash "$SCRIPT" "$IMAGE_TAG" "$EXPECTED_COMMIT" 1 --dry-run 2>&1)"; then
+  echo "expected dry-run to find multica in \$HOME/.local/bin" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
+[[ "$output" == *"dry-run complete"* ]]
+# Restore the non-script fixture the later cases assert on.
+printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
+chmod 755 "$HOME/.local/bin/multica"
+
 # Missing staged image fails during preflight, before any state changes.
 if FAIL_IMAGE="ghcr.io/multica-ai/multica-web:$IMAGE_TAG" run --dry-run >/dev/null 2>&1; then
   echo "expected missing-image preflight failure" >&2; exit 1
@@ -199,24 +229,31 @@ printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONT
 printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
 
 # A positive drain takes an authenticated lease, verifies idle through it and
-# records the stop with structured UTC fields.
+# records the stop with structured UTC fields. M-632: the status URL must carry
+# the port from the daemon's control file — before #386 request_drain ran in a
+# subshell, lost DRAIN_PORT and called `http://127.0.0.1:/drain/status`.
 : > "$AUDIT_LOG"
 before_begin="$(grep -c '/drain/begin$' "$STUB_LOG" || true)"
+before_status="$(grep -c '^curl http://127.0.0.1:19514/drain/status$' "$STUB_LOG" || true)"
 run >/dev/null 2>&1
 assert test "$(grep -c '/drain/begin$' "$STUB_LOG")" -eq "$((before_begin + 1))"
-assert grep -q '/drain/status$' "$STUB_LOG"
+assert test "$(grep -c '^curl http://127.0.0.1:19514/drain/status$' "$STUB_LOG")" -eq "$((before_status + 1))"
 assert audit_has 'any(.[]; .operation=="stop" and .outcome=="drained" and .unit=="multica-daemon.service" and (.force|type=="boolean") and (.timeout|type=="number") and (.ts|test("Z$")))'
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
 
 # An unforced timeout aborts the lease and resumes claims; nothing is switched.
+# The abort must reach the same control port, with the lease token in its
+# header (M-632: a subshell lost DRAIN_PORT and called `127.0.0.1:/drain/abort`).
 : > "$AUDIT_LOG"
-before_abort="$(grep -c '/drain/abort$' "$STUB_LOG" || true)"
+before_abort="$(grep -c '^curl http://127.0.0.1:19514/drain/abort$' "$STUB_LOG" || true)"
+before_status="$(grep -c '^curl http://127.0.0.1:19514/drain/status$' "$STUB_LOG" || true)"
 before_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG" || true)"
 if ACTIVE_TASK_COUNT=1 run >/dev/null 2>&1; then
   echo "expected unforced drain timeout to abort" >&2; exit 1
 fi
-assert test "$(grep -c '/drain/abort$' "$STUB_LOG")" -eq "$((before_abort + 1))"
+assert test "$(grep -c '^curl http://127.0.0.1:19514/drain/abort$' "$STUB_LOG")" -eq "$((before_abort + 1))"
+assert test "$(grep -c '^curl http://127.0.0.1:19514/drain/status$' "$STUB_LOG")" -gt "$before_status"
 assert test "$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")" -eq "$before_stops"
 assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
 assert audit_has 'all(.[]; .operation != "stop")'
@@ -284,6 +321,10 @@ assert test "$after_stops" -gt "$before_stops"
 # a fixed --tail window, or a healthy deploy rolls back. The stub above drops
 # the healthz line for --tail and keeps it for --since, so a regression to
 # --tail makes this deploy fail.
+# M-632: the same stub writes the healthz line first and then ~78 KiB, past the
+# 64 KiB pipe buffer. A `grep -q` reader exits at the first match, the writer
+# takes SIGPIPE and pipefail turns a found line into exit 141 (runs 46147975031
+# and 46149857404 rolled a healthy stack back this way). The deploy must pass.
 noisy_log="$SANDBOX/noisy-serving-proof.log"
 if ! NOISY_BACKEND_LOG=1 run >"$noisy_log" 2>&1; then
   echo "expected noisy-log deploy to pass the serving proof" >&2
@@ -292,9 +333,24 @@ if ! NOISY_BACKEND_LOG=1 run >"$noisy_log" 2>&1; then
 fi
 assert grep -q 'waiting for the backend to log a /healthz request' "$noisy_log"
 assert grep -q 'podman logs:.*--since' "$STUB_LOG"
+assert test "$(wc -c < "$STUB_LOG.backend")" -gt 65536
 # Restore fixtures the later rollback tests rely on.
 printf 'MULTICA_IMAGE_TAG=old-tag\nPOSTGRES_DB=multica\nBACKEND_PORT=4802\nFRONTEND_PORT=4180\n' > "$STACK_DIR/.env"
 printf 'old daemon binary\n' > "$HOME/.local/bin/multica"
+
+# M-632: a backend that never logs /healthz must still fail the proof and roll
+# back, even with a log large enough to fill the pipe buffer — the fix counts
+# matches, it does not merely ignore the pipeline status.
+before_stops="$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG" || true)"
+nohealthz_log="$SANDBOX/no-healthz-serving-proof.log"
+if NO_HEALTHZ_BACKEND_LOG=1 run >"$nohealthz_log" 2>&1; then
+  echo "expected the serving proof to fail without a /healthz line" >&2
+  exit 1
+fi
+assert grep -q 'not provably serving' "$nohealthz_log"
+assert test "$(grep -c 'systemctl --user stop multica-daemon.service' "$STUB_LOG")" -gt "$before_stops"
+assert grep -q '^MULTICA_IMAGE_TAG=old-tag$' "$STACK_DIR/.env"
+assert grep -q 'old daemon binary' "$HOME/.local/bin/multica"
 
 # Image retention: after a successful deploy, only the two newest
 # localhost/multica-{web,backend} versions stay; older tags are removed and

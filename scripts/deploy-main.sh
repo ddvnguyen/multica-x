@@ -523,7 +523,15 @@ be_cid="$(podman ps -q \
 [ -n "$be_cid" ] || die "could not find the backend container after the switch"
 served=0
 for _ in $(seq 1 15); do
-  if podman logs --since "$SWITCH_LOG_SINCE" "$be_cid" 2>&1 | grep -q 'healthz'; then served=1; break; fi
+  # M-632: count the matches instead of `grep -q`. `grep -q` exits at the
+  # first match, the log writer takes SIGPIPE, and under `set -o pipefail` the
+  # pipeline returns 141 even though the line was found: runs 46147975031 and
+  # 46149857404 passed every probe, then rolled a healthy stack back on this.
+  # `grep -c` reads the whole stream, so the producer never sees SIGPIPE, and
+  # a backend that logged no /healthz line still counts 0 and fails the proof.
+  matches="$(podman logs --since "$SWITCH_LOG_SINCE" "$be_cid" 2>&1 | grep -c 'healthz' || true)"
+  [[ "$matches" =~ ^[0-9]+$ ]] || matches=0
+  if [ "$matches" -gt 0 ]; then served=1; break; fi
   sleep 2
 done
 [ "$served" = 1 ] || die "backend logged no /healthz request within 30s of the switch; not provably serving"
