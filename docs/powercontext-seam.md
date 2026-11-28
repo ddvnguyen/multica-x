@@ -34,9 +34,17 @@ dispatches to `powerContextInjectPrompt`, which calls:
 
 ```
 POST /v1/context/prepare
-{"scope_id": "multica:project:<uuid>", "query": "<trigger comment, clamped>",
+{"scope_id": "multica:project:<uuid>", "query": "<best run text, clamped>",
  "max_bytes": 24000}
 ```
+
+The query falls back in the order a reader would use: the trigger comment, the
+issue title plus the head of its description (both sent on the claim), the
+autopilot or chat message, then a handoff note. Only ~15% of assignment runs
+carry a trigger comment, and a real 1.6.0 answers 422 to a prepare with no
+`query`, so a run with none of that text is recorded with a note and sends no
+prepare at all (M-625). The text is clamped to one line; it is a recall query,
+not prompt content.
 
 The response envelope (`status`, `content`, `content_bytes`) is injected into
 the same prompt slot MOCT uses, behind the same `PartMemory` report row. Two
@@ -69,7 +77,8 @@ A ref is a **key**, not an id. PowerContext generates a Scope id (`scp_…`) whe
 a Scope is created and keeps the Multica ref as an external reference, so a
 route handed `multica:project:<uuid>` answers `scope_not_found` — a real 1.6.0
 does exactly that. [`Client.ResolveScope`](../server/internal/powercontext/client.go)
-resolves it once per client and caches the result:
+caches the mapping process-wide, keyed by base URL and ref, with a TTL; a new
+client built on each claim therefore does not pay a listing on every run:
 
 ```
 GET /v1/scopes?query=<ref>&query_field=external_reference_value
@@ -160,7 +169,9 @@ the acceptance test asserts the injected bytes are identical with the switch on
 and off.
 - **It never delays the claim.** The read runs in its own goroutine and is
 joined only when `init_context` is marshalled at run end. A read still in flight
-then is recorded as unfinished (`note`), not waited for.
+then is recorded as unfinished (`note`), not waited for. The ref-to-scope listing
+is resolved before the latency clock starts, so `shadow.latency_ms` prices the
+prepare rather than a cached one-off lookup (M-625).
 - **It never fails a run.** Its own timeout — 5 s, shorter than the seam's 10 s —
 ends the call; the outcome is one `error` or `note` on the same record.
 
