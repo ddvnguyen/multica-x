@@ -76,8 +76,18 @@ vi.mock("./components/archived-agent-banner", () => ({
 const FOLD_INNER_PORTRAIT = 669;
 const FOLD_INNER_LANDSCAPE = 951;
 const TABLET = 768;
+const PHONE = 390;
 const DESKTOP = 1440;
 const layout = vi.hoisted(() => ({ width: 1440 }));
+// The page-level keyboard fit is driven by the same hook the floating chat
+// window uses; steer it directly so the DOM assertions need no real
+// visualViewport events.
+const keyboardRef = vi.hoisted(() => ({
+  value: null as { occludedBottom: number; viewportHeight: number } | null,
+}));
+vi.mock("./components/use-visual-viewport-keyboard", () => ({
+  useVisualViewportKeyboard: () => keyboardRef.value,
+}));
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
   useIsCompact: () => layout.width < 768,
@@ -259,6 +269,7 @@ beforeEach(() => {
   agentsSettledRef.current = true;
   platformWorkspace.slug = "acme";
   layout.width = DESKTOP;
+  keyboardRef.value = null;
 });
 
 describe("ChatPage URL synchronization", () => {
@@ -493,5 +504,51 @@ describe("ChatPage responsive layout", () => {
       screen.getByRole("button", { name: "select-thread" }),
     ).toBeInTheDocument();
     expect(screen.getByText("chat-input")).toBeInTheDocument();
+  });
+});
+
+describe("ChatPage mobile keyboard viewport", () => {
+  const keyboard = { occludedBottom: 300, viewportHeight: 500 };
+
+  function chatPageRoot(): HTMLElement {
+    const root = document.querySelector('[data-testid="chat-page"]');
+    if (!root) throw new Error("chat page root not rendered");
+    return root as HTMLElement;
+  }
+
+  it("pins the open conversation to the visible strip while the keyboard is up", () => {
+    layout.width = PHONE;
+    storeRef.current = { activeSessionId: "session-1" };
+    keyboardRef.value = keyboard;
+    renderPage("session=session-1");
+
+    const root = chatPageRoot();
+    expect(root.style.position).toBe("fixed");
+    expect(root.style.left).toBe("0px");
+    expect(root.style.right).toBe("0px");
+    expect(root.style.bottom).toBe("300px");
+    expect(root.style.height).toBe("500px");
+    expect(screen.getByText("chat-input")).toBeInTheDocument();
+  });
+
+  it("returns the page to the shell flow when the keyboard closes", () => {
+    layout.width = PHONE;
+    storeRef.current = { activeSessionId: "session-1" };
+    keyboardRef.value = null;
+    renderPage("session=session-1");
+
+    const root = chatPageRoot();
+    expect(root.style.position).toBe("");
+    expect(root.style.bottom).toBe("");
+    expect(root.style.height).toBe("");
+  });
+
+  it("leaves the two-pane layout alone even if a keyboard reports geometry", () => {
+    layout.width = DESKTOP;
+    storeRef.current = { activeSessionId: "session-1" };
+    keyboardRef.value = keyboard;
+    renderPage("session=session-1");
+
+    expect(chatPageRoot().style.position).toBe("");
   });
 });
