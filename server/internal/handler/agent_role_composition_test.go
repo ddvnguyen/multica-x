@@ -312,7 +312,7 @@ func TestClaimTaskByRuntime_MikaKeepsRoleInstructions(t *testing.T) {
 	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
 
 	got := roleCompositionClaim(t, runtimeID, protocol.DaemonCapabilitySkillBundlesV1).Agent.Instructions
-	for _, want := range []string{"You are Mika", "ROLE RULES", "AGENT RULES"} {
+	for _, want := range []string{"Multica's built-in system agent (Mika)", "ROLE RULES", "AGENT RULES"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Mika claim instructions missing %q:\n%s", want, got)
 		}
