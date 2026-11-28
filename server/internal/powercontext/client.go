@@ -76,6 +76,53 @@ type Client struct {
 	scopes map[string]string
 }
 
+// scopeCacheTTL bounds a process-level ref → Scope id mapping. Scope ids are
+// generated when a Scope is created and do not move, so the TTL only limits how
+// long a recreated Scope's stale id can survive. A variable so a test can
+// exercise expiry without waiting minutes.
+var scopeCacheTTL = 15 * time.Minute
+
+type scopeCacheEntry struct {
+	id        string
+	expiresAt time.Time
+}
+
+// scopeCache is shared by every Client in the process. The daemon builds a new
+// client on every claim, so a per-client map still paid one GET /v1/scopes per
+// run — a cost the shadow's latency_ms then included (M-625). The base URL is
+// part of the key: two PowerContext instances own different Scope ids for the
+// same Multica ref.
+var scopeCache = struct {
+	sync.Mutex
+	entries map[string]scopeCacheEntry
+}{entries: map[string]scopeCacheEntry{}}
+
+func scopeCacheKey(baseURL, ref string) string {
+	return baseURL + "\x00" + strings.TrimSpace(ref)
+}
+
+func processCachedScope(baseURL, ref string) (string, bool) {
+	key := scopeCacheKey(baseURL, ref)
+	scopeCache.Lock()
+	defer scopeCache.Unlock()
+	entry, ok := scopeCache.entries[key]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(scopeCache.entries, key)
+		return "", false
+	}
+	return entry.id, true
+}
+
+func processRememberScope(baseURL, ref, id string) {
+	key := scopeCacheKey(baseURL, ref)
+	scopeCache.Lock()
+	defer scopeCache.Unlock()
+	scopeCache.entries[key] = scopeCacheEntry{id: id, expiresAt: time.Now().Add(scopeCacheTTL)}
+}
+
 // NewClient validates the base URL once so a misconfigured lane fails at
 // startup, not on the first pre-run prepare.
 func NewClient(cfg Config) (*Client, error) {
@@ -117,12 +164,17 @@ func (c *Client) ResolveScope(ctx context.Context, ref string) (string, error) {
 	if id, ok := c.cachedScope(ref); ok {
 		return id, nil
 	}
+	if id, ok := processCachedScope(c.baseURL, ref); ok {
+		c.rememberScope(ref, id)
+		return id, nil
+	}
 	for _, field := range []string{"scope_id", "external_reference_value"} {
 		page, err := c.listScopes(ctx, ref, field)
 		if err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
 				// No scope listing on this build: keep the pre-resolution contract.
+				processRememberScope(c.baseURL, ref, ref)
 				return ref, nil
 			}
 			return "", err
@@ -130,6 +182,10 @@ func (c *Client) ResolveScope(ctx context.Context, ref string) (string, error) {
 		for _, scope := range page.Items {
 			if scope.ScopeID == ref || hasExternalReference(scope, ref) {
 				c.rememberScope(ref, scope.ScopeID)
+				processRememberScope(c.baseURL, ref, scope.ScopeID)
+				// Callers that already hold a resolved id pass it back into
+				// Prepare; cache that key too so they never list a second time.
+				processRememberScope(c.baseURL, scope.ScopeID, scope.ScopeID)
 				return scope.ScopeID, nil
 			}
 		}

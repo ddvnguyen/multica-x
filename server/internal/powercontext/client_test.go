@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // testScopeID is the server-generated id a Multica ref resolves to. PowerContext
@@ -451,5 +452,86 @@ func TestPrepareDecodesUnknownFieldsOnKnownShape(t *testing.T) {
 	}
 	if strings.TrimSpace(got.Text()) != "c" {
 		t.Fatalf("content = %q", got.Text())
+	}
+}
+
+// resetScopeCacheForTest keeps the process-level cache from leaking between
+// tests: every case uses its own httptest URL, but a shared TTL variable must
+// also be restored.
+func resetScopeCacheForTest(t *testing.T) {
+	t.Helper()
+	previousTTL := scopeCacheTTL
+	scopeCache.Lock()
+	scopeCache.entries = map[string]scopeCacheEntry{}
+	scopeCache.Unlock()
+	t.Cleanup(func() {
+		scopeCache.Lock()
+		scopeCache.entries = map[string]scopeCacheEntry{}
+		scopeCache.Unlock()
+		scopeCacheTTL = previousTTL
+	})
+}
+
+// The daemon builds a new client on every claim. A per-client map alone still
+// cost one GET /v1/scopes per run, which the shadow then priced as latency
+// (M-625). Two different clients must share one process-level lookup — and a
+// caller holding an already-resolved scp_ id must not trigger a second one.
+func TestResolveScopeIsCachedAcrossClients(t *testing.T) {
+	resetScopeCacheForTest(t)
+	var listings atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "multica:project:prj_1", &listings) {
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"empty","content":null,"content_bytes":0}`))
+	}))
+	defer srv.Close()
+
+	for i := 0; i < 2; i++ {
+		client, err := NewClient(Config{BaseURL: srv.URL})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		got, err := client.ResolveScope(context.Background(), "multica:project:prj_1")
+		if err != nil || got != testScopeID {
+			t.Fatalf("ResolveScope = (%q, %v), want %q", got, err, testScopeID)
+		}
+	}
+	client, _ := NewClient(Config{BaseURL: srv.URL})
+	if _, err := client.Prepare(context.Background(), PrepareRequest{ScopeID: testScopeID}); err != nil {
+		t.Fatalf("Prepare with a resolved id: %v", err)
+	}
+	if listings.Load() != 1 {
+		t.Fatalf("listings = %d, want 1 across clients and a resolved id", listings.Load())
+	}
+}
+
+// A recreated Scope can change its generated id, so the process cache is
+// bounded by a TTL. Once it expires the next client must look the ref up again.
+func TestResolveScopeCacheExpires(t *testing.T) {
+	resetScopeCacheForTest(t)
+	scopeCacheTTL = 20 * time.Millisecond
+	var listings atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !serveScopes(w, r, "multica:ws:ws_1", &listings) {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	first, _ := NewClient(Config{BaseURL: srv.URL})
+	if _, err := first.ResolveScope(context.Background(), "multica:ws:ws_1"); err != nil {
+		t.Fatalf("first ResolveScope: %v", err)
+	}
+	if listings.Load() != 1 {
+		t.Fatalf("listings = %d after the first lookup", listings.Load())
+	}
+	time.Sleep(40 * time.Millisecond)
+	second, _ := NewClient(Config{BaseURL: srv.URL})
+	if _, err := second.ResolveScope(context.Background(), "multica:ws:ws_1"); err != nil {
+		t.Fatalf("second ResolveScope: %v", err)
+	}
+	if listings.Load() != 2 {
+		t.Fatalf("listings = %d, want 2 after the TTL expired", listings.Load())
 	}
 }
