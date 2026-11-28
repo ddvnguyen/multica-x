@@ -8306,7 +8306,7 @@ func resolveTaskModelSelection(
 	runtimeCmd agent.Command,
 	sel taskModelSelection,
 	taskLog *slog.Logger,
-) taskModelSelection {
+) (taskModelSelection, error) {
 	capabilityChecksPending := sel.ThinkingLevel != "" || sel.ServiceTier != ""
 
 	read := false
@@ -8323,6 +8323,34 @@ func resolveTaskModelSelection(
 	}
 
 	sel.Model = qualifyTaskModel(provider, sel.Model, capabilityChecksPending, loadCatalog, taskLog)
+
+	// M-634: a tier member pinned to a model the runtime no longer lists is a
+	// member-level problem, not a problem with the task. Fail the run with an
+	// explicit reason (the same text taskfailure.Classify maps to
+	// ReasonAgentModelNotFoundOrUnavailable) so FailTask arms that member's
+	// cooldown and the next resolve falls over to the next member/tier instead
+	// of launching a run the runtime is guaranteed to reject.
+	//
+	// Only runtimes whose catalog is the authority for the model id get this
+	// guard — see agent.CatalogDefinesModelIDs. A verified (non-empty, live)
+	// catalog is the only thing allowed to reject: on a lookup error, or an
+	// empty/fallback/static catalog, the persisted model goes to the runtime
+	// untouched and its own resolver judges it. The bridge's own "let the
+	// desktop pick" sentinel is never a stale model — the wrapper turns it
+	// into no --model and the picker does not list it. Failures that happen
+	// later at the provider (an HTTP 400, for example) are NOT reclassified.
+	if sel.Model != "" && sel.Model != agent.FreebuffDesktopDefaultModelID && agent.CatalogDefinesModelIDs(provider, runtimeCmd) {
+		catalog, err := loadCatalog()
+		if err != nil {
+			taskLog.Warn("model: catalog lookup failed; using the configured model as-is",
+				"provider", provider,
+				"model", sel.Model,
+				"error", err,
+			)
+		} else if catalog.Verified() && !catalog.HasModel(sel.Model) {
+			return sel, fmt.Errorf("model %q was not found in the runtime catalog", sel.Model)
+		}
+	}
 
 	// service_tier is catalog-owned and currently Codex-only. As with
 	// thinking_level, stale or incompatible persisted values degrade to the
@@ -8382,7 +8410,7 @@ func resolveTaskModelSelection(
 		}
 	}
 
-	return sel
+	return sel, nil
 }
 
 func (d *Daemon) reportThinkingLevelWarning(ctx context.Context, taskID, warning string, msgSeq *atomic.Int32, taskLog *slog.Logger) {
@@ -8455,6 +8483,34 @@ func qualifyTaskModel(
 		"model", qualified,
 	)
 	return qualified
+}
+
+// freebuffDesktopDiscoveryEnv copies the run's Freebuff Desktop account knobs
+// onto the model-discovery command. The wrapper's `--list-models --json`
+// enumerates ONE account — the one FREEBUFF_DESKTOP_URL points at — while the
+// bare command would enumerate whichever desktop happens to be the default on
+// this host. Carrying the run's env is what makes the stale-model guard check
+// the catalog the run will actually launch against (M-634).
+//
+// These travel on agent.Command.Env, never through os.Setenv: the daemon's
+// process env is shared by every concurrent task, and Command.cacheKey folds
+// Env into the discovery key so two desktops keep separate catalogs. Keys are
+// sorted so repeated runs with the same account share one cache entry.
+// FREEBUFF_DESKTOP_SCOPE is excluded: it is per-task transcript identity, not
+// account selection, and would fragment the cache on every run.
+func freebuffDesktopDiscoveryEnv(runEnv map[string]string, cmd agent.Command) agent.Command {
+	keys := make([]string, 0, 3)
+	for key := range runEnv {
+		switch key {
+		case "FREEBUFF_DESKTOP_URL", "FREEBUFF_DESKTOP_CREDENTIAL_REF", freebuffDesktopLaunchIDEnv:
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		cmd = cmd.WithEnv(key + "=" + runEnv[key])
+	}
+	return cmd
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
@@ -9866,8 +9922,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		thinkingLevel = task.Agent.ThinkingLevel
 		serviceTier = task.Agent.ServiceTier
 	}
-	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
+	discoveryCmd := agent.NewCommand(entry.Path, profileFixedArgs)
+	if isFreebuffDesktopRuntime(entry.Path, task) {
+		discoveryCmd = freebuffDesktopDiscoveryEnv(agentEnv, discoveryCmd)
+	}
+	selection, err := resolveTaskModelSelection(ctx, provider, discoveryCmd,
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
+	if err != nil {
+		// Reported through handleTask's terminal-fail path, whose
+		// taskRunFailureReason classifies the explicit model-not-found text as
+		// ReasonAgentModelNotFoundOrUnavailable — a tier cooldown reason, so a
+		// stale member falls over to the next one (M-634).
+		return TaskResult{}, err
+	}
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
 
 	var idleWatchdogTimeout time.Duration

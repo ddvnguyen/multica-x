@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1750,6 +1751,100 @@ func TestDiscoveryCacheKeyIsolatesByExecutable(t *testing.T) {
 // but only when exactly one provider claims it. opencode rejects an
 // unqualified id outright, and every capability lookup keyed on the model id
 // misses until the two agree.
+// M-634: only runtimes whose catalog is the authority for the launched model
+// id get the pre-launch stale-model guard. A free-form selector (the default)
+// must never be failed on a catalog miss.
+func TestCatalogDefinesModelIDs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		provider string
+		cmd      Command
+		want     bool
+	}{
+		{name: "freebuff desktop bridge", provider: "codebuddy", cmd: Command{Path: "/opt/freebuff-runtime/freebuff-desktop"}, want: true},
+		{name: "freebuff desktop bridge via env", provider: "codebuddy", cmd: Command{Path: "node"}.WithEnv(freebuffDesktopEnvURL + "=http://127.0.0.1:1234"), want: true},
+		{name: "plain codebuddy is free-form", provider: "codebuddy", cmd: Command{Path: "/usr/bin/codebuddy"}, want: false},
+		{name: "dsh is free-form here", provider: "dsh", cmd: Command{Path: "/usr/bin/dsh"}, want: false},
+		{name: "claude is free-form", provider: "claude", cmd: Command{Path: "/usr/bin/claude"}, want: false},
+		{name: "codex is free-form", provider: "codex", cmd: Command{Path: "/usr/bin/codex"}, want: false},
+		{name: "opencode is free-form", provider: "opencode", cmd: Command{Path: "/usr/bin/opencode"}, want: false},
+		{name: "pi is free-form", provider: "pi", cmd: Command{Path: "/usr/bin/pi"}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CatalogDefinesModelIDs(tc.provider, tc.cmd); got != tc.want {
+				t.Errorf("CatalogDefinesModelIDs(%q, %q) = %v, want %v", tc.provider, tc.cmd.Path, got, tc.want)
+			}
+		})
+	}
+}
+
+// The bridge exits 0 with a single stand-in row when it is signed in but
+// cannot read the picker. That is not a catalog of what the account can run,
+// so ListModels must flag it Fallback instead of treating it as authoritative
+// (M-634).
+func TestFreebuffDesktopStandInCatalogIsFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "freebuff-desktop")
+	body := "#!/bin/sh\nprintf '%s\\n' '{\"models\":[{\"id\":\"freebuff-desktop\",\"name\":\"Freebuff Desktop\",\"provider\":\"freebuff\"}]}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ListModels(context.Background(), "codebuddy", Command{Path: script})
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if !catalog.Fallback {
+		t.Error("a stand-in-only freebuff-desktop list must be flagged Fallback")
+	}
+	if catalog.Verified() {
+		t.Error("a stand-in-only freebuff-desktop list must not be Verified")
+	}
+	if !catalog.HasModel(FreebuffDesktopDefaultModelID) {
+		t.Errorf("stand-in row missing from catalog: %+v", catalog.Models)
+	}
+}
+
+// A real picker list is authoritative even though the default sentinel is not
+// one of its ids — the sentinel is never sent to the desktop as a model.
+func TestFreebuffDesktopRealCatalogIsVerified(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "freebuff-desktop-account-a")
+	body := "#!/bin/sh\nprintf '%s\\n' '{\"models\":[{\"id\":\"m-8db1ccbba6\",\"name\":\"DeepSeek V4.1 Flash\"}]}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ListModels(context.Background(), "codebuddy", Command{Path: script})
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if catalog.Fallback || !catalog.Verified() {
+		t.Errorf("a live picker list must be Verified: %+v", catalog)
+	}
+}
+
+func TestCatalogHasModel(t *testing.T) {
+	t.Parallel()
+	catalog := Catalog{Models: []Model{{ID: "m-8db1ccbba6"}, {ID: "dsh-opencode-go/beam-free"}}}
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{id: "m-8db1ccbba6", want: true},
+		{id: "  m-8db1ccbba6  ", want: true},
+		{id: "dsh-opencode-go/beam-free", want: true},
+		{id: "deepseek-v4.1-flash", want: false},
+		{id: "", want: false},
+	} {
+		if got := catalog.HasModel(tc.id); got != tc.want {
+			t.Errorf("HasModel(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestQualifyModelID(t *testing.T) {
 	t.Parallel()
 

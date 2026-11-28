@@ -154,6 +154,61 @@ func (c Catalog) Verified() bool {
 	return !c.Fallback && len(c.Models) > 0
 }
 
+// HasModel reports whether id is one of the catalog's own model ids. It is an
+// exact match on the id the runtime advertised — no guessing at slash-shaped
+// aliases — because callers use it only to decide whether a verified catalog
+// (see Catalog.Verified) knows the model it is about to launch with (M-634).
+func (c Catalog) HasModel(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, m := range c.Models {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// CatalogDefinesModelIDs reports whether provider's discovered catalog is the
+// authority for the model id a run launches with (M-634). These runtimes
+// reject an id the catalog does not list, so a member pinned to a retired id
+// fails at launch instead of falling over; the daemon checks the catalog
+// before launching and fails such runs with an explicit model-not-found
+// reason, which arms the member cooldown.
+//
+// Everything else treats the model as a free-form selector and must NOT be
+// failed on a catalog miss: claude's list_models is a picker, not an
+// exhaustive list of --model values; codex resolves its model from
+// config.toml; opencode/pi accept vendor-qualified ids beyond any one list;
+// and the runtimes that report no catalog already fail Catalog.Verified.
+//
+// The Freebuff Desktop bridge speaks codebuddy on the wire but enumerates a
+// private, opaque-id catalog through `--list-models --json`, and its thread
+// API answers 400 to an id outside that catalog (the production M-634
+// failure). dsh is deliberately NOT included: whether its catalog lists every
+// accepted model is unproven, and qualifyDshModelID intentionally passes some
+// ambiguous ids through for the runtime to judge.
+func CatalogDefinesModelIDs(provider string, cmd Command) bool {
+	return isFreebuffDesktopCommand(cmd)
+}
+
+// FreebuffDesktopDefaultModelID is the bridge's sentinel for "let the desktop
+// pick its own model". The wrapper rewrites `--model <this value>` to no model
+// and never sends it to /api/threads, and the picker catalog does not list it,
+// so the daemon's stale-model guard must never reject it (M-634).
+const FreebuffDesktopDefaultModelID = "freebuff-desktop"
+
+// isFreebuffDesktopStandInCatalog reports whether a discovery result is only
+// the bridge's stand-in row. When the desktop is signed in but cannot read its
+// picker catalog, the wrapper exits 0 with a single `freebuff-desktop` entry;
+// that is not a catalog of what the account can run, so it must be flagged
+// Fallback and never used to reject a saved model (M-634).
+func isFreebuffDesktopStandInCatalog(models []Model) bool {
+	return len(models) == 1 && strings.EqualFold(strings.TrimSpace(models[0].ID), FreebuffDesktopDefaultModelID)
+}
+
 // discovered adapts a plain `([]Model, error)` discovery function to Catalog
 // for providers that have no static fallback — for them a failure is already
 // reported as an empty list or an error, which downstream guards handle.
@@ -306,7 +361,9 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 				if err != nil {
 					return Catalog{}, err
 				}
-				return Catalog{Models: models}, nil
+				// A stand-in-only list means the desktop was reachable but its
+				// picker catalog was unavailable: not authoritative (M-634).
+				return Catalog{Models: models, Fallback: isFreebuffDesktopStandInCatalog(models)}, nil
 			})
 		}
 		// discoverCodebuddyModels owns the thinking annotation too, so the one
