@@ -30,6 +30,11 @@ func shadowMoctServer(t *testing.T) *httptest.Server {
 func shadowPrepareServer(t *testing.T, calls *atomic.Int32, body *map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The scope listing is not the read: it must not count toward the
+		// one prepare call these tests assert.
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		calls.Add(1)
 		if body != nil {
 			var got map[string]any
@@ -110,8 +115,8 @@ func TestMemoryShadowLeavesTheInjectByteIdentical(t *testing.T) {
 	}
 	// Same trigger means the same request the primary seam would send: the
 	// project scope and the memory part's byte budget.
-	if pcBody["scope_id"] != "multica:project:"+moctTestProjectID {
-		t.Fatalf("scope_id = %v", pcBody["scope_id"])
+	if pcBody["scope_id"] != daemonTestScopeID {
+		t.Fatalf("scope_id = %v, want the task's ref resolved to its Scope id", pcBody["scope_id"])
 	}
 	if pcBody["max_bytes"] != float64(powerContextMaxBytes()) {
 		t.Fatalf("max_bytes = %v, want %d", pcBody["max_bytes"], powerContextMaxBytes())

@@ -77,11 +77,16 @@ type RememberRequest struct {
 }
 
 // RememberedRecord is one independent memory the server created or matched.
+// Text is the entry body — PowerContext's field is `text`, not the `content`
+// of /v1/artifacts/*; a decoder written against the wrong one silently reads
+// every entry as empty, which turns the dedupe search into "never found".
 type RememberedRecord struct {
-	Content      string          `json:"content"`
+	Artifact     ArtifactPointer `json:"artifact"`
+	Kind         string          `json:"kind"`
+	Text         string          `json:"text"`
 	State        string          `json:"state"`
 	StateVersion int             `json:"state_version"`
-	Artifact     ArtifactPointer `json:"artifact"`
+	MergedIntoID *string         `json:"merged_into_id"`
 }
 
 // ArtifactPointer identifies the exact immutable revision behind a record.
@@ -91,7 +96,34 @@ type ArtifactPointer struct {
 	Revision   int    `json:"revision"`
 }
 
-// RememberResult is POST /v1/memory/remember's response.
+// RememberResult is POST /v1/memory/remember's response. Changed is false
+// when the server matched an existing entry instead of writing a new one.
 type RememberResult struct {
+	Changed bool               `json:"changed"`
 	Records []RememberedRecord `json:"records"`
+}
+
+// SearchHit is one ranked result from /v1/memory/search. The entry itself sits
+// under `memory`; the outer object carries the ranking.
+type SearchHit struct {
+	Memory    RememberedRecord `json:"memory"`
+	Score     float64          `json:"score"`
+	MatchedBy []string         `json:"matched_by"`
+}
+
+// scopePage is GET /v1/scopes' envelope, used only to resolve a Multica ref
+// to the server-generated Scope id the other routes take.
+type scopePage struct {
+	Items      []scopeDescriptor `json:"items"`
+	NextCursor *string           `json:"next_cursor"`
+}
+
+type scopeDescriptor struct {
+	ScopeID            string                   `json:"scope_id"`
+	ExternalReferences []scopeExternalReference `json:"external_references"`
+}
+
+type scopeExternalReference struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
 }

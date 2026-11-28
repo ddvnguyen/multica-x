@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,6 +68,12 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+
+	// scopes caches ref -> Scope id for this client's lifetime. A Scope id is
+	// server-generated (scp_...), so a Multica ref has to be resolved once per
+	// process instead of being sent as an id the server would not find.
+	mu     sync.Mutex
+	scopes map[string]string
 }
 
 // NewClient validates the base URL once so a misconfigured lane fails at
@@ -85,7 +92,89 @@ func NewClient(cfg Config) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
 	}
-	return &Client{baseURL: base, token: strings.TrimSpace(cfg.Token), httpClient: httpClient}, nil
+	return &Client{
+		baseURL:    base,
+		token:      strings.TrimSpace(cfg.Token),
+		httpClient: httpClient,
+		scopes:     map[string]string{},
+	}, nil
+}
+
+// ResolveScope maps a Multica ref (multica:project:<uuid>, multica:ws:<uuid>)
+// to the Scope id the server's routes take.
+//
+// PowerContext generates Scope ids (scp_...) at creation and keeps the Multica
+// ref as an external reference, so the ref is a lookup key, never an id: sent
+// verbatim the server answers scope_not_found. Resolution is cached per client.
+//
+// A server that does not serve GET /v1/scopes at all (an older installation)
+// gets the ref passed through unchanged, which is what those builds accepted.
+func (c *Client) ResolveScope(ctx context.Context, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errors.New("powercontext: scope ref is empty")
+	}
+	if id, ok := c.cachedScope(ref); ok {
+		return id, nil
+	}
+	for _, field := range []string{"scope_id", "external_reference_value"} {
+		page, err := c.listScopes(ctx, ref, field)
+		if err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
+				// No scope listing on this build: keep the pre-resolution contract.
+				return ref, nil
+			}
+			return "", err
+		}
+		for _, scope := range page.Items {
+			if scope.ScopeID == ref || hasExternalReference(scope, ref) {
+				c.rememberScope(ref, scope.ScopeID)
+				return scope.ScopeID, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("powercontext: no Scope carries the ref %q", ref)
+}
+
+func (c *Client) listScopes(ctx context.Context, query, field string) (*scopePage, error) {
+	params := url.Values{"query": {query}, "query_field": {field}, "limit": {"50"}}
+	var page scopePage
+	if err := c.do(ctx, http.MethodGet, apiPath+"/scopes?"+params.Encode(), nil, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+func hasExternalReference(scope scopeDescriptor, ref string) bool {
+	for _, ext := range scope.ExternalReferences {
+		if ext.Value == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) cachedScope(ref string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, ok := c.scopes[ref]
+	return id, ok
+}
+
+func (c *Client) rememberScope(ref, id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.scopes == nil {
+		c.scopes = map[string]string{}
+	}
+	c.scopes[ref] = id
+}
+
+// scopeID resolves the request's scope, so every route below accepts the D2
+// ref vocabulary the callers speak (refs.go) rather than a raw Scope id.
+func (c *Client) scopeID(ctx context.Context, ref string) (string, error) {
+	return c.ResolveScope(ctx, ref)
 }
 
 // --- endpoints ------------------------------------------------------------
@@ -102,6 +191,11 @@ func (c *Client) Prepare(ctx context.Context, req PrepareRequest) (*Prepared, er
 		return nil, errors.New("powercontext: prepare needs a scope_id")
 	}
 	req.MaxBytes = ClampMaxBytes(req.MaxBytes)
+	scope, err := c.scopeID(ctx, req.ScopeID)
+	if err != nil {
+		return nil, err
+	}
+	req.ScopeID = scope
 	var out Prepared
 	if err := c.do(ctx, http.MethodPost, apiPath+"/context/prepare", req, &out); err != nil {
 		return nil, err
@@ -120,6 +214,11 @@ func (c *Client) Remember(ctx context.Context, req RememberRequest) (*RememberRe
 	if strings.TrimSpace(req.Text) == "" {
 		return nil, errors.New("powercontext: remember needs text")
 	}
+	scope, err := c.scopeID(ctx, req.ScopeID)
+	if err != nil {
+		return nil, err
+	}
+	req.ScopeID = scope
 	var out RememberResult
 	if err := c.do(ctx, http.MethodPost, apiPath+"/memory/remember", req, &out); err != nil {
 		return nil, err
@@ -135,9 +234,24 @@ type SearchParams struct {
 	Limit   int
 }
 
-// SearchResult is POST /v1/memory/search's response.
+// SearchResult is POST /v1/memory/search's response: the ranking mode and the
+// ranked hits. The entry text is SearchHit.Memory.Text — a decoder that looks
+// for a top-level `results` array reads every search as empty.
 type SearchResult struct {
-	Results []RememberedRecord `json:"results"`
+	Mode string      `json:"mode"`
+	Hits []SearchHit `json:"hits"`
+}
+
+// Texts returns the body of every hit, in rank order.
+func (r *SearchResult) Texts() []string {
+	if r == nil {
+		return nil
+	}
+	out := make([]string, 0, len(r.Hits))
+	for _, hit := range r.Hits {
+		out = append(out, hit.Memory.Text)
+	}
+	return out
 }
 
 // Search runs a recall query in one scope.
@@ -146,7 +260,11 @@ func (c *Client) Search(ctx context.Context, p SearchParams) (*SearchResult, err
 	if scope == "" {
 		return nil, errors.New("powercontext: search needs a scope_id")
 	}
-	body := map[string]any{"scope_id": scope}
+	resolved, err := c.scopeID(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"scope_id": resolved}
 	if q := strings.TrimSpace(p.Query); q != "" {
 		body["query"] = q
 	}

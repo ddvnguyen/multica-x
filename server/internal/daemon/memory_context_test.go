@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,6 +110,23 @@ func TestPowerContextInjectPromptOffPaths(t *testing.T) {
 	}
 }
 
+// daemonTestScopeID is the id the fake planes hand back for the task's Multica
+// ref. PowerContext generates Scope ids, so every daemon route test has to
+// serve the listing that maps the ref to one.
+const daemonTestScopeID = "scp_daemon_test_1"
+
+// serveDaemonScopeListing answers GET /v1/scopes for whatever ref the client
+// asks about and reports whether it handled the request.
+func serveDaemonScopeListing(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != "/v1/scopes" {
+		return false
+	}
+	ref := r.URL.Query().Get("query")
+	_, _ = fmt.Fprintf(w, `{"items":[{"scope_id":%q,"external_references":[{"kind":"multica-project","value":%q}]}],"next_cursor":null}`,
+		daemonTestScopeID, ref)
+	return true
+}
+
 // TestPowerContextInjectPromptReady asserts the contract with the server: one
 // scope derived from the task's project, a budget derived from the memory
 // part's token budget, the content returned verbatim, and a run-row note that
@@ -116,6 +134,9 @@ func TestPowerContextInjectPromptOffPaths(t *testing.T) {
 func TestPowerContextInjectPromptReady(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		if r.URL.Path != "/v1/context/prepare" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
@@ -127,8 +148,8 @@ func TestPowerContextInjectPromptReady(t *testing.T) {
 	block, part := memoryInjectPrompt(context.Background(),
 		Config{PowerContextBaseURL: srv.URL}, moctTestTask(), moctTestLogger())
 
-	if gotBody["scope_id"] != "multica:project:"+moctTestProjectID {
-		t.Fatalf("scope_id = %v, want the project scope", gotBody["scope_id"])
+	if gotBody["scope_id"] != daemonTestScopeID {
+		t.Fatalf("scope_id = %v, want the resolved Scope id", gotBody["scope_id"])
 	}
 	if gotBody["max_bytes"] != float64(powerContextMaxBytes()) {
 		t.Fatalf("max_bytes = %v, want %d", gotBody["max_bytes"], powerContextMaxBytes())
@@ -151,6 +172,9 @@ func TestPowerContextInjectPromptReady(t *testing.T) {
 // from "backend broken": both inject nothing, but only one is a fault.
 func TestPowerContextInjectPromptEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"empty","content":null,"content_bytes":0}`))
 	}))
 	defer srv.Close()
@@ -169,6 +193,9 @@ func TestPowerContextInjectPromptEmpty(t *testing.T) {
 // unreadable scope) is named on the row, not collapsed into "unreachable".
 func TestPowerContextInjectPromptHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":{"code":"scope_not_readable","message":"no scope"}}`))
 	}))
@@ -289,14 +316,17 @@ func TestPowerContextMCPConfigSkips(t *testing.T) {
 func TestPowerContextRecordHandoffWrites(t *testing.T) {
 	var remembers []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/memory/search":
-			_, _ = w.Write([]byte(`{"results":[]}`))
+			_, _ = w.Write([]byte(`{"mode":"text","hits":[]}`))
 		case "/v1/memory/remember":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			remembers = append(remembers, body)
-			_, _ = w.Write([]byte(`{"records":[]}`))
+			_, _ = w.Write([]byte(`{"changed":true,"records":[]}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -323,8 +353,8 @@ func TestPowerContextRecordHandoffWrites(t *testing.T) {
 			t.Fatalf("handoff text missing %q:\n%s", want, text)
 		}
 	}
-	if remembers[0]["scope_id"] != "multica:project:"+moctTestProjectID {
-		t.Fatalf("scope_id = %v", remembers[0]["scope_id"])
+	if remembers[0]["scope_id"] != daemonTestScopeID {
+		t.Fatalf("scope_id = %v, want the resolved Scope id", remembers[0]["scope_id"])
 	}
 }
 
@@ -334,12 +364,18 @@ func TestPowerContextRecordHandoffIsIdempotent(t *testing.T) {
 	remembers := 0
 	task := moctTestTask()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/memory/search":
-			_, _ = w.Write([]byte(`{"results":[{"content":"` + powerContextHandoffMarker(task) + `\noutcome: completed"}]}`))
+			// A 1.6.0 answer: the entry sits under `memory`, and its body is
+			// `text`. Reading a top-level `content` here is how a dedupe check
+			// silently stops finding anything.
+			_, _ = w.Write([]byte(`{"mode":"text","hits":[{"memory":{"text":"` + powerContextHandoffMarker(task) + `\noutcome: completed"}}]}`))
 		case "/v1/memory/remember":
 			remembers++
-			_, _ = w.Write([]byte(`{"records":[]}`))
+			_, _ = w.Write([]byte(`{"changed":true,"records":[]}`))
 		}
 	}))
 	defer srv.Close()
@@ -356,7 +392,7 @@ func TestPowerContextRecordHandoffSkips(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"results":[]}`))
+		_, _ = w.Write([]byte(`{"mode":"text","hits":[]}`))
 	}))
 	defer srv.Close()
 

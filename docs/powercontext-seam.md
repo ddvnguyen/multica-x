@@ -63,6 +63,40 @@ exactly one names the scope ([`refs.go`](../server/internal/powercontext/refs.go
 The **strings stay the D2 refs** from [moct-seam.md](moct-seam.md) so both
 backends answer to one vocabulary and a migration never rewrites stored refs.
 
+### Refs are looked up, never sent as ids
+
+A ref is a **key**, not an id. PowerContext generates a Scope id (`scp_…`) when
+a Scope is created and keeps the Multica ref as an external reference, so a
+route handed `multica:project:<uuid>` answers `scope_not_found` — a real 1.6.0
+does exactly that. [`Client.ResolveScope`](../server/internal/powercontext/client.go)
+resolves it once per client and caches the result:
+
+```
+GET /v1/scopes?query=<ref>&query_field=external_reference_value
+→ {"items": [{"scope_id": "scp_…", "external_references": [{"kind": "multica-project",
+              "value": "multica:project:<uuid>"}]}]}
+```
+
+`Prepare`, `Remember` and `Search` all resolve their `scope_id` this way, so
+callers keep speaking refs and never handle a `scp_` id. Two consequences worth
+knowing:
+
+- **A ref with no Scope is a configuration fact**, reported before any write
+  (`no Scope carries the ref …`), not a mystery `scope_not_found` per entry. The
+  Scope has to exist — created by whatever provisions the lane, with the ref in
+  `external_references`.
+- **An older server with no `GET /v1/scopes`** gets the ref passed through
+  unchanged, which is what those builds accepted.
+
+### Two wire shapes that bite
+
+Both were read from a live 1.6.0 `/openapi.json`, not inferred:
+
+| Route | Shape | The trap |
+| --- | --- | --- |
+| `POST /v1/memory/search` | `{mode, hits: [{memory: {kind, text, state, …}, score, matched_by}]}` | The entry sits under `memory` and its body is **`text`**. A decoder expecting a top-level `results[].content` reads every search as empty — which silently turns the handoff's dedupe into "never found" and writes a duplicate every run. |
+| `POST /v1/memory/remember` | `{changed, records: [{artifact, kind, text, state, …}]}` | `changed` says whether an entry was written or matched. |
+
 ## Out-path 2 — tools
 
 PowerContext serves its own MCP endpoint at `/mcp`, so the daemon adds a
@@ -172,6 +206,52 @@ moves them.
 Agents may vote because the point of the dogfood is that the run's own agent can
 say which block it used; the row records `member` or `agent`, never which one.
 
+## Backfilling the corpus — `powercontext_ingest` (M-616)
+
+The seam above only writes a run's own handoff. The dogfood compares two memory
+planes on the same claims, so PowerContext also needs the knowledge that
+predates those runs. [`server/cmd/powercontext_ingest`](../server/cmd/powercontext_ingest/main.go)
+mirrors it in from the database the two sources can prove:
+
+| Source | Mirrored | Why |
+| --- | --- | --- |
+| `issue_decision_record`, current rows | all | A decision is already curated. A superseded row is not the workspace's decision any more, so it is skipped. |
+| `comment`, `author_type = 'member'`, `type = 'comment'` | all | Human prose is the scarce signal. Agent comments are pages of reasoning per run and would bury it. Status changes and blank comments carry nothing. |
+| Active MOCT records | **not mirrored** | `moct.Client` injects, searches, gets by id, notes and retracts; nothing lists a scope's active records, and an inject is a bounded top-k of what would be sent, not the set. Mirroring a guessed endpoint was rejected; this waits for a list endpoint (follow-up card). |
+
+Each entry lands in the scope the read path would use for that issue:
+`multica:project:<id>` when the record or its issue has a project, else
+`multica:ws:<id>`, so a backfilled entry is recallable by the runs it belongs
+to. The remembered kind is `decision` for a decision and `fact` for a comment.
+
+Idempotency is by source id. Every entry carries a marker
+(`decision:/multica/decision/<id>`, `comment:/multica/comment/<id>`), and the
+writer searches for that marker in the scope before writing. A search that
+**fails** skips the entry instead of writing it: a gap is retried by the next
+pass, a duplicate would be injected forever.
+
+```bash
+cd server
+export POWERCONTEXT_BASE_URL=http://127.0.0.1:8000   # POWERCONTEXT_TOKEN if the server wants one
+
+go run ./cmd/powercontext_ingest --workspace <workspace uuid> --dry-run
+go run ./cmd/powercontext_ingest --workspace <workspace uuid>
+```
+
+`--since` (RFC3339) bounds a pass to newer rows and `--limit` bounds rows per
+source (default 500); neither is the idempotency mechanism, so a repeated run
+writes nothing new. The command exits non-zero when any entry failed, which is
+the signal a scheduled run needs; failures are listed with their markers.
+Nothing schedules it: run it by hand, or from whatever the host already uses
+for periodic jobs, after a first pass.
+
+The write path is verified end to end against a **live PowerContext 1.6.0**
+(`127.0.0.1:8000`, package version 1.6.0): first pass `written=2 skipped=0`, a
+second pass over the same rows `written=0 skipped=2`, and the Scope's entry
+list holds exactly one copy of each mirrored record. That run is also what
+proved ref resolution is mandatory: before it, every write answered
+`scope_not_found` because the ref was sent as an id.
+
 ## Failure contract
 
 Inherited verbatim from the MOCT seam: **memory never blocks a task.**
@@ -189,6 +269,9 @@ The client's 10 s timeout is the most a slow server can add to a claim.
 
 ## Not implemented here
 
+- **Mirroring MOCT records.** The ingest covers the two sources the database
+  proves (decisions, human comments). Listing a MOCT scope's active records
+  needs an endpoint `moct` does not serve yet.
 - **Native handoff endpoints.** PowerContext's `/v1/handoff/*` and `/v1/work/*`
   are richer than a remembered entry: they carry revisions, acknowledgements
   and receivers. The seam writes through `/v1/memory/remember` because that

@@ -4,11 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// testScopeID is the server-generated id a Multica ref resolves to. PowerContext
+// never uses a ref as an id: it keeps the ref as an external reference and hands
+// out scp_... ids, so every route test serves the listing that maps one to the
+// other.
+const testScopeID = "scp_test_1"
+
+// serveScopes answers GET /v1/scopes for one ref and reports whether it did.
+// Counting through calls lets a test assert the listing is cached per client.
+func serveScopes(w http.ResponseWriter, r *http.Request, ref string, calls *atomic.Int32) bool {
+	if r.URL.Path != "/v1/scopes" {
+		return false
+	}
+	if calls != nil {
+		calls.Add(1)
+	}
+	_, _ = fmt.Fprintf(w, `{"items":[{"scope_id":%q,"external_references":[{"kind":"multica-project","value":%q}]}],"next_cursor":null}`,
+		testScopeID, ref)
+	return true
+}
 
 // TestPrepareSendsContract pins the wire contract the seam depends on: the
 // route, the four fields that drive recall, and the bearer header when a token
@@ -18,6 +40,9 @@ func TestPrepareSendsContract(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "multica:project:prj_1", nil) {
+			return
+		}
 		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -45,8 +70,10 @@ func TestPrepareSendsContract(t *testing.T) {
 	if gotAuth != "Bearer tok_1" {
 		t.Fatalf("Authorization = %q, want the configured bearer", gotAuth)
 	}
-	if gotBody["scope_id"] != "multica:project:prj_1" {
-		t.Fatalf("scope_id = %v", gotBody["scope_id"])
+	// The ref is resolved, never sent as an id: a real server answers
+	// scope_not_found for anything but its own scp_... id.
+	if gotBody["scope_id"] != testScopeID {
+		t.Fatalf("scope_id = %v, want the resolved Scope id %q", gotBody["scope_id"], testScopeID)
 	}
 	if gotBody["query"] != "how should a token refresh work" {
 		t.Fatalf("query = %v", gotBody["query"])
@@ -70,6 +97,9 @@ func TestPrepareSendsContract(t *testing.T) {
 func TestPrepareOmitsAuthorizationWithoutToken(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "multica:ws:ws_1", nil) {
+			return
+		}
 		gotAuth = r.Header.Get("Authorization")
 		_, _ = w.Write([]byte(`{"status":"empty","content":null,"content_bytes":0}`))
 	}))
@@ -138,6 +168,9 @@ func TestClampMaxBytes(t *testing.T) {
 func TestPrepareClampsAndSendsBudget(t *testing.T) {
 	var gotMax float64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "s", nil) {
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if v, ok := body["max_bytes"].(float64); ok {
@@ -174,6 +207,9 @@ func TestPrepareRejectsMissingScope(t *testing.T) {
 // configuration fact) from "the server is down" (a transient one).
 func TestAPIErrorEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "missing", nil) {
+			return
+		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"unknown scope"}}`))
 	}))
@@ -215,10 +251,15 @@ func TestRememberShape(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "multica:project:prj_1", nil) {
+			return
+		}
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{"records":[{"content":"handoff","state":"active","state_version":1,` +
-			`"artifact":{"family":"atomic-memory","artifact_id":"mem_1","revision":1}}]}`))
+		// Verbatim shape of a 1.6.0 answer: the body is `text`, and there is
+		// no `content` field on a remembered record.
+		_, _ = w.Write([]byte(`{"changed":true,"records":[{"kind":"decision","text":"handoff","state":"active","state_version":1,` +
+			`"merged_into_id":null,"artifact":{"family":"atomic-memory","artifact_id":"mem_1","revision":1}}]}`))
 	}))
 	defer srv.Close()
 
@@ -237,11 +278,14 @@ func TestRememberShape(t *testing.T) {
 	if gotPath != "/v1/memory/remember" {
 		t.Fatalf("path = %s", gotPath)
 	}
-	if gotBody["scope_id"] != "multica:project:prj_1" || gotBody["kind"] != "decision" {
+	if gotBody["scope_id"] != testScopeID || gotBody["kind"] != "decision" {
 		t.Fatalf("body = %v", gotBody)
 	}
-	if len(got.Records) != 1 || got.Records[0].Artifact.ArtifactID != "mem_1" {
-		t.Fatalf("records = %+v", got.Records)
+	if got.Changed != true || len(got.Records) != 1 || got.Records[0].Artifact.ArtifactID != "mem_1" {
+		t.Fatalf("result = %+v", got)
+	}
+	if got.Records[0].Text != "handoff" {
+		t.Fatalf("text = %q, want the entry body", got.Records[0].Text)
 	}
 }
 
@@ -258,8 +302,14 @@ func TestRememberRejectsEmptyText(t *testing.T) {
 func TestSearchShape(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "multica:project:prj_1", nil) {
+			return
+		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{"results":[{"content":"already here"}]}`))
+		// Verbatim shape of a 1.6.0 search answer: hits carry the entry under
+		// `memory`, and the entry body is `text`.
+		_, _ = w.Write([]byte(`{"mode":"text","hits":[{"memory":{"kind":"decision","text":"already here","state":"active","state_version":0},` +
+			`"score":0.5,"matched_by":["text"]}]}`))
 	}))
 	defer srv.Close()
 
@@ -267,15 +317,15 @@ func TestSearchShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	got, err := client.Search(context.Background(), SearchParams{ScopeID: "s", Query: "handoff iss_1", Limit: 3})
+	got, err := client.Search(context.Background(), SearchParams{ScopeID: "multica:project:prj_1", Query: "handoff iss_1", Limit: 3})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if gotBody["scope_id"] != "s" || gotBody["query"] != "handoff iss_1" || gotBody["limit"] != float64(3) {
+	if gotBody["scope_id"] != testScopeID || gotBody["query"] != "handoff iss_1" || gotBody["limit"] != float64(3) {
 		t.Fatalf("body = %v", gotBody)
 	}
-	if len(got.Results) != 1 {
-		t.Fatalf("results = %+v", got.Results)
+	if texts := got.Texts(); len(texts) != 1 || texts[0] != "already here" {
+		t.Fatalf("texts = %+v, want the hit body", texts)
 	}
 }
 
@@ -311,11 +361,81 @@ func TestScopeForTask(t *testing.T) {
 	}
 }
 
+// TestResolveScopeMapsExternalReference is the contract a real 1.6.0 enforces:
+// the ref is an external reference, the id is scp_..., and a route handed the
+// ref answers scope_not_found. Resolution is cached across calls on one client.
+func TestResolveScopeMapsExternalReference(t *testing.T) {
+	var listings atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !serveScopes(w, r, "multica:project:prj_1", &listings) {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		got, err := client.ResolveScope(context.Background(), "multica:project:prj_1")
+		if err != nil {
+			t.Fatalf("ResolveScope: %v", err)
+		}
+		if got != testScopeID {
+			t.Fatalf("ResolveScope = %q, want %q", got, testScopeID)
+		}
+	}
+	if listings.Load() != 1 {
+		t.Fatalf("listings = %d, want 1 for a cached ref", listings.Load())
+	}
+}
+
+// TestResolveScopeRejectsUnknownRef: a ref the server has no Scope for is a
+// configuration fact, named locally, not a request that fails with a mystery
+// scope_not_found on every write.
+func TestResolveScopeRejectsUnknownRef(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"items":[],"next_cursor":null}`))
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.ResolveScope(context.Background(), "multica:ws:ws_1"); err == nil ||
+		!strings.Contains(err.Error(), "multica:ws:ws_1") {
+		t.Fatalf("err = %v, want it to name the unresolvable ref", err)
+	}
+}
+
+// TestResolveScopePassesThroughWithoutListing keeps an older server (no
+// GET /v1/scopes) working exactly as it did before resolution existed.
+func TestResolveScopePassesThroughWithoutListing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	got, err := client.ResolveScope(context.Background(), "multica:ws:ws_1")
+	if err != nil || got != "multica:ws:ws_1" {
+		t.Fatalf("ResolveScope = (%q, %v), want the ref passed through", got, err)
+	}
+}
+
 // TestPrepareDecodesUnknownFieldsOnKnownShape guards the "ignore what we do not
 // read" rule: the server's envelope carries fields the seam does not model, and
 // a future addition must not break decoding.
 func TestPrepareDecodesUnknownFieldsOnKnownShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveScopes(w, r, "s", nil) {
+			return
+		}
 		_, _ = w.Write([]byte(`{"schema":"prepare/2","status":"ready","content":"c","content_bytes":1,` +
 			`"receipt":{"retrieval":{"searches":[]}},"future_field":true}`))
 	}))
