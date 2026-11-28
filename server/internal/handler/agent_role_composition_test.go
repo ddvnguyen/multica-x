@@ -296,3 +296,28 @@ func TestClaimTaskByRuntime_MoctReadExpertID(t *testing.T) {
 		t.Fatalf("role-less claim carries moct_read_expert_id = %q, want absent", *plain.MoctReadExpertID)
 	}
 }
+
+// TestClaimTaskByRuntime_MikaKeepsRoleInstructions: the Mika system-agent
+// override must layer over the Role-composed instructions (M-516), so a Mika
+// that implements a Role carries Mika's prompt, the Role text and its own notes.
+func TestClaimTaskByRuntime_MikaKeepsRoleInstructions(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.AgentRoleType, true)
+	ctx := context.Background()
+	name := "role-mika-" + compositionHandlerSuffix()
+	runtimeID, agentID, _, issueID, _, _, _ := seedRoleCompositionClaim(t, ctx, name)
+	dbfx.Exec(t, `UPDATE agent SET system_key = $2 WHERE id = $1`, agentID, service.MikaSystemKey)
+	dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueID})
+
+	got := roleCompositionClaim(t, runtimeID, protocol.DaemonCapabilitySkillBundlesV1).Agent.Instructions
+	for _, want := range []string{"You are Mika", "ROLE RULES", "AGENT RULES"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Mika claim instructions missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "ROLE RULES") > strings.Index(got, "AGENT RULES") {
+		t.Fatalf("Role text must precede Agent additions:\n%s", got)
+	}
+}
