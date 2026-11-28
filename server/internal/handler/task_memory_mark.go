@@ -17,6 +17,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -186,6 +187,14 @@ type MemoryComparisonResponse struct {
 		Neither      int `json:"neither"`
 	} `json:"preference_pct"`
 	Backends []MemoryComparisonBackend `json:"backends"`
+	// ShadowStatus counts the judged runs by what their shadow read returned.
+	// A vote is only possible when a shadow was recorded, but a recorded
+	// shadow can still be empty (an error or a note): without this split the
+	// preference share reads as evidence on runs that never compared anything.
+	ShadowStatus struct {
+		WithBlock    int64 `json:"with_block"`
+		WithoutBlock int64 `json:"without_block"`
+	} `json:"shadow_status"`
 }
 
 // GetWorkspaceMemoryComparison reads the aggregate for the panel. Member
@@ -196,7 +205,19 @@ func (h *Handler) GetWorkspaceMemoryComparison(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	stats, err := h.Queries.GetWorkspaceMemoryMarkStats(r.Context(), workspaceID)
+	params := db.GetWorkspaceMemoryMarkStatsParams{WorkspaceID: workspaceID}
+	// M-638: the CLI's --since window is applied to the vote timestamp on the
+	// server so the panel and the CLI agree on what a window means. The panel
+	// sends no since and keeps its all-time view.
+	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
+		since, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "since must be an RFC3339 timestamp")
+			return
+		}
+		params.Since = pgtype.Timestamptz{Time: since, Valid: true}
+	}
+	stats, err := h.Queries.GetWorkspaceMemoryMarkStats(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read the memory comparison")
 		return
@@ -220,6 +241,8 @@ func (h *Handler) GetWorkspaceMemoryComparison(w http.ResponseWriter, r *http.Re
 	resp.Votes.Moct = stats.MoctVotes
 	resp.Votes.PowerContext = stats.PowercontextVotes
 	resp.Votes.Neither = stats.NeitherVotes
+	resp.ShadowStatus.WithBlock = stats.ShadowWithBlock
+	resp.ShadowStatus.WithoutBlock = stats.ShadowWithoutBlock
 	if stats.Marked > 0 {
 		pct := func(n int64) int { return int(math.Round(float64(n) * 100 / float64(stats.Marked))) }
 		resp.PreferencePct.Moct = pct(stats.MoctVotes)
