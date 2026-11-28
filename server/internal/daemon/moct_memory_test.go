@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ const (
 	moctTestAgentID     = "22222222-2222-4222-8222-222222222222"
 	moctTestIssueID     = "33333333-3333-4333-8333-333333333333"
 	moctTestProjectID   = "44444444-4444-4444-8444-444444444444"
+	moctTestRoleID      = "55555555-5555-4555-8555-555555555555"
 )
 
 func moctTestTask() Task {
@@ -450,14 +452,13 @@ func TestBuildPromptWithoutMoctInjectIsUnchanged(t *testing.T) {
 
 // M-542: a run whose Agent implements a Role fetches two bounded injects —
 // the Role scope read-only and the run Agent's own — and renders them in
-// labeled sections. Budgets split so neither side starves the other.
+// labeled sections. Each call asks for half the budget.
 func TestMoctInjectPromptDualRoleAndAgent(t *testing.T) {
-	const roleID = "55555555-5555-4555-8555-555555555555"
 	var queries []url.Values
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.Query())
 		switch r.URL.Query().Get("expertId") {
-		case "multica:agent:" + roleID:
+		case "multica:agent:" + moctTestRoleID:
 			_, _ = io.WriteString(w, `{"entries":[{"id":"role-1","type":"how_to_work","title":"Role way","body":"Work this way."}]}`)
 		default:
 			_, _ = io.WriteString(w, `{"entries":[{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}]}`)
@@ -465,17 +466,13 @@ func TestMoctInjectPromptDualRoleAndAgent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	task := moctTestTask()
-	readExpert := "multica:agent:" + roleID
-	task.MoctReadExpertID = &readExpert
-
-	block, part := moctInjectPrompt(context.Background(), srv.URL, task, moctTestLogger())
+	block, part := moctInjectPrompt(context.Background(), srv.URL, moctDualTask(), moctTestLogger())
 	if len(queries) != 2 {
 		t.Fatalf("expected 2 inject calls, got %d", len(queries))
 	}
 	for _, q := range queries {
 		if got := q.Get("layerTokens"); got != "3000" {
-			t.Errorf("layerTokens = %q, want the split budget 3000", got)
+			t.Errorf("layerTokens = %q, want half the budget", got)
 		}
 	}
 	for _, want := range []string{
@@ -500,12 +497,163 @@ func TestMoctInjectPromptDualRoleAndAgent(t *testing.T) {
 	}
 }
 
+// moctDualServer answers the Role scope with roleBody and every other scope
+// with agentBody, so one test can stage overlapping, disjoint and fully
+// overlapping answers.
+func moctDualServer(t *testing.T, roleBody, agentBody string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("expertId") == "multica:agent:"+moctTestRoleID {
+			_, _ = io.WriteString(w, roleBody)
+			return
+		}
+		_, _ = io.WriteString(w, agentBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func moctDualTask() Task {
+	task := moctTestTask()
+	readExpert := "multica:agent:" + moctTestRoleID
+	task.MoctReadExpertID = &readExpert
+	return task
+}
+
+// M-643: both reads return the shared team/project records, so an id renders
+// once — in the Role section — and the report's per-side counts are what the
+// block lists, not what the two answers carried.
+func TestMoctInjectPromptDualDedupesRecords(t *testing.T) {
+	const (
+		shared    = `{"id":"shared-1","type":"convention","title":"Shared record","body":"Seen from both scopes."}`
+		roleOnly  = `{"id":"role-1","type":"how_to_work","title":"Role way","body":"Role body."}`
+		agentOnly = `{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}`
+	)
+	cases := []struct {
+		name           string
+		roleBody       string
+		agentBody      string
+		wantRole       int
+		wantAgent      int
+		wantIDs        []string
+		wantAgentLabel bool
+	}{
+		{
+			name:           "overlapping",
+			roleBody:       `{"entries":[` + shared + `,` + roleOnly + `]}`,
+			agentBody:      `{"entries":[` + shared + `,` + agentOnly + `]}`,
+			wantRole:       2,
+			wantAgent:      1,
+			wantIDs:        []string{"shared-1", "role-1", "agent-1"},
+			wantAgentLabel: true,
+		},
+		{
+			name:           "disjoint",
+			roleBody:       `{"entries":[` + roleOnly + `]}`,
+			agentBody:      `{"entries":[` + agentOnly + `]}`,
+			wantRole:       1,
+			wantAgent:      1,
+			wantIDs:        []string{"role-1", "agent-1"},
+			wantAgentLabel: true,
+		},
+		{
+			name:           "fully overlapping",
+			roleBody:       `{"entries":[` + shared + `]}`,
+			agentBody:      `{"entries":[` + shared + `]}`,
+			wantRole:       1,
+			wantAgent:      0,
+			wantIDs:        []string{"shared-1"},
+			wantAgentLabel: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := moctDualServer(t, tc.roleBody, tc.agentBody)
+			block, part := moctInjectPrompt(context.Background(), srv.URL, moctDualTask(), moctTestLogger())
+
+			if got := strings.Count(block, "#### "); got != tc.wantRole+tc.wantAgent {
+				t.Errorf("block lists %d entries, want %d:\n%s", got, tc.wantRole+tc.wantAgent, block)
+			}
+			if got := strings.Count(block, "#### [convention] Shared record"); got > 1 {
+				t.Errorf("shared record rendered %d times:\n%s", got, block)
+			}
+			// The shared record is rendered in the Role section, so it counts
+			// for Role: the two counts add up to the listed entries.
+			wantNote := fmt.Sprintf("%d role (read-only) + %d agent entries", tc.wantRole, tc.wantAgent)
+			if !strings.Contains(part.Note, wantNote) {
+				t.Errorf("part note = %q, want %q", part.Note, wantNote)
+			}
+			if len(part.Entries) != len(tc.wantIDs) {
+				t.Fatalf("part entries = %+v, want %d", part.Entries, len(tc.wantIDs))
+			}
+			for i, want := range tc.wantIDs {
+				if part.Entries[i].ID != want {
+					t.Errorf("entry %d = %q, want %q", i, part.Entries[i].ID, want)
+				}
+			}
+			if got := strings.Contains(block, "### Agent memory"); got != tc.wantAgentLabel {
+				t.Errorf("agent section present = %v, want %v:\n%s", got, tc.wantAgentLabel, block)
+			}
+			if tc.wantAgentLabel && strings.Index(block, "### Role memory") > strings.Index(block, "### Agent memory") {
+				t.Errorf("role section must come first:\n%s", block)
+			}
+			if strings.Contains(block, "memory_search") {
+				t.Errorf("nothing was deferred, so the way-out line must be absent:\n%s", block)
+			}
+		})
+	}
+}
+
+// M-643: both scopes defer into the same tools, so the way-out sentence
+// appears once per block even when both sides left records out.
+func TestMoctInjectPromptDualPrintsDeferredNoteOnce(t *testing.T) {
+	const (
+		shared = `{"id":"shared-1","type":"convention","title":"Shared record","body":"Seen from both scopes."}`
+		role   = `{"id":"role-1","type":"how_to_work","title":"Role way","body":"Role body."}`
+		agent  = `{"id":"agent-1","type":"convention","title":"Agent habit","body":"Habit."}`
+	)
+	cases := map[string]struct {
+		roleBody, agentBody string
+		wantEntries         int
+		wantAgentLabel      bool
+	}{
+		"both sides defer": {
+			roleBody:       `{"entries":[` + role + `],"omitted":1}`,
+			agentBody:      `{"entries":[` + agent + `],"omitted":2}`,
+			wantEntries:    2,
+			wantAgentLabel: true,
+		},
+		// The dropped Agent section still deferred records, so the way out has
+		// to survive it — once.
+		"deferred records behind a fully duplicated section": {
+			roleBody:       `{"entries":[` + shared + `]}`,
+			agentBody:      `{"entries":[` + shared + `],"omitted":2}`,
+			wantEntries:    1,
+			wantAgentLabel: false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := moctDualServer(t, tc.roleBody, tc.agentBody)
+			block, _ := moctInjectPrompt(context.Background(), srv.URL, moctDualTask(), moctTestLogger())
+			if got := strings.Count(block, "memory_search"); got != 1 {
+				t.Fatalf("deferred way-out printed %d times, want once:\n%s", got, block)
+			}
+			if got := strings.Count(block, "#### "); got != tc.wantEntries {
+				t.Errorf("block lists %d entries, want %d:\n%s", got, tc.wantEntries, block)
+			}
+			if got := strings.Contains(block, "### Agent memory"); got != tc.wantAgentLabel {
+				t.Errorf("agent section present = %v, want %v:\n%s", got, tc.wantAgentLabel, block)
+			}
+		})
+	}
+}
+
 // M-542: a Role-side failure loses the Role section, never the run's own
 // memory and never the run — the same degrade contract as the single call.
 func TestMoctInjectPromptRoleFailureDegradesToAgent(t *testing.T) {
-	const roleID = "55555555-5555-4555-8555-555555555555"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("expertId") == "multica:agent:"+roleID {
+		if r.URL.Query().Get("expertId") == "multica:agent:"+moctTestRoleID {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"ok":false,"code":"down"}`)
 			return
@@ -514,12 +662,10 @@ func TestMoctInjectPromptRoleFailureDegradesToAgent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	task := moctTestTask()
-	readExpert := "multica:agent:" + roleID
-	task.MoctReadExpertID = &readExpert
+	task := moctDualTask()
 
 	var logs strings.Builder
-	block, _ := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
+	block, part := moctInjectPrompt(context.Background(), srv.URL, task, slog.New(slog.NewTextHandler(&logs, nil)))
 	if !strings.Contains(block, "Agent habit") {
 		t.Fatalf("agent memory lost on role failure: %q", block)
 	}
@@ -528,6 +674,15 @@ func TestMoctInjectPromptRoleFailureDegradesToAgent(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "role pre-run inject failed") {
 		t.Errorf("expected a role-side degrade warning, got %q", logs.String())
+	}
+	// The failed call contributes nothing, and the fallback is the single-expert
+	// block, so the row must count the one record it rendered rather than two
+	// sides (M-643).
+	if !strings.Contains(part.Note, "1 entries at moct-be's inject budget") {
+		t.Errorf("part note = %q, want the one rendered entry", part.Note)
+	}
+	if len(part.Entries) != 1 || part.Entries[0].ID != "agent-1" {
+		t.Errorf("part entries = %+v, want the agent record only", part.Entries)
 	}
 }
 
