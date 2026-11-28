@@ -139,6 +139,51 @@ func TestDecideClassifiesFailures(t *testing.T) {
 	}
 }
 
+// M-624: a 429 exposes its Retry-After to the shadow breaker in both header
+// forms. Other statuses may carry the header but must not look rate limited.
+func TestDecideExposesRetryAfterOn429(t *testing.T) {
+	future := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	for _, tc := range []struct {
+		name   string
+		status int
+		header string
+		want   time.Duration
+		rate   bool
+	}{
+		{name: "seconds", status: http.StatusTooManyRequests, header: "120", want: 120 * time.Second, rate: true},
+		{name: "http date", status: http.StatusTooManyRequests, header: future, want: 90 * time.Second, rate: true},
+		{name: "no header", status: http.StatusTooManyRequests, header: "", want: 0, rate: true},
+		{name: "garbage header", status: http.StatusTooManyRequests, header: "soon", want: 0, rate: true},
+		{name: "other status", status: http.StatusInternalServerError, header: "120", want: 120 * time.Second, rate: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			_, err := client(t, srv.URL, time.Second).Decide(context.Background(), "state", map[string]Question{
+				"needs_action": Noul("q", "y", "n"),
+			})
+			if err == nil {
+				t.Fatal("want an error, got an answer")
+			}
+			if got := IsRateLimited(err); got != tc.rate {
+				t.Errorf("IsRateLimited = %v, want %v", got, tc.rate)
+			}
+			got := RetryAfterOf(err)
+			if tc.want == 0 && got != 0 {
+				t.Fatalf("RetryAfter = %s, want 0", got)
+			}
+			if tc.want > 0 && (got < tc.want-5*time.Second || got > tc.want+5*time.Second) {
+				t.Errorf("RetryAfter = %s, want about %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecideTransportFailureIsClassified(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := srv.URL

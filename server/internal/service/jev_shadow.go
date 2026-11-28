@@ -77,6 +77,21 @@ const (
 	// jevShadowFlag turns the observation on. Off by default, and the only way
 	// a dispatch is ever affected is by the log line that says it is off.
 	jevShadowFlag = "MULTICA_JEV_SHADOW"
+	// jevShadowMaxPerHourEnv caps vendor calls in a rolling clock hour. The
+	// shadow is a sample, not a firehose: a cap keeps a noisy schedule from
+	// spending the whole free-tier quota on observations. A missing or invalid
+	// value takes the default; a value of zero is invalid, since turning the
+	// shadow off is the flag's job.
+	jevShadowMaxPerHourEnv     = "MULTICA_JEV_SHADOW_MAX_PER_HOUR"
+	jevShadowMaxPerHourDefault = 120
+	// jevShadowRateLimitedKind is recorded instead of the generic "http" when
+	// the endpoint answered 429. The agreement report can then separate a
+	// spent quota from a broken endpoint.
+	jevShadowRateLimitedKind = "rate_limited"
+	// jevShadowBreakerDefault is the pause after a 429 with no usable
+	// Retry-After; jevShadowBreakerMax bounds an absurdly long header value.
+	jevShadowBreakerDefault = time.Hour
+	jevShadowBreakerMax     = 24 * time.Hour
 )
 
 // WakeupDispatchSnapshot is the structured state sent to the vendor, captured
@@ -138,6 +153,10 @@ type JevShadow struct {
 	inFlight sync.WaitGroup
 	dropped  atomic.Int64
 	now      func() time.Time
+	// budget and breaker gate the vendor call itself. Nil is safe: a shadow
+	// built directly in a test can opt out of both.
+	budget  *shadowBudget
+	breaker *shadowBreaker
 }
 
 type jevShadowJob struct {
@@ -158,6 +177,101 @@ type jevShadowJob struct {
 	// logKey names the subject in debug lines ("wakeup_id" or "task_id").
 	logKey string
 }
+
+// shadowBudget caps vendor calls in a rolling clock hour. It is checked at the
+// moment of the call, not at enqueue time, so a job that waited behind a slow
+// endpoint cannot spend quota after the window rolled. Refusals are counted in
+// memory only: writing a row for each would put the noise back in the table the
+// cap exists to keep quiet.
+type shadowBudget struct {
+	max int64
+	mu  sync.Mutex
+	// calls holds the timestamps of accepted calls in the last hour, oldest
+	// first. A rolling window rather than a fixed clock hour: 120 calls just
+	// before the hour turns and 120 just after would otherwise be 240 in one
+	// real hour, which is exactly the quota burn the cap exists to stop.
+	calls   []time.Time
+	skipped atomic.Int64
+}
+
+func newShadowBudget(max int64) *shadowBudget {
+	if max <= 0 {
+		max = jevShadowMaxPerHourDefault
+	}
+	return &shadowBudget{max: max}
+}
+
+// shadowBudgetFromEnv reads the cap once at startup. A missing, malformed or
+// non-positive value takes the default rather than silently disabling calls.
+func shadowBudgetFromEnv() (*shadowBudget, int64) {
+	max := int64(jevShadowMaxPerHourDefault)
+	if raw := strings.TrimSpace(os.Getenv(jevShadowMaxPerHourEnv)); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			max = parsed
+		}
+	}
+	return newShadowBudget(max), max
+}
+
+// allow consumes one slot when the last rolling hour still has room.
+func (b *shadowBudget) allow(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cutoff := now.Add(-time.Hour)
+	stale := 0
+	for stale < len(b.calls) && !b.calls[stale].After(cutoff) {
+		stale++
+	}
+	if stale > 0 {
+		b.calls = append([]time.Time(nil), b.calls[stale:]...)
+	}
+	if int64(len(b.calls)) >= b.max {
+		b.skipped.Add(1)
+		return false
+	}
+	b.calls = append(b.calls, now)
+	return true
+}
+
+func (b *shadowBudget) skippedCalls() int64 { return b.skipped.Load() }
+
+// shadowBreaker pauses every shadow call after a 429. It opens on the first
+// rate limit and only ever extends its deadline, so a second 429 cannot shorten
+// a window a previous header asked for.
+type shadowBreaker struct {
+	mu      sync.Mutex
+	until   time.Time
+	skipped atomic.Int64
+}
+
+// allow reports whether calls may go out now, counting every refusal.
+func (b *shadowBreaker) allow(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if now.Before(b.until) {
+		b.skipped.Add(1)
+		return false
+	}
+	return true
+}
+
+// trip opens the breaker for pause, or for the default when the endpoint gave
+// no usable Retry-After. An absurdly long header is clamped.
+func (b *shadowBreaker) trip(now time.Time, pause time.Duration) {
+	if pause <= 0 {
+		pause = jevShadowBreakerDefault
+	}
+	if pause > jevShadowBreakerMax {
+		pause = jevShadowBreakerMax
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if until := now.Add(pause); until.After(b.until) {
+		b.until = until
+	}
+}
+
+func (b *shadowBreaker) skippedCalls() int64 { return b.skipped.Load() }
 
 // StartJevShadow reads the flag and the key and returns nil unless both say a
 // shadow is possible. It logs once, so an operator reading the startup logs
@@ -184,18 +298,24 @@ func StartJevShadow(ctx context.Context, database db.DBTX, log *slog.Logger) *Je
 		return nil
 	}
 	log.Info("jev shadow: on", "decision_point", jevShadowDecisionPoint, "model", cfg.Model, "api_base", cfg.APIBase)
-	return newJevShadow(ctx, database, client, log)
+	shadow := newJevShadow(ctx, database, client, log)
+	log.Info("jev shadow: call budget", "env", jevShadowMaxPerHourEnv, "max_per_hour", shadow.budget.max)
+	return shadow
 }
 
 // newJevShadow starts the worker pool that answers observations. Callers hand it
 // a context that is cancelled at shutdown, which is what stops the pool.
 func newJevShadow(ctx context.Context, database db.DBTX, client *jev.Client, log *slog.Logger) *JevShadow {
+	now := time.Now
+	budget, _ := shadowBudgetFromEnv()
 	shadow := &JevShadow{
-		client: client,
-		db:     database,
-		log:    log,
-		jobs:   make(chan jevShadowJob, jevShadowQueue),
-		now:    time.Now,
+		client:  client,
+		db:      database,
+		log:     log,
+		jobs:    make(chan jevShadowJob, jevShadowQueue),
+		now:     now,
+		budget:  budget,
+		breaker: &shadowBreaker{},
 	}
 	for i := 0; i < jevShadowWorkers; i++ {
 		go shadow.work(ctx)
@@ -214,6 +334,39 @@ func (s *JevShadow) Dropped() int64 {
 		return 0
 	}
 	return s.dropped.Load()
+}
+
+// Skipped counts observations the budget or the breaker refused. Unlike
+// Dropped (a full queue), these never made a call and never wrote a row, so a
+// rising number is the signal that the cap is doing its job.
+func (s *JevShadow) Skipped() int64 {
+	if s == nil {
+		return 0
+	}
+	var total int64
+	if s.budget != nil {
+		total += s.budget.skippedCalls()
+	}
+	if s.breaker != nil {
+		total += s.breaker.skippedCalls()
+	}
+	return total
+}
+
+// allowCall applies both gates immediately before a vendor call. The breaker
+// is checked first: while it is open no call should consume a budget slot, so
+// the cap is still available when the pause ends. Both refusals are counted in
+// memory and logged, never written to jev_shadow_decision.
+func (s *JevShadow) allowCall(now time.Time) bool {
+	if s.breaker != nil && !s.breaker.allow(now) {
+		s.log.Debug("jev shadow: circuit open, skipped", "decision_point", "shadow", "skipped_total", s.Skipped())
+		return false
+	}
+	if s.budget != nil && !s.budget.allow(now) {
+		s.log.Debug("jev shadow: over hourly budget, skipped", "max_per_hour", s.budget.max, "skipped_total", s.Skipped())
+		return false
+	}
+	return true
 }
 
 // Snapshot reads the card's state for one dispatch. It is called before the
@@ -344,7 +497,12 @@ func (s *JevShadow) work(ctx context.Context) {
 
 // observe asks one question and writes one row. Every failure stays here: the
 // row records the error kind, and the dispatch it observed is long since done.
+// A refusal by the budget or breaker makes no call and writes no row at all —
+// otherwise the safety net would put the very noise it stops back in the table.
 func (s *JevShadow) observe(ctx context.Context, job jevShadowJob) {
+	if !s.allowCall(s.now()) {
+		return
+	}
 	started := s.now()
 	result, err := s.client.Decide(ctx, job.state, map[string]jev.Question{job.questionKey: job.question})
 	latency := int(s.now().Sub(started).Milliseconds())
@@ -360,9 +518,19 @@ func (s *JevShadow) observe(ctx context.Context, job jevShadowJob) {
 		latencyMS:     latency,
 	}
 	if err != nil {
-		row.errorKind = string(jev.KindOf(err))
-		if row.errorKind == "" {
-			row.errorKind = "unknown"
+		if jev.IsRateLimited(err) {
+			// A 429 means the quota is spent, not that the endpoint is broken.
+			// Record it apart from faults and open the breaker so the rest of
+			// this window costs neither a call nor a row.
+			row.errorKind = jevShadowRateLimitedKind
+			if s.breaker != nil {
+				s.breaker.trip(s.now(), jev.RetryAfterOf(err))
+			}
+		} else {
+			row.errorKind = string(jev.KindOf(err))
+			if row.errorKind == "" {
+				row.errorKind = "unknown"
+			}
 		}
 		s.log.Debug("jev shadow: no answer", job.logKey, job.subjectID, "kind", row.errorKind, "error", s.client.Redact(err.Error()))
 	} else {
