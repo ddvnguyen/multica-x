@@ -834,6 +834,29 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	return s.runDispatch(ctx, w, dispatch)
 }
 
+// wakeupDispatchOutcome is the one bit runDispatch needs back from dispatch:
+// did this pass actually create a run? It travels in the context so dispatch
+// keeps its signature and its other callers stay untouched. A rule whose
+// condition was polled and not met commits successfully but creates no task;
+// shadowing that would burn the quota on a run that never existed (M-624).
+type wakeupDispatchOutcomeKey struct{}
+
+type wakeupDispatchOutcome struct{ runEnqueued bool }
+
+func withWakeupDispatchOutcome(ctx context.Context) (context.Context, *wakeupDispatchOutcome) {
+	outcome := &wakeupDispatchOutcome{}
+	return context.WithValue(ctx, wakeupDispatchOutcomeKey{}, outcome), outcome
+}
+
+// markWakeupRunEnqueued is called exactly where a dispatch creates a task. With
+// no listener in the context it is a no-op, so the immediate-dispatch paths
+// that bypass runDispatch are unaffected.
+func markWakeupRunEnqueued(ctx context.Context) {
+	if outcome, ok := ctx.Value(wakeupDispatchOutcomeKey{}).(*wakeupDispatchOutcome); ok {
+		outcome.runEnqueued = true
+	}
+}
+
 // runDispatch is dispatchFromTick with the dispatch itself supplied. The shadow
 // hook sits in this function, so a test can hold the dispatch's outcome still —
 // success or failure — and prove the observation changes neither the errors this
@@ -847,19 +870,21 @@ func (s *IssueWakeupService) runDispatch(ctx context.Context, w db.IssueWakeup, 
 	// below is byte-for-byte what it was before this hook existed.
 	shadow := s.jevShadow()
 	snapshot := shadow.Snapshot(ctx, w)
-	if err := dispatch(ctx, w); err != nil {
+	dispatchCtx, outcome := withWakeupDispatchOutcome(ctx)
+	if err := dispatch(dispatchCtx, w); err != nil {
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(err.Error(), 500), Valid: true}})
 		cancel()
-	} else {
+	} else if outcome.runEnqueued {
 		// After the dispatch committed, never inside it: dispatch holds row
 		// locks under a two-second budget, and a shadow call must not be able to
 		// spend any of it.
 		//
-		// Only a dispatch that succeeded is observed, so the table holds one row
-		// per run that will start. A failed dispatch started no run, and asking
-		// what that run would have done answers nothing.
+		// Only a dispatch that actually started a run is observed. A failed
+		// dispatch and a committed poll whose condition was not met both start
+		// nothing, so asking what that nonexistent run would have done answers
+		// nothing — and is what filled the table with HTTP errors (M-624).
 		shadow.Assess(snapshot)
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
@@ -1388,6 +1413,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		contextJSON, _ := json.Marshal(map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain})
 		task, err = q.CreateWakeupTask(ctx, db.CreateWakeupTaskParams{ID: dbid.NewV7(), AgentID: w.AgentID, RuntimeID: agent.RuntimeID, IssueID: w.IssueID, Priority: priorityToInt(issue.Priority), TriggerCommentID: w.ParentCommentID, TriggerSummary: pgtype.Text{String: "Wakeup: " + truncateForSummary(w.Instruction, 160), Valid: true}, HandoffNote: pgtype.Text{String: noteText, Valid: true}, IsLeaderTask: pgtype.Bool{Bool: squadID.Valid, Valid: true}, SquadID: squadID, OriginatorUserID: w.CreatedBy, AccountableUserID: w.CreatedBy, OriginatorSource: pgtype.Text{String: "trigger_owner", Valid: true}, TriggerEvidenceKind: pgtype.Text{String: "issue_wakeup", Valid: true}, TriggerEvidenceRefID: w.ID, DelegatedFromTaskID: w.SourceTaskID, WakeupContext: contextJSON, RuntimeMcpOverlay: overlay.Overlay, RuntimeConnectedApps: overlay.ConnectedApps})
+		if err == nil {
+			markWakeupRunEnqueued(ctx)
+		}
 	}
 	if err != nil {
 		return err

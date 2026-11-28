@@ -612,3 +612,209 @@ func TestSnapshotReclaimBuildsPostUpdateState(t *testing.T) {
 		t.Errorf("idle minutes = %d, want about 30", snap.IdleMinutes)
 	}
 }
+
+// M-624: the hourly cap is checked at call time. Four observations with a cap
+// of two make exactly two HTTP calls and write two rows; the other two are
+// counted as skipped without touching the endpoint or the table.
+func TestShadowBudgetCapsCallsPerRollingHour(t *testing.T) {
+	srv, counter := countingJevServer(t, http.StatusOK, noulBody(0.8))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	clock := start
+	database := &fakeDB{status: "in_progress", updatedAt: clock}
+	shadow := shadowFor(t, ctx, database, srv.URL)
+	shadow.now = func() time.Time { return clock }
+	shadow.budget = newShadowBudget(2)
+	shadow.breaker = &shadowBreaker{}
+
+	snap := shadow.Snapshot(ctx, testWakeup())
+	for i := 0; i < 4; i++ {
+		shadow.Assess(snap)
+	}
+	shadow.Wait()
+
+	if got := counter.Hits(); got != 2 {
+		t.Errorf("HTTP calls = %d, want 2", got)
+	}
+	if rows := database.shadowRows(); len(rows) != 2 {
+		t.Errorf("shadow rows = %d, want 2", len(rows))
+	}
+	if got := shadow.Skipped(); got != 2 {
+		t.Errorf("skipped = %d, want 2", got)
+	}
+	if got := shadow.budget.skippedCalls(); got != 2 {
+		t.Errorf("budget skipped = %d, want 2", got)
+	}
+
+	// A rolling window frees the two slots once the first calls age out.
+	clock = start.Add(time.Hour + time.Second)
+	shadow.Assess(snap)
+	shadow.Wait()
+	if got := counter.Hits(); got != 3 {
+		t.Errorf("HTTP calls after window rolled = %d, want 3", got)
+	}
+	if got := shadow.Skipped(); got != 2 {
+		t.Errorf("skipped after window rolled = %d, want 2", got)
+	}
+}
+
+// M-624: a 429 is recorded as rate_limited, opens the breaker for the header's
+// window, and every later observation in that window is skipped without a call
+// or a row. Once the window passes, calls resume.
+func TestShadowBreakerTripsOn429(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"rate limited"}`)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := time.Date(2026, 11, 28, 13, 0, 0, 0, time.UTC)
+	clock := start
+	database := &fakeDB{status: "in_progress", updatedAt: clock}
+	shadow := shadowFor(t, ctx, database, srv.URL)
+	shadow.now = func() time.Time { return clock }
+	shadow.budget = newShadowBudget(100)
+	shadow.breaker = &shadowBreaker{}
+
+	snap := shadow.Snapshot(ctx, testWakeup())
+	shadow.Assess(snap)
+	shadow.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("HTTP calls = %d, want 1", got)
+	}
+	rows := database.shadowRows()
+	if len(rows) != 1 {
+		t.Fatalf("shadow rows = %d, want 1", len(rows))
+	}
+	if kind := rows[0].args[12]; kind != jevShadowRateLimitedKind {
+		t.Errorf("error_kind = %v, want %q", kind, jevShadowRateLimitedKind)
+	}
+
+	shadow.Assess(snap)
+	shadow.Wait()
+	if got := hits.Load(); got != 1 {
+		t.Errorf("HTTP calls while breaker open = %d, want 1", got)
+	}
+	if got := shadow.breaker.skippedCalls(); got != 1 {
+		t.Errorf("breaker skipped = %d, want 1", got)
+	}
+	if rows := database.shadowRows(); len(rows) != 1 {
+		t.Errorf("shadow rows while breaker open = %d, want 1", len(rows))
+	}
+
+	clock = start.Add(121 * time.Second)
+	shadow.Assess(snap)
+	shadow.Wait()
+	if got := hits.Load(); got != 2 {
+		t.Errorf("HTTP calls after breaker window = %d, want 2", got)
+	}
+}
+
+// M-624: a 429 with no Retry-After still opens the breaker, for the default
+// pause. A non-429 HTTP error must not trip it.
+func TestShadowBreakerDefaultAndFaults(t *testing.T) {
+	var hits atomic.Int32
+	var status atomic.Int32
+	status.Store(http.StatusTooManyRequests)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(int(status.Load()))
+		_, _ = io.WriteString(w, `{"error":"rate limited"}`)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clock := time.Date(2026, 11, 28, 14, 0, 0, 0, time.UTC)
+	database := &fakeDB{status: "in_progress", updatedAt: clock}
+	shadow := shadowFor(t, ctx, database, srv.URL)
+	shadow.now = func() time.Time { return clock }
+	shadow.budget = newShadowBudget(100)
+	shadow.breaker = &shadowBreaker{}
+
+	snap := shadow.Snapshot(ctx, testWakeup())
+	shadow.Assess(snap)
+	shadow.Wait()
+	shadow.Assess(snap)
+	shadow.Wait()
+	if got := hits.Load(); got != 1 {
+		t.Errorf("HTTP calls with no Retry-After = %d, want 1", got)
+	}
+	if rows := database.shadowRows(); len(rows) != 1 || rows[0].args[12] != jevShadowRateLimitedKind {
+		t.Errorf("rows = %+v, want one rate_limited row", rows)
+	}
+
+	// A 500 is a fault, not a rate limit; it must leave the breaker closed.
+	status.Store(http.StatusInternalServerError)
+	clock = clock.Add(jevShadowBreakerDefault + time.Second)
+	shadow.Assess(snap)
+	shadow.Wait()
+	if got := hits.Load(); got != 2 {
+		t.Errorf("HTTP calls after reset = %d, want 2", got)
+	}
+	if rows := database.shadowRows(); len(rows) != 2 || rows[1].args[12] != "http" {
+		t.Errorf("rows = %+v, want the second row to be http", rows)
+	}
+}
+
+// M-624: runDispatch only shadows a pass that actually enqueued a run. A
+// committed poll whose condition was not met marks nothing and makes no call,
+// while a real dispatch marks the outcome and is observed. Both outcomes keep
+// dispatch calls and returned errors identical to the shadow-off path.
+func TestRunDispatchShadowsOnlyRealRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		enqueued bool
+		wantHits int
+	}{
+		{name: "unmet condition poll", enqueued: false, wantHits: 0},
+		{name: "real dispatch", enqueued: true, wantHits: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, counter := countingJevServer(t, http.StatusOK, noulBody(0.8))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			database := &fakeDB{status: "in_progress", updatedAt: time.Now()}
+			shadow := shadowFor(t, ctx, database, srv.URL)
+			svc := &IssueWakeupService{Tasks: &TaskService{Queries: db.New(database), JevShadow: shadow}}
+
+			dispatches := 0
+			errs := svc.runDispatch(ctx, testWakeup(), func(dispatchCtx context.Context, _ db.IssueWakeup) error {
+				dispatches++
+				if tc.enqueued {
+					markWakeupRunEnqueued(dispatchCtx)
+				}
+				return nil
+			})
+			shadow.Wait()
+
+			if dispatches != 1 || len(errs) != 0 {
+				t.Fatalf("dispatch calls = %d, errors = %v, want 1 and none", dispatches, errs)
+			}
+			if got := counter.Hits(); got != tc.wantHits {
+				t.Errorf("HTTP calls = %d, want %d", got, tc.wantHits)
+			}
+			wantRows := tc.wantHits
+			if got := len(database.shadowRows()); got != wantRows {
+				t.Errorf("shadow rows = %d, want %d", got, wantRows)
+			}
+		})
+	}
+}
+
+// With the shadow off, neither the outcome marker nor runDispatch has any
+// observable effect: no endpoint, no row, no panic on a nil receiver.
+func TestRunDispatchOutcomeWithShadowOff(t *testing.T) {
+	markWakeupRunEnqueued(context.Background())
+	svc := &IssueWakeupService{Tasks: &TaskService{Queries: db.New(&fakeDB{})}}
+	errs := svc.runDispatch(context.Background(), testWakeup(), func(context.Context, db.IssueWakeup) error { return nil })
+	if len(errs) != 0 {
+		t.Errorf("errors = %v, want none", errs)
+	}
+}

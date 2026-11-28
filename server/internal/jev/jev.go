@@ -74,11 +74,13 @@ const (
 )
 
 // Error is the one failure type this package raises. Its message never carries
-// the API key.
+// the API key. RetryAfter is the vendor's requested pause after a 429, zero when
+// it sent no usable Retry-After header; callers decide what to do with it.
 type Error struct {
-	Kind   ErrorKind
-	Status int
-	msg    string
+	Kind       ErrorKind
+	Status     int
+	RetryAfter time.Duration
+	msg        string
 }
 
 func (e *Error) Error() string { return e.msg }
@@ -90,6 +92,42 @@ func KindOf(err error) ErrorKind {
 		return jevErr.Kind
 	}
 	return ""
+}
+
+// RetryAfterOf reports the pause the endpoint asked for after a 429, or zero
+// when the failure was not a rate limit or carried no usable Retry-After. It is
+// kept beside KindOf so callers need not reach into this package's Error type.
+func RetryAfterOf(err error) time.Duration {
+	var jevErr *Error
+	if errors.As(err, &jevErr) {
+		return jevErr.RetryAfter
+	}
+	return 0
+}
+
+// IsRateLimited reports whether the endpoint answered 429. Shadow callers use
+// it to record a distinct error kind and to open a circuit breaker.
+func IsRateLimited(err error) bool {
+	var jevErr *Error
+	return errors.As(err, &jevErr) && jevErr.Kind == KindHTTP && jevErr.Status == http.StatusTooManyRequests
+}
+
+// retryAfter parses an HTTP Retry-After header, in either seconds or HTTP-date
+// form. A missing or unusable value is zero; the caller picks its own default.
+func retryAfter(header string, now time.Time) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(header); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(header); err == nil {
+		if pause := at.Sub(now); pause > 0 {
+			return pause
+		}
+	}
+	return 0
 }
 
 // Question is one typed question: `noul` (yes/no) or `choice` (one option out
@@ -280,9 +318,10 @@ func (c *Client) Decide(ctx context.Context, state any, questions map[string]Que
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &Error{
-			Kind:   KindHTTP,
-			Status: resp.StatusCode,
-			msg:    fmt.Sprintf("jev: endpoint answered %d: %s", resp.StatusCode, c.Redact(snippet(raw))),
+			Kind:       KindHTTP,
+			Status:     resp.StatusCode,
+			RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			msg:        fmt.Sprintf("jev: endpoint answered %d: %s", resp.StatusCode, c.Redact(snippet(raw))),
 		}
 	}
 
