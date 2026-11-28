@@ -97,18 +97,106 @@ func TestResolveTaskModelSelectionStaleModelUnverifiedCatalog(t *testing.T) {
 	}
 }
 
-// dsh is the other catalog-authoritative runtime: its adapter registry
-// rejects an unregistered route at dispatch, so a stale member must fail
-// over before launch too.
-func TestResolveTaskModelSelectionRejectsStaleDshModel(t *testing.T) {
+// dsh is deliberately NOT catalog-authoritative here: qualifyDshModelID
+// passes ambiguous ids through for the runtime to judge, so rejecting one on
+// a catalog miss would break a working selection.
+func TestResolveTaskModelSelectionDoesNotRejectDshModel(t *testing.T) {
 	catalog := agent.Catalog{Models: []agent.Model{
 		{ID: "dsh-opencode-go/beam-free", Default: true},
 	}}
 	stubModelDiscovery(t, map[string]agent.Catalog{"dsh": catalog})
 
-	_, err := resolveTaskModelSelection(context.Background(), "dsh", agent.Command{Path: "/usr/bin/dsh"},
-		taskModelSelection{Model: "opencode-go/retired-model"}, quietTaskLog())
-	if err == nil || !strings.Contains(err.Error(), "was not found in the runtime catalog") {
-		t.Fatalf("stale dsh model error = %v, want model-not-found in runtime catalog", err)
+	in := taskModelSelection{Model: "opencode-go/retired-model"}
+	got, err := resolveTaskModelSelection(context.Background(), "dsh", agent.Command{Path: "/usr/bin/dsh"}, in, quietTaskLog())
+	if err != nil {
+		t.Fatalf("dsh must not fail on a catalog miss: %v", err)
+	}
+	if got != in {
+		t.Errorf("selection = %+v, want %+v unchanged", got, in)
+	}
+}
+
+// The wrapper rewrites its "no model" sentinel before launching, and the
+// picker does not list the sentinel. It must never be treated as stale even
+// though the catalog is authoritative and verified.
+func TestResolveTaskModelSelectionKeepsFreebuffDefaultSentinel(t *testing.T) {
+	catalog := agent.Catalog{Models: []agent.Model{{ID: "m-8db1ccbba6", Default: true}}}
+	reads := stubModelDiscovery(t, map[string]agent.Catalog{"codebuddy": catalog})
+	cmd := agent.Command{Path: "/opt/freebuff-runtime/freebuff-desktop"}
+
+	in := taskModelSelection{Model: agent.FreebuffDesktopDefaultModelID}
+	got, err := resolveTaskModelSelection(context.Background(), "codebuddy", cmd, in, quietTaskLog())
+	if err != nil {
+		t.Fatalf("default sentinel must not be rejected: %v", err)
+	}
+	if got != in {
+		t.Errorf("selection = %+v, want %+v unchanged", got, in)
+	}
+	if reads() != 0 {
+		t.Errorf("catalog reads = %d, want 0 for the default sentinel", reads())
+	}
+}
+
+// Discovery must carry the account env the run will actually use. A bare
+// command would enumerate the host's default desktop, which may not be the
+// one whose catalog contains (or rejects) the tier's model.
+func TestFreebuffDesktopDiscoveryEnvCarriesRunAccount(t *testing.T) {
+	runEnv := map[string]string{
+		"FREEBUFF_DESKTOP_URL":            "http://127.0.0.1:4320",
+		"FREEBUFF_DESKTOP_CREDENTIAL_REF": "/state/account-a",
+		freebuffDesktopLaunchIDEnv:        "launch-abc",
+		"FREEBUFF_DESKTOP_SCOPE":          "task-identity",
+		"MULTICA_WORKSPACE_ID":            "not-a-desktop-knob",
+	}
+	cmd := freebuffDesktopDiscoveryEnv(runEnv, agent.Command{Path: "/opt/freebuff-runtime/freebuff-desktop"})
+
+	for _, want := range []string{
+		"FREEBUFF_DESKTOP_URL=http://127.0.0.1:4320",
+		"FREEBUFF_DESKTOP_CREDENTIAL_REF=/state/account-a",
+		"FREEBUFF_DESKTOP_LAUNCH_ID=launch-abc",
+	} {
+		found := false
+		for _, kv := range cmd.Env {
+			if kv == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("discovery env = %v, missing %q", cmd.Env, want)
+		}
+	}
+	for _, kv := range cmd.Env {
+		if strings.HasPrefix(kv, "FREEBUFF_DESKTOP_SCOPE=") || strings.HasPrefix(kv, "MULTICA_") {
+			t.Errorf("discovery env must only carry account knobs, got %q", kv)
+		}
+	}
+	// Deterministic order keeps one cache entry per account.
+	again := freebuffDesktopDiscoveryEnv(runEnv, agent.Command{Path: "/opt/freebuff-runtime/freebuff-desktop"})
+	if strings.Join(cmd.Env, "\x00") != strings.Join(again.Env, "\x00") {
+		t.Errorf("discovery env is not deterministic: %v vs %v", cmd.Env, again.Env)
+	}
+}
+
+// The catalog read during a run comes from the env-carrying command, not the
+// bare one, so a stale member is judged against the desktop it launches on.
+func TestResolveTaskModelSelectionUsesEnvCarriedCatalog(t *testing.T) {
+	var gotCmd agent.Command
+	orig := listModels
+	listModels = func(_ context.Context, _ string, cmd agent.Command) (agent.Catalog, error) {
+		gotCmd = cmd
+		return agent.Catalog{Models: []agent.Model{{ID: "m-8db1ccbba6", Default: true}}}, nil
+	}
+	t.Cleanup(func() { listModels = orig })
+
+	cmd := freebuffDesktopDiscoveryEnv(map[string]string{
+		"FREEBUFF_DESKTOP_URL": "http://127.0.0.1:4320",
+	}, agent.Command{Path: "/opt/freebuff-runtime/freebuff-desktop"})
+	_, err := resolveTaskModelSelection(context.Background(), "codebuddy", cmd,
+		taskModelSelection{Model: "deepseek-v4.1-flash"}, quietTaskLog())
+	if err == nil {
+		t.Fatal("expected stale-model failure")
+	}
+	if !strings.Contains(strings.Join(gotCmd.Env, "\x00"), "FREEBUFF_DESKTOP_URL=http://127.0.0.1:4320") {
+		t.Errorf("discovery command lost the run account env: %v", gotCmd.Env)
 	}
 }

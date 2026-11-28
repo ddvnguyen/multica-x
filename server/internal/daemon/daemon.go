@@ -8335,9 +8335,11 @@ func resolveTaskModelSelection(
 	// guard — see agent.CatalogDefinesModelIDs. A verified (non-empty, live)
 	// catalog is the only thing allowed to reject: on a lookup error, or an
 	// empty/fallback/static catalog, the persisted model goes to the runtime
-	// untouched and its own resolver judges it. Failures that happen later at
-	// the provider (an HTTP 400, for example) are NOT reclassified here.
-	if sel.Model != "" && agent.CatalogDefinesModelIDs(provider, runtimeCmd) {
+	// untouched and its own resolver judges it. The bridge's own "let the
+	// desktop pick" sentinel is never a stale model — the wrapper turns it
+	// into no --model and the picker does not list it. Failures that happen
+	// later at the provider (an HTTP 400, for example) are NOT reclassified.
+	if sel.Model != "" && sel.Model != agent.FreebuffDesktopDefaultModelID && agent.CatalogDefinesModelIDs(provider, runtimeCmd) {
 		catalog, err := loadCatalog()
 		if err != nil {
 			taskLog.Warn("model: catalog lookup failed; using the configured model as-is",
@@ -8481,6 +8483,34 @@ func qualifyTaskModel(
 		"model", qualified,
 	)
 	return qualified
+}
+
+// freebuffDesktopDiscoveryEnv copies the run's Freebuff Desktop account knobs
+// onto the model-discovery command. The wrapper's `--list-models --json`
+// enumerates ONE account — the one FREEBUFF_DESKTOP_URL points at — while the
+// bare command would enumerate whichever desktop happens to be the default on
+// this host. Carrying the run's env is what makes the stale-model guard check
+// the catalog the run will actually launch against (M-634).
+//
+// These travel on agent.Command.Env, never through os.Setenv: the daemon's
+// process env is shared by every concurrent task, and Command.cacheKey folds
+// Env into the discovery key so two desktops keep separate catalogs. Keys are
+// sorted so repeated runs with the same account share one cache entry.
+// FREEBUFF_DESKTOP_SCOPE is excluded: it is per-task transcript identity, not
+// account selection, and would fragment the cache on every run.
+func freebuffDesktopDiscoveryEnv(runEnv map[string]string, cmd agent.Command) agent.Command {
+	keys := make([]string, 0, 3)
+	for key := range runEnv {
+		switch key {
+		case "FREEBUFF_DESKTOP_URL", "FREEBUFF_DESKTOP_CREDENTIAL_REF", freebuffDesktopLaunchIDEnv:
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		cmd = cmd.WithEnv(key + "=" + runEnv[key])
+	}
+	return cmd
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot int, taskLog *slog.Logger) (taskResult TaskResult, returnErr error) {
@@ -9892,7 +9922,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		thinkingLevel = task.Agent.ThinkingLevel
 		serviceTier = task.Agent.ServiceTier
 	}
-	selection, err := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
+	discoveryCmd := agent.NewCommand(entry.Path, profileFixedArgs)
+	if isFreebuffDesktopRuntime(entry.Path, task) {
+		discoveryCmd = freebuffDesktopDiscoveryEnv(agentEnv, discoveryCmd)
+	}
+	selection, err := resolveTaskModelSelection(ctx, provider, discoveryCmd,
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	if err != nil {
 		// Reported through handleTask's terminal-fail path, whose
