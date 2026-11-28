@@ -46,7 +46,7 @@ export const FORK_OWNED_PREFIXES: Readonly<Record<string, readonly string[]>> = 
     "inspector.role_inherited_by",
     "inspector.role_inherited_by_hint",
     "inspector.role_inherited_none",
-    "inspector.role_inherited_summary_count",
+    "inspector.role_inherited_summary",
     "inspector.no_description_placeholder",
     "inspector.section_skills",
     "inspector.tiers_none_hint",
@@ -339,7 +339,10 @@ export function isForkOwnedKey(namespace: string, key: string): boolean {
   if (prefixes === undefined) return false;
   if (prefixes.length === 0) return true;
   return prefixes.some(
-    (prefix) => key === prefix || key.startsWith(prefix + "."),
+    (prefix) =>
+      key === prefix ||
+      key.startsWith(prefix + ".") ||
+      key === `${prefix}_count`,
   );
 }
 
