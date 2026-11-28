@@ -86,7 +86,7 @@ import type { InboxUnsubscribeScope } from "@multica/core/inbox/mutations";
 import { PropRow } from "../../common/prop-row";
 import { TimelineHandoff } from "../../workflows/timeline-handoff";
 import { PropertyIcon } from "../../common/property-icon";
-import type { Attachment, Issue, IssueDecisionRecord, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
+import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { isBuiltInIssueStatus } from "@multica/core/issue-statuses";
 import { commentLandingTarget, isDeletedComment } from "@multica/core/issues/comment-deletion";
@@ -158,7 +158,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useRecentContextStore } from "@multica/core/chat";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useModalStore } from "@multica/core/modals";
-import { issueListOptions, issueDetailOptions, issueDecisionRecordsOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
+import { issueListOptions, issueDetailOptions, childIssuesOptions, childIssueProgressOptions, issueAttachmentsOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { propertyListOptions } from "@multica/core/properties";
@@ -1519,7 +1519,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     commentId: string;
     token: number;
   } | null>(null);
-  const [decisionMode, setDecisionMode] = useState(false);
   const activeDeliverableJump = deliverableJump?.issueId === id &&
     deliverableJump.linkedCommentId === linkedCommentId &&
     deliverableJump.linkedRequestToken === linkedRequestToken ? deliverableJump : null;
@@ -1822,8 +1821,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     },
   });
   const { data: issue = null, isLoading: issueLoading, refetch: refetchIssue } = issueQuery;
-  const decisionRecordsQuery = useQuery(issueDecisionRecordsOptions(wsId, issue?.id ?? ""));
-  const decisionRecords = decisionRecordsQuery.data ?? [];
   const issueReadState = useIssueReadState(wsId, id, issueQuery);
   useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
   useMarkIssueInboxReadWhileViewing(wsId, issue?.id ?? "", readsInbox);
@@ -3922,48 +3919,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
 
           </div>
 
-          <section className="mt-6" aria-labelledby="owner-decisions-heading">
-            <h2 id="owner-decisions-heading" className="mb-2 text-label font-semibold text-foreground">
-              {t(($) => $.detail.owner_decisions)}
-            </h2>
-            {decisionRecordsQuery.isLoading ? (
-              <p className="text-label text-muted-foreground">{t(($) => $.detail.owner_decisions_loading)}</p>
-            ) : decisionRecordsQuery.isError ? (
-              <div className="flex items-center gap-2 text-label text-muted-foreground">
-                <span>{t(($) => $.detail.owner_decisions_failed)}</span>
-                <Button size="sm" variant="outline" onClick={() => void decisionRecordsQuery.refetch()}>
-                  {t(($) => $.detail.owner_decisions_retry)}
-                </Button>
-              </div>
-            ) : decisionRecords.length === 0 ? (
-              <Button size="sm" variant="outline" onClick={() => {
-                setDecisionMode(true);
-                composerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}>
-                {t(($) => $.detail.owner_decisions_empty)}
-              </Button>
-            ) : (
-              <ul className="space-y-2">
-                {decisionRecords.map((record: IssueDecisionRecord) => {
-                  const replacement = record.superseded_by_id
-                    ? decisionRecords.find((candidate) => candidate.id === record.superseded_by_id)
-                    : undefined;
-                  return (
-                    <li key={record.id} className={cn("rounded-md border border-border px-3 py-2", replacement && "opacity-50")}>
-                      <p className="text-body font-medium text-foreground">{record.decided}</p>
-                      {record.rationale && <p className="mt-1 whitespace-pre-wrap text-label text-muted-foreground">{record.rationale}</p>}
-                      {replacement && (
-                        <p className="mt-1 text-micro text-muted-foreground">
-                          {t(($) => $.detail.owner_decisions_superseded, { decision: replacement.decided })}
-                        </p>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-
           {/* Sub-issues — Linear-style */}
           {childIssues.length === 0 && (
             <div className="mt-6">
@@ -4342,9 +4297,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
               <CommentInput
                 key={id}
                 issueId={id}
-                decisionMode={decisionMode}
-                onDecisionModeChange={setDecisionMode}
-                decisionRecords={decisionRecords}
                 onSubmit={submitComment}
                 annotationComposer={descriptionAnnotations.composer}
                 onAccepted={scrollToTimelineBottom}

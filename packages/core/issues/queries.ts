@@ -205,8 +205,6 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
-  decisionRecords: (wsId: string, issueId: string) =>
-    [...issueKeys.all(wsId), "decision-records", issueId] as const,
   commentThread: (issueId: string, commentId: string) =>
     [...issueKeys.timeline(issueId), "thread", commentId] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
@@ -554,14 +552,6 @@ export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
-  });
-}
-
-export function issueDecisionRecordsOptions(wsId: string, issueId: string) {
-  return queryOptions({
-    queryKey: issueKeys.decisionRecords(wsId, issueId),
-    queryFn: () => api.listIssueDecisionRecords(issueId),
-    enabled: !!wsId && !!issueId,
   });
 }
 

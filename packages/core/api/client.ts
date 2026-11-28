@@ -577,7 +577,6 @@ import {
   EMPTY_QUICK_ACTION,
   EMPTY_LIST_QUICK_ACTIONS_RESPONSE,
   CommentSchema,
-  IssueDecisionRecordsSchema,
   EMPTY_COMMENT,
   EMPTY_ISSUE_PROPERTY,
   EMPTY_LIST_PROPERTIES_RESPONSE,
@@ -2110,13 +2109,6 @@ export class ApiClient {
     });
   }
 
-  async listIssueDecisionRecords(issueId: string): Promise<import("../types").IssueDecisionRecord[]> {
-    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decision-records`);
-    return parseWithFallback(raw, IssueDecisionRecordsSchema, [], {
-      endpoint: "GET /api/issues/:id/decision-records",
-    });
-  }
-
   async createComment(
     issueId: string,
     content: string,
@@ -2125,8 +2117,6 @@ export class ApiClient {
     attachmentIds?: string[],
     suppressAgentIds?: string[],
     steerTaskIds?: string[],
-    recordAsDecision?: boolean,
-    supersedesRecordId?: string,
   ): Promise<Comment> {
     return this.fetch(`/api/issues/${issueId}/comments`, {
       method: "POST",
@@ -2137,8 +2127,6 @@ export class ApiClient {
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
         ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
-        ...(recordAsDecision ? { record_as_decision: true } : {}),
-        ...(supersedesRecordId ? { supersedes_record_id: supersedesRecordId } : {}),
       }),
     });
   }

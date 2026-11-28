@@ -70,7 +70,6 @@ func TestM209ReceiptInsertFailureRollsBackEverything(t *testing.T) {
 
 func TestM209PublishesAfterCommitOnce(t *testing.T) {
 	issue, _, _, body := m209ReviewSetup(t)
-	body["rationale"] = "Proceed after the readiness review."
 	var waitingAt time.Time
 	dbfx.QueryRow(t, `SELECT updated_at FROM issue WHERE id=$1`, issue).Scan(&waitingAt)
 	h, eventCount, hintCount := m209ObservedHandler(t, issue)
@@ -81,24 +80,6 @@ func TestM209PublishesAfterCommitOnce(t *testing.T) {
 		t.Fatalf("retry = %d: %s", w.Code, w.Body.String())
 	}
 	assertM209Rows(t, issue, "in_progress", 1, 1, 1)
-	if count := dbfx.Count(t, `SELECT count(*) FROM issue_decision_record WHERE issue_id=$1 AND source_kind='ask_answer'`, issue); count != 1 {
-		t.Fatalf("human answer decision records = %d, want one despite retry", count)
-	}
-	var decided, rationale, sourceKind, commentContent string
-	if err := testPool.QueryRow(t.Context(), `
-		SELECT record.decided, record.rationale, record.source_kind, comment.content
-		FROM issue_decision_record record
-		JOIN comment ON comment.id=record.comment_id
-		WHERE record.issue_id=$1 AND record.source_kind='ask_answer'
-	`, issue).Scan(&decided, &rationale, &sourceKind, &commentContent); err != nil {
-		t.Fatalf("read human answer decision record and comment: %v", err)
-	}
-	if decided != body["decision"] || rationale != body["rationale"] || sourceKind != "ask_answer" {
-		t.Fatalf("ask_answer record = (%q, %q, %q), want (%q, %q, ask_answer)", decided, rationale, sourceKind, body["decision"], body["rationale"])
-	}
-	if commentContent != "Approve\n\nProceed after the readiness review." {
-		t.Fatalf("ask_answer comment content = %q, want decision and rationale", commentContent)
-	}
 	var requestedAt time.Time
 	dbfx.QueryRow(t, `SELECT requested_at FROM issue_decision_response WHERE issue_id=$1`, issue).Scan(&requestedAt)
 	if !requestedAt.Equal(waitingAt) {
@@ -280,7 +261,7 @@ func m209ReviewSetup(t *testing.T) (string, string, string, map[string]any) {
 	project := deliveryProject(t, "M209 review project", agent)
 	issue := dbfx.Issue(t, "M209 review answer", testutil.Cols{"project_id": project, "status": "wait_for_decision"})
 	t.Cleanup(func() {
-		for _, table := range []string{"issue_decision_record", "issue_decision_response", "comment", "agent_task_queue"} {
+		for _, table := range []string{"issue_decision_response", "comment", "agent_task_queue"} {
 			_, _ = testPool.Exec(context.Background(), "DELETE FROM "+table+" WHERE issue_id=$1", issue)
 		}
 	})

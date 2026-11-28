@@ -39,14 +39,11 @@ interface CommentInputProps {
   /** Resolves true on success, false on failure. The composer keeps the text
    *  (editor locked + button spinning) until this settles, then clears only on
    *  success — a failed send must not silently discard the user's draft. */
-  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[], recordAsDecision?: boolean, supersedesRecordId?: string) => Promise<string | boolean>;
+  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
   /** Called after the server accepts the comment and the composer is cleared. */
   onAccepted?: (commentId: string) => void;
   onEditAnnotation?: (id: string) => boolean;
   annotationComposer?: AnnotationComposerSlot;
-  decisionMode?: boolean;
-  onDecisionModeChange?: (enabled: boolean) => void;
-  decisionRecords?: { id: string; decided: string; superseded_by_id: string | null }[];
 }
 
 // A top-level comment belongs to no thread, so it takes a running turn by
@@ -55,7 +52,7 @@ function steerTopLevelByDefault(task: AgentTask): boolean {
   return !task.trigger_comment_id;
 }
 
-function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotationComposer, decisionMode = false, onDecisionModeChange, decisionRecords = [] }: CommentInputProps) {
+function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotationComposer }: CommentInputProps) {
   const { t } = useT("issues");
   const { t: tEditor } = useT("editor");
   const sendShortcut = useShortcut("send");
@@ -72,7 +69,6 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotat
   const persistedDraft = useCommentDraftStore((store) => store.getDraft(draftKey));
   const [content, setContent] = useState(initialDraft ?? "");
   const [isEmpty, setIsEmpty] = useState(() => !initialDraft?.trim());
-  const [supersedesRecordId, setSupersedesRecordId] = useState("");
   const annotations = useCommentDraftStore((s) => s.getAnnotations(draftKey));
   const previewAnnotations = useMemo(() => annotationsWithPending(annotations, annotationComposer?.pending), [annotations, annotationComposer?.pending]);
   const composedContent = useMemo(() => composeAnnotatedReply(content, previewAnnotations), [content, previewAnnotations]);
@@ -113,11 +109,6 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotat
       useCommentDraftStore.getState().getUploads(draftKey).length > 0,
     editorRef,
   });
-  useEffect(() => {
-    if (!decisionMode) return;
-    lazy.activate();
-    requestAnimationFrame(() => editorRef.current?.focus());
-  }, [decisionMode, lazy.activate]);
   // Inactive shells must not mount query observers or duplicate cold reads.
   const quickActionMenu = useQuickActionMenu(issueId, { enabled: lazy.active, triggerPreview, previewContent });
   const { isDragOver, dropZoneProps } = useFileDropZone({
@@ -211,22 +202,12 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotat
       const activeIds = pendingAttachments
         .filter((a) => contentReferencesAttachment(content, a))
         .map((a) => a.id);
-      const commentRequest = decisionMode
-        ? onSubmit(
-          content,
-          activeIds.length > 0 ? activeIds : undefined,
-          suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
-          steerTaskIds.length > 0 ? steerTaskIds : undefined,
-          true,
-          supersedesRecordId || undefined,
-        )
-        : onSubmit(
-          content,
-          activeIds.length > 0 ? activeIds : undefined,
-          suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
-          steerTaskIds.length > 0 ? steerTaskIds : undefined,
-        );
-      return commentRequest.then((commentId) => {
+      return onSubmit(
+        content,
+        activeIds.length > 0 ? activeIds : undefined,
+        suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
+        steerTaskIds.length > 0 ? steerTaskIds : undefined,
+      ).then((commentId) => {
         acceptedCommentIdRef.current = typeof commentId === "string" ? commentId : null;
         return !!commentId;
       });
@@ -247,8 +228,6 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotat
       editorRef.current?.clearContent();
       setContent("");
       setIsEmpty(true);
-      setSupersedesRecordId("");
-      onDecisionModeChange?.(false);
       resetRecipients();
       editorScrubbedRef.current = true;
       if (acceptedCommentIdRef.current) onAccepted?.(acceptedCommentIdRef.current);
@@ -284,30 +263,6 @@ function CommentInput({ issueId, onSubmit, onAccepted, onEditAnnotation, annotat
       ref={voice.rootRef}
       onFocusCapture={voice.onFocusCapture}
     >
-      <div className="flex flex-wrap items-center gap-2 px-3 pt-2">
-        <label className="inline-flex items-center gap-2 text-label text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={decisionMode}
-            onChange={(event) => onDecisionModeChange?.(event.currentTarget.checked)}
-            aria-label={t(($) => $.comment.record_as_decision)}
-          />
-          <span>{t(($) => $.comment.record_as_decision)}</span>
-        </label>
-        {decisionMode && (
-          <select
-            className="h-8 rounded-md border border-input bg-background px-2 text-label text-foreground"
-            aria-label={t(($) => $.comment.supersedes_decision)}
-            value={supersedesRecordId}
-            onChange={(event) => setSupersedesRecordId(event.currentTarget.value)}
-          >
-            <option value="">{t(($) => $.comment.new_decision)}</option>
-            {decisionRecords.filter((record) => !record.superseded_by_id).map((record) => (
-              <option key={record.id} value={record.id}>{record.decided}</option>
-            ))}
-          </select>
-        )}
-      </div>
       {attachmentsBlockSteer && <div className="px-3 pt-2">
         <SteerAttachmentNotice />
       </div>}
