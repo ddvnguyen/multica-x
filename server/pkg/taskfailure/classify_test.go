@@ -137,6 +137,7 @@ func TestClassifyRules(t *testing.T) {
 		{"codearts step open at EOF", "codearts stream ended without a terminal signal (step still open at EOF)", ReasonAgentProviderNetwork},
 
 		// 8. Model not found / unavailable.
+		{"model not found in runtime catalog", `model "deepseek-v4.1-flash" was not found in the runtime catalog`, ReasonAgentModelNotFoundOrUnavailable},
 		{"model not found", "Error: model claude-3-opus-99 not found", ReasonAgentModelNotFoundOrUnavailable},
 		{"model not found phrase", "the model was not found in this account", ReasonAgentModelNotFoundOrUnavailable},
 		{"unknown model", "unknown model 'foo-1.0'", ReasonAgentModelNotFoundOrUnavailable},

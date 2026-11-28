@@ -237,8 +237,9 @@ func TestResolveAgentTier_SkipsCoolingTier(t *testing.T) {
 }
 
 // TestFailTaskArmsTierCooldown pins the recording half of M-352: a tier-stamped
-// task that fails with a capacity/rate-limit or quota reason arms that tier's
-// cooldown for the default window, in the same transaction as the fail. A
+// task that fails with a capacity/rate-limit, quota or model-not-found reason
+// arms that tier's/member's cooldown for the default window, in the same
+// transaction as the fail. A
 // tier-less task and an unrelated reason arm nothing.
 func TestFailTaskArmsTierCooldown(t *testing.T) {
 	ctx := context.Background()
@@ -284,6 +285,9 @@ func TestFailTaskArmsTierCooldown(t *testing.T) {
 	for _, reason := range []string{
 		taskfailure.ReasonAgentProviderCapacityOrRateLimit.String(),
 		taskfailure.ReasonAgentProviderQuotaLimit.String(),
+		// M-634: a stale model is a member-level problem, so the next
+		// resolve skips the cooled member and uses the next one.
+		taskfailure.ReasonAgentModelNotFoundOrUnavailable.String(),
 	} {
 		clearCooldown()
 		before := time.Now()

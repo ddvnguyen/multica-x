@@ -2164,6 +2164,7 @@
     "model_placeholder": "Select a model",
     "model_required": "Enter a model.",
     "model_custom": "Custom model ID…",
+    "member_model_not_in_catalog": "Model {{model}} is not in this runtime's discovered catalog. Runs that pick this member may fail until you choose a listed model.",
     "models_loading": "Discovering models…",
     "models_offline_note": "Model discovery is offline — the stored value stays editable below.",
     "models_unsupported_note": "This runtime ignores per-model selection; the value is kept for display.",

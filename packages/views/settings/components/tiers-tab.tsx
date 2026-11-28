@@ -77,6 +77,7 @@ import { useT } from "../../i18n";
 import { RuntimePicker } from "../../agents/components/inspector/runtime-picker";
 import { ModelPicker } from "../../agents/components/inspector/model-picker";
 import { ThinkingPicker } from "../../agents/components/inspector/thinking-picker";
+import { findModelCapabilityEntry } from "../../agents/components/inspector/model-capability";
 import {
   memberAfterModelChange,
   memberAfterRuntimeChange,
@@ -1751,6 +1752,20 @@ function MemberRowEditor({
     row.model,
     runtime?.provider ?? row.provider,
   );
+  // M-634: a stored model that the runtime's discovered catalog no longer
+  // offers is displayed and saved unchanged, but the editor must say so.
+  // Only an authoritative catalog may flag it: offline, discovery errors and
+  // runtimes without per-model selection keep their stored value unflagged.
+  const modelIsStale =
+    catalog !== null &&
+    catalog.length > 0 &&
+    !modelsQuery.isLoading &&
+    row.model.trim() !== "" &&
+    !findModelCapabilityEntry(
+      catalog,
+      row.model.trim(),
+      runtime?.provider ?? row.provider,
+    );
 
   const changeRuntime = async (runtimeId: string) => {
     const nextRuntime = runtimes.find((item) => item.id === runtimeId);
@@ -1883,6 +1898,17 @@ function MemberRowEditor({
           </Button>
         </div>
       </div>
+      {modelIsStale && (
+        <p
+          className="text-caption text-destructive"
+          data-testid={`tier-member-stale-model-${index}`}
+          role="status"
+        >
+          {t(($) => $.tiers.member_model_not_in_catalog, {
+            model: row.model.trim(),
+          })}
+        </p>
+      )}
       {error && <p className="text-caption text-destructive">{error}</p>}
       {slotsError && (
         <p className="text-caption text-destructive">{slotsError}</p>
