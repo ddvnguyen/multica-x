@@ -237,15 +237,19 @@ func renderMoctInjectDualBlock(role, agent *moct.Injection) string {
 	if !roleEntries && !agentEntries {
 		return ""
 	}
+	// Dedupe by record id: a record present in both scopes renders once, in
+	// the Role (read-only) section, so the shared team/project records do not
+	// consume the budget twice (M-643).
+	seen := map[string]struct{}{}
 	var b strings.Builder
 	b.WriteString("## MOCT memory (pre-run inject)\n\n")
 	if roleEntries {
 		b.WriteString("### Role memory (read-only)\n\n")
-		writeMoctInjectEntries(&b, role)
+		writeMoctInjectEntries(&b, role, seen)
 	}
 	if agentEntries {
 		b.WriteString("### Agent memory\n\n")
-		writeMoctInjectEntries(&b, agent)
+		writeMoctInjectEntries(&b, agent, seen)
 	}
 	return b.String()
 }
@@ -253,8 +257,15 @@ func renderMoctInjectDualBlock(role, agent *moct.Injection) string {
 // writeMoctInjectEntries renders one inject's entries plus its deferred way
 // out. Shared with the single-expert block above it so the two paths cannot
 // drift in shape.
-func writeMoctInjectEntries(b *strings.Builder, injection *moct.Injection) {
+func writeMoctInjectEntries(b *strings.Builder, injection *moct.Injection, seen map[string]struct{}) {
 	for _, entry := range injection.Entries {
+		// Skip records already rendered in an earlier section (M-643).
+		if seen != nil {
+			if _, dup := seen[entry.ID]; dup {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+		}
 		entryType := moctOneLine(entry.Type, 64)
 		fmt.Fprintf(b, "#### [%s] %s\n\n", entryType, moctHeading(entry))
 		if body := strings.TrimSpace(entry.Body); body != "" {
@@ -284,11 +295,16 @@ func moctMemoryDualPart(block string, role, agent *moct.Injection) initctx.PartR
 	}
 	part.Note = fmt.Sprintf("%d role (read-only) + %d agent entries at moct-be's inject budget of %d tokens", roleCount, agentCount, initctx.BudgetMemory)
 	part.Entries = make([]initctx.MemoryEntry, 0, roleCount+agentCount)
+	seenEntries := map[string]struct{}{}
 	for _, injection := range []*moct.Injection{role, agent} {
 		if injection == nil {
 			continue
 		}
 		for _, entry := range injection.Entries {
+			if _, dup := seenEntries[entry.ID]; dup {
+				continue
+			}
+			seenEntries[entry.ID] = struct{}{}
 			part.Entries = append(part.Entries, initctx.MemoryEntry{
 				ID: entry.ID, Type: entry.Type, Title: entry.Title, Body: entry.Body,
 			})
