@@ -78,8 +78,11 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 	// moct-be's own configured inject budget happens to be: this is the number
 	// the band is built from, and leaving it implicit is what let the first
 	// request drift unpriced (M-140). A run that implements a Role (M-542)
-	// splits the budget across two bounded calls — the Role's scope, read-only,
-	// and the run Agent's own — so one side can never starve the other.
+	// asks twice — the Role's read-only scope, then the run Agent's own — so
+	// each request is bounded by half the budget. That half is not a partition
+	// of the block: moct-be applies layerTokens per layer and caps the
+	// allowance itself, which is why deduping the two answers loses nothing
+	// instead of freeing budget (M-643).
 	// moctReadExpert derefs the claim's Role scope: absent on Role-less runs
 	// and on claims from servers that predate Roles, which keeps the
 	// single-expert seam byte-identical for both.
@@ -136,8 +139,8 @@ func moctInjectPrompt(ctx context.Context, baseURL string, task Task, logger *sl
 		block := renderMoctInjectBlock(injection)
 		return block, moctMemoryPart(block, injection)
 	}
-	block := renderMoctInjectDualBlock(roleInjection, injection)
-	return block, moctMemoryDualPart(block, roleInjection, injection)
+	dual := buildMoctDualMemory(roleInjection, injection)
+	return dual.block, moctMemoryDualPart(dual)
 }
 
 // moctMemoryPart is the memory row for a run. An empty block is reported with
@@ -192,6 +195,10 @@ func moctScopeParams(task Task) (moct.InjectParams, bool) {
 // heading and let the rest of the title read as its own instruction line.
 const moctHeadingMaxRunes = 200
 
+// moctDeferredRecordsNote is the one way out of a block: records that did not
+// fit are still readable through the `moct` MCP tools.
+const moctDeferredRecordsNote = "Some records did not fit above; read them with the `moct` MCP tools `memory_search` and `memory_get`.\n\n"
+
 // renderMoctInjectBlock turns inject entries into the prompt block, or "" when
 // there is nothing to say — an empty block would only cost tokens and tell the
 // agent that memory exists when it does not.
@@ -210,8 +217,8 @@ func renderMoctInjectBlock(injection *moct.Injection) string {
 	}
 	// Deferred records: too large or too low priority to inject. Name the way
 	// out so the count is actionable rather than a shrug.
-	if injection.Omitted > 0 || len(injection.Index) > 0 {
-		b.WriteString("Some records did not fit above; read them with the `moct` MCP tools `memory_search` and `memory_get`.\n\n")
+	if moctDefersRecords(injection) {
+		b.WriteString(moctDeferredRecordsNote)
 	}
 	return b.String()
 }
@@ -227,34 +234,86 @@ func moctReadExpert(task Task) string {
 	return strings.TrimSpace(*task.MoctReadExpertID)
 }
 
-// renderMoctInjectDualBlock merges the Role and Agent injects into one prompt
-// block. The Role section is labeled read-only so the model never treats
-// shared knowledge as its own writable profile; each side keeps its own
-// deferred-records note so neither count reads as the whole.
-func renderMoctInjectDualBlock(role, agent *moct.Injection) string {
-	roleEntries := role != nil && len(role.Entries) > 0
-	agentEntries := agent != nil && len(agent.Entries) > 0
-	if !roleEntries && !agentEntries {
-		return ""
+// moctDualMemory is a dual-scope inject rendered once for both consumers: the
+// prompt block the model reads and the run row the report carries. Both come
+// from one deduped walk, so the note's counts are exactly the entries the
+// block lists (M-643).
+type moctDualMemory struct {
+	block   string
+	role    int
+	agent   int
+	entries []initctx.MemoryEntry
+}
+
+// buildMoctDualMemory merges the Role and Agent injects into one prompt block.
+// The Role section is labeled read-only so the model never treats shared
+// knowledge as its own writable profile. A record present in both scopes
+// renders once, in the Role section, and counts for Role there, so the two
+// counts always add up to the number of entries the block lists (M-643).
+func buildMoctDualMemory(role, agent *moct.Injection) moctDualMemory {
+	seen := map[string]struct{}{}
+	roleEntries := moctUniqueEntries(role, seen)
+	agentEntries := moctUniqueEntries(agent, seen)
+	m := moctDualMemory{role: len(roleEntries), agent: len(agentEntries)}
+	if m.role == 0 && m.agent == 0 {
+		return m
 	}
 	var b strings.Builder
 	b.WriteString("## MOCT memory (pre-run inject)\n\n")
-	if roleEntries {
+	if m.role > 0 {
 		b.WriteString("### Role memory (read-only)\n\n")
-		writeMoctInjectEntries(&b, role)
+		writeMoctInjectEntries(&b, roleEntries)
 	}
-	if agentEntries {
+	if m.agent > 0 {
 		b.WriteString("### Agent memory\n\n")
-		writeMoctInjectEntries(&b, agent)
+		writeMoctInjectEntries(&b, agentEntries)
 	}
-	return b.String()
+	// One way out per block: both scopes defer into the same tools, so a
+	// second copy would only spend tokens (M-643).
+	if moctDefersRecords(role) || moctDefersRecords(agent) {
+		b.WriteString(moctDeferredRecordsNote)
+	}
+	m.block = b.String()
+	m.entries = make([]initctx.MemoryEntry, 0, m.role+m.agent)
+	for _, entries := range [][]moct.Entry{roleEntries, agentEntries} {
+		for _, entry := range entries {
+			m.entries = append(m.entries, initctx.MemoryEntry{
+				ID: entry.ID, Type: entry.Type, Title: entry.Title, Body: entry.Body,
+			})
+		}
+	}
+	return m
 }
 
-// writeMoctInjectEntries renders one inject's entries plus its deferred way
-// out. Shared with the single-expert block above it so the two paths cannot
-// drift in shape.
-func writeMoctInjectEntries(b *strings.Builder, injection *moct.Injection) {
+// moctUniqueEntries returns the records of one inject that no earlier section
+// rendered, and marks them seen. Ids repeat because both reads return the
+// shared team/project records; an id therefore renders at most once per block
+// (M-643).
+func moctUniqueEntries(injection *moct.Injection, seen map[string]struct{}) []moct.Entry {
+	if injection == nil {
+		return nil
+	}
+	var unique []moct.Entry
 	for _, entry := range injection.Entries {
+		if _, dup := seen[entry.ID]; dup {
+			continue
+		}
+		seen[entry.ID] = struct{}{}
+		unique = append(unique, entry)
+	}
+	return unique
+}
+
+// moctDefersRecords reports whether an inject left records out of the block.
+func moctDefersRecords(injection *moct.Injection) bool {
+	return injection != nil && (injection.Omitted > 0 || len(injection.Index) > 0)
+}
+
+// writeMoctInjectEntries renders already-deduped records as headings plus
+// bodies. Shared with the single-expert block above it so the two paths cannot
+// drift in shape.
+func writeMoctInjectEntries(b *strings.Builder, entries []moct.Entry) {
+	for _, entry := range entries {
 		entryType := moctOneLine(entry.Type, 64)
 		fmt.Fprintf(b, "#### [%s] %s\n\n", entryType, moctHeading(entry))
 		if body := strings.TrimSpace(entry.Body); body != "" {
@@ -262,38 +321,19 @@ func writeMoctInjectEntries(b *strings.Builder, injection *moct.Injection) {
 			b.WriteString("\n\n")
 		}
 	}
-	if injection.Omitted > 0 || len(injection.Index) > 0 {
-		b.WriteString("Some records did not fit above; read them with the `moct` MCP tools `memory_search` and `memory_get`.\n\n")
-	}
 }
 
-// moctMemoryDualPart is the memory row for a dual-scope run: entry counts per
-// side so the row never reads as "this is all the memory there is".
-func moctMemoryDualPart(block string, role, agent *moct.Injection) initctx.PartReport {
-	part := initctx.PartReport{Part: initctx.PartMemory, Measured: true, Tokens: initctx.Estimate(block)}
-	if block == "" {
+// moctMemoryDualPart is the memory row for a dual-scope run: what each section
+// actually rendered, so the row never reads as "this is all the memory there
+// is" and never claims more than the block lists (M-643).
+func moctMemoryDualPart(m moctDualMemory) initctx.PartReport {
+	part := initctx.PartReport{Part: initctx.PartMemory, Measured: true, Tokens: initctx.Estimate(m.block)}
+	if m.block == "" {
 		part.Note = "moct returned no entries for this run's agent or role scope"
 		return part
 	}
-	roleCount, agentCount := 0, 0
-	if role != nil {
-		roleCount = len(role.Entries)
-	}
-	if agent != nil {
-		agentCount = len(agent.Entries)
-	}
-	part.Note = fmt.Sprintf("%d role (read-only) + %d agent entries at moct-be's inject budget of %d tokens", roleCount, agentCount, initctx.BudgetMemory)
-	part.Entries = make([]initctx.MemoryEntry, 0, roleCount+agentCount)
-	for _, injection := range []*moct.Injection{role, agent} {
-		if injection == nil {
-			continue
-		}
-		for _, entry := range injection.Entries {
-			part.Entries = append(part.Entries, initctx.MemoryEntry{
-				ID: entry.ID, Type: entry.Type, Title: entry.Title, Body: entry.Body,
-			})
-		}
-	}
+	part.Note = fmt.Sprintf("%d role (read-only) + %d agent entries at moct-be's inject budget of %d tokens", m.role, m.agent, initctx.BudgetMemory)
+	part.Entries = m.entries
 	return part
 }
 
