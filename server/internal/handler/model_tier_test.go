@@ -102,6 +102,58 @@ func TestNormalizeTierInput(t *testing.T) {
 	}
 }
 
+// Tiers saved before M-634 could hold "High" where the resolver expects
+// "high". Both the tier and the tier-member save paths must canonicalise it.
+func TestNormalizeTierThinkingLevelCasing(t *testing.T) {
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		in    string
+		want  string
+		valid bool
+	}{
+		{"High", "high", true},
+		{" HIGH ", "high", true},
+		{"low", "low", true},
+		{"future-token", "future-token", true}, // runtime-native tokens are never rewritten
+		{"", "", false},
+	} {
+		got := normalizeTierThinkingLevel(tc.in)
+		if got.Valid != tc.valid || (tc.valid && got.String != tc.want) {
+			t.Errorf("normalizeTierThinkingLevel(%q) = %+v, want valid=%v string=%q", tc.in, got, tc.valid, tc.want)
+		}
+
+		tierParams, _, err := normalizeTierInput(modelTierInput{
+			Name: str("casing"), Provider: str("codebuddy"), Model: str("m1"), ThinkingLevel: str(tc.in),
+		}, nil, true)
+		if err != nil {
+			t.Fatalf("normalizeTierInput(%q): %v", tc.in, err)
+		}
+		if tierParams.ThinkingLevel.Valid != tc.valid || (tc.valid && tierParams.ThinkingLevel.String != tc.want) {
+			t.Errorf("tier thinking for %q = %+v, want %q valid=%v", tc.in, tierParams.ThinkingLevel, tc.want, tc.valid)
+		}
+
+		memberParams, _, err := normalizeTierMemberInput(modelTierMemberInput{
+			Provider: str("codebuddy"), Model: str("m1"), ThinkingLevel: str(tc.in),
+		}, nil, true)
+		if err != nil {
+			t.Fatalf("normalizeTierMemberInput(%q): %v", tc.in, err)
+		}
+		if memberParams.ThinkingLevel.Valid != tc.valid || (tc.valid && memberParams.ThinkingLevel.String != tc.want) {
+			t.Errorf("member thinking for %q = %+v, want %q valid=%v", tc.in, memberParams.ThinkingLevel, tc.want, tc.valid)
+		}
+	}
+
+	// An update that omits thinking_level keeps the stored (normalised) value.
+	cur := db.ModelTier{Name: "casing", Provider: "codebuddy", Model: "m1", ThinkingLevel: normalizeTierThinkingLevel("High")}
+	got, _, err := normalizeTierInput(modelTierInput{Provider: str("codebuddy")}, &cur, false)
+	if err != nil {
+		t.Fatalf("update without thinking_level: %v", err)
+	}
+	if !got.ThinkingLevel.Valid || got.ThinkingLevel.String != "high" {
+		t.Fatalf("update kept thinking = %+v, want high", got.ThinkingLevel)
+	}
+}
+
 // ── database-backed ──────────────────────────────────────────────────────────
 
 func newTierTestEnv(t *testing.T) (foreignWorkspaceID, memberUserID string) {

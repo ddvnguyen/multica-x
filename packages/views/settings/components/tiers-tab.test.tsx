@@ -782,6 +782,47 @@ describe("TiersTab", () => {
     expect(within(row).getByText("legacy-thinking")).toBeInTheDocument();
   });
 
+  it("flags a stored model missing from the runtime catalog but saves it unchanged", async () => {
+    data.runtimes = [makeRuntime("rt-freebuff", "freebuff", "Freebuff")];
+    data.models = [{ id: "m-8db1ccbba6", label: "DeepSeek V4.1 Flash" }];
+    data.members = {
+      "tier-1": [
+        member({
+          id: "member-1",
+          runtime_id: "rt-freebuff",
+          model: "deepseek-v4.1-flash",
+          thinking_level: "high",
+        }),
+      ],
+    };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const row = await screen.findByTestId("tier-member-row-0");
+    expect(within(row).getByTestId("tier-member-stale-model-0")).toBeInTheDocument();
+
+    // Display-only: the warning never rewrites the stored value on save.
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(mockUpdateMember).toHaveBeenCalled());
+    expect(mockUpdateMember.mock.calls[0]![0]).toMatchObject({
+      model: "deepseek-v4.1-flash",
+      thinking_level: "high",
+    });
+  });
+
+  it("does not flag a model when discovery returns no catalog", async () => {
+    data.runtimes = [makeRuntime("rt-freebuff", "freebuff", "Freebuff")];
+    data.models = [];
+    data.members = {
+      "tier-1": [member({ id: "member-1", runtime_id: "rt-freebuff" })],
+    };
+    data.tiers = [tier({ id: "tier-1", name: "fast", idx: 0 })];
+    render(<TiersTab />, { wrapper: Wrapper });
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const row = await screen.findByTestId("tier-member-row-0");
+    expect(within(row).queryByTestId("tier-member-stale-model-0")).toBeNull();
+  });
+
   it("rejects a non-slug name before submitting", async () => {
     render(<TiersTab />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /add tier/i }));

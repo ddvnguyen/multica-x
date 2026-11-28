@@ -65,6 +65,12 @@ const DefaultTierCooldown = 15 * time.Minute
 var tierCooldownReasons = map[string]bool{
 	taskfailure.ReasonAgentProviderCapacityOrRateLimit.String(): true,
 	taskfailure.ReasonAgentProviderQuotaLimit.String():          true,
+	// M-634: a model that the runtime's authoritative catalog no longer
+	// offers is a property of that tier member, not of the task. Cooling the
+	// member lets the next resolve fall over to the next member/tier instead
+	// of sending every run into the same "model not found in runtime catalog"
+	// failure. Tier-less runs still arm nothing (see FailTask below).
+	taskfailure.ReasonAgentModelNotFoundOrUnavailable.String(): true,
 }
 
 // tierSlotID maps a task row (or trigger override) onto the pending slot

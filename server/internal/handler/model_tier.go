@@ -277,6 +277,29 @@ func (in *modelTierInput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// canonicalTierThinkingTokens is the fixed cross-provider effort vocabulary
+// (see pkg/agent/thinking.go providerThinkingEnums). Dynamic catalog tokens
+// are deliberately not folded: they are runtime-native and case-sensitive.
+var canonicalTierThinkingTokens = map[string]bool{
+	"off": true, "none": true, "minimal": true, "low": true,
+	"medium": true, "high": true, "xhigh": true, "max": true, "ultra": true,
+}
+
+// normalizeTierThinkingLevel folds casing for known fixed tokens only.
+// Tiers saved before M-634 could hold "High" where the resolver expects
+// "high"; unknown/dynamic tokens are returned unchanged so a runtime-native
+// value is never rewritten.
+func normalizeTierThinkingLevel(level string) pgtype.Text {
+	s := strings.TrimSpace(level)
+	if s == "" {
+		return pgtype.Text{}
+	}
+	if canonicalTierThinkingTokens[strings.ToLower(s)] {
+		s = strings.ToLower(s)
+	}
+	return optionalText(s)
+}
+
 func parseTierCost(raw *string) (pgtype.Numeric, error) {
 	var out pgtype.Numeric
 	if raw == nil {
@@ -393,7 +416,7 @@ func normalizeTierInput(in modelTierInput, cur *db.ModelTier, forCreate bool) (d
 	}
 
 	if in.ThinkingLevel != nil {
-		params.ThinkingLevel = optionalText(*in.ThinkingLevel)
+		params.ThinkingLevel = normalizeTierThinkingLevel(*in.ThinkingLevel)
 	}
 	if in.ServiceTier != nil {
 		params.ServiceTier = optionalText(*in.ServiceTier)
@@ -1618,7 +1641,7 @@ func normalizeTierMemberInput(in modelTierMemberInput, cur *db.ModelTierMember, 
 		params.Model = m
 	}
 	if in.ThinkingLevel != nil {
-		params.ThinkingLevel = optionalText(*in.ThinkingLevel)
+		params.ThinkingLevel = normalizeTierThinkingLevel(*in.ThinkingLevel)
 	}
 	var runtimeID *pgtype.UUID
 	if in.RuntimeID != nil {
