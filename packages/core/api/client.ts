@@ -3576,15 +3576,25 @@ export class ApiClient {
    * M-616: record which memory block this run's reader found more useful.
    * Members and agents can both vote; the server re-reads the run's own
    * measurements rather than trusting any numbers sent here.
+   *
+   * The workspace must be explicit: authHeaders() stamps the ambient route
+   * slug, which another tab can change between rendering the panel and this
+   * POST. Without a scope the server answers "workspace_id is required" and
+   * the vote never lands (M-625).
    */
   async setIssueTaskMemoryMark(
     issueId: string,
     taskId: string,
     choice: MemoryCompareChoice,
+    workspaceId: string,
   ): Promise<MemoryCompareMark> {
     const raw = await this.fetch<unknown>(
       `/api/issues/${issueId}/tasks/${taskId}/memory-mark`,
-      { method: "POST", body: JSON.stringify({ choice }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ choice }),
+        headers: workspaceHeader({ workspaceId }),
+      },
     );
     return parseWithFallback<MemoryCompareMark>(raw, MemoryCompareMarkSchema, {
       task_id: taskId, choice, marked_by_type: "", primary_bytes: 0,

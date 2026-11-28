@@ -94,7 +94,7 @@ describe("MemoryCompare", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "PowerContext" }));
     await waitFor(() =>
-      expect(setIssueTaskMemoryMark).toHaveBeenCalledWith("issue-1", "task-1", "powercontext"),
+      expect(setIssueTaskMemoryMark).toHaveBeenCalledWith("issue-1", "task-1", "powercontext", "ws-1"),
     );
     expect(await screen.findByTestId("memory-compare-mark")).toHaveTextContent(
       "Saved: PowerContext — by a member",

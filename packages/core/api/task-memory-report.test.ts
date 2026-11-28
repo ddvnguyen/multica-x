@@ -69,11 +69,29 @@ it("posts a vote and validates the saved mark", async () => {
   })));
   vi.stubGlobal("fetch", fetcher);
 
-  const mark = await new ApiClient("/multica").setIssueTaskMemoryMark("issue-1", "task-1", "neither");
+  const mark = await new ApiClient("/multica").setIssueTaskMemoryMark("issue-1", "task-1", "neither", "ws-1");
 
   expect(String(fetcher.mock.calls[0]?.[0])).toBe("/multica/api/issues/issue-1/tasks/task-1/memory-mark");
   expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ choice: "neither" }) });
   expect(mark.choice).toBe("neither");
+});
+
+// M-625: the panel POST must name the issue's workspace. The ambient route
+// slug can be overwritten by another tab, and the handler then refuses the
+// vote as unscoped — the lane-z evidence that prompted this fix.
+it("stamps the issue's workspace on a memory vote", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    task_id: "task-1", choice: "moct", marked_by_type: "member",
+    primary_bytes: 900, primary_latency_ms: 40, shadow_bytes: 1200,
+    shadow_latency_ms: 150, marked_at: "2026-11-27T19:00:00Z",
+  })));
+  vi.stubGlobal("fetch", fetcher);
+
+  await new ApiClient("/multica").setIssueTaskMemoryMark("issue-1", "task-1", "moct", "ws-42");
+
+  expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+    headers: { "X-Workspace-ID": "ws-42", "X-Workspace-Slug": "" },
+  });
 });
 
 it("reads the workspace comparison and falls back on a malformed one", async () => {
