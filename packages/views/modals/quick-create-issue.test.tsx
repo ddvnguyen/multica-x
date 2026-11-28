@@ -152,8 +152,11 @@ const mockRuntimesData = vi.hoisted(
 // the same or the two records drift apart only in tests.
 let mockUploadIdSeq = 0;
 
-vi.mock("@tanstack/react-query", () => ({
-  useQuery: ({ queryKey }: { queryKey: string[] }) => {
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    useQuery: ({ queryKey }: { queryKey: string[] }) => {
     // Workspace-scoped query keys carry the wsId as `queryKey[1]`; the
     // discriminator is at `queryKey[2]` (e.g. ["workspaces", wsId, "squads"]).
     if (queryKey[0] === "workspaces" && queryKey[2] === "squads") {
@@ -174,7 +177,8 @@ vi.mock("@tanstack/react-query", () => ({
         return { data: [] };
     }
   },
-}));
+  };
+});
 
 const { ApiError } = vi.hoisted(() => {
   class ApiErrorImpl extends Error {
@@ -203,6 +207,12 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-test",
+}));
+
+vi.mock("@multica/core/agents", () => ({
+  isAgentRuntimeBound: () => true,
+  isRoleAgent: () => false,
+  useAgentRoleTypeEnabled: () => false,
 }));
 
 vi.mock("@multica/core/paths", () => ({

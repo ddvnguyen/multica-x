@@ -993,16 +993,58 @@ describe("createMentionSuggestion", () => {
   });
 
   it("offers workspace presets with their agent and tier context", async () => {
+    // M-633: presets are Role-only in the mention list. The Role agent must
+    // be in the agents cache and the flag on for the row to appear.
+    const { AGENT_ROLE_TYPE_FLAG } = await import("@multica/core/feature-flags");
+    const { agentListOptions } = await import("@multica/core/workspace/queries");
+    const { QueryClient: QC, QueryClientProvider: QCP } = await import("@tanstack/react-query");
+    configStore.getState().setFeatureFlags({ [AGENT_ROLE_TYPE_FLAG]: true });
+    try {
+      listAgentPresetsMock.mockResolvedValueOnce([{
+        id: "preset-1",
+        name: "Claude Architect",
+        agent_id: "role-1",
+        agent_name: "Architect",
+        tier_name: "Sonnet High",
+      }]);
+      const qc = new QC({ defaultOptions: { queries: { retry: false } } });
+      qc.setQueryData(agentListOptions("ws-1").queryKey, [{
+        id: "role-1", name: "Architect", archived_at: null, subtype: "role",
+        runtime_id: "runtime-1", runtime_bound: true, permission_mode: "public_to",
+        invocation_targets: [{ target_type: "workspace", target_id: null }],
+      } as never]);
+      render(
+        <QCP client={qc}>
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <MentionList items={[]} query="Claude" command={vi.fn()} />
+          </I18nProvider>
+        </QCP>,
+      );
+
+      expect(await screen.findByText("Claude Architect")).toBeInTheDocument();
+      expect(screen.getByText("Architect · Sonnet High")).toBeInTheDocument();
+    } finally {
+      configStore.getState().setFeatureFlags({});
+    }
+  });
+
+  it("hides plain-Agent presets from the mention list", async () => {
+    // M-633: a preset pinned to a plain Agent stays stored but is no longer
+    // offered — only Roles pick tiers. The presets query is flag-gated, so
+    // nothing fires with the flag off.
     listAgentPresetsMock.mockResolvedValueOnce([{
       id: "preset-1",
       name: "Claude Architect",
+      agent_id: "agent-1",
       agent_name: "Architect",
       tier_name: "Sonnet High",
     }]);
     render(<I18nWrapper><MentionList items={[]} query="Claude" command={vi.fn()} /></I18nWrapper>);
 
-    expect(await screen.findByText("Claude Architect")).toBeInTheDocument();
-    expect(screen.getByText("Architect · Sonnet High")).toBeInTheDocument();
+    // Let pending queries settle; the flag-off query stays disabled.
+    await act(async () => {});
+    expect(screen.queryByText("Claude Architect")).toBeNull();
+    expect(listAgentPresetsMock).not.toHaveBeenCalled();
   });
 
   it("includes squads with a runnable leader in the mention list", () => {

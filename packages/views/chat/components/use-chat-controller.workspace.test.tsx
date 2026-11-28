@@ -22,6 +22,8 @@ vi.mock("@multica/core/auth", () => ({
 }));
 vi.mock("@multica/core/agents", () => ({
   isAgentRuntimeBound: () => false,
+  isRoleAgent: () => false,
+  useAgentRoleTypeEnabled: () => false,
   useAgentPresenceDetail: () => ({ availability: "online" }),
   useWorkspaceAgentAvailability: () => "available",
 }));

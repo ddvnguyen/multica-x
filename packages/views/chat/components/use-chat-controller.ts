@@ -16,6 +16,8 @@ import { canAssignAgent } from "../../issues/components/pickers/assignee-picker"
 import { api, dispatchReasonCode } from "@multica/core/api";
 import {
   isAgentRuntimeBound as hasAgentRuntime,
+  isRoleAgent,
+  useAgentRoleTypeEnabled,
   useAgentPresenceDetail,
   useWorkspaceAgentAvailability,
 } from "@multica/core/agents";
@@ -346,6 +348,9 @@ export function useChatController(opts?: { isActive?: boolean }) {
     availableAgents[0] ??
     null;
   const isAgentRuntimeBound = !!activeAgent && hasAgentRuntime(activeAgent);
+  // M-633: tier picking is Role-only. The flag is read here (top level) so
+  // the send path below can ignore a stored tier for plain Agents.
+  const roleTypeEnabled = useAgentRoleTypeEnabled(wsId);
 
   // A session outlives the permission that created it. The agent can be flipped
   // to personal, change owner, or drop this member from its allow-list, and the
@@ -513,7 +518,9 @@ export function useChatController(opts?: { isActive?: boolean }) {
       const finalContent = content;
       const isNewSession = !activeSessionId;
       // M-359 explicit tier for this turn (TierDropdown in the composer).
-      const sendTierId = (selectedTierIds ?? {})[activeAgent.id] ?? null;
+      // M-633: Role-only. A stored `selectedTierIds` entry for a plain
+      // Agent is never sent — plain Agents message directly.
+      const sendTierId = roleTypeEnabled && isRoleAgent(activeAgent) ? (selectedTierIds ?? {})[activeAgent.id] ?? null : null;
 
       apiLogger.info("sendChatMessage.start", {
         sessionId: activeSessionId,
@@ -668,6 +675,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       ensureSession,
       cancelChatTask,
       selectedTierIds,
+      roleTypeEnabled,
       qc,
       setActiveSession,
       t,
