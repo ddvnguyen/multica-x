@@ -217,6 +217,7 @@ export function apply(ctx: DshClientContext): void {
     sidebarRight,
     workspaces,
     sessions,
+    panelInfo: layoutFace?.panelInfo ?? null,
     daemonId: "",
     sidePreviewKind: canOpenSidePreview(sidebarRight, tabTypes !== null)
       ? SIDE_PREVIEW_KIND

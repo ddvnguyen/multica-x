@@ -314,6 +314,7 @@ function installShell({ sidePreviewKind }: { sidePreviewKind: string | null }) {
     sidebarRight: sidebarRight(),
     workspaces: null,
     sessions: null,
+    panelInfo: null,
     daemonId: "",
     sidePreviewKind,
   });

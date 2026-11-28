@@ -136,11 +136,12 @@ if (withHostPanel) {
       return () => { calls.push(`selectHostedSession-release ${sessionId}`); };
     };
     if (withoutMount) {
-      // The face holds the name the way the lane's `hostedSession` does when
-      // the gate ignores it: here it holds nothing, so the press reports the
-      // panel is not hosting the column rather than the generic no-session note.
-      sidebarRight.hostedSession = {
-        getSnapshot: (): null => null,
+      // dsh's gate ignores the name: the sidebar claims a different panel, so
+      // the active MMX panel is not in `hostedPanels` and nothing mounts. The
+      // press reports the panel is not hosting the column rather than the
+      // generic no-session note.
+      sidebarRight.hostedPanels = {
+        getSnapshot: (): ReadonlySet<string> => new Set(["some-other-panel"]),
         subscribe: (): (() => void) => () => {},
       };
     }
@@ -171,12 +172,23 @@ const sessions: SessionsLike = {
   },
 };
 
+// The harness runs on the `multica` rail panel, so the hosting gate is read
+// against that id (the `?noMount` case publishes claims for another panel).
+const panelInfo = {
+  getSnapshot: (): { activePanelId: string } => ({ activePanelId: "multica" }),
+  subscribe: (listener: () => void): (() => void) => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  },
+};
+
 // The harness has no tab-type registry: it exercises the header toggle and the
 // side preview's absent-seam case, not the shell's tab strip (M-336).
 configureHostShell({
   sidebarRight,
   workspaces,
   sessions,
+  panelInfo,
   daemonId: "",
   sidePreviewKind: null,
 });

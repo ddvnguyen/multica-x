@@ -40,6 +40,7 @@ export function useSidePreview(input: SidebarFolderInput): {
         sidebarRight,
         workspaces: shell.workspaces,
         sessions: shell.sessions,
+        panelInfo: shell.panelInfo,
         folder,
       });
       void opener(toTarget(target))

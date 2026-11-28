@@ -9,6 +9,7 @@
  * keeps applying cleanly.
  */
 
+import type { DshPanelInfo } from "../dsh";
 import type {
   SessionsLike,
   SidebarRightLike,
@@ -23,6 +24,11 @@ export interface ShellBridge {
   workspaces: WorkspacesLike | null;
   /** The dsh sessions face; absent means session creation is unavailable. */
   sessions: SessionsLike | null;
+  /**
+   * The shell's panel selection; `null` when the host has no `ctx.layout`.
+   * The hosted column reads it to check dsh's hosting gate after naming.
+   */
+  panelInfo: DshPanelInfo | null;
   /** The host's daemon id, used to filter `local_directory` refs; may be empty. */
   daemonId: string;
   /**
