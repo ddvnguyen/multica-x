@@ -154,6 +154,48 @@ func (c Catalog) Verified() bool {
 	return !c.Fallback && len(c.Models) > 0
 }
 
+// HasModel reports whether id is one of the catalog's own model ids. It is an
+// exact match on the id the runtime advertised — no guessing at slash-shaped
+// aliases — because callers use it only to decide whether a verified catalog
+// (see Catalog.Verified) knows the model it is about to launch with (M-634).
+func (c Catalog) HasModel(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, m := range c.Models {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// CatalogDefinesModelIDs reports whether provider's discovered catalog is the
+// authority for the model id a run launches with (M-634). These runtimes
+// reject an id the catalog does not list, so a member pinned to a retired id
+// fails at launch instead of falling over; the daemon checks the catalog
+// before launching and fails such runs with an explicit model-not-found
+// reason, which arms the member cooldown.
+//
+// Everything else treats the model as a free-form selector and must NOT be
+// failed on a catalog miss: claude's list_models is a picker, not an
+// exhaustive list of --model values; codex resolves its model from
+// config.toml; opencode/pi accept vendor-qualified ids beyond any one list;
+// and the runtimes that report no catalog already fail Catalog.Verified.
+//
+// The Freebuff Desktop bridge speaks codebuddy on the wire but enumerates a
+// private, opaque-id catalog through `--list-models --json`, and its thread
+// API answers 400 to an id outside that catalog (the production M-634
+// failure). dsh dispatches every model call through its adapter registry,
+// where an unregistered route fails at dispatch.
+func CatalogDefinesModelIDs(provider string, cmd Command) bool {
+	if isFreebuffDesktopCommand(cmd) {
+		return true
+	}
+	return Family(provider) == "dsh"
+}
+
 // discovered adapts a plain `([]Model, error)` discovery function to Catalog
 // for providers that have no static fallback — for them a failure is already
 // reported as an empty list or an error, which downstream guards handle.

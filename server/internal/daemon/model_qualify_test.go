@@ -178,7 +178,10 @@ func TestResolveTaskModelSelectionReadsTheCatalogAtMostOnce(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reads := stubModelDiscovery(t, thinkingCatalogs())
 
-			got := resolveTaskModelSelection(context.Background(), tt.provider, agent.Command{}, tt.in, quietTaskLog())
+			got, err := resolveTaskModelSelection(context.Background(), tt.provider, agent.Command{}, tt.in, quietTaskLog())
+			if err != nil {
+				t.Fatalf("resolveTaskModelSelection(%s, %+v) unexpected error: %v", tt.provider, tt.in, err)
+			}
 			if got != tt.want {
 				t.Errorf("resolveTaskModelSelection(%s, %+v) = %+v, want %+v", tt.provider, tt.in, got, tt.want)
 			}
@@ -207,7 +210,10 @@ func TestResolveTaskModelSelectionFailsOpenOnDiscoveryError(t *testing.T) {
 	t.Cleanup(func() { listModels = orig })
 
 	in := taskModelSelection{Model: "claude/claude-opus-5", ThinkingLevel: "high"}
-	got := resolveTaskModelSelection(context.Background(), "opencode", agent.Command{}, in, quietTaskLog())
+	got, err := resolveTaskModelSelection(context.Background(), "opencode", agent.Command{}, in, quietTaskLog())
+	if err != nil {
+		t.Fatalf("resolveTaskModelSelection on discovery error = unexpected error: %v", err)
+	}
 	if got != in {
 		t.Errorf("resolveTaskModelSelection on discovery error = %+v, want %+v unchanged", got, in)
 	}
@@ -288,7 +294,10 @@ func TestResolveTaskModelSelectionPassesThroughUnverifiedCatalogs(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reads := stubModelDiscovery(t, map[string]agent.Catalog{tc.provider: tc.catalog})
-			got := resolveTaskModelSelection(context.Background(), tc.provider, agent.Command{}, tc.in, quietTaskLog())
+			got, err := resolveTaskModelSelection(context.Background(), tc.provider, agent.Command{}, tc.in, quietTaskLog())
+			if err != nil {
+				t.Fatalf("launch selection unexpected error: %v", err)
+			}
 			if got != tc.want {
 				t.Errorf("launch selection = %+v, want %+v", got, tc.want)
 			}
@@ -340,7 +349,10 @@ func TestResolveTaskModelSelectionKeepsLiveOnlyCodexOverridesOnFallback(t *testi
 				t.Fatal(err)
 			}
 
-			got := resolveTaskModelSelection(context.Background(), "codex", agent.Command{Path: binary}, tc.in, quietTaskLog())
+			got, err := resolveTaskModelSelection(context.Background(), "codex", agent.Command{Path: binary}, tc.in, quietTaskLog())
+			if err != nil {
+				t.Fatalf("launch selection unexpected error: %v", err)
+			}
 			if got != tc.want {
 				t.Fatalf("launch selection = %+v, want %+v", got, tc.want)
 			}

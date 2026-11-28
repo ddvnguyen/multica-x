@@ -8306,7 +8306,7 @@ func resolveTaskModelSelection(
 	runtimeCmd agent.Command,
 	sel taskModelSelection,
 	taskLog *slog.Logger,
-) taskModelSelection {
+) (taskModelSelection, error) {
 	capabilityChecksPending := sel.ThinkingLevel != "" || sel.ServiceTier != ""
 
 	read := false
@@ -8323,6 +8323,32 @@ func resolveTaskModelSelection(
 	}
 
 	sel.Model = qualifyTaskModel(provider, sel.Model, capabilityChecksPending, loadCatalog, taskLog)
+
+	// M-634: a tier member pinned to a model the runtime no longer lists is a
+	// member-level problem, not a problem with the task. Fail the run with an
+	// explicit reason (the same text taskfailure.Classify maps to
+	// ReasonAgentModelNotFoundOrUnavailable) so FailTask arms that member's
+	// cooldown and the next resolve falls over to the next member/tier instead
+	// of launching a run the runtime is guaranteed to reject.
+	//
+	// Only runtimes whose catalog is the authority for the model id get this
+	// guard — see agent.CatalogDefinesModelIDs. A verified (non-empty, live)
+	// catalog is the only thing allowed to reject: on a lookup error, or an
+	// empty/fallback/static catalog, the persisted model goes to the runtime
+	// untouched and its own resolver judges it. Failures that happen later at
+	// the provider (an HTTP 400, for example) are NOT reclassified here.
+	if sel.Model != "" && agent.CatalogDefinesModelIDs(provider, runtimeCmd) {
+		catalog, err := loadCatalog()
+		if err != nil {
+			taskLog.Warn("model: catalog lookup failed; using the configured model as-is",
+				"provider", provider,
+				"model", sel.Model,
+				"error", err,
+			)
+		} else if catalog.Verified() && !catalog.HasModel(sel.Model) {
+			return sel, fmt.Errorf("model %q was not found in the runtime catalog", sel.Model)
+		}
+	}
 
 	// service_tier is catalog-owned and currently Codex-only. As with
 	// thinking_level, stale or incompatible persisted values degrade to the
@@ -8382,7 +8408,7 @@ func resolveTaskModelSelection(
 		}
 	}
 
-	return sel
+	return sel, nil
 }
 
 func (d *Daemon) reportThinkingLevelWarning(ctx context.Context, taskID, warning string, msgSeq *atomic.Int32, taskLog *slog.Logger) {
@@ -9866,8 +9892,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		thinkingLevel = task.Agent.ThinkingLevel
 		serviceTier = task.Agent.ServiceTier
 	}
-	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
+	selection, err := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
+	if err != nil {
+		// Reported through handleTask's terminal-fail path, whose
+		// taskRunFailureReason classifies the explicit model-not-found text as
+		// ReasonAgentModelNotFoundOrUnavailable — a tier cooldown reason, so a
+		// stale member falls over to the next one (M-634).
+		return TaskResult{}, err
+	}
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
 
 	var idleWatchdogTimeout time.Duration
