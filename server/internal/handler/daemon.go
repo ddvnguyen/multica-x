@@ -3253,7 +3253,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Composing here covers every task kind, because this is the single
 	// place a claimed task's agent payload is assembled.
 	if agent.SystemKey.String == service.MikaSystemKey {
-		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
+		// M-516: layer Mika's product prompt over the Role-composed text, not the
+		// raw row, so a Mika that implements a Role keeps its Role instructions.
+		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, composition.InstructionsFor(agent.Instructions))
 	}
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadComposedSkillBundles(r.Context(), composition, agent, agent.SystemKey.String, legacySkillRedirects)
