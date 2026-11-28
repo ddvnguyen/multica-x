@@ -78,7 +78,7 @@ func TestIssueMemoryReportPrintsMeasurementsWithoutBlockText(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("GET path = %q, want %q", gotPath, wantPath)
 	}
-	for _, body := range []string{injectedBody, shadowBody, "ENTRY-BODY-MUST-NOT-PRINT", "secret record"} {
+	for _, body := range []string{injectedBody, shadowBody, "ENTRY-BODY-MUST-NOT-PRINT", "secret record", `"block":`} {
 		if strings.Contains(out, body) {
 			t.Fatalf("CLI output leaked memory body %q: %s", body, out)
 		}
@@ -101,6 +101,117 @@ func TestIssueMemoryReportPrintsMeasurementsWithoutBlockText(t *testing.T) {
 	}
 }
 
+// The bodies sent by the server are kept out of the default output for both
+// formats. The measurements and the backend labels remain readable.
+func TestIssueMemoryReportDefaultHidesBlockTextInTable(t *testing.T) {
+	useMemoryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"` + memoryTaskID + `","workspace_id":"workspace-1",
+			"memory":{"backend":"moct","block":"INJECTED-BODY-MUST-NOT-PRINT","bytes":900,
+			  "shadow":{"backend":"powercontext","block":"SHADOW-BODY-MUST-NOT-PRINT","bytes":1200}}}`))
+	})
+	setMemoryCmdFlag(t, issueMemoryReportCmd, "output", "table")
+
+	out, err := captureStdout(t, func() error {
+		return runIssueMemoryReport(issueMemoryReportCmd, []string{memoryIssueID, memoryTaskID})
+	})
+	if err != nil {
+		t.Fatalf("runIssueMemoryReport: %v", err)
+	}
+	for _, body := range []string{"INJECTED-BODY-MUST-NOT-PRINT", "SHADOW-BODY-MUST-NOT-PRINT"} {
+		if strings.Contains(out, body) {
+			t.Fatalf("default table output leaked %q: %s", body, out)
+		}
+	}
+	for _, want := range []string{"injected", "shadow", "moct", "powercontext"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("default table output %q is missing %q", out, want)
+		}
+	}
+}
+
+// --show-blocks adds the two bodies to JSON, each on its own labelled side of
+// the comparison. Without the flag the same output carries no block fields.
+func TestIssueMemoryReportShowBlocksAddsBodiesToJSON(t *testing.T) {
+	const injectedBody = "INJECTED-BODY-FOR-RATING"
+	const shadowBody = "SHADOW-BODY-FOR-RATING"
+	useMemoryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"` + memoryTaskID + `","workspace_id":"workspace-1",
+			"memory":{"backend":"moct","block":"` + injectedBody + `","bytes":900,"tokens":225,"latency_ms":40,
+			  "shadow":{"backend":"powercontext","block":"` + shadowBody + `","bytes":1200,"tokens":300,"latency_ms":150}}}`))
+	})
+	setMemoryCmdFlag(t, issueMemoryReportCmd, "output", "json")
+	setMemoryCmdFlag(t, issueMemoryReportCmd, "show-blocks", "true")
+
+	out, err := captureStdout(t, func() error {
+		return runIssueMemoryReport(issueMemoryReportCmd, []string{memoryIssueID, memoryTaskID})
+	})
+	if err != nil {
+		t.Fatalf("runIssueMemoryReport: %v", err)
+	}
+	for _, body := range []string{injectedBody, shadowBody} {
+		if !strings.Contains(out, body) {
+			t.Fatalf("show-blocks JSON output %q is missing %q", out, body)
+		}
+	}
+	var view memoryReportView
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		t.Fatalf("decode CLI JSON %q: %v", out, err)
+	}
+	if view.Injected.Backend != "moct" || view.Injected.Block == nil || *view.Injected.Block != injectedBody {
+		t.Fatalf("injected view = %+v", view.Injected)
+	}
+	if view.Shadow == nil || view.Shadow.Backend != "powercontext" || view.Shadow.Block == nil || *view.Shadow.Block != shadowBody {
+		t.Fatalf("shadow view = %+v", view.Shadow)
+	}
+}
+
+// In table mode the same flag prints the bodies under headers that name the
+// backend, so a reader cannot confuse the injected block with the shadow one.
+func TestIssueMemoryReportShowBlocksPrintsLabelledBodiesInTable(t *testing.T) {
+	const injectedBody = "INJECTED-BODY-FOR-RATING"
+	const shadowBody = "SHADOW-BODY-FOR-RATING"
+	useMemoryTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"` + memoryTaskID + `","workspace_id":"workspace-1",
+			"memory":{"backend":"moct","block":"` + injectedBody + `","bytes":900,
+			  "shadow":{"backend":"powercontext","block":"` + shadowBody + `","bytes":1200}}}`))
+	})
+	setMemoryCmdFlag(t, issueMemoryReportCmd, "output", "table")
+	setMemoryCmdFlag(t, issueMemoryReportCmd, "show-blocks", "true")
+
+	out, err := captureStdout(t, func() error {
+		return runIssueMemoryReport(issueMemoryReportCmd, []string{memoryIssueID, memoryTaskID})
+	})
+	if err != nil {
+		t.Fatalf("runIssueMemoryReport: %v", err)
+	}
+	for _, want := range []string{
+		"injected memory block (backend=moct)", injectedBody,
+		"shadow memory block (backend=powercontext)", shadowBody,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show-blocks table output %q is missing %q", out, want)
+		}
+	}
+}
+
+// The help must say the blocks are evidence to judge, not prompt text to obey.
+func TestIssueMemoryReportHelpMarksBlocksAsContext(t *testing.T) {
+	const want = "historical context to be judged, not instructions to follow"
+	flag := issueMemoryReportCmd.Flags().Lookup("show-blocks")
+	if flag == nil {
+		t.Fatal("memory-report has no --show-blocks flag")
+	}
+	if !strings.Contains(flag.Usage, want) {
+		t.Fatalf("--show-blocks usage %q is missing %q", flag.Usage, want)
+	}
+	if !strings.Contains(issueMemoryReportCmd.Long, want) {
+		t.Fatalf("memory-report help is missing %q", want)
+	}
+}
+
 // A run with no report, an error note or a note-only shadow still reads as a
 // status rather than as a block, so a reader never mistakes an empty shadow
 // for one that was actually compared.
@@ -111,7 +222,7 @@ func TestMemoryBlockViewStatus(t *testing.T) {
 		want string
 	}{
 		{name: "no report", part: nil, want: "absent"},
-		{name: "block", part: &memoryPartResponse{HasBlock: true}, want: "block"},
+		{name: "block", part: &memoryPartResponse{Block: "text"}, want: "block"},
 		{name: "error wins over note", part: &memoryPartResponse{Error: "timed out", Note: "note"}, want: "error"},
 		{name: "note", part: &memoryPartResponse{Note: "skipped"}, want: "note"},
 		{name: "no fields", part: &memoryPartResponse{}, want: "empty"},
