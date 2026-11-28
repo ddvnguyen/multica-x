@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS issue_decision_record_supersedes_idx;

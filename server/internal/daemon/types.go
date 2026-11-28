@@ -73,15 +73,6 @@ type ProjectWorkflowData struct {
 	Brief string `json:"brief"`
 }
 
-// DecisionRecordData mirrors the current issue decision records delivered at
-// claim time. Superseded records are omitted and the newest ten are ordered
-// oldest to newest for prompt rendering.
-type DecisionRecordData struct {
-	ID        string `json:"id"`
-	Decided   string `json:"decided"`
-	Rationale string `json:"rationale"`
-}
-
 // Task represents a claimed task from the server.
 // Agent data (name, skills) is populated by the claim endpoint.
 type Task struct {
@@ -122,7 +113,6 @@ type Task struct {
 	IssueStatuses        []IssueStatusData     `json:"issue_statuses,omitempty"`
 	IssueStatusesOmitted int                   `json:"issue_statuses_omitted,omitempty"`
 	ProjectWorkflow      *ProjectWorkflowData  `json:"project_workflow,omitempty"`
-	DecisionRecords      []DecisionRecordData  `json:"decision_records,omitempty"`
 	ThreadName           string                `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
 	Agent                *AgentData            `json:"agent,omitempty"`
 	ModelOverride        string                `json:"model_override,omitempty"` // claim-time snapshot of the agent's persistent OpenClaw model override

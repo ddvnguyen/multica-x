@@ -380,14 +380,6 @@ func (h *Handler) DecisionResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create comment")
 		return
 	}
-	if err := qtx.CreateIssueDecisionRecord(ctx, db.CreateIssueDecisionRecordParams{
-		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: lockedIssue.ID,
-		CommentID: commentRow.ID, Decided: req.Decision, Rationale: req.Rationale,
-		SourceKind: "ask_answer", ActorID: authorUUID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record decision")
-		return
-	}
 
 	// Receipt.
 	receiptID := dbid.NewV7()

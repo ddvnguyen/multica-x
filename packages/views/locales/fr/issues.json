@@ -622,13 +622,7 @@
     "workdir_path_copy_failed": "Échec de la copie du chemin du répertoire de travail",
     "workdir_path_unavailable": "Aucun répertoire de travail local — cette tâche n'a pas encore été traitée par un agent local",
     "pull_requests_empty_title": "Aucune pull request associée.",
-    "restore_to_inbox_tooltip": "Restaurer dans la boîte de réception",
-    "owner_decisions": "Décisions du propriétaire",
-    "owner_decisions_loading": "Chargement des décisions…",
-    "owner_decisions_failed": "Impossible de charger les décisions.",
-    "owner_decisions_retry": "Réessayer",
-    "owner_decisions_empty": "Enregistrer une décision",
-    "owner_decisions_superseded": "Remplacée par « {{decision}} »"
+    "restore_to_inbox_tooltip": "Restaurer dans la boîte de réception"
   },
   "timeline": {
     "loading": "Chargement...",
@@ -814,10 +808,7 @@
     "trigger_blocked_tier_waiting_capacity": "Le tier sélectionné est plein ou hors ligne — l'exécution est en file et démarrera dès qu'une place se libère",
     "trigger_blocked_tier_unavailable": "Le tier sélectionné n'existe pas, est désactivé ou n'est pas disponible pour cet agent — corrigez le nom",
     "trigger_blocked_short_tier_waiting_capacity": "Tier plein — en file",
-    "trigger_blocked_short_tier_unavailable": "Tier invalide",
-    "record_as_decision": "Enregistrer comme décision",
-    "supersedes_decision": "Remplace une décision existante",
-    "new_decision": "Nouvelle décision"
+    "trigger_blocked_short_tier_unavailable": "Tier invalide"
   },
   "reply": {
     "recipients_changed": "La cible de la réponse a changé. Vérifiez les destinataires avant de réessayer.",

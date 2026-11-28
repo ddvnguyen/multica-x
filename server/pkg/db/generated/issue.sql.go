@@ -474,9 +474,6 @@ WITH target AS (
 cleared_decision_responses AS (
  DELETE FROM issue_decision_response WHERE issue_id IN (SELECT target.id FROM target) AND workspace_id = $2
 ),
-cleared_decision_records AS (
- DELETE FROM issue_decision_record WHERE issue_id IN (SELECT target.id FROM target) AND workspace_id = $2
-),
 cleared_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id IN (SELECT target.id FROM target))
 ),
