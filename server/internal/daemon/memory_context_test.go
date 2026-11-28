@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon/initctx"
@@ -432,4 +433,93 @@ func TestPowerContextClampKeepsRunes(t *testing.T) {
 func withMemorySwitch(task Task, on *bool) Task {
 	task.MoctMemoryInject = on
 	return task
+}
+
+// TestPowerContextQueryFallbacks pins the recall query for the runs that do
+// not carry a trigger comment — most assignment runs (M-625). The order is
+// what a reader would look at: instruction, issue, autopilot, chat, handoff.
+func TestPowerContextQueryFallbacks(t *testing.T) {
+	memberText := "member asked for the gate"
+	cases := []struct {
+		name string
+		task Task
+		want string
+	}{
+		{
+			name: "trigger comment still wins",
+			task: Task{TriggerCommentContent: "  please fix the token refresh\nnow ", IssueTitle: "Other issue"},
+			want: "please fix the token refresh now",
+		},
+		{
+			name: "issue title and description",
+			task: Task{IssueTitle: "Shadow query is empty", IssueDescription: "Fix the fallback."},
+			want: "Shadow query is empty Fix the fallback.",
+		},
+		{
+			name: "issue title alone",
+			task: Task{IssueTitle: "Assignment run"},
+			want: "Assignment run",
+		},
+		{
+			name: "autopilot before chat",
+			task: Task{AutopilotTitle: "Nightly", AutopilotDescription: "Summarize", ChatMessage: "chat"},
+			want: "Nightly Summarize",
+		},
+		{
+			name: "authored chat text over generic chat field",
+			task: Task{ChatMessage: "system kickoff", ChatSkillMessage: &memberText},
+			want: memberText,
+		},
+		{
+			name: "resume chat text",
+			task: Task{ChatMessage: "system kickoff", ChatResumeMessage: &memberText},
+			want: memberText,
+		},
+		{
+			name: "quick create before handoff",
+			task: Task{QuickCreatePrompt: "Open an issue about latency", HandoffNote: "old run"},
+			want: "Open an issue about latency",
+		},
+		{name: "handoff last", task: Task{HandoffNote: "task.completed run-x; check result"}, want: "task.completed run-x; check result"},
+		{name: "no text at all", task: Task{}, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := powerContextQuery(tc.task); got != tc.want {
+				t.Fatalf("query = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	long := Task{IssueTitle: strings.Repeat("x", powerContextQueryMaxRunes+20)}
+	got := powerContextQuery(long)
+	if []rune(got)[powerContextQueryMaxRunes] != '…' || len([]rune(got)) != powerContextQueryMaxRunes+1 {
+		t.Fatalf("query was not clamped to %d runes: %d", powerContextQueryMaxRunes, len([]rune(got)))
+	}
+}
+
+// A run with no text at all must not send a prepare: PowerContext 1.6.0
+// answers 422 to a query-less prepare, and a note on the row explains why.
+func TestPowerContextInjectPromptSkipsWithNoText(t *testing.T) {
+	var prepares atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveDaemonScopeListing(w, r) {
+			return
+		}
+		prepares.Add(1)
+		_, _ = w.Write([]byte(`{"status":"ready","content":"never shown","content_bytes":11}`))
+	}))
+	defer srv.Close()
+
+	task := Task{ID: "task-1", WorkspaceID: moctTestWorkspaceID, ProjectID: moctTestProjectID}
+	block, part := memoryInjectPrompt(context.Background(), Config{PowerContextBaseURL: srv.URL}, task, moctTestLogger())
+	if block != "" {
+		t.Fatalf("block = %q, want empty", block)
+	}
+	if !strings.Contains(part.Note, "no text to recall") {
+		t.Fatalf("note = %q, want the skip reason", part.Note)
+	}
+	if prepares.Load() != 0 {
+		t.Fatalf("prepare called %d times with no query", prepares.Load())
+	}
 }

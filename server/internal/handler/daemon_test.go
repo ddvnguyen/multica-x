@@ -2801,6 +2801,8 @@ type claimRuntimeGuardTask struct {
 	PriorSessionResumeUnavailable bool            `json:"prior_session_resume_unavailable"`
 	ChatMessage                   string          `json:"chat_message"`
 	ThreadName                    string          `json:"thread_name"`
+	IssueTitle                    string          `json:"issue_title"`
+	IssueDescription              string          `json:"issue_description"`
 	QuickCreateAttachmentIDs      []string        `json:"quick_create_attachment_ids"`
 	QuickCreatePriority           string          `json:"quick_create_priority"`
 	QuickCreateDueDate            string          `json:"quick_create_due_date"`
@@ -3014,8 +3016,9 @@ func TestClaimTask_IssuePriorSessionRuntimeGuard(t *testing.T) {
 	oldRuntimeID := createRuntimeGuardRuntime(t, ctx, "kimi")
 
 	skipIssueID := dbfx.Issue(t, "runtime-session-skip fixture", testutil.Cols{
-		"status": "in_progress",
-		"number": 81203,
+		"status":      "in_progress",
+		"number":      81203,
+		"description": "Issue body for the recall query.",
 	})
 
 	dbfx.Exec(t, `
@@ -3043,6 +3046,11 @@ func TestClaimTask_IssuePriorSessionRuntimeGuard(t *testing.T) {
 	}
 	if task.ThreadName != "runtime-session-skip fixture" {
 		t.Fatalf("issue task thread_name = %q, want issue title", task.ThreadName)
+	}
+	// The recall query needs the issue text on assignment runs, which carry no
+	// trigger comment (M-625).
+	if task.IssueTitle != "runtime-session-skip fixture" || task.IssueDescription != "Issue body for the recall query." {
+		t.Fatalf("claim issue text = %q / %q, want the issue title and body", task.IssueTitle, task.IssueDescription)
 	}
 	dbfx.Exec(t, `
 		UPDATE agent_task_queue

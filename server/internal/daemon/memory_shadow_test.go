@@ -249,6 +249,62 @@ func TestApplyMemoryShadowIgnoresAnOffSwitch(t *testing.T) {
 	}
 }
 
+// A claim with no text to recall must not send a prepare at all: the real
+// 1.6.0 answers 422, and a scored empty shadow would be mistaken for a backend
+// with nothing to say (M-625).
+func TestMemoryShadowSkipsWithNoText(t *testing.T) {
+	var prepares atomic.Int32
+	pc := shadowPrepareServer(t, &prepares, nil)
+	cfg := Config{MoctBaseURL: "http://127.0.0.1:8110", PowerContextBaseURL: pc.URL, MemoryShadow: "powercontext"}
+	task := Task{ID: "task-1", WorkspaceID: moctTestWorkspaceID, ProjectID: moctTestProjectID}
+
+	shadow, _ := newMemoryShadow(cfg, task, moctTestLogger())
+	shadow.start(context.Background())
+	record, ok := shadow.wait(3 * time.Second)
+	if !ok {
+		t.Fatal("the shadow did not finish")
+	}
+	if !strings.Contains(record.Note, "no text to recall") {
+		t.Fatalf("note = %q, want the skip reason", record.Note)
+	}
+	if record.Block != "" || prepares.Load() != 0 {
+		t.Fatalf("block = %q, prepares = %d, want neither", record.Block, prepares.Load())
+	}
+}
+
+// The ref-to-scope GET is a process-level lookup, not a prepare. A slow scope
+// listing used to be priced into shadow.latency_ms, inflating the number the
+// compare panel puts beside the primary's (M-625).
+func TestMemoryShadowLatencyExcludesScopeLookup(t *testing.T) {
+	pc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/scopes" {
+			time.Sleep(700 * time.Millisecond)
+			serveDaemonScopeListing(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ready","content":"### Shadow plane","content_bytes":17}`))
+	}))
+	t.Cleanup(pc.Close)
+
+	cfg := Config{MoctBaseURL: "http://127.0.0.1:8110", PowerContextBaseURL: pc.URL, MemoryShadow: "powercontext"}
+	shadow, _ := newMemoryShadow(cfg, moctTestTask(), moctTestLogger())
+	shadow.start(context.Background())
+	record, ok := shadow.wait(3 * time.Second)
+	if !ok {
+		t.Fatal("the shadow did not finish")
+	}
+	if record.Error != "" {
+		t.Fatalf("shadow error = %q", record.Error)
+	}
+	if !strings.Contains(record.Block, "Shadow plane") {
+		t.Fatalf("shadow block = %q", record.Block)
+	}
+	// The lookup alone costs 700 ms; only the prepare should be priced.
+	if record.LatencyMS >= 350 {
+		t.Fatalf("latency = %d ms, want the 700 ms scope lookup excluded", record.LatencyMS)
+	}
+}
+
 // TestMemoryShadowUnfinishedReadIsRecorded covers a run that ends before the
 // read does: the row says so rather than blocking the run or pretending the
 // second plane was empty.

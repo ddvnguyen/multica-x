@@ -136,6 +136,9 @@ func (s *memoryShadow) wait(deadline time.Duration) (initctx.MemoryShadowReport,
 func (s *memoryShadow) fetch(ctx context.Context) (report initctx.MemoryShadowReport) {
 	report.Backend = memoryShadowPowerContext
 	started := time.Now()
+	// `started` is reset after the scope lookup below. A ref-to-scope GET is a
+	// process-level, TTL-cached mapping, not part of the prepare this panel
+	// compares; pricing it made a cold shadow look ~25% slower (M-625).
 	defer func() { report.LatencyMS = time.Since(started).Milliseconds() }()
 
 	// The same subtraction the primary path makes: a workspace that does not
@@ -147,6 +150,11 @@ func (s *memoryShadow) fetch(ctx context.Context) (report initctx.MemoryShadowRe
 	scope, ok := powercontext.ScopeForTask(s.task.ProjectID, s.task.WorkspaceID)
 	if !ok {
 		report.Note = "task carries no project or workspace identity, so there is no memory scope to read"
+		return report
+	}
+	query := powerContextQuery(s.task)
+	if query == "" {
+		report.Note = "this run carries no text to recall; the shadow prepare was skipped"
 		return report
 	}
 
@@ -166,9 +174,26 @@ func (s *memoryShadow) fetch(ctx context.Context) (report initctx.MemoryShadowRe
 		report.Error = "invalid POWERCONTEXT_BASE_URL"
 		return report
 	}
+	// Resolve the ref before the clock starts. The mapping is cached across
+	// clients in the process, so this is normally a map hit; on a cold start it
+	// is still a read the run should not be charged for.
+	resolved, err := client.ResolveScope(shadowCtx, scope)
+	if err != nil {
+		if shadowCtx.Err() == context.DeadlineExceeded {
+			report.Error = "timed out after " + timeout.String()
+		} else {
+			report.Error = powerContextErrorNote(err)
+		}
+		if s.logger != nil {
+			s.logger.Warn("powercontext shadow: scope lookup failed; nothing compared",
+				"task_id", s.task.ID, "scope", scope, "error", err)
+		}
+		return report
+	}
+	started = time.Now()
 	prepared, err := client.Prepare(shadowCtx, powercontext.PrepareRequest{
-		ScopeID:  scope,
-		Query:    powerContextQuery(s.task),
+		ScopeID:  resolved,
+		Query:    query,
 		MaxBytes: powerContextMaxBytes(),
 	})
 	if err != nil {
