@@ -45,19 +45,29 @@ SELECT
     count(*) FILTER (WHERE choice = 'moct')::bigint AS moct_votes,
     count(*) FILTER (WHERE choice = 'powercontext')::bigint AS powercontext_votes,
     count(*) FILTER (WHERE choice = 'neither')::bigint AS neither_votes,
+    count(*) FILTER (WHERE shadow_bytes > 0)::bigint AS shadow_with_block,
+    count(*) FILTER (WHERE shadow_bytes = 0)::bigint AS shadow_without_block,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY primary_bytes), 0)::float8 AS median_moct_bytes,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY primary_latency_ms), 0)::float8 AS median_moct_latency_ms,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY shadow_bytes), 0)::float8 AS median_powercontext_bytes,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY shadow_latency_ms), 0)::float8 AS median_powercontext_latency_ms
 FROM task_memory_mark
 WHERE workspace_id = $1
+  AND updated_at >= COALESCE($2::timestamptz, '-infinity'::timestamptz)
 `
+
+type GetWorkspaceMemoryMarkStatsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
 
 type GetWorkspaceMemoryMarkStatsRow struct {
 	Marked                      int64   `json:"marked"`
 	MoctVotes                   int64   `json:"moct_votes"`
 	PowercontextVotes           int64   `json:"powercontext_votes"`
 	NeitherVotes                int64   `json:"neither_votes"`
+	ShadowWithBlock             int64   `json:"shadow_with_block"`
+	ShadowWithoutBlock          int64   `json:"shadow_without_block"`
 	MedianMoctBytes             float64 `json:"median_moct_bytes"`
 	MedianMoctLatencyMs         float64 `json:"median_moct_latency_ms"`
 	MedianPowercontextBytes     float64 `json:"median_powercontext_bytes"`
@@ -68,15 +78,24 @@ type GetWorkspaceMemoryMarkStatsRow struct {
 // the median size and latency each backend cost on the runs that were judged.
 // Medians ignore unmarked runs on purpose — a run nobody judged is not evidence
 // either way, and its numbers would otherwise dominate the sample.
+//
+// M-638: an optional lower bound on the vote's own timestamp lets the CLI's
+// --since window be applied server-side, so two clients asking for the same
+// window see the same counts. A null bound keeps the panel's all-time view.
+// The shadow counts describe the runs that were judged: a shadow that returned
+// a block against one that recorded no block is the difference between a
+// comparison that happened and one that only had an error or a note.
 // COALESCE keeps an unmarked workspace a zero row instead of a NULL scan.
-func (q *Queries) GetWorkspaceMemoryMarkStats(ctx context.Context, workspaceID pgtype.UUID) (GetWorkspaceMemoryMarkStatsRow, error) {
-	row := q.db.QueryRow(ctx, getWorkspaceMemoryMarkStats, workspaceID)
+func (q *Queries) GetWorkspaceMemoryMarkStats(ctx context.Context, arg GetWorkspaceMemoryMarkStatsParams) (GetWorkspaceMemoryMarkStatsRow, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceMemoryMarkStats, arg.WorkspaceID, arg.Since)
 	var i GetWorkspaceMemoryMarkStatsRow
 	err := row.Scan(
 		&i.Marked,
 		&i.MoctVotes,
 		&i.PowercontextVotes,
 		&i.NeitherVotes,
+		&i.ShadowWithBlock,
+		&i.ShadowWithoutBlock,
 		&i.MedianMoctBytes,
 		&i.MedianMoctLatencyMs,
 		&i.MedianPowercontextBytes,

@@ -26,15 +26,25 @@ SELECT * FROM task_memory_mark WHERE task_id = $1 AND workspace_id = $2;
 -- the median size and latency each backend cost on the runs that were judged.
 -- Medians ignore unmarked runs on purpose — a run nobody judged is not evidence
 -- either way, and its numbers would otherwise dominate the sample.
+--
+-- M-638: an optional lower bound on the vote's own timestamp lets the CLI's
+-- --since window be applied server-side, so two clients asking for the same
+-- window see the same counts. A null bound keeps the panel's all-time view.
+-- The shadow counts describe the runs that were judged: a shadow that returned
+-- a block against one that recorded no block is the difference between a
+-- comparison that happened and one that only had an error or a note.
 SELECT
     count(*)::bigint AS marked,
     count(*) FILTER (WHERE choice = 'moct')::bigint AS moct_votes,
     count(*) FILTER (WHERE choice = 'powercontext')::bigint AS powercontext_votes,
     count(*) FILTER (WHERE choice = 'neither')::bigint AS neither_votes,
+    count(*) FILTER (WHERE shadow_bytes > 0)::bigint AS shadow_with_block,
+    count(*) FILTER (WHERE shadow_bytes = 0)::bigint AS shadow_without_block,
 -- COALESCE keeps an unmarked workspace a zero row instead of a NULL scan.
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY primary_bytes), 0)::float8 AS median_moct_bytes,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY primary_latency_ms), 0)::float8 AS median_moct_latency_ms,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY shadow_bytes), 0)::float8 AS median_powercontext_bytes,
     COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY shadow_latency_ms), 0)::float8 AS median_powercontext_latency_ms
 FROM task_memory_mark
-WHERE workspace_id = $1;
+WHERE workspace_id = $1
+  AND updated_at >= COALESCE(sqlc.narg('since')::timestamptz, '-infinity'::timestamptz);

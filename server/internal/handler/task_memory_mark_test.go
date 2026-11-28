@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestMemoryNumbersOf(t *testing.T) {
@@ -54,8 +57,9 @@ func TestMemoryNumbersOf(t *testing.T) {
 // memoryCompareFixture builds a run whose memory part recorded both blocks.
 func memoryCompareFixture(t *testing.T, workspaceID string, part string) (issueID, taskID string) {
 	t.Helper()
-	runtimeID := dbfx.Runtime(t, "compare-runtime", testutil.Cols{"workspace_id": workspaceID})
-	agentID := dbfx.Agent(t, "compare-agent", runtimeID, testutil.Cols{"workspace_id": workspaceID})
+	suffix := uuid.NewString()
+	runtimeID := dbfx.Runtime(t, "compare-runtime-"+suffix, testutil.Cols{"workspace_id": workspaceID})
+	agentID := dbfx.Agent(t, "compare-agent-"+suffix, runtimeID, testutil.Cols{"workspace_id": workspaceID})
 	issueID = dbfx.Issue(t, "Compare memory", testutil.Cols{"workspace_id": workspaceID})
 	// agent_task_queue carries no workspace_id: the tenant guard joins the
 	// owning agent, which the fixture already seats in workspaceID. A queued
@@ -79,6 +83,20 @@ func callMemoryMark(t *testing.T, handler http.HandlerFunc, method, workspaceID,
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
+	return recorder
+}
+
+// callMemoryComparison reads the workspace aggregate with an optional query
+// string. The route carries the workspace id, as it does in the real router.
+func callMemoryComparison(t *testing.T, workspaceID, rawQuery string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := testutil.WithHeaders(httptest.NewRequest(http.MethodGet, "/?"+rawQuery, nil),
+		"X-User-ID", testUserID, "X-Workspace-ID", workspaceID)
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", workspaceID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+	recorder := httptest.NewRecorder()
+	inboxWorkspaceHandler(testHandler.GetWorkspaceMemoryComparison).ServeHTTP(recorder, req)
 	return recorder
 }
 
@@ -190,7 +208,7 @@ func TestWorkspaceMemoryComparisonIsEmptyBeforeAnyVote(t *testing.T) {
 
 	// The aggregate over no rows is a zero row, not a NULL scan: assert the
 	// query itself first so a scan failure reads as one.
-	stats, err := testHandler.Queries.GetWorkspaceMemoryMarkStats(context.Background(), parseUUID(workspaceID))
+	stats, err := testHandler.Queries.GetWorkspaceMemoryMarkStats(context.Background(), db.GetWorkspaceMemoryMarkStatsParams{WorkspaceID: parseUUID(workspaceID)})
 	if err != nil {
 		t.Fatalf("empty aggregate query: %v", err)
 	}
@@ -208,5 +226,60 @@ func TestWorkspaceMemoryComparisonIsEmptyBeforeAnyVote(t *testing.T) {
 	}
 	if comparison.Marked != 0 || comparison.Votes.Moct != 0 || comparison.PreferencePct.Moct != 0 {
 		t.Fatalf("aggregate = %+v, want an empty tally", comparison)
+	}
+}
+
+// M-638: the CLI's --since is applied on the vote's own timestamp, and the
+// shadow split tells a comparison that happened from one that recorded only an
+// error or a note.
+func TestWorkspaceMemoryComparisonSinceAndShadowStatus(t *testing.T) {
+	workspaceID := dbfx.Workspace(t, "Memory compare since", "memory-compare-since-"+uuid.NewString())
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+
+	withBlockIssue, withBlockTask := memoryCompareFixture(t, workspaceID,
+		`{"part":"memory","backend":"moct","bytes":900,"latency_ms":40,"shadow":{"backend":"powercontext","bytes":1200,"latency_ms":150}}`)
+	emptyIssue, emptyTask := memoryCompareFixture(t, workspaceID,
+		`{"part":"memory","backend":"moct","bytes":900,"latency_ms":40,"shadow":{"backend":"powercontext","error":"timed out"}}`)
+
+	for _, tc := range []struct{ issueID, taskID string }{
+		{withBlockIssue, withBlockTask},
+		{emptyIssue, emptyTask},
+	} {
+		recorder := callMemoryMark(t, testHandler.SetTaskMemoryMark, http.MethodPost, workspaceID, tc.issueID, tc.taskID, `{"choice":"powercontext"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("vote status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	// Age the block-backed vote so a one-day window has to exclude it.
+	dbfx.Exec(t, `UPDATE task_memory_mark SET updated_at = now() - interval '2 days' WHERE task_id = $1`, withBlockTask)
+
+	all := callMemoryComparison(t, workspaceID, "")
+	if all.Code != http.StatusOK {
+		t.Fatalf("all-time status=%d body=%s", all.Code, all.Body.String())
+	}
+	var allResp MemoryComparisonResponse
+	if err := json.Unmarshal(all.Body.Bytes(), &allResp); err != nil {
+		t.Fatalf("decode all-time aggregate: %v", err)
+	}
+	if allResp.Marked != 2 || allResp.ShadowStatus.WithBlock != 1 || allResp.ShadowStatus.WithoutBlock != 1 {
+		t.Fatalf("all-time aggregate = %+v, want two votes split one block / one empty", allResp)
+	}
+
+	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	recent := callMemoryComparison(t, workspaceID, "since="+url.QueryEscape(since))
+	if recent.Code != http.StatusOK {
+		t.Fatalf("since status=%d body=%s", recent.Code, recent.Body.String())
+	}
+	var recentResp MemoryComparisonResponse
+	if err := json.Unmarshal(recent.Body.Bytes(), &recentResp); err != nil {
+		t.Fatalf("decode since aggregate: %v", err)
+	}
+	if recentResp.Marked != 1 || recentResp.Votes.PowerContext != 1 || recentResp.ShadowStatus.WithBlock != 0 || recentResp.ShadowStatus.WithoutBlock != 1 {
+		t.Fatalf("since aggregate = %+v, want only the recent empty-shadow vote", recentResp)
+	}
+
+	bad := callMemoryComparison(t, workspaceID, "since=not-a-time")
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid since status=%d body=%s, want 400", bad.Code, bad.Body.String())
 	}
 }
