@@ -12,8 +12,7 @@ import {
   folderForSelection,
   folderOfProjectResources,
   HOST_NO_BESIDE_PANEL_TOOLTIP,
-  hostedSessionId,
-  isHostingNamedSession,
+  isHostedPanel,
   isNoSessionSurfaceError,
   isNotHostingColumnError,
   normalizePath,
@@ -384,38 +383,35 @@ describe("notHostingColumnError", () => {
   });
 });
 
-describe("hostedSessionId", () => {
-  const face = (snapshot: string | null | undefined) => ({
-    hostedSession: { getSnapshot: () => snapshot, subscribe: () => () => {} },
+describe("isHostedPanel", () => {
+  const face = (ids: readonly string[]) => ({
+    hostedPanels: { getSnapshot: () => new Set(ids), subscribe: () => () => {} },
   });
 
-  it("reads the named id, trimmed", () => {
-    expect(hostedSessionId(face("s-1"))).toBe("s-1");
-    expect(hostedSessionId(face("  s-1  "))).toBe("s-1");
+  it("reads dsh's gate as membership of the active panel id", () => {
+    const claims = face(["multica", "multica-inbox"]);
+    expect(isHostedPanel(claims, "multica")).toBe(true);
+    expect(isHostedPanel(claims, "multica-inbox")).toBe(true);
+    expect(isHostedPanel(claims, "multica-agents")).toBe(false);
   });
 
-  it("is null without the face, a blank name, or a throwing read", () => {
-    expect(hostedSessionId(face(null))).toBeNull();
-    expect(hostedSessionId(face(undefined))).toBeNull();
-    expect(hostedSessionId(face("   "))).toBeNull();
-    expect(hostedSessionId(null)).toBeNull();
-    expect(hostedSessionId(undefined)).toBeNull();
-    expect(hostedSessionId({})).toBeNull();
-  });
-});
-
-describe("isHostingNamedSession", () => {
-  it("matches only the name just given", () => {
-    const face = {
-      hostedSession: { getSnapshot: () => "s-1", subscribe: () => () => {} },
-    };
-    expect(isHostingNamedSession(face, "s-1")).toBe(true);
-    expect(isHostingNamedSession(face, "s-9")).toBe(false);
-  });
-
-  it("is false when the face publishes nothing", () => {
-    expect(isHostingNamedSession(null, "s-1")).toBe(false);
-    expect(isHostingNamedSession({}, "s-1")).toBe(false);
+  it("is false without a published set, an active panel, or a readable face", () => {
+    expect(isHostedPanel(face(["multica"]), null)).toBe(false);
+    expect(isHostedPanel({}, "multica")).toBe(false);
+    expect(isHostedPanel(null, "multica")).toBe(false);
+    expect(isHostedPanel(undefined, "multica")).toBe(false);
+    expect(
+      isHostedPanel(
+        {
+          hostedPanels: {
+            getSnapshot: () => {
+              throw new Error("gone");
+            },
+          },
+        },
+        "multica",
+      ),
+    ).toBe(false);
   });
 });
 

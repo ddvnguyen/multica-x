@@ -182,11 +182,10 @@ export const SIDEBAR_NO_SESSION_MESSAGE = "no session surface is mounted";
 /**
  * The words the hosted column fails with when the panel is not hosting it.
  *
- * Naming a Session is ignored unless the dsh gate holds (the MMX panel is one
- * of the claimed `hostedPanels` in the same commit, M-504): the face then
- * does not hold the named id and `mounted` stays empty. That is a different
- * state from "no Session on screen", so it gets its own message instead of
- * the generic no-session note.
+ * Naming a Session is ignored unless dsh's gate holds (the active MMX panel
+ * is one of the claimed `hostedPanels`, M-504): `mounted` stays empty though
+ * the name was stored. That is a different state from "no Session on screen",
+ * so it gets its own message instead of the generic no-session note.
  */
 export const HOSTED_COLUMN_NOT_HOSTING_MESSAGE = "panel is not hosting the column";
 
@@ -201,13 +200,12 @@ export function noSessionSurfaceError(): Error {
 }
 
 /**
- * The failure for a name the panel never drew beside MMX.
+ * The failure for a panel the sidebar did not agree to host.
  *
- * Thrown when `hostedSession` does not hold the named id while `mounted`
- * stays empty: the gate (claimed `hostedPanels` + active panel) ignored the
- * name, so the column has nothing to act on. Kept distinct from
- * `noSessionSurfaceError` so the toggle's note says which state the reader
- * is in.
+ * Thrown when the active MMX panel is not in the claimed `hostedPanels` set
+ * while `mounted` stays empty: dsh's gate ignored the name, so the column has
+ * nothing to act on. Kept distinct from `noSessionSurfaceError` so the
+ * toggle's note says which state the reader is in.
  */
 export function notHostingColumnError(): Error {
   return new Error(`sidebarRight: ${HOSTED_COLUMN_NOT_HOSTING_MESSAGE}`);
@@ -216,8 +214,9 @@ export function notHostingColumnError(): Error {
 /**
  * Whether a failure is exactly the not-hosting state.
  *
- * Checked after the call, like `isNoSessionSurfaceError`: a press that names
- * but never mounts means the panel is not hosting the column.
+ * Checked after the call, like `isNoSessionSurfaceError`: the note is raised
+ * only when dsh's claim set excludes the active panel, not for any press that
+ * named a Session without mounting one.
  */
 export function isNotHostingColumnError(cause: unknown): boolean {
   return cause instanceof Error && cause.message.includes(HOSTED_COLUMN_NOT_HOSTING_MESSAGE);
@@ -234,25 +233,26 @@ export function isNoSessionSurfaceError(cause: unknown): boolean {
   return cause instanceof Error && cause.message.includes(SIDEBAR_NO_SESSION_MESSAGE);
 }
 
-/** The id last named via `selectHostedSession`, when the face publishes it. */
-export function hostedSessionId(
-  sidebarRight: { hostedSession?: { getSnapshot(): string | null | undefined } } | null | undefined,
-): string | null {
-  try {
-    const snapshot = sidebarRight?.hostedSession?.getSnapshot() ?? null;
-    const id = typeof snapshot === "string" ? snapshot.trim() : "";
-    return id === "" ? null : id;
-  } catch {
-    return null;
-  }
-}
-
-/** Whether the name just given is the one the face is holding. */
-export function isHostingNamedSession(
-  sidebarRight: { hostedSession?: { getSnapshot(): string | null | undefined } } | null | undefined,
-  sessionId: string,
+/**
+ * Whether the panel showing MMX is one the dsh sidebar agreed to host.
+ *
+ * This is dsh's own gate: `hostedColumn()` holds only when the active panel is
+ * one of the claimed `hostedPanels` ids. Reading the named id instead (as the
+ * first M-504 patch did) cannot work: `HostedSession.select()` stores the name
+ * unconditionally, so the face always appears to hold it. The claim set is
+ * absent on older builds; there the gate cannot be read and the caller keeps
+ * the generic no-session note.
+ */
+export function isHostedPanel(
+  sidebarRight: { hostedPanels?: { getSnapshot(): ReadonlySet<string> } } | null | undefined,
+  panelId: string | null,
 ): boolean {
-  return hostedSessionId(sidebarRight) === sessionId.trim();
+  if (panelId === null) return false;
+  try {
+    return sidebarRight?.hostedPanels?.getSnapshot().has(panelId) === true;
+  } catch {
+    return false;
+  }
 }
 
 export type DisabledReason = FolderReason | "no-session" | "host";
@@ -485,21 +485,12 @@ export interface SidebarRightLike {
    */
   selectHostedSession?(sessionId: string): () => void;
   /**
-   * The id last named via `selectHostedSession`, when the build publishes it.
-   * Read after naming to tell "the panel ignored the name" (gate closed: the
-   * MMX panel on screen is not a claimed `hostedPanels` id) apart from "no
-   * Session on screen". Absent on builds that only publish `mounted`.
-   */
-  hostedSession?: {
-    getSnapshot(): string | null | undefined;
-    subscribe(listener: () => void): () => void;
-  };
-  /**
    * The panel ids the sidebar is willing to stand beside (card C's
-   * `hostPanel` claims). Published for diagnosis; absent on older builds.
+   * `hostPanel` claims). dsh publishes this as a `ReadonlySet`, so the gate is
+   * read with `has`; absent on older builds, where it cannot be checked.
    */
   hostedPanels?: {
-    getSnapshot(): readonly string[];
+    getSnapshot(): ReadonlySet<string>;
     subscribe(listener: () => void): () => void;
   };
   /**

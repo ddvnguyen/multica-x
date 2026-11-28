@@ -76,6 +76,7 @@ describe("island side preview capability", () => {
       sidebarRight: sidebarRight(),
       workspaces: null,
       sessions: null,
+      panelInfo: null,
       daemonId: "",
       sidePreviewKind: "multica-issue",
     });
@@ -93,6 +94,7 @@ describe("island side preview capability", () => {
       sidebarRight: sidebarRight(),
       workspaces: null,
       sessions: null,
+      panelInfo: null,
       daemonId: "",
       sidePreviewKind: null,
     });

@@ -237,8 +237,9 @@ describe("createSidePreviewOpener", () => {
   });
 
   it("reports the panel is not hosting the column when the gate ignores the name", async () => {
-    // M-504: `selectHostedSession` returns normally but nothing mounts and the
-    // face does not hold the named id — the dsh gate rejected it.
+    // M-513: dsh stores every name, so the gate is read from `hostedPanels`
+    // instead. The active MMX panel is not among the claims and nothing
+    // mounts, so the press gets the not-hosting note.
     const mounted: string | undefined = undefined;
     const names: string[] = [];
     const sidebarRight: SidebarRightLike = {
@@ -250,7 +251,10 @@ describe("createSidePreviewOpener", () => {
         names.push(sessionId);
         return () => {};
       },
-      hostedSession: { getSnapshot: () => null, subscribe: () => () => {} },
+      hostedPanels: {
+        getSnapshot: () => new Set(["multica-inbox"]),
+        subscribe: () => () => {},
+      },
       openTab: () => {},
     };
     await expect(
@@ -261,15 +265,19 @@ describe("createSidePreviewOpener", () => {
           [{ workspaceId: "w-1", path: "/work/acme", sessionIds: ["s-1"] }],
         ),
         sessions: fakeSessions([]),
+        panelInfo: {
+          getSnapshot: () => ({ activePanelId: "multica" }),
+          subscribe: () => () => {},
+        },
         folder: "/work/acme",
       })("iss-1"),
     ).rejects.toThrow(/panel is not hosting the column/);
     expect(names).toEqual(["s-1"]);
   });
 
-  it("keeps the generic note when the face publishes no named id", async () => {
-    // Without `hostedSession` the press cannot tell the gate state apart from
-    // an unresolvable Session, so it stays with the no-session failure.
+  it("keeps the generic note when the claim set is absent", async () => {
+    // A build that does not publish `hostedPanels` gives no gate to read; an
+    // unmounted press stays with the no-session failure.
     const mounted: string | undefined = undefined;
     const sidebarRight: SidebarRightLike = {
       mounted: { getSnapshot: () => mounted, subscribe: () => () => {} },
@@ -287,6 +295,39 @@ describe("createSidePreviewOpener", () => {
           [{ workspaceId: "w-1", path: "/work/acme", sessionIds: ["s-1"] }],
         ),
         sessions: fakeSessions([]),
+        folder: "/work/acme",
+      })("iss-1"),
+    ).rejects.toThrow(/no session surface is mounted/);
+  });
+
+  it("keeps the generic note when the gate holds but the Session is unresolvable", async () => {
+    // The ws-down press from M-504: the panel is claimed, the name is stored,
+    // but no surface mounts. That is not a hosting failure.
+    const mounted: string | undefined = undefined;
+    const sidebarRight: SidebarRightLike = {
+      mounted: { getSnapshot: () => mounted, subscribe: () => () => {} },
+      toggleExpanded: () => {},
+      isExpanded: () => false,
+      hostPanel: () => () => {},
+      selectHostedSession: () => () => {},
+      hostedPanels: {
+        getSnapshot: () => new Set(["multica"]),
+        subscribe: () => () => {},
+      },
+      openTab: () => {},
+    };
+    await expect(
+      createSidePreviewOpener({
+        sidebarRight,
+        workspaces: fakeWorkspaces(
+          [],
+          [{ workspaceId: "w-1", path: "/work/acme", sessionIds: ["s-1"] }],
+        ),
+        sessions: fakeSessions([]),
+        panelInfo: {
+          getSnapshot: () => ({ activePanelId: "multica" }),
+          subscribe: () => () => {},
+        },
         folder: "/work/acme",
       })("iss-1"),
     ).rejects.toThrow(/no session surface is mounted/);

@@ -133,7 +133,10 @@ function SidePanelToggle({
       // Match or create the Workspace, name the project's Session, and fail on
       // a build that cannot host the column beside MMX. The side preview runs
       // the same sequence, so it lives in one place (M-336).
-      await prepareHostedColumn({ sidebarRight, workspaces, sessions }, folder);
+      await prepareHostedColumn(
+        { sidebarRight, workspaces, sessions, panelInfo: shell.panelInfo },
+        folder,
+      );
       if (!readExpanded(sidebarRight)) sidebarRight.toggleExpanded();
       setExpanded(readExpanded(sidebarRight));
       setNote(null);

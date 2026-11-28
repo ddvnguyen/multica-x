@@ -1,7 +1,8 @@
+import type { DshPanelInfo } from "../dsh";
 import {
   boundSessionId,
   describe,
-  isHostingNamedSession,
+  isHostedPanel,
   noSessionSurfaceError,
   notHostingColumnError,
   planSidebarToggle,
@@ -32,6 +33,11 @@ export interface HostedColumnFaces {
   sidebarRight: SidebarRightLike;
   workspaces: WorkspacesLike | null;
   sessions: SessionsLike | null;
+  /**
+   * The shell's panel selection, used to read dsh's hosting gate after a name.
+   * Absent on builds without `ctx.layout`, where the gate cannot be checked.
+   */
+  panelInfo?: DshPanelInfo | null;
 }
 
 /**
@@ -65,7 +71,7 @@ export async function prepareHostedColumn(
   faces: HostedColumnFaces,
   folder: string,
 ): Promise<void> {
-  const { sidebarRight, workspaces, sessions } = faces;
+  const { sidebarRight, workspaces, sessions, panelInfo } = faces;
   if (workspaces === null || sessions === null) {
     throw new Error("this dsh build has no workspace or session service");
   }
@@ -90,12 +96,13 @@ export async function prepareHostedColumn(
   }
   nameHostedSession(sidebarRight, sessionId);
   if (sessionSurfaceMounted(sidebarRight)) return;
-  // The name was ignored: the face does not hold the named id, so the dsh
-  // gate rejected it (the MMX panel on screen is not a claimed `hostedPanels`
-  // id). That is a different state from "no Session on screen" and gets its
-  // own note. Without the face — or when the face holds the name but nothing
-  // mounted (an unresolvable Session) — only the generic note is available.
-  if ("hostedSession" in sidebarRight && !isHostingNamedSession(sidebarRight, sessionId)) {
+  // The name was stored but nothing mounted. dsh's gate holds only when the
+  // active MMX panel is one of the claimed `hostedPanels` ids; when it does
+  // not, the name is ignored and the column has nothing to act on. That is a
+  // different state from "no Session on screen" — an unresolvable Session
+  // with the gate open (a dropped ws, for instance) keeps the generic note.
+  const activePanelId = panelInfo?.getSnapshot().activePanelId ?? null;
+  if (sidebarRight.hostedPanels !== undefined && !isHostedPanel(sidebarRight, activePanelId)) {
     throw notHostingColumnError();
   }
   throw noSessionSurfaceError();
